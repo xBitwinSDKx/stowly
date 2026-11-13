@@ -1,0 +1,3325 @@
+{
+  "components": {
+    "schemas": {
+      "Changes": {
+        "additionalProperties": false,
+        "description": "Alle seit ``cursor`` geänderten Datensätze, jeweils vollständig.",
+        "properties": {
+          "label_templates": {
+            "items": {
+              "$ref": "#/components/schemas/LabelTemplate"
+            },
+            "type": "array"
+          },
+          "packages": {
+            "items": {
+              "$ref": "#/components/schemas/Package"
+            },
+            "type": "array"
+          },
+          "print_jobs": {
+            "items": {
+              "$ref": "#/components/schemas/PrintJob"
+            },
+            "type": "array"
+          },
+          "printer_status": {
+            "items": {
+              "$ref": "#/components/schemas/PrinterStatus"
+            },
+            "type": "array"
+          },
+          "printers": {
+            "items": {
+              "$ref": "#/components/schemas/Printer"
+            },
+            "type": "array"
+          },
+          "products": {
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            },
+            "type": "array"
+          },
+          "settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HouseholdSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null = unverändert."
+          },
+          "zones": {
+            "items": {
+              "$ref": "#/components/schemas/Zone"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "products",
+          "zones",
+          "packages",
+          "printers",
+          "printer_status",
+          "print_jobs",
+          "label_templates",
+          "settings"
+        ],
+        "type": "object"
+      },
+      "CmdPackageCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "best_before": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "package_id": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+            "type": "string"
+          },
+          "product_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "package.create",
+            "type": "string"
+          },
+          "zone_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "package_id",
+          "product_id",
+          "zone_id"
+        ],
+        "type": "object"
+      },
+      "CmdPackageRemove": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "package_id": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/RemovalReason"
+          },
+          "type": {
+            "const": "package.remove",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "package_id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "CmdPackageRestore": {
+        "additionalProperties": false,
+        "properties": {
+          "apply_displaced": {
+            "default": false,
+            "description": "Die verdrängte Bearbeitung beim Wiederherstellen übernehmen.",
+            "type": "boolean"
+          },
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "package_id": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "package.restore",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "package_id"
+        ],
+        "type": "object"
+      },
+      "CmdPackageUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "changes": {
+            "$ref": "#/components/schemas/PackageChanges"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "package_id": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "package.update",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "package_id",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "CmdPrintReport": {
+        "additionalProperties": false,
+        "description": "Meldet den Fortschritt eines Etiketts, auch Abbruch und die Antwort des Anwenders bei ``unknown``.",
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "boot_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/PrintJobState"
+          },
+          "type": {
+            "const": "print.report",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "job_id",
+          "state"
+        ],
+        "type": "object"
+      },
+      "CmdPrintRequest": {
+        "additionalProperties": false,
+        "description": "Legt ein Etikett im Zustand ``pending`` an.",
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PrintJobKind"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "print.request",
+            "type": "string"
+          },
+          "zone_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "job_id",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "CmdPrinterCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "connection": {
+            "$ref": "#/components/schemas/PrinterConnection"
+          },
+          "direct": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DirectPrinterConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "printer_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "server": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServerPrinterConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "printer.create",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "printer_id",
+          "name",
+          "connection"
+        ],
+        "type": "object"
+      },
+      "CmdPrinterDelete": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "printer_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "printer.delete",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "printer_id"
+        ],
+        "type": "object"
+      },
+      "CmdPrinterReport": {
+        "additionalProperties": false,
+        "description": "Ein Gerät hat einen Druckdienst erreicht und bringt dessen Zustand mit. ``at`` ist der Zeitpunkt der Beobachtung.",
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "boot_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HostHealth"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "printer_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DriverStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "printer.report",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "printer_id"
+        ],
+        "type": "object"
+      },
+      "CmdPrinterUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "changes": {
+            "$ref": "#/components/schemas/PrinterChanges"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "printer_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "printer.update",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "printer_id",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "CmdProductAddBarcode": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "barcode": {
+            "pattern": "^(\\d{8}|\\d{13})$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "product_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "product.add_barcode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "product_id",
+          "barcode"
+        ],
+        "type": "object"
+      },
+      "CmdProductCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "barcodes": {
+            "items": {
+              "pattern": "^(\\d{8}|\\d{13})$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "type": "array"
+          },
+          "brand": {
+            "default": "",
+            "maxLength": 80,
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "product_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "quantity": {
+            "default": "",
+            "maxLength": 40,
+            "type": "string"
+          },
+          "type": {
+            "const": "product.create",
+            "type": "string"
+          },
+          "warn_days": {
+            "anyOf": [
+              {
+                "maximum": 3650,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "product_id"
+        ],
+        "type": "object"
+      },
+      "CmdProductMerge": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "source_id": {
+            "description": "Dieses Produkt geht im Ziel auf.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "target_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "product.merge",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "source_id",
+          "target_id"
+        ],
+        "type": "object"
+      },
+      "CmdProductRemoveBarcode": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "barcode": {
+            "pattern": "^(\\d{8}|\\d{13})$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "product_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "product.remove_barcode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "product_id",
+          "barcode"
+        ],
+        "type": "object"
+      },
+      "CmdProductUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "changes": {
+            "$ref": "#/components/schemas/ProductChanges"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "product_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "product.update",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "product_id",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "CmdSettingsUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "changes": {
+            "$ref": "#/components/schemas/SettingsChanges"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "settings.update",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "CmdZoneCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "icon": {
+            "default": "box",
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "default": 0,
+            "type": "integer"
+          },
+          "type": {
+            "const": "zone.create",
+            "type": "string"
+          },
+          "zone_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "zone_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "CmdZoneDelete": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "move_to": {
+            "description": "Zone, in die alle Packungen der gelöschten Zone wandern.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "zone.delete",
+            "type": "string"
+          },
+          "zone_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "zone_id",
+          "move_to"
+        ],
+        "type": "object"
+      },
+      "CmdZoneUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "changes": {
+            "$ref": "#/components/schemas/ZoneChanges"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "zone.update",
+            "type": "string"
+          },
+          "zone_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "zone_id",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "Command": {
+        "discriminator": {
+          "mapping": {
+            "package.create": "#/components/schemas/CmdPackageCreate",
+            "package.remove": "#/components/schemas/CmdPackageRemove",
+            "package.restore": "#/components/schemas/CmdPackageRestore",
+            "package.update": "#/components/schemas/CmdPackageUpdate",
+            "print.report": "#/components/schemas/CmdPrintReport",
+            "print.request": "#/components/schemas/CmdPrintRequest",
+            "printer.create": "#/components/schemas/CmdPrinterCreate",
+            "printer.delete": "#/components/schemas/CmdPrinterDelete",
+            "printer.report": "#/components/schemas/CmdPrinterReport",
+            "printer.update": "#/components/schemas/CmdPrinterUpdate",
+            "product.add_barcode": "#/components/schemas/CmdProductAddBarcode",
+            "product.create": "#/components/schemas/CmdProductCreate",
+            "product.merge": "#/components/schemas/CmdProductMerge",
+            "product.remove_barcode": "#/components/schemas/CmdProductRemoveBarcode",
+            "product.update": "#/components/schemas/CmdProductUpdate",
+            "settings.update": "#/components/schemas/CmdSettingsUpdate",
+            "zone.create": "#/components/schemas/CmdZoneCreate",
+            "zone.delete": "#/components/schemas/CmdZoneDelete",
+            "zone.update": "#/components/schemas/CmdZoneUpdate"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CmdProductCreate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdProductUpdate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdProductAddBarcode"
+          },
+          {
+            "$ref": "#/components/schemas/CmdProductRemoveBarcode"
+          },
+          {
+            "$ref": "#/components/schemas/CmdProductMerge"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPackageCreate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPackageUpdate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPackageRemove"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPackageRestore"
+          },
+          {
+            "$ref": "#/components/schemas/CmdZoneCreate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdZoneUpdate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdZoneDelete"
+          },
+          {
+            "$ref": "#/components/schemas/CmdSettingsUpdate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPrinterCreate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPrinterUpdate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPrinterDelete"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPrinterReport"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPrintRequest"
+          },
+          {
+            "$ref": "#/components/schemas/CmdPrintReport"
+          }
+        ]
+      },
+      "CommandResult": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RejectCode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nur bei rejected."
+          },
+          "duplicate": {
+            "description": "Der Befehl war schon bekannt; status ist das Ergebnis von damals.",
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Deutscher Klartext zum code, als Rückfall anzeigbar."
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "code",
+          "message",
+          "duplicate"
+        ],
+        "type": "object"
+      },
+      "CommandStatus": {
+        "enum": [
+          "applied",
+          "displaced",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "Device": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "current": {
+            "description": "true = das Gerät, das gerade fragt.",
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "last_seen_at",
+          "revoked_at",
+          "current"
+        ],
+        "type": "object"
+      },
+      "DeviceList": {
+        "additionalProperties": false,
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/Device"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "type": "object"
+      },
+      "DeviceUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "DirectPrinterConfig": {
+        "additionalProperties": false,
+        "description": "Druckdienst, den das Gerät selbst anspricht (Raspberry Pi im Keller).",
+        "properties": {
+          "printer": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Name des Druckers im Druckdienst; null = dessen Standarddrucker."
+          },
+          "token": {
+            "description": "Bearer-Token des Druckdienstes.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "urls": {
+            "description": "Basis-Adressen in der Reihenfolge der Versuche, z. B. https://10.71.83.1:8443, dann http://10.71.83.1:8080.",
+            "items": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "urls",
+          "token",
+          "printer"
+        ],
+        "type": "object"
+      },
+      "DisplacedChange": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "$ref": "#/components/schemas/PackageField"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "type": "object"
+      },
+      "DisplacedEdit": {
+        "additionalProperties": false,
+        "description": "Eine Bearbeitung, die auf eine bereits entnommene Packung traf (Löschen gewinnt).",
+        "properties": {
+          "at": {
+            "description": "Wann die Bearbeitung gemacht wurde.",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "changes": {
+            "description": "Die nicht angewendeten Feldwerte.",
+            "items": {
+              "$ref": "#/components/schemas/DisplacedChange"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "at",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "DriverStatus": {
+        "additionalProperties": false,
+        "description": "Momentaufnahme eines Druckers. ``None`` heißt: lässt sich nicht feststellen.",
+        "properties": {
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "media_detected": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reachable": {
+            "type": "boolean"
+          },
+          "ready": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "reachable",
+          "ready",
+          "media_detected",
+          "errors"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "additionalProperties": false,
+        "description": "Rumpf jeder Fehlerantwort der Schnittstelle.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorInfo"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorCode": {
+        "description": "Fehlercodes der HTTP-Schnittstelle (docs/sync-protokoll.md, „Fehlerformat\").",
+        "enum": [
+          "invalid_request",
+          "unauthorized",
+          "invalid_password",
+          "rate_limited",
+          "not_configured",
+          "not_found",
+          "conflict",
+          "protocol_mismatch",
+          "payload_too_large",
+          "not_implemented",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "ErrorInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "description": "Deutscher Klartext, als Rückfall anzeigbar.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "details"
+        ],
+        "type": "object"
+      },
+      "EventPage": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "description": "Neueste zuerst.",
+            "items": {
+              "$ref": "#/components/schemas/EventRecord"
+            },
+            "type": "array"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Als ?before= mitsenden, um weiterzublättern; null = Ende."
+          }
+        },
+        "required": [
+          "events",
+          "next_before"
+        ],
+        "type": "object"
+      },
+      "EventRecord": {
+        "additionalProperties": false,
+        "description": "Ein Eintrag des Ereignisprotokolls.",
+        "properties": {
+          "at": {
+            "description": "Wann es geschah (Serverzeit, aus dem Befehl berechnet).",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "command_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entity": {
+            "type": "string"
+          },
+          "entity_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "recorded_at": {
+            "description": "Wann der Server es verbucht hat.",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "recorded_at",
+          "device_id",
+          "command_id",
+          "type",
+          "entity",
+          "entity_id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "HostHealth": {
+        "additionalProperties": false,
+        "description": "Zustand des Rechners, auf dem der Druckdienst läuft. ``None`` = unbekannt.\n\n``undervoltage`` ist auf der Pi-Zero-Reihe immer ``None``: Sie hat keinen Detektor.\nFür die SD-Karte gibt es nur Symptome (docs/recherche.md, Abschnitt 6).",
+        "properties": {
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overlay_used_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "storage_errors": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "storage_read_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "temperature_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "throttled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "undervoltage": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "uptime_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "HouseholdSettings": {
+        "additionalProperties": false,
+        "description": "Einstellungen des Haushalts; gelten für alle Geräte.",
+        "properties": {
+          "default_printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Drucker für Zonen ohne eigenen Drucker."
+          },
+          "primary_zone_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Primärzone; null = erste Zone der Reihenfolge."
+          },
+          "trash_retention_days": {
+            "description": "Aufbewahrungsdauer der Lösch-Historie in Tagen.",
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "warn_days": {
+            "description": "Vorlaufzeit der MHD-Warnung in Tagen.",
+            "maximum": 3650.0,
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "zone_mode": {
+            "$ref": "#/components/schemas/ZoneMode"
+          }
+        },
+        "required": [
+          "zone_mode",
+          "primary_zone_id",
+          "warn_days",
+          "trash_retention_days",
+          "default_printer_id",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "IdPoolGrant": {
+        "additionalProperties": false,
+        "properties": {
+          "grant": {
+            "description": "Neu für dieses Gerät reservierte Packungs-IDs.",
+            "items": {
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target": {
+            "description": "Sollgröße des Vorrats.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "grant",
+          "target"
+        ],
+        "type": "object"
+      },
+      "IdPoolState": {
+        "additionalProperties": false,
+        "properties": {
+          "have": {
+            "description": "Wie viele unbenutzte Packungs-IDs das Gerät noch hat.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "have"
+        ],
+        "type": "object"
+      },
+      "LabelTemplate": {
+        "additionalProperties": false,
+        "description": "Etikett-Vorlage. Die App reicht ``body`` unverändert mit jedem Druckauftrag weiter.",
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "key": {
+            "$ref": "#/components/schemas/PrintJobKind"
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "hash",
+          "body",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "LoginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "device_name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "password",
+          "device_name"
+        ],
+        "type": "object"
+      },
+      "LoginResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/Device"
+          },
+          "token": {
+            "description": "Geräte-Token; bei jedem Aufruf als 'Authorization: Bearer <token>' senden.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "device"
+        ],
+        "type": "object"
+      },
+      "LookupState": {
+        "description": "Stand des Nachschlagens bei Open Food Facts.",
+        "enum": [
+          "none",
+          "pending",
+          "found",
+          "not_found"
+        ],
+        "type": "string"
+      },
+      "Package": {
+        "additionalProperties": false,
+        "description": "Eine einzelne Packung. Entnommene Packungen bleiben als Datensatz erhalten.",
+        "properties": {
+          "best_before": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "MHD als Kalenderdatum; null = keines."
+          },
+          "created_at": {
+            "description": "Zeitpunkt des Einlagerns.",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "displaced": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplacedEdit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Verdrängte Bearbeitung, nur bei entnommenen Packungen."
+          },
+          "id": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+            "type": "string"
+          },
+          "product_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "removal_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemovalReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "removed_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt = entnommen (Lösch-Historie)."
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "zone_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "product_id",
+          "zone_id",
+          "best_before",
+          "created_at",
+          "updated_at",
+          "removed_at",
+          "removal_reason",
+          "displaced"
+        ],
+        "type": "object"
+      },
+      "PackageChanges": {
+        "additionalProperties": false,
+        "properties": {
+          "best_before": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "product_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "zone_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PackageField": {
+        "description": "Änderbare Felder einer Packung.",
+        "enum": [
+          "best_before",
+          "zone_id",
+          "product_id"
+        ],
+        "type": "string"
+      },
+      "PackageLabelData": {
+        "additionalProperties": false,
+        "properties": {
+          "best_before": {
+            "description": "MHD als 'TT.MM.JJJJ'; leer = keines.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Packungs-ID im Klartext, z. B. 'A2B3C'.",
+            "type": "string"
+          },
+          "qr": {
+            "description": "QR-Inhalt, z. B. 'STOWLY/P/A2B3C'.",
+            "type": "string"
+          },
+          "stored": {
+            "description": "Tag des Einlagerns als 'TT.MM.JJJJ'.",
+            "type": "string"
+          },
+          "subtitle": {
+            "description": "Marke und Packungsgröße, mit ' · ' verbunden; darf leer sein.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Produktname; bei Platzhaltern der Barcode.",
+            "type": "string"
+          },
+          "zone": {
+            "description": "Name der Zone; leer, wenn es nur eine gibt.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "qr",
+          "id",
+          "title",
+          "subtitle",
+          "best_before",
+          "stored",
+          "zone"
+        ],
+        "type": "object"
+      },
+      "PrintJob": {
+        "additionalProperties": false,
+        "description": "Ein Etikett, das gedruckt werden soll oder wurde. Die Kennung ist zugleich die Auftragskennung beim Druckdienst.",
+        "properties": {
+          "boot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "boot_id des Druckdienstes, der den Auftrag angenommen hat."
+          },
+          "created_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gerät, das den Auftrag angelegt hat."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fehlercode des Druckdienstes bei failed."
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PrintJobKind"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{5}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt bei kind = package."
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Zieldrucker; null = beim Drucken aus Zone und Standarddrucker bestimmen."
+          },
+          "state": {
+            "$ref": "#/components/schemas/PrintJobState"
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "zone_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt bei kind = zone."
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "package_id",
+          "zone_id",
+          "printer_id",
+          "state",
+          "error",
+          "boot_id",
+          "device_id",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PrintJobKind": {
+        "enum": [
+          "package",
+          "zone"
+        ],
+        "type": "string"
+      },
+      "PrintJobState": {
+        "description": "Zustand eines Etiketts aus Sicht des Haushalts.\n\n``pending`` und ``cancelled`` kennt nur Stowly; die übrigen Werte sind die\nZustände des Druckdienstes (docs/etiketten.md).",
+        "enum": [
+          "pending",
+          "queued",
+          "printing",
+          "printed",
+          "sent",
+          "failed",
+          "unknown",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "Printer": {
+        "additionalProperties": false,
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/PrinterConnection"
+          },
+          "created_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "direct": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DirectPrinterConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt genau dann, wenn connection = direct."
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "server": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServerPrinterConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt genau dann, wenn connection = server."
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "connection",
+          "server",
+          "direct",
+          "created_at",
+          "updated_at",
+          "deleted_at"
+        ],
+        "type": "object"
+      },
+      "PrinterCapabilities": {
+        "additionalProperties": false,
+        "description": "Was ein Treiber kann. Ändert sich nicht, solange die Konfiguration gleich bleibt.",
+        "properties": {
+          "colors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "confirms_print": {
+            "type": "boolean"
+          },
+          "cutter": {
+            "type": "boolean"
+          },
+          "dpi": {
+            "type": "integer"
+          },
+          "media": {
+            "$ref": "#/components/schemas/PrinterMedia"
+          },
+          "status_query": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dpi",
+          "media",
+          "cutter",
+          "colors",
+          "status_query",
+          "confirms_print"
+        ],
+        "type": "object"
+      },
+      "PrinterChanges": {
+        "additionalProperties": false,
+        "description": "Die Art der Verbindung lässt sich nicht ändern; passend zur Verbindung ist nur eines der Objekte erlaubt.",
+        "properties": {
+          "direct": {
+            "$ref": "#/components/schemas/DirectPrinterConfig"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "server": {
+            "$ref": "#/components/schemas/ServerPrinterConfig"
+          }
+        },
+        "type": "object"
+      },
+      "PrinterConnection": {
+        "enum": [
+          "server",
+          "direct"
+        ],
+        "type": "string"
+      },
+      "PrinterDriver": {
+        "enum": [
+          "brother_ql",
+          "image"
+        ],
+        "type": "string"
+      },
+      "PrinterMedia": {
+        "additionalProperties": false,
+        "description": "Eingelegtes Material. Längenangaben in Millimetern.",
+        "properties": {
+          "length_mm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "printable_px": {
+            "type": "integer"
+          },
+          "width_mm": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "width_mm",
+          "length_mm",
+          "printable_px"
+        ],
+        "type": "object"
+      },
+      "PrinterStatus": {
+        "additionalProperties": false,
+        "description": "Zuletzt gesehener Zustand eines Druckers („zuletzt gesehen\", kein Herzschlag).",
+        "properties": {
+          "boot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HostHealth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Zustand des Rechners (Pi); null bei Druckern am Server."
+          },
+          "observed_at": {
+            "description": "Wann ein Gerät oder der Server den Druckdienst zuletzt erreicht hat.",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "printer_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DriverStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Zustand des Druckers; null, wenn der Dienst ihn nicht melden konnte."
+          }
+        },
+        "required": [
+          "printer_id",
+          "observed_at",
+          "boot_id",
+          "status",
+          "host"
+        ],
+        "type": "object"
+      },
+      "Product": {
+        "additionalProperties": false,
+        "properties": {
+          "barcodes": {
+            "description": "Alle Barcodes dieses Produkts, aufsteigend sortiert.",
+            "items": {
+              "pattern": "^(\\d{8}|\\d{13})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "brand": {
+            "maxLength": 80,
+            "type": "string"
+          },
+          "created_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt = in einem anderen Produkt aufgegangen."
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bild-ID für GET /api/images/{id} oder null."
+          },
+          "lookup": {
+            "$ref": "#/components/schemas/LookupState"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bei zusammengeführten Produkten: das Zielprodukt."
+          },
+          "name": {
+            "description": "Leer = noch unbekannt (Platzhalter); die App zeigt dann den Barcode.",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "quantity": {
+            "description": "Packungsgröße als Text, z. B. '500 g'.",
+            "maxLength": 40,
+            "type": "string"
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "warn_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Vorlaufzeit der MHD-Warnung in Tagen; null = Haushaltswert."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "brand",
+          "quantity",
+          "image",
+          "warn_days",
+          "lookup",
+          "barcodes",
+          "created_at",
+          "updated_at",
+          "deleted_at",
+          "merged_into"
+        ],
+        "type": "object"
+      },
+      "ProductChanges": {
+        "additionalProperties": false,
+        "properties": {
+          "brand": {
+            "maxLength": 80,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "type": "string"
+          },
+          "quantity": {
+            "maxLength": 40,
+            "type": "string"
+          },
+          "warn_days": {
+            "anyOf": [
+              {
+                "maximum": 3650,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RejectCode": {
+        "enum": [
+          "invalid",
+          "not_found",
+          "id_conflict",
+          "last_zone",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "RemovalReason": {
+        "description": "Warum eine Packung entnommen wurde (Grundlage der Statistik in Stufe 2).",
+        "enum": [
+          "consumed",
+          "discarded",
+          "mistake"
+        ],
+        "type": "string"
+      },
+      "ServerHealth": {
+        "additionalProperties": false,
+        "description": "Antwort von ``GET /api/health``. ``app`` ist der Marker, an dem die App den Server erkennt.",
+        "properties": {
+          "app": {
+            "const": "stowly",
+            "type": "string"
+          },
+          "configured": {
+            "description": "false = STOWLY_PASSWORD ist nicht gesetzt, Anmelden ist nicht möglich.",
+            "type": "boolean"
+          },
+          "protocol": {
+            "type": "integer"
+          },
+          "status": {
+            "const": "ok",
+            "type": "string"
+          },
+          "time": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "status",
+          "version",
+          "protocol",
+          "time",
+          "configured"
+        ],
+        "type": "object"
+      },
+      "ServerPrinterConfig": {
+        "additionalProperties": false,
+        "description": "Drucker, den der Server ansteuert.",
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'tcp://192.168.1.60:9100' oder 'usb://04f9:209b'; null beim Bild-Treiber."
+          },
+          "driver": {
+            "$ref": "#/components/schemas/PrinterDriver"
+          },
+          "media": {
+            "description": "Rollenkennung des Treibers, z. B. '62' für die 62-mm-Endlosrolle.",
+            "maxLength": 40,
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Modell für den Treiber, z. B. 'QL-820NWB'; null beim Bild-Treiber."
+          }
+        },
+        "required": [
+          "driver",
+          "model",
+          "address",
+          "media"
+        ],
+        "type": "object"
+      },
+      "ServiceHealth": {
+        "additionalProperties": false,
+        "description": "Antwort von ``GET /v1/health``.",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "boot_id": {
+            "type": "string"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HostHealth"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "printers": {
+            "items": {
+              "$ref": "#/components/schemas/ServicePrinter"
+            },
+            "type": "array"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol": {
+            "type": "integer"
+          },
+          "uptime_s": {
+            "type": "number"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "version",
+          "protocol",
+          "boot_id",
+          "uptime_s",
+          "proof",
+          "host",
+          "printers"
+        ],
+        "type": "object"
+      },
+      "ServiceJob": {
+        "additionalProperties": false,
+        "description": "Antwort auf das Einreichen und Abfragen eines Auftrags.",
+        "properties": {
+          "boot_id": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceJobError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "printer": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ServiceJobState"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "printer",
+          "boot_id",
+          "error",
+          "position"
+        ],
+        "type": "object"
+      },
+      "ServiceJobError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ServiceJobRequest": {
+        "additionalProperties": false,
+        "description": "Inhalt eines Druckauftrags.\n\nEntweder ``template`` und ``data`` (Normalfall: gerendert wird beim Drucker)\noder ``png`` (Notausgang: fertiges 1-Bit-PNG in exakt passender Größe, Base64).\n``expect_boot_id`` gehört nicht zum Inhalt und beeinflusst ``content_hash`` nicht.",
+        "properties": {
+          "copies": {
+            "default": 1,
+            "type": "integer"
+          },
+          "cut": {
+            "default": true,
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expect_boot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "png": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "printer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "template": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ServiceJobState": {
+        "description": "Zustand eines Auftrags im Druckdienst.",
+        "enum": [
+          "queued",
+          "printing",
+          "printed",
+          "sent",
+          "failed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "ServicePrinter": {
+        "additionalProperties": false,
+        "description": "Ein Drucker, wie ihn ``GET /v1/printers`` und ``GET /v1/health`` melden.",
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/PrinterCapabilities"
+          },
+          "driver": {
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DriverStatus"
+          }
+        },
+        "required": [
+          "name",
+          "driver",
+          "model",
+          "capabilities",
+          "status"
+        ],
+        "type": "object"
+      },
+      "SettingsChanges": {
+        "additionalProperties": false,
+        "properties": {
+          "default_printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "primary_zone_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trash_retention_days": {
+            "maximum": 3650,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "warn_days": {
+            "maximum": 3650,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "zone_mode": {
+            "$ref": "#/components/schemas/ZoneMode"
+          }
+        },
+        "type": "object"
+      },
+      "SyncRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "commands": {
+            "description": "Befehle in der Reihenfolge ihrer Entstehung.",
+            "items": {
+              "$ref": "#/components/schemas/Command"
+            },
+            "maxItems": 500,
+            "type": "array"
+          },
+          "cursor": {
+            "description": "cursor der letzten Antwort; 0 beim ersten Sync.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dataset_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "dataset_id der letzten Antwort; null beim ersten Sync."
+          },
+          "id_pool": {
+            "$ref": "#/components/schemas/IdPoolState"
+          },
+          "protocol": {
+            "description": "Protokollversion des Geräts.",
+            "type": "integer"
+          },
+          "sent_at": {
+            "description": "Geräteuhr im Moment des Absendens.",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "dataset_id",
+          "cursor",
+          "sent_at",
+          "commands",
+          "id_pool"
+        ],
+        "type": "object"
+      },
+      "SyncResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "$ref": "#/components/schemas/Changes"
+          },
+          "cursor": {
+            "description": "Beim nächsten Sync mitsenden.",
+            "type": "integer"
+          },
+          "dataset_id": {
+            "description": "Kennung des Datenbestands. Weicht sie vom gespeicherten Wert ab, ist reset = true.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "has_more": {
+            "description": "true = sofort erneut abrufen (ohne Befehle), es gibt weitere Änderungen.",
+            "type": "boolean"
+          },
+          "id_pool": {
+            "$ref": "#/components/schemas/IdPoolGrant"
+          },
+          "protocol": {
+            "type": "integer"
+          },
+          "reset": {
+            "description": "true = die Antwort ist ein vollständiger Abzug; lokale Kopie vorher leeren.",
+            "type": "boolean"
+          },
+          "results": {
+            "description": "Ein Ergebnis je gesendetem Befehl, in derselben Reihenfolge.",
+            "items": {
+              "$ref": "#/components/schemas/CommandResult"
+            },
+            "type": "array"
+          },
+          "server_time": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "dataset_id",
+          "server_time",
+          "results",
+          "reset",
+          "changes",
+          "cursor",
+          "has_more",
+          "id_pool"
+        ],
+        "type": "object"
+      },
+      "Zone": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Schlüssel aus der Farbpalette der Web-App oder null."
+          },
+          "created_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt = Zone gelöscht (Grabstein)."
+          },
+          "icon": {
+            "description": "Schlüssel aus der Symbolliste der Web-App; Unbekanntes wird als 'box' gezeigt.",
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "moved_to": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bei gelöschten Zonen: wohin ihre Packungen verschoben wurden."
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Drucker für Etiketten dieser Zone; null = Standarddrucker."
+          },
+          "sort": {
+            "description": "Reihenfolge, aufsteigend; bei Gleichstand nach Name.",
+            "type": "integer"
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "icon",
+          "color",
+          "sort",
+          "printer_id",
+          "created_at",
+          "updated_at",
+          "deleted_at",
+          "moved_to"
+        ],
+        "type": "object"
+      },
+      "ZoneChanges": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "icon": {
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ZoneLabelData": {
+        "additionalProperties": false,
+        "properties": {
+          "qr": {
+            "description": "QR-Inhalt, z. B. 'STOWLY/Z/3F2B…' (32 Hex-Zeichen).",
+            "type": "string"
+          },
+          "subtitle": {
+            "description": "Zusatzzeile, z. B. 'Lagerzone'; darf leer sein.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Name der Zone.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "qr",
+          "title",
+          "subtitle"
+        ],
+        "type": "object"
+      },
+      "ZoneMode": {
+        "enum": [
+          "primary",
+          "equal"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  "info": {
+    "description": "Selbst gehostete Lagerverwaltung für Lebensmittel. Vertrag: docs/sync-protokoll.md.",
+    "title": "Stowly",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/auth/login": {
+      "post": {
+        "description": "Ohne Anmeldung. Legt ein Gerät an und liefert dessen Token genau einmal.",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "description": "Sperrt das Token des aufrufenden Geräts.",
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/backup": {
+      "get": {
+        "description": "Liefert eine konsistente Kopie (``sqlite3.Connection.backup``) als Datei-Download.\n\nDie Kopie bekommt eine neue ``dataset_id``: Wird sie später eingespielt, holen\nalle Geräte den Bestand vollständig neu, statt mit einem veralteten Cursor zu arbeiten.",
+        "operationId": "download_backup",
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.sqlite3": {}
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Download Backup",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/devices": {
+      "get": {
+        "operationId": "list_devices",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Devices",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
+    "/api/devices/{device_id}": {
+      "delete": {
+        "description": "Sperrt das Token dieses Geräts. Ein Gerät darf auch sich selbst sperren.",
+        "operationId": "revoke_device",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Revoke Device",
+        "tags": [
+          "devices"
+        ]
+      },
+      "patch": {
+        "operationId": "update_device",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Update Device",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
+    "/api/events": {
+      "get": {
+        "description": "Neueste zuerst, seitenweise über ``before``.",
+        "operationId": "list_events",
+        "parameters": [
+          {
+            "description": "Nur Einträge mit kleinerer id.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Nur Einträge mit kleinerer id.",
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Nur diese Art von Datensatz, z. B. 'package'.",
+            "in": "query",
+            "name": "entity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Nur diese Art von Datensatz, z. B. 'package'.",
+              "title": "Entity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "entity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Events",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "description": "Ohne Anmeldung. Die App prüft damit selbst, ob der Server erreichbar ist:\n``navigator.onLine`` meldet im WLAN des Pi „online\", obwohl der Server fehlt.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerHealth"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/images/{image_id}": {
+      "get": {
+        "description": "Ohne Anmeldung, weil ``<img>`` keinen Authorization-Header senden kann. Die Kennung\nist der Hash des Inhalts; die Antwort ist unveränderlich und darf ewig zwischengespeichert werden.",
+        "operationId": "get_image",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {},
+              "image/png": {},
+              "image/webp": {}
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Image",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/api/sync": {
+      "post": {
+        "description": "Nimmt Befehle an und liefert alle Änderungen seit ``cursor``.",
+        "operationId": "sync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sync",
+        "tags": [
+          "sync"
+        ]
+      }
+    }
+  }
+}

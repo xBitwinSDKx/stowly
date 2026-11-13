@@ -1,0 +1,302 @@
+{
+  "_hinweis": "Gemeinsame Beispiele für Server (server/tests/test_vectors.py) und Web-App (web/src/contract/vectors.test.ts). Beide Seiten müssen jedes Beispiel erfüllen.",
+  "package_ids": {
+    "valid": [
+      "A2B3C",
+      "00000",
+      "ZZZZZ",
+      "7K9QX",
+      "0123H"
+    ],
+    "invalid": [
+      "A2B3",
+      "A2B3CD",
+      "a2b3c",
+      "A2B3I",
+      "A2B3L",
+      "A2B3O",
+      "A2B3U",
+      "A2 B3",
+      "A2B3Ä",
+      ""
+    ],
+    "normalize": [
+      {
+        "input": "a2b3c",
+        "output": "A2B3C"
+      },
+      {
+        "input": " a2-b3c ",
+        "output": "A2B3C"
+      },
+      {
+        "input": "A2 B3C",
+        "output": "A2B3C"
+      },
+      {
+        "input": "O1L2I",
+        "output": "01121"
+      },
+      {
+        "input": "o0il1",
+        "output": "00111"
+      },
+      {
+        "input": "A2B3U",
+        "output": null
+      },
+      {
+        "input": "A2B3",
+        "output": null
+      },
+      {
+        "input": "A2B3C4",
+        "output": null
+      },
+      {
+        "input": "A2B3Ä",
+        "output": null
+      },
+      {
+        "input": "",
+        "output": null
+      }
+    ]
+  },
+  "qr": {
+    "package": [
+      {
+        "id": "A2B3C",
+        "text": "STOWLY/P/A2B3C"
+      },
+      {
+        "id": "00000",
+        "text": "STOWLY/P/00000"
+      },
+      {
+        "id": "ZZZZZ",
+        "text": "STOWLY/P/ZZZZZ"
+      }
+    ],
+    "zone": [
+      {
+        "id": "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4a5b",
+        "text": "STOWLY/Z/3F2B8C1E5A474D099B6E0C1D2E3F4A5B"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000000",
+        "text": "STOWLY/Z/00000000000040008000000000000000"
+      }
+    ],
+    "parse": [
+      {
+        "text": "STOWLY/P/A2B3C",
+        "kind": "package",
+        "id": "A2B3C"
+      },
+      {
+        "text": " stowly/p/a2b3c\n",
+        "kind": "package",
+        "id": "A2B3C"
+      },
+      {
+        "text": "STOWLY/Z/3F2B8C1E5A474D099B6E0C1D2E3F4A5B",
+        "kind": "zone",
+        "id": "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4a5b"
+      },
+      {
+        "text": "stowly/z/3f2b8c1e5a474d099b6e0c1d2e3f4a5b",
+        "kind": "zone",
+        "id": "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4a5b"
+      },
+      {
+        "text": "STOWLY/P/A2B3U",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "STOWLY/P/A2B3CD",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "STOWLY/P/A2B3",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "STOWLY/P/O1L2I",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "STOWLY/X/A2B3C",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "STOWLY/Z/3F2B8C1E",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "STOWLY/Z/3F2B8C1E-5A47-4D09-9B6E-0C1D2E3F4A5B",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "XSTOWLY/P/A2B3C",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "https://example.org/P/A2B3C",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "A2B3C",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "4006381333931",
+        "kind": null,
+        "id": null
+      },
+      {
+        "text": "",
+        "kind": null,
+        "id": null
+      }
+    ]
+  },
+  "barcodes": {
+    "valid": [
+      "4006381333931",
+      "96385074",
+      "0036000291452",
+      "2112345678900",
+      "20000004"
+    ],
+    "invalid": [
+      "4006381333932",
+      "96385075",
+      "123",
+      "abcdefgh",
+      "40063813339310",
+      "036000291452",
+      ""
+    ],
+    "normalize": [
+      {
+        "input": "4006381333931",
+        "output": "4006381333931"
+      },
+      {
+        "input": " 96385074 ",
+        "output": "96385074"
+      },
+      {
+        "input": "036000291452",
+        "output": "0036000291452"
+      },
+      {
+        "input": "4006381333932",
+        "output": null
+      },
+      {
+        "input": "12345",
+        "output": null
+      },
+      {
+        "input": "40063813339 31",
+        "output": null
+      },
+      {
+        "input": "４００６３８１３３３９３１",
+        "output": null
+      },
+      {
+        "input": "",
+        "output": null
+      }
+    ],
+    "store_internal": [
+      {
+        "code": "2112345678900",
+        "internal": true
+      },
+      {
+        "code": "20000004",
+        "internal": true
+      },
+      {
+        "code": "4006381333931",
+        "internal": false
+      },
+      {
+        "code": "96385074",
+        "internal": false
+      },
+      {
+        "code": "0036000291452",
+        "internal": false
+      }
+    ]
+  },
+  "timestamps": {
+    "valid": [
+      "2026-11-13T10:15:30.123Z",
+      "2026-12-31T23:59:59.999Z",
+      "2028-02-29T00:00:00.000Z"
+    ],
+    "invalid": [
+      "2026-11-13T10:15:30Z",
+      "2026-11-13T10:15:30.1Z",
+      "2026-11-13T10:15:30.123456Z",
+      "2026-11-13T10:15:30.123+01:00",
+      "2026-11-13 10:15:30.123Z",
+      "2026-13-01T00:00:00.000Z",
+      "2026-02-30T00:00:00.000Z",
+      "2026-11-13",
+      ""
+    ],
+    "dates_valid": [
+      "2026-11-13",
+      "2028-02-29",
+      "2027-12-31"
+    ],
+    "dates_invalid": [
+      "2026-02-30",
+      "2026-13-01",
+      "13.11.2026",
+      "2026-1-3",
+      "2027-02-29",
+      ""
+    ],
+    "effective": [
+      {
+        "_fall": "Befehl ist beim Absenden 5 Minuten alt",
+        "at": "2026-11-13T10:00:00.000Z",
+        "sent_at": "2026-11-13T10:05:00.000Z",
+        "received": "2026-11-13T11:00:00.000Z",
+        "effective": "2026-11-13T10:55:00.000Z"
+      },
+      {
+        "_fall": "Geräteuhr geht eine Stunde vor: Es zählt nur das Alter",
+        "at": "2026-11-13T12:00:00.000Z",
+        "sent_at": "2026-11-13T12:00:02.500Z",
+        "received": "2026-11-13T11:00:00.000Z",
+        "effective": "2026-11-13T10:59:57.500Z"
+      },
+      {
+        "_fall": "at liegt nach sent_at: Alter 0, nie in der Zukunft",
+        "at": "2026-11-13T10:10:00.000Z",
+        "sent_at": "2026-11-13T10:05:00.000Z",
+        "received": "2026-11-13T11:00:00.000Z",
+        "effective": "2026-11-13T11:00:00.000Z"
+      }
+    ]
+  }
+}

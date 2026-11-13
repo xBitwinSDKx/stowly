@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stowly-print"
+version = "0.1.0"
+description = "Stowly-Druckdienst: Etiketten rendern, Druckertreiber, Auftragswarteschlange"
+requires-python = ">=3.12"
+# Bewusst klein gehalten: Das Paket läuft auch auf dem Raspberry Pi (Python 3.13,
+# Raspberry Pi OS Trixie) mit den Systempaketen python3-pil, python3-segno,
+# python3-starlette und python3-uvicorn. Kein FastAPI, kein pydantic
+# (docs/recherche.md, Abschnitt 6). Die Untergrenzen sind die Versionen aus Trixie.
+dependencies = [
+    "pillow>=11.1",
+    "segno>=1.6.1",
+]
+
+[project.optional-dependencies]
+# HTTP-Dienst (Runde 2). Starlette 0.46 ist die Version aus Trixie, der Server
+# bringt über FastAPI eine 1.x mit: nur Schnittstellen verwenden, die es in beiden gibt.
+service = [
+    "starlette>=0.46",
+    "uvicorn>=0.32",
+]
+# Brother-QL-Treiber (Runde 2). Fest gepinnt, weil die Bibliothek nur einen
+# Maintainer hat (docs/recherche.md, Abschnitt 5).
+brother = [
+    "brother-ql-next==0.12.0",
+]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+include = ["stowly_print*"]
+
+[tool.setuptools.package-data]
+stowly_print = ["templates/*.json", "fonts/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,23 @@
+# Was nicht ins Image gehört
+.git
+.venv
+.env
+.env.*
+!.env.example
+data
+data-*
+docs
+pi
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+**/tests
+web/node_modules
+web/dist
+web/dist-mock
+web/dev-dist
+web/coverage
+*.sqlite3
+*.md

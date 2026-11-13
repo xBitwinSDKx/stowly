@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "name": "zone-62x29",
+  "media": { "width_mm": 62, "length_mm": 29 },
+  "design": { "width_mm": 58.9, "height_mm": 29.0 },
+  "elements": [
+    { "type": "qr", "x": 0.5, "y": 1.0, "size": 27.0, "value": "{qr}", "ec": "Q", "quiet": 4, "min_module_px": 6 },
+    { "type": "text", "x": 29.0, "y": 3.0, "w": 29.4, "h": 16.0, "value": "{title}", "font": "bold", "size": 7.0, "min_size": 3.6, "max_lines": 2, "valign": "middle" },
+    { "type": "line", "x1": 29.0, "y1": 20.8, "x2": 58.4, "y2": 20.8, "width": 0.25 },
+    { "type": "text", "x": 29.0, "y": 21.4, "w": 29.4, "h": 6.8, "value": "{subtitle}", "font": "regular", "size": 3.2, "min_size": 2.4, "valign": "middle", "when": "subtitle" }
+  ]
+}

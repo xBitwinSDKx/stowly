@@ -1,0 +1,41 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+
+# Node / Web-App
+node_modules/
+web/dist/
+web/dist-mock/
+web/dev-dist/
+web/.vite/
+web/coverage/
+*.tsbuildinfo
+
+# Laufzeitdaten (Datenbank, Bilder, Druck-Ausgaben)
+/data/
+/data-*/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Zugangsdaten und lokale Einstellungen
+.env
+.env.*
+!.env.example
+
+# Zertifikate und Schlüssel (Pi)
+*.key
+*.pem
+*.crt
+*.p12
+
+# Betriebssystem und Editoren
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,5 @@
+{
+  // Für Editoren: die ganze App. Geprüft wird über die Skripte in package.json
+  // (typecheck:ui, typecheck:core, typecheck:sw, typecheck:app).
+  "extends": "./tsconfig.app.json"
+}

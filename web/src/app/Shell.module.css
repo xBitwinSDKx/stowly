@@ -1,0 +1,230 @@
+.shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------------------------------------------------------------- Seitenleiste (Desktop) */
+.sidebar {
+  display: none;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: var(--sidebar-width);
+  padding: var(--space-5) var(--space-4);
+  border-right: var(--border-width) solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-2);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+}
+
+.brand img {
+  border-radius: var(--radius-sm);
+}
+
+.nav {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-weight: var(--weight-medium);
+}
+
+.link:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.link.active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+/* ---------------------------------------------------------------- Hauptbereich */
+.main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.header {
+  position: sticky;
+  z-index: var(--z-header);
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--header-height);
+  padding: var(--safe-top) calc(var(--space-4) + var(--safe-right)) 0 calc(var(--space-4) + var(--safe-left));
+  border-bottom: var(--border-width) solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.brandSmall {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+}
+
+.headerEnd {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.sync,
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.sync:hover,
+.pill:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.sync span,
+.pillLabel,
+.device {
+  display: none;
+}
+
+.device {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  /* Platz für Leiste und Scan-Knopf am Handy */
+  padding-bottom: calc(var(--tabbar-height) + var(--safe-bottom) + var(--space-8));
+}
+
+/* ---------------------------------------------------------------- Leiste unten (Handy) */
+.tabbar {
+  position: fixed;
+  z-index: var(--z-nav);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  height: calc(var(--tabbar-height) + var(--safe-bottom));
+  padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+  border-top: var(--border-width) solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.tab {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.tab:hover {
+  text-decoration: none;
+}
+
+.tab.active {
+  color: var(--color-accent);
+}
+
+/* Schwebender Knopf zum Scannen, mit dem Daumen erreichbar */
+.fab {
+  position: fixed;
+  z-index: var(--z-fab);
+  right: calc(var(--space-4) + var(--safe-right));
+  bottom: calc(var(--tabbar-height) + var(--safe-bottom) + var(--space-4));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.75rem;
+  height: 3.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  box-shadow: var(--shadow-md);
+}
+
+.fab:hover {
+  background: var(--color-accent-hover);
+}
+
+/* ---------------------------------------------------------------- Desktop */
+@media (min-width: 60rem) {
+  .sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    height: 100dvh;
+  }
+
+  .tabbar,
+  .brandSmall,
+  .logoutSmall {
+    display: none;
+  }
+
+  .header {
+    justify-content: flex-end;
+    padding-right: var(--space-8);
+    padding-left: var(--space-8);
+  }
+
+  .sync span,
+  .pillLabel,
+  .device {
+    display: inline;
+  }
+
+  .content {
+    padding-bottom: 0;
+  }
+
+  .fab {
+    bottom: var(--space-6);
+    right: var(--space-8);
+  }
+}

@@ -1,0 +1,11 @@
+# Gemeinsame Regeln für server/ und print/:  python -m ruff check server print
+line-length = 110
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]
+# Die Zeilenlänge regelt der Formatierer; lange Beschreibungstexte dürfen überstehen.
+ignore = ["E501"]
+
+[lint.isort]
+known-first-party = ["stowly", "stowly_print"]

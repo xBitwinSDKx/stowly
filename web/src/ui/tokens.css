@@ -1,0 +1,208 @@
+/*
+ * Design-Tokens von Stowly (nach docs/ui-entwurf.md).
+ *
+ * Alle Farben, Abstände und Maße der App kommen aus diesen Variablen. Komponenten
+ * verwenden nie feste Farbwerte, sonst stimmen helles Thema und Akzentfarbe nicht.
+ *
+ * Die NAMEN der Variablen sind eine stabile Schnittstelle: Oberfläche und Scan-Ansichten
+ * benutzen sie parallel. Werte dürfen verfeinert, neue Variablen ergänzt werden;
+ * umbenennen oder entfernen nicht.
+ *
+ * Thema:   <html data-theme="dark|light">   (src/ui/theme.ts, public/theme-init.js)
+ * Akzent:  <html data-accent="mint|blue|violet|rose|lime">
+ */
+
+:root {
+  /* Akzentfarbe als Farbton und Sättigung; Helligkeit legt das Thema fest. */
+  --accent-h: 172;
+  --accent-c: 0.13;
+
+  /* Abstände: 4-Pixel-Raster */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* Rundungen: leicht gerundete Ecken */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* Schrift: Systemschriften, nichts wird nachgeladen (offline) */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Consolas, monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.625rem;
+  --text-3xl: 2.25rem; /* große Zahlen der Kennzahl-Karten */
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-bold: 650;
+  --leading-tight: 1.2;
+  --leading-normal: 1.45;
+
+  /* Maße */
+  --touch-target: 44px; /* kleinste Fläche für alles, was man antippt */
+  --control-sm: 32px;
+  --control-md: 40px;
+  --control-lg: 48px;
+  --sidebar-width: 15rem;
+  --header-height: 3.75rem;
+  --tabbar-height: 3.75rem;
+  --content-max: 82rem;
+  --border-width: 1px;
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+
+  /* Bewegung */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Ebenen */
+  --z-header: 10;
+  --z-nav: 20;
+  --z-fab: 30;
+  --z-dialog: 100;
+  --z-toast: 200;
+
+  /* Ränder für Geräte mit Notch und Home-Balken */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+:root[data-accent="blue"] {
+  --accent-h: 248;
+  --accent-c: 0.14;
+}
+:root[data-accent="violet"] {
+  --accent-h: 295;
+  --accent-c: 0.15;
+}
+:root[data-accent="rose"] {
+  --accent-h: 12;
+  --accent-c: 0.15;
+}
+:root[data-accent="lime"] {
+  --accent-h: 132;
+  --accent-c: 0.16;
+}
+
+/* ---------------------------------------------------------------- Dunkles Thema */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Flächen: fast schwarz mit Blaugrün-Stich, Karten eine Stufe heller */
+  --color-bg: #0b1214;
+  --color-surface: #121c1f;
+  --color-surface-2: #18262a;
+  --color-surface-3: #20333a;
+  --color-overlay: rgb(3 8 9 / 0.66);
+
+  /* Konturen: fein, kaum sichtbar */
+  --color-border: #1f2e32;
+  --color-border-strong: #2e444a;
+
+  /* Text: hell, Beschriftungen gedämpft */
+  --color-text: #e6efef;
+  --color-text-muted: #93a5a8;
+  --color-text-faint: #64777b;
+
+  /* Akzent: Mint/Türkis für Navigation, Schaltflächen, Balken, Symbole */
+  --color-accent: oklch(0.8 var(--accent-c) var(--accent-h));
+  --color-accent-hover: oklch(0.86 var(--accent-c) var(--accent-h));
+  --color-accent-contrast: oklch(0.2 0.04 var(--accent-h));
+  --color-accent-soft: oklch(0.8 var(--accent-c) var(--accent-h) / 0.13);
+  --color-accent-border: oklch(0.8 var(--accent-c) var(--accent-h) / 0.5);
+
+  /* Bernstein: „läuft bald ab" */
+  --color-warn: oklch(0.82 0.14 78);
+  --color-warn-soft: oklch(0.82 0.14 78 / 0.14);
+  --color-warn-contrast: oklch(0.24 0.05 78);
+
+  /* Rot: abgelaufen, Löschen, Fehler */
+  --color-danger: oklch(0.7 0.17 25);
+  --color-danger-hover: oklch(0.76 0.17 25);
+  --color-danger-soft: oklch(0.7 0.17 25 / 0.15);
+  --color-danger-contrast: oklch(0.18 0.04 25);
+
+  /* Blau: zweite Markierungsfarbe */
+  --color-info: oklch(0.74 0.12 245);
+  --color-info-soft: oklch(0.74 0.12 245 / 0.15);
+
+  --color-success: oklch(0.78 0.15 152);
+  --color-success-soft: oklch(0.78 0.15 152 / 0.14);
+
+  /* Palette für Zonen (Zone.color); "accent" folgt der Akzentfarbe */
+  --palette-blue: oklch(0.74 0.12 245);
+  --palette-amber: oklch(0.82 0.14 78);
+  --palette-violet: oklch(0.74 0.14 300);
+  --palette-rose: oklch(0.74 0.15 12);
+  --palette-lime: oklch(0.82 0.16 132);
+  --palette-slate: oklch(0.72 0.03 230);
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 6px 20px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 18px 48px rgb(0 0 0 / 0.55);
+}
+
+/* ---------------------------------------------------------------- Helles Thema */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-bg: #f3f6f6;
+  --color-surface: #ffffff;
+  --color-surface-2: #edf2f2;
+  --color-surface-3: #e0e8e9;
+  --color-overlay: rgb(15 28 31 / 0.42);
+
+  --color-border: #dde5e6;
+  --color-border-strong: #bfcdd0;
+
+  --color-text: #142022;
+  --color-text-muted: #55676a;
+  --color-text-faint: #7f9093;
+
+  --color-accent: oklch(0.55 var(--accent-c) var(--accent-h));
+  --color-accent-hover: oklch(0.49 var(--accent-c) var(--accent-h));
+  --color-accent-contrast: #ffffff;
+  --color-accent-soft: oklch(0.55 var(--accent-c) var(--accent-h) / 0.11);
+  --color-accent-border: oklch(0.55 var(--accent-c) var(--accent-h) / 0.45);
+
+  --color-warn: oklch(0.6 0.15 62);
+  --color-warn-soft: oklch(0.75 0.15 75 / 0.2);
+  --color-warn-contrast: #ffffff;
+
+  --color-danger: oklch(0.55 0.2 27);
+  --color-danger-hover: oklch(0.49 0.2 27);
+  --color-danger-soft: oklch(0.55 0.2 27 / 0.1);
+  --color-danger-contrast: #ffffff;
+
+  --color-info: oklch(0.52 0.15 250);
+  --color-info-soft: oklch(0.52 0.15 250 / 0.1);
+
+  --color-success: oklch(0.52 0.14 152);
+  --color-success-soft: oklch(0.52 0.14 152 / 0.12);
+
+  --palette-blue: oklch(0.52 0.15 250);
+  --palette-amber: oklch(0.6 0.15 62);
+  --palette-violet: oklch(0.52 0.17 300);
+  --palette-rose: oklch(0.55 0.18 12);
+  --palette-lime: oklch(0.55 0.15 132);
+  --palette-slate: oklch(0.5 0.03 230);
+
+  --shadow-sm: 0 1px 2px rgb(20 32 34 / 0.08);
+  --shadow-md: 0 6px 20px rgb(20 32 34 / 0.1);
+  --shadow-lg: 0 18px 48px rgb(20 32 34 / 0.16);
+}

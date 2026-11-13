@@ -1,0 +1,20 @@
+{
+  // Typprüfung für Offline-Kern und Scannen (Worker 3): npm run typecheck:core
+  // Sieht src/core und src/features/scan, dazu nur, was diese importieren
+  // (src/contract, src/ui/base, src/mock). Der Rest der Oberfläche stört hier nicht.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@entry": ["./src/entry.real.ts"],
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "src/vite-env.d.ts",
+    "src/entry.real.ts",
+    "src/core",
+    "src/features/scan",
+    "src/contract",
+    "src/test/setup.core.ts"
+  ]
+}

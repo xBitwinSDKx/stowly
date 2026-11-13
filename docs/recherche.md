@@ -2,10 +2,10 @@
 
 Ergebnisse der Recherche vom 13.11.2026, auf die sich der Plan für Stufe 1 stützt (`plan-stufe-1.md`). Quellen sind Herstellerdokumentation, Chromium-Quelltext, Paketregister und Fehlerdatenbanken. **Nichts davon wurde auf echter Hardware geprüft.** Punkte unter „Am Gerät zu prüfen" sind offen.
 
-Vom Anwender geliefert und lesenswert:
+Vom Anwender geliefert (liegen nicht im Repository; die Briefings nennen den Ablageort):
 
-- `LNA Adoption Guide.txt` – Chrome-Leitfaden zu Local Network Access (Stand 18.05.2026)
-- `bugs-2026-11-13.csv` – WebKit-Fehler zur iPhone-Kamera
+- „LNA Adoption Guide" – Chrome-Leitfaden zu Local Network Access (Stand 18.05.2026)
+- Liste der WebKit-Fehler zur iPhone-Kamera (Abzug vom 13.11.2026)
 
 ## 1. Scannen im Browser
 

@@ -1,0 +1,62 @@
+{
+  "name": "stowly-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stowly: Web-App für Desktop und Handy (React, Offline-PWA)",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "dev:fake": "vite --mode fake",
+    "build": "vite build",
+    "build:mock": "vite build --mode mock",
+    "preview": "vite preview",
+    "typecheck": "npm run typecheck:ui && npm run typecheck:core && npm run typecheck:sw && npm run typecheck:app && npm run typecheck:node",
+    "typecheck:ui": "tsc -p tsconfig.ui.json",
+    "typecheck:core": "tsc -p tsconfig.core.json",
+    "typecheck:sw": "tsc -p tsconfig.sw.json",
+    "typecheck:app": "tsc -p tsconfig.app.json",
+    "typecheck:node": "tsc -p tsconfig.node.json",
+    "test": "vitest run",
+    "test:contract": "vitest run --project contract",
+    "test:ui": "vitest run --project ui",
+    "test:core": "vitest run --project core",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "barcode-detector": "3.2.3",
+    "dexie": "^4.4.7",
+    "lucide-react": "^1.72.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^8.5.1",
+    "workbox-cacheable-response": "^7.4.1",
+    "workbox-core": "^7.4.1",
+    "workbox-expiration": "^7.4.1",
+    "workbox-precaching": "^7.4.1",
+    "workbox-routing": "^7.4.1",
+    "workbox-strategies": "^7.4.1",
+    "workbox-window": "^7.4.1",
+    "zxing-wasm": "3.1.6"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.10",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "fake-indexeddb": "^6.2.8",
+    "jsdom": "^31.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.1.0"
+  }
+}

@@ -1,0 +1,20 @@
+# Start:  docker compose up -d --build
+# Vorher: .env.example nach .env kopieren und STOWLY_PASSWORD setzen.
+#
+# In der Zielumgebung noch nicht gestartet: Auf dem Entwicklungsrechner gibt es kein Docker.
+services:
+  stowly:
+    build: .
+    container_name: stowly
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Nur für den Reverse Proxy auf demselben Rechner. Läuft der Proxy woanders,
+      # "8010:8010" eintragen und den Port in der Firewall auf das Heimnetz beschränken.
+      - "127.0.0.1:8010:8010"
+    volumes:
+      - stowly-data:/data
+
+volumes:
+  stowly-data:

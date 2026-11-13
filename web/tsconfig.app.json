@@ -1,0 +1,13 @@
+{
+  // Typprüfung für die ganze App mit dem echten Kern: npm run typecheck:app
+  // Das ist die Prüfung der Integration; sie schlägt fehl, solange irgendein Teil unfertig ist.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@entry": ["./src/entry.real.ts"],
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["src/sw.ts"]
+}

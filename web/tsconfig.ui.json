@@ -1,0 +1,24 @@
+{
+  // Typprüfung für die Oberfläche (Worker 2): npm run typecheck:ui
+  // Startet bei der Attrappe (@entry -> entry.mock.ts) und sieht deshalb weder
+  // src/core noch src/features/scan. Halbfertiger Code dort stört hier nicht.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@entry": ["./src/entry.mock.ts"],
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "src/vite-env.d.ts",
+    "src/main.tsx",
+    "src/entry.mock.ts",
+    "src/app",
+    "src/ui",
+    "src/features",
+    "src/mock",
+    "src/contract",
+    "src/test"
+  ],
+  "exclude": ["src/features/scan", "src/test/setup.core.ts"]
+}

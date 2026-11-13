@@ -1,0 +1,14 @@
+{
+  // Typprüfung für den Service Worker (Worker 3): npm run typecheck:sw
+  // Eigene Prüfung, weil der Service Worker keine DOM-Typen hat, sondern die eines Workers.
+  // Was sw.ts importiert, muss deshalb ohne window und document auskommen.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "WebWorker"],
+    "types": [],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/sw.ts"]
+}
