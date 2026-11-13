@@ -1,9 +1,11 @@
-import { useMemo, type ComponentType } from "react";
+import { useCallback, useMemo, type ComponentType } from "react";
 import { RouterProvider } from "react-router/dom";
 
-import { CoreProvider, type Core } from "@/contract";
+import { CoreProvider, ROUTES, type Core } from "@/contract";
+import { LogoutProvider } from "@/features/auth/logout";
 import { ToastProvider } from "@/ui/base";
 
+import { ErrorBoundary } from "./ErrorBoundary";
 import { createAppRouter } from "./routes";
 import { SessionGate } from "./SessionGate";
 
@@ -20,13 +22,20 @@ export interface AppProps {
 
 export function App({ core, scanPage }: AppProps) {
   const router = useMemo(() => createAppRouter(scanPage), [scanPage]);
+  // Nach einem bewussten Abmelden beginnt die nächste Anmeldung wieder beim Bestand
+  // und nicht in der Ansicht, in der abgemeldet wurde.
+  const backToStart = useCallback(() => void router.navigate(ROUTES.stock, { replace: true }), [router]);
   return (
-    <CoreProvider core={core}>
-      <ToastProvider>
-        <SessionGate>
-          <RouterProvider router={router} />
-        </SessionGate>
-      </ToastProvider>
-    </CoreProvider>
+    <ErrorBoundary>
+      <CoreProvider core={core}>
+        <ToastProvider>
+          <SessionGate onLogout={backToStart}>
+            <LogoutProvider>
+              <RouterProvider router={router} />
+            </LogoutProvider>
+          </SessionGate>
+        </ToastProvider>
+      </CoreProvider>
+    </ErrorBoundary>
   );
 }

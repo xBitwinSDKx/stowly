@@ -76,6 +76,24 @@ def get_meta(con: sqlite3.Connection, key: str) -> str | None:
     return None if row is None else str(row[0])
 
 
+def renew_dataset_id(con: sqlite3.Connection) -> str:
+    """Gibt dem Datenbestand eine neue Kennung und liefert sie.
+
+    Danach antwortet der Server jedem Gerät mit ``reset: true``: Alle holen den Bestand
+    vollständig neu und senden ihre Outbox erneut (docs/sync-protokoll.md, Abschnitt 6.4).
+    Nötig, wenn eine Kopie der Datenbank zurückgespielt wurde, die nicht über
+    ``GET /api/backup`` entstanden ist; jene trägt schon eine neue Kennung.
+    """
+    dataset_id = ids.new_uuid()
+    with transaction(con):
+        con.execute(
+            "INSERT INTO meta (key, value) VALUES ('dataset_id', ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (dataset_id,),
+        )
+    return dataset_id
+
+
 def list_migrations() -> list[tuple[int, str, str]]:
     """Alle Migrationen als ``(nummer, dateiname, sql)``, aufsteigend und lückenlos ab 1."""
     found: list[tuple[int, str, str]] = []

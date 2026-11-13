@@ -1,15 +1,25 @@
-import { Link } from "react-router";
-
 import { ROUTES } from "@/contract";
+import { EmptyState, LinkButton } from "@/ui";
+import { SearchIcon } from "@/ui/icons";
 
-import { Page } from "./Page";
+import { PageBody, usePageTitle } from "./Page";
 
 export function NotFoundPage() {
+  usePageTitle("Seite nicht gefunden");
   return (
-    <Page title="Seite nicht gefunden">
-      <p>
-        Diese Adresse gibt es nicht. <Link to={ROUTES.stock}>Zum Bestand</Link>
-      </p>
-    </Page>
+    <PageBody>
+      <EmptyState
+        pageTitle
+        icon={<SearchIcon />}
+        title="Seite nicht gefunden"
+        actions={
+          <LinkButton to={ROUTES.stock} variant="primary">
+            Zum Bestand
+          </LinkButton>
+        }
+      >
+        Diese Adresse gibt es in Stowly nicht.
+      </EmptyState>
+    </PageBody>
   );
 }

@@ -1,0 +1,161 @@
+/* Zeile über der Liste: Auswahl und die Aktion für mehrere Packungen */
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.barText {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.barActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* In der Tabelle braucht das Ankreuzfeld keine eigene Zeilenhöhe. */
+:global(table) .check {
+  min-height: var(--control-sm);
+}
+
+.none {
+  color: var(--color-text-faint);
+}
+
+/* Der Grund als unauffälliges Auswahlfeld: sieht aus wie Text, lässt sich aber ändern. */
+.reason {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.reasonSelect {
+  height: var(--control-sm);
+  margin-left: calc(-1 * var(--space-2));
+  padding: 0 calc(var(--space-2) + 1rem) 0 var(--space-2);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  appearance: none;
+  cursor: pointer;
+}
+
+.reasonSelect:hover,
+.reasonSelect:focus-visible {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-2);
+}
+
+.reasonChevron {
+  position: absolute;
+  right: var(--space-1);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+/* Zeile mit der verdrängten Bearbeitung: gehört zur Zeile darüber, deshalb ohne Trennlinie */
+.noteCell {
+  padding: 0 var(--space-5) var(--space-3) 0;
+}
+
+.from {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+}
+
+/* ---------------------------------------------------------------- Karten (Handy) */
+.cards {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.card .cardCheck {
+  align-items: flex-start;
+  padding-top: var(--space-1);
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.cardTitle {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.facts > div {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  min-width: 0;
+}
+
+.facts dt {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.facts dd {
+  min-width: 0;
+}
+
+.askText {
+  color: var(--color-text-muted);
+}
+
+/*
+ * Breiter als ein Handy, aber zu schmal für die Tabelle: die vier Angaben in einer Reihe,
+ * „Wiederherstellen" oben rechts neben dem Namen.
+ */
+@media (min-width: 40rem) {
+  .card {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .facts,
+  .cardNote {
+    grid-column: 1 / -1;
+  }
+
+  .facts {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .cardAction {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+  }
+}
+
+@media (pointer: coarse) {
+  .reasonSelect {
+    height: var(--touch-target);
+    font-size: 1rem;
+  }
+}

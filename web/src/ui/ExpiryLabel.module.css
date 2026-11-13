@@ -1,0 +1,48 @@
+.expiry {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-2);
+  min-width: 0;
+}
+
+.none {
+  color: var(--color-text-faint);
+}
+
+.date {
+  white-space: nowrap;
+}
+
+/* Bernstein: läuft bald ab */
+.soon .date {
+  color: var(--color-warn);
+  font-weight: var(--weight-medium);
+}
+
+/* Abgelaufen: deutlich abgesetzt */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 1.5rem;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-weight: var(--weight-bold);
+  white-space: nowrap;
+}
+
+.detail {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.soon .detail {
+  color: var(--color-warn);
+}
+
+.expired .detail {
+  color: var(--color-danger);
+}

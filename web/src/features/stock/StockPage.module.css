@@ -1,0 +1,113 @@
+/* Kennzahl-Karten: am Handy im Raster 2 × 2, am Desktop zwei breite Karten nebeneinander */
+.stats {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.statsWide {
+  gap: var(--space-4);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.title {
+  font-size: var(--text-2xl);
+}
+
+.headActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Zonen-Karten: am Handy zweispaltig, am Desktop eine Reihe */
+.zones {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Zeile über der Liste: was gezeigt wird, aktive Filter, am Handy der Umschalter „Details" */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-sm);
+}
+
+.summary {
+  margin-right: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  height: var(--control-sm);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-accent-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--color-accent);
+}
+
+.chipText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Umschalter in Form einer Marke: aus = neutral, an = Akzent */
+.toggle {
+  border-color: var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.toggle:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.chipOn,
+.chipOn:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
+.end {
+  margin-left: auto;
+}
+
+@media (pointer: coarse) {
+  .chip {
+    height: var(--touch-target);
+    padding: 0 var(--space-4);
+  }
+}
+
+@media (min-width: 48rem) {
+  .zones {
+    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  }
+}

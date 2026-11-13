@@ -1,0 +1,102 @@
+.zones {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* Am Handy: Symbol, Name und Reihenfolge oben, die Aktionen darunter über die ganze Breite */
+.zone {
+  display: grid;
+  align-items: center;
+  gap: var(--space-3);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "tile text order"
+    "actions actions actions";
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+/* `color` trägt die Farbe der Zone */
+.tile {
+  grid-area: tile;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, currentColor var(--tint-strength), transparent);
+}
+
+.text {
+  grid-area: text;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.nameText {
+  min-width: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  overflow-wrap: anywhere;
+}
+
+.sub {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.order {
+  grid-area: order;
+  display: flex;
+}
+
+.actions {
+  grid-area: actions;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Jede Schaltfläche so breit wie ihr Text, der Rest wird gleichmäßig verteilt. */
+.actions > :global(*) {
+  flex: 1 1 auto;
+}
+
+.primarySelect {
+  width: 14rem;
+  max-width: 100%;
+}
+
+/* Der Umschalter soll am Desktop nicht über die ganze Karte laufen. */
+.mode {
+  max-width: 26rem;
+}
+
+@media (min-width: 48rem) {
+  .zone {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "tile text order actions";
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .actions {
+    flex-wrap: nowrap;
+    margin-left: var(--space-2);
+  }
+
+  .actions > :global(*) {
+    flex: none;
+  }
+}

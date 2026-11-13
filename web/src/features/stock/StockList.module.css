@@ -1,0 +1,323 @@
+/* ---------------------------------------------------------------- Tabelle (Desktop) */
+
+/*
+ * Die Liste ist für Screenreader eine Tabelle, gezeichnet aber als Raster: Die Liste legt
+ * die Spalten fest, Kopfzeile, Gruppen und Zeilen übernehmen sie (Unterraster). So richten
+ * sich die Spalten nach ihrem breitesten Inhalt wie in einer Tabelle, und jede
+ * Produktgruppe ist trotzdem ein eigenes Element, das die Akzent-Kontur tragen kann.
+ */
+.list {
+  --cols: minmax(11rem, 1fr) fit-content(14rem) max-content max-content max-content;
+
+  display: grid;
+  grid-template-columns: var(--cols);
+  min-width: min-content;
+}
+
+.noZone {
+  --cols: minmax(11rem, 1fr) max-content max-content max-content;
+}
+
+.head,
+.headRow,
+.group,
+.row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.th,
+.td {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.th {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.th:first-child,
+.td:first-child {
+  padding-left: var(--space-5);
+}
+
+.th:last-child,
+.td:last-child {
+  padding-right: var(--space-5);
+}
+
+.num {
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+.actions {
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.actions > :global(*) {
+  flex: none;
+}
+
+/* Spaltenköpfe, nach denen sich sortieren lässt */
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-2));
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.sort:hover,
+.sortActive {
+  color: var(--color-text);
+}
+
+.actionsHead {
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+/* Der Umschalter „Details" im Tabellenkopf: kompakt, Beschriftung in der Schrift der Kopfzeile */
+.actionsHead .detailsSwitch {
+  gap: var(--space-2);
+  min-height: 0;
+  font-size: var(--text-sm);
+}
+
+.actionsHead .detailsSwitch :global(span) {
+  color: inherit;
+}
+
+/* Eine Gruppe je Produkt: die Zeile und, wenn aufgeklappt, ihre Chargen-Ansicht */
+.group {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.row {
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.row:hover {
+  background: var(--color-hover);
+}
+
+.panelRow {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.panelCell {
+  min-width: 0;
+}
+
+/*
+ * Die ausgewählte Zeile samt ihrer Chargen-Ansicht: Kontur in der Akzentfarbe.
+ * Die Kontur liegt innen und über dem Inhalt; die Trennlinien darüber und darunter
+ * treten dafür zurück.
+ */
+.selected {
+  border-top-color: transparent;
+  border-radius: var(--radius-md);
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+  overflow: hidden;
+}
+
+.selected + .group {
+  border-top-color: transparent;
+}
+
+.product {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.productText {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.productTitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-faint);
+  overflow: hidden;
+}
+
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.zones {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.more {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Wenig Platz (schmales Fenster, Tablet): Die Zellen der Liste rücken zusammen. */
+.compact {
+  --cols: minmax(9rem, 1fr) fit-content(11rem) max-content max-content max-content;
+}
+
+.compact.noZone {
+  --cols: minmax(9rem, 1fr) max-content max-content max-content;
+}
+
+.compact .th,
+.compact .td {
+  padding-right: var(--space-2);
+  padding-left: var(--space-2);
+}
+
+.compact .th:first-child,
+.compact .td:first-child {
+  padding-left: var(--space-4);
+}
+
+.compact .th:last-child,
+.compact .td:last-child {
+  padding-right: var(--space-4);
+}
+
+/*
+ * Browser ohne Unterraster (ältere iPads): feste Spalten statt gemeinsam vermessener.
+ * Die Breiten in rem wachsen mit der Schriftgröße mit.
+ */
+@supports not (grid-template-columns: subgrid) {
+  .list,
+  .head,
+  .group {
+    display: block;
+  }
+
+  .headRow,
+  .row {
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.2fr) 9.5rem 7.75rem 17.5rem;
+  }
+
+  .noZone .headRow,
+  .noZone .row {
+    grid-template-columns: minmax(0, 2.2fr) 9.5rem 7.75rem 17.5rem;
+  }
+
+  .compact .headRow,
+  .compact .row {
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.2fr) 8.5rem 4.75rem 13.75rem;
+  }
+
+  .compact.noZone .headRow,
+  .compact.noZone .row {
+    grid-template-columns: minmax(0, 2.2fr) 8.5rem 4.75rem 13.75rem;
+  }
+}
+
+/* ---------------------------------------------------------------- Karten (Handy) */
+.cards {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.card {
+  overflow: hidden;
+}
+
+.cardMain {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.cardTitle {
+  font-size: var(--text-lg);
+}
+
+/* Drei beschriftete Werte: Zone, Menge, kritischstes MHD */
+.values {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.6fr) minmax(0, 1.25fr);
+  margin: 0;
+}
+
+.twoValues {
+  grid-template-columns: minmax(0, 0.6fr) minmax(0, 1.4fr);
+}
+
+.values > div {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  min-width: 0;
+}
+
+.values dt {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.values dd {
+  min-width: 0;
+  font-weight: var(--weight-medium);
+}
+
+.cardActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* „Details" links, „Bearbeiten" und „Löschen" rechts: mit dem Daumen erreichbar */
+.cardActions > :global(:first-child) {
+  margin-right: auto;
+  margin-left: calc(-1 * var(--space-2));
+}
+
+/* In der Karte bleibt „+1" neben dem Namen der ersten Zone; der Name wird notfalls gekürzt. */
+.values .zones {
+  flex-wrap: nowrap;
+  gap: var(--space-2);
+}

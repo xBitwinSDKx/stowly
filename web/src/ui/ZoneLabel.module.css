@@ -1,0 +1,33 @@
+.zone {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Ungekürzt: Der Name bestimmt die Breite. */
+.full {
+  max-width: none;
+  white-space: nowrap;
+}
+
+.full .name {
+  overflow: visible;
+}
+
+.unknown {
+  color: var(--color-text-faint);
+  font-style: italic;
+}

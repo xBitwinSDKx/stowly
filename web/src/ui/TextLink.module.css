@@ -1,0 +1,12 @@
+/* Der Verweis bricht nicht um: Über zwei Zeilen hätte er keine eindeutige Tippfläche. */
+.link {
+  position: relative;
+  white-space: nowrap;
+}
+
+/* Die Tippfläche reicht über die Zeile hinaus: mindestens --touch-target hoch. */
+.link::after {
+  content: "";
+  position: absolute;
+  inset: calc((1em - var(--touch-target)) / 2) calc(-1 * var(--space-2));
+}

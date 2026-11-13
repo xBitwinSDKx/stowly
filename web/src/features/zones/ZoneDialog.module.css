@@ -1,0 +1,33 @@
+.form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+/* Vorschau: So erscheint die Zone in Karten und Listen. `color` trägt die gewählte Farbe. */
+.preview {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, currentColor var(--tint-strength), transparent);
+}
+
+.previewName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

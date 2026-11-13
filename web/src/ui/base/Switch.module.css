@@ -33,6 +33,14 @@
   transition: background-color var(--duration-normal) var(--ease-out);
 }
 
+/* Die Tippfläche reicht über den sichtbaren Schalter hinaus: mindestens --touch-target hoch. */
+.switch::before {
+  content: "";
+  position: absolute;
+  /* Gemessen wird ab der Innenkante des Rahmens, deshalb dessen Breite dazu. */
+  inset: calc((1.625rem - var(--touch-target)) / 2 - var(--border-width)) calc(-1 * var(--space-1));
+}
+
 .switch:disabled {
   opacity: 0.5;
 }

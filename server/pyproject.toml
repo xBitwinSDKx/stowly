@@ -33,3 +33,6 @@ stowly = ["migrations/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "allow_contract_violation: der Test prüft selbst, was bei einer vertragswidrigen Sync-Antwort geschieht",
+]

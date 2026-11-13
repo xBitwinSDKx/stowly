@@ -1,8 +1,9 @@
 # Stowly: ein Container, ein Prozess. Er liefert die Schnittstelle (/api), den Druckdienst
-# (/print) und die gebaute Web-App auf Port 8010 und spricht nur HTTP. HTTPS stellt der
-# Reverse Proxy davor bereit (Nginx Proxy Manager oder Tailscale), siehe README.md.
+# (/print, ab Runde 2) und die gebaute Web-App auf Port 8010 und spricht nur HTTP. HTTPS stellt
+# der Reverse Proxy davor bereit (Nginx Proxy Manager oder Tailscale), siehe docs/betrieb.md.
 #
 # In der Zielumgebung noch nicht gebaut: Auf dem Entwicklungsrechner gibt es kein Docker.
+# Die Prüfliste dafür steht in docs/betrieb.md.
 
 # ---------------------------------------------------------------- Web-App bauen
 FROM node:26-slim AS web
@@ -22,16 +23,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Erst der Druckdienst, dann der Server, der ihn als Abhängigkeit braucht. Installiert wird
+# nach site-packages; die Quellen bleiben nicht im Image.
+COPY print/ /src/print/
+COPY server/ /src/server/
+RUN pip install /src/print /src/server \
+    && rm -rf /src
+
 WORKDIR /app
-
-# Erst der Druckdienst, dann der Server, der ihn als Abhängigkeit braucht.
-COPY print/ ./print/
-COPY server/ ./server/
-RUN pip install ./print ./server
-
 COPY --from=web /src/web/dist ./web
 
-# Eigener Benutzer; die Datenbank liegt im Volume /data.
+# Eigener Benutzer ohne Rechte; die Datenbank liegt im Volume /data.
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin stowly \
     && mkdir -p /data \
     && chown stowly:stowly /data
@@ -45,7 +47,8 @@ ENV STOWLY_HOST=0.0.0.0 \
 VOLUME ["/data"]
 EXPOSE 8010
 
+# Fragt denselben Endpunkt ab wie die App (docs/sync-protokoll.md, 9.5).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/health', timeout=3)"]
+    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('STOWLY_PORT', '8010'), timeout=3)"]
 
 CMD ["python", "-m", "stowly"]

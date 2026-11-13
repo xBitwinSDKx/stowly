@@ -1,143 +1,358 @@
-import { Bell, Boxes, CloudOff, History, LogOut, MapPin, Printer, RefreshCw, ScanLine, Settings, type LucideIcon } from "lucide-react";
-import { NavLink, Outlet, useNavigate } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink, Outlet, ScrollRestoration, useLocation, useNavigate } from "react-router";
 
-import { expiryState, isCoreError, ROUTES, todayLocal, useCore, useLive, warnDaysFor } from "@/contract";
-import { Badge, Button, cx, IconButton, useToast } from "@/ui/base";
+import { ROUTES, useCore, useLive } from "@/contract";
+import { useLogout } from "@/features/auth/logout";
+import { useStock } from "@/features/stock/useStock";
+import { summarizeSync, type SyncSummary } from "@/features/sync/status";
+import { DESKTOP_QUERY, Logo, Menu, Notice, useMediaQuery } from "@/ui";
+import { Badge, Button, cx, IconButton, TextField } from "@/ui/base";
+import {
+  AlertCircleIcon,
+  BellIcon,
+  ChevronDownIcon,
+  CloseIcon,
+  CloudCheckIcon,
+  CloudIcon,
+  CloudOffIcon,
+  HistoryIcon,
+  LockOpenIcon,
+  LogOutIcon,
+  MenuIcon,
+  MonitorIcon,
+  PlusIcon,
+  PrinterIcon,
+  RefreshIcon,
+  SearchIcon,
+  SettingsIcon,
+} from "@/ui/icons";
 
+import { primaryDestinations, SECONDARY_DESTINATIONS } from "./destinations";
+import { MobileMenu } from "./MobileMenu";
+import { SearchProvider, useSearch } from "./search";
 import styles from "./Shell.module.css";
 
-interface NavItem {
-  to: string;
-  label: string;
-  icon: LucideIcon;
-  /** Auch in der Leiste am Handy zeigen. */
-  primary?: boolean;
+function SyncGlyph({ tone, size = 18 }: { tone: SyncSummary["tone"]; size?: number }) {
+  switch (tone) {
+    case "ok":
+      return <CloudCheckIcon size={size} aria-hidden="true" />;
+    case "busy":
+      return <RefreshIcon size={size} aria-hidden="true" className={styles.spin} />;
+    case "offline":
+      return <CloudOffIcon size={size} aria-hidden="true" />;
+    case "error":
+      return <AlertCircleIcon size={size} aria-hidden="true" />;
+    default:
+      return <CloudIcon size={size} aria-hidden="true" />;
+  }
 }
 
-const NAV: NavItem[] = [
-  { to: ROUTES.stock, label: "Bestand", icon: Boxes, primary: true },
-  { to: ROUTES.zones, label: "Zonen", icon: MapPin, primary: true },
-  { to: ROUTES.warnings, label: "Warnungen", icon: Bell, primary: true },
-  { to: ROUTES.history, label: "Lösch-Historie", icon: History },
-  { to: ROUTES.printers, label: "Drucker", icon: Printer },
-  { to: ROUTES.settings, label: "Einstellungen", icon: Settings, primary: true },
-];
+/** Sync-Anzeiger: erreichbar oder offline, Zahl der ungesendeten Änderungen; führt zur Sync-Ansicht. */
+function SyncIndicator({ summary, compact }: { summary: SyncSummary; compact: boolean }) {
+  const attention = summary.tone === "offline" || summary.tone === "error";
+  const showCount = summary.pending > 0 && summary.tone !== "pending";
+  return (
+    <NavLink
+      to={ROUTES.sync}
+      className={cx(styles.pill, styles.sync, compact && styles.compact, attention && styles.attention)}
+      aria-label={`Sync-Status: ${summary.label}${summary.pending > 0 ? `, ${String(summary.pending)} ungesendet` : ""}`}
+      title={summary.detail}
+    >
+      <SyncGlyph tone={summary.tone} />
+      {compact ? null : <span>{summary.label}</span>}
+      {showCount ? (
+        <Badge tone="warn" solid={compact} className={compact ? styles.counter : undefined}>
+          {summary.pending}
+        </Badge>
+      ) : null}
+    </NavLink>
+  );
+}
 
-/** Zahl der Packungen, die abgelaufen sind oder bald ablaufen. */
-function useWarningCount(): number {
-  const core = useCore();
-  const packages = useLive(core.data.packages, []);
-  const products = useLive(core.data.products, []);
-  const settings = useLive(core.data.settings);
-  if (!settings) {
-    return 0;
+/** Suchfeld der Kopfzeile. Tippt jemand in einer anderen Ansicht, wechselt die App zum Bestand. */
+function SearchField({ desktop }: { desktop: boolean }) {
+  const { query, setQuery } = useSearch();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const ref = useRef<HTMLInputElement>(null);
+
+  // „/" setzt den Fokus ins Suchfeld, solange nicht gerade irgendwo getippt wird.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
+        return;
+      }
+      if (document.querySelector("dialog[open]")) {
+        return;
+      }
+      event.preventDefault();
+      ref.current?.focus();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  function change(value: string) {
+    setQuery(value);
+    if (value.trim() !== "" && location.pathname !== ROUTES.stock) {
+      void navigate(ROUTES.stock);
+    }
   }
-  const today = todayLocal();
-  const byId = new Map(products.map((product) => [product.id, product]));
-  return packages.filter((pkg) => {
-    const state = expiryState(pkg.best_before, warnDaysFor(byId.get(pkg.product_id), settings), today);
-    return state === "soon" || state === "expired";
-  }).length;
+
+  return (
+    <form
+      role="search"
+      className={styles.search}
+      onSubmit={(event) => {
+        event.preventDefault();
+        // Am Handy: Tastatur einklappen, die Treffer stehen schon da.
+        ref.current?.blur();
+        if (location.pathname !== ROUTES.stock) {
+          void navigate(ROUTES.stock);
+        }
+      }}
+    >
+      <TextField
+        ref={ref}
+        label="Bestand durchsuchen"
+        hideLabel
+        type="search"
+        enterKeyHint="search"
+        autoComplete="off"
+        placeholder={desktop ? "Produkt, Marke, Barcode oder Packungs-ID suchen" : "Bestand durchsuchen"}
+        value={query}
+        onChange={(event) => change(event.target.value)}
+        leading={<SearchIcon aria-hidden="true" />}
+        trailing={
+          query !== "" ? (
+            <IconButton
+              label="Suche leeren"
+              size="sm"
+              onClick={() => {
+                setQuery("");
+                ref.current?.focus();
+              }}
+            >
+              <CloseIcon />
+            </IconButton>
+          ) : undefined
+        }
+      />
+    </form>
+  );
 }
 
 /**
- * Der Rahmen der App: Seitenleiste am Desktop, Kopfzeile, am Handy eine Leiste unten
- * mit dem Scan-Knopf. Grundgerüst; die Ausgestaltung nach dem Entwurf folgt in Runde 1.
+ * Der Rahmen der App nach dem Entwurf.
+ *
+ * Desktop: schmale Seitenleiste (Logo, Navigation, unten „Abmelden" und eine Reihe kleiner
+ * Symbole), Kopfzeile mit Suchfeld, Sync-Anzeiger, der Pille „MHD-Warnungen" und dem Geräte-Menü.
+ * Handy: Suchfeld und Menü-Symbol oben, unten mittig der schwebende Plus-Knopf zum Scannen.
  */
 export function Shell() {
-  const core = useCore();
-  const toast = useToast();
-  const navigate = useNavigate();
-  const session = useLive(core.session.state);
-  const sync = useLive(core.sync.status);
-  const app = useLive(core.app.state);
-  const warnings = useWarningCount();
-  const deviceName = session?.status === "signed_in" ? session.device.name : "";
-  const canScan = app?.secure_context !== false;
+  return (
+    <SearchProvider>
+      <ShellFrame />
+    </SearchProvider>
+  );
+}
 
-  async function logout() {
+function ShellFrame() {
+  const core = useCore();
+  const logout = useLogout();
+  const desktop = useMediaQuery(DESKTOP_QUERY);
+  const session = useLive(core.session.state);
+  const app = useLive(core.app.state);
+  const sync = summarizeSync(useLive(core.sync.status));
+  const { warnings, multiZone } = useStock();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [updating, setUpdating] = useState(false);
+
+  const deviceName = session?.status === "signed_in" ? session.device.name : "";
+  // Über http://<LAN-IP> verweigert der Browser die Kamera: keine Zugänge zum Scannen.
+  const canScan = app?.secure_context !== false;
+  const showFab = !desktop && canScan;
+  const primary = primaryDestinations(multiZone);
+
+  // Meldungen liegen am Handy über dem schwebenden Knopf, nicht darunter.
+  useEffect(() => {
+    if (!showFab) {
+      return;
+    }
+    const root = document.documentElement;
+    root.style.setProperty("--toast-offset", "var(--fab-clearance)");
+    return () => {
+      root.style.removeProperty("--toast-offset");
+    };
+  }, [showFab]);
+
+  useEffect(() => {
+    if (desktop) {
+      setMenuOpen(false);
+    }
+  }, [desktop]);
+
+  async function applyUpdate() {
+    setUpdating(true);
     try {
-      await core.session.logout();
-    } catch (error) {
-      if (isCoreError(error, "pending_changes")) {
-        toast.show({
-          message: `${String(error.details.pending)} Änderungen sind noch nicht gesendet.`,
-          tone: "warn",
-          duration: 0,
-          action: { label: "Trotzdem abmelden", onAction: () => void core.session.logout({ discard_pending: true }) },
-        });
-        return;
-      }
-      throw error;
+      await core.app.applyUpdate();
+    } finally {
+      setUpdating(false);
     }
   }
 
   return (
     <div className={styles.shell}>
-      <aside className={styles.sidebar}>
-        <div className={styles.brand}>
-          <img src="/icons/icon-192.png" alt="" width={32} height={32} />
-          <span>Stowly</span>
-        </div>
-        <nav aria-label="Hauptnavigation" className={styles.nav}>
-          {NAV.map((item) => (
-            <NavLink key={item.to} to={item.to} end={item.to === ROUTES.stock} className={({ isActive }) => cx(styles.link, isActive && styles.active)}>
-              <item.icon size={20} aria-hidden="true" />
-              <span>{item.label}</span>
-            </NavLink>
-          ))}
-        </nav>
-        <Button icon={<LogOut />} onClick={() => void logout()}>
-          Abmelden
-        </Button>
-      </aside>
+      <a
+        href="#inhalt"
+        className={styles.skip}
+        onClick={(event) => {
+          // Fokus setzen statt die Adresse zu ändern: Die gehört dem Router.
+          event.preventDefault();
+          document.getElementById("inhalt")?.focus();
+        }}
+      >
+        Zum Inhalt springen
+      </a>
+
+      {desktop ? (
+        <aside className={styles.sidebar}>
+          <Link to={ROUTES.stock} className={styles.brand} aria-label="Stowly: zum Bestand">
+            <Logo />
+          </Link>
+          <nav aria-label="Hauptnavigation" className={styles.nav}>
+            {primary.map((item) => (
+              <NavLink key={item.to} to={item.to} end={item.to === ROUTES.stock} className={({ isActive }) => cx(styles.link, isActive && styles.active)}>
+                <item.icon size={20} aria-hidden="true" />
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+          </nav>
+          <div className={styles.sidebarEnd}>
+            <Button block icon={<LogOutIcon />} onClick={logout}>
+              Abmelden
+            </Button>
+            <nav aria-label="Weitere Bereiche" className={styles.quick}>
+              {SECONDARY_DESTINATIONS.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) => cx(styles.quickLink, isActive && styles.active)}
+                  aria-label={item.label}
+                  data-tip={item.label}
+                >
+                  {item.to === ROUTES.sync ? <SyncGlyph tone={sync.tone} size={20} /> : <item.icon size={20} aria-hidden="true" />}
+                  {item.to === ROUTES.warnings && warnings.total > 0 ? <span className={styles.dot} /> : null}
+                  {item.to === ROUTES.sync && (sync.tone === "offline" || sync.tone === "error") ? <span className={styles.dot} /> : null}
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        </aside>
+      ) : null}
 
       <div className={styles.main}>
         <header className={styles.header}>
-          <div className={styles.brandSmall}>Stowly</div>
+          <SearchField desktop={desktop} />
           <div className={styles.headerEnd}>
-            <NavLink to={ROUTES.sync} className={styles.sync} aria-label="Sync-Status">
-              {sync?.online === false ? <CloudOff size={18} aria-hidden="true" /> : <RefreshCw size={18} aria-hidden="true" />}
-              <span>{sync?.online === false ? "Offline" : sync?.phase === "syncing" ? "Abgleich läuft" : "Aktuell"}</span>
-              {sync && sync.pending > 0 ? <Badge tone="warn">{sync.pending}</Badge> : null}
-            </NavLink>
-            <NavLink to={ROUTES.warnings} className={styles.pill}>
-              <Bell size={18} aria-hidden="true" />
-              <span className={styles.pillLabel}>MHD-Warnungen</span>
-              <Badge tone={warnings > 0 ? "warn" : "neutral"} solid={warnings > 0}>
-                {warnings}
-              </Badge>
-            </NavLink>
-            <span className={styles.device} title="Dieses Gerät">
-              {deviceName}
-            </span>
-            <span className={styles.logoutSmall}>
-              <IconButton label="Abmelden" onClick={() => void logout()}>
-                <LogOut />
+            <SyncIndicator summary={sync} compact={!desktop} />
+            {desktop ? (
+              <>
+                <NavLink to={ROUTES.warnings} className={cx(styles.pill, styles.warnings)}>
+                  <BellIcon size={18} aria-hidden="true" />
+                  <span>MHD-Warnungen</span>
+                  <Badge tone={warnings.total > 0 ? "warn" : "neutral"} solid={warnings.total > 0}>
+                    {warnings.total}
+                  </Badge>
+                </NavLink>
+                <Menu
+                  label="Geräte-Menü"
+                  className={cx(styles.pill, styles.device)}
+                  header={
+                    <>
+                      Angemeldet als <strong className={styles.deviceStrong}>{deviceName}</strong>
+                    </>
+                  }
+                  items={[
+                    { key: "settings", label: "Einstellungen", icon: <SettingsIcon />, to: ROUTES.settings },
+                    { key: "sync", label: "Sync-Status", icon: <RefreshIcon />, to: ROUTES.sync },
+                    { key: "history", label: "Lösch-Historie", icon: <HistoryIcon />, to: ROUTES.history },
+                    { key: "printers", label: "Drucker", icon: <PrinterIcon />, to: ROUTES.printers },
+                    { key: "logout", label: "Abmelden", icon: <LogOutIcon />, onSelect: logout, tone: "danger", separated: true },
+                  ]}
+                >
+                  <MonitorIcon size={18} aria-hidden="true" />
+                  <span className={styles.deviceName}>{deviceName}</span>
+                  <ChevronDownIcon size={16} aria-hidden="true" />
+                </Menu>
+              </>
+            ) : (
+              <IconButton label="Menü" aria-haspopup="dialog" onClick={() => setMenuOpen(true)}>
+                <MenuIcon />
               </IconButton>
-            </span>
+            )}
           </div>
         </header>
 
-        <main className={styles.content}>
+        {app?.update_ready ? (
+          <Notice
+            banner
+            tone="accent"
+            role="status"
+            icon={<RefreshIcon />}
+            title="Neue Version"
+            action={
+              <Button size="sm" variant="primary" busy={updating} onClick={() => void applyUpdate()}>
+                Jetzt aktualisieren
+              </Button>
+            }
+          >
+            Eine neue Version von Stowly ist geladen und wartet auf den Neustart.
+          </Notice>
+        ) : null}
+        {app?.secure_context === false ? (
+          <Notice banner tone="warn" icon={<LockOpenIcon />} title="Kein Scannen über diese Adresse">
+            Scannen und Offline-Betrieb brauchen die HTTPS-Adresse von Stowly. Über eine http-Adresse läuft die App nur online und ohne Kamera.
+          </Notice>
+        ) : null}
+
+        <main id="inhalt" tabIndex={-1} className={cx(styles.content, showFab && styles.withFab)}>
           <Outlet />
         </main>
       </div>
 
-      <nav aria-label="Hauptnavigation" className={styles.tabbar}>
-        {NAV.filter((item) => item.primary).map((item) => (
-          <NavLink key={item.to} to={item.to} end={item.to === ROUTES.stock} className={({ isActive }) => cx(styles.tab, isActive && styles.active)}>
-            <item.icon size={22} aria-hidden="true" />
-            <span>{item.label}</span>
-          </NavLink>
-        ))}
-      </nav>
-
-      {canScan ? (
-        <button type="button" className={styles.fab} aria-label="Jetzt scannen" onClick={() => void navigate(ROUTES.scan)}>
-          <ScanLine size={26} aria-hidden="true" />
-        </button>
+      {showFab ? (
+        <Link to={ROUTES.scan} className={styles.fab} aria-label="Jetzt scannen" title="Jetzt scannen">
+          <PlusIcon size={30} aria-hidden="true" />
+        </Link>
       ) : null}
+
+      {desktop ? null : (
+        <MobileMenu
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          primary={primary}
+          deviceName={deviceName}
+          warnings={warnings.total}
+          sync={sync}
+          onLogout={() => {
+            setMenuOpen(false);
+            logout();
+          }}
+        />
+      )}
+
+      {/*
+        Neue Ansicht: oben beginnen. Zurück und Neuladen: die alte Stelle wiederfinden.
+        Der erste Aufruf einer Adresse hat immer denselben Schlüssel ("default"); dort
+        entscheidet deshalb der Pfad, sonst erbte eine frisch geöffnete Ansicht die
+        Scroll-Stelle einer anderen.
+      */}
+      <ScrollRestoration getKey={(location) => (location.key === "default" ? location.pathname : location.key)} />
     </div>
   );
 }

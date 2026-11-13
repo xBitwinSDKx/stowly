@@ -1,0 +1,117 @@
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.list {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.list > li + li {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+/* Am Handy untereinander: Produkt und Menge, MHD, Ort mit IDs, Aktionen */
+.item {
+  display: grid;
+  align-items: start;
+  gap: var(--space-2) var(--space-4);
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "product count"
+    "when when"
+    "where where"
+    "actions actions";
+  padding: var(--space-4);
+}
+
+.product {
+  grid-area: product;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+.sub {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.when {
+  grid-area: when;
+}
+
+.where {
+  grid-area: where;
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.place {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.zone {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.count {
+  grid-area: count;
+  font-weight: var(--weight-bold);
+  white-space: nowrap;
+}
+
+.actions {
+  grid-area: actions;
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.actions > :global(*) {
+  flex: 1;
+}
+
+.foot {
+  max-width: 44rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Am Desktop eine Zeile je Produkt und MHD */
+@media (min-width: 48rem) {
+  .item {
+    align-items: center;
+    grid-template-columns: minmax(10rem, 1.1fr) minmax(11rem, 0.9fr) minmax(0, 1.4fr) 3rem auto;
+    grid-template-areas: "product when where count actions";
+    padding: var(--space-3) var(--space-5);
+  }
+
+  .count {
+    text-align: right;
+  }
+
+  .actions {
+    margin-top: 0;
+  }
+
+  .actions > :global(*) {
+    flex: none;
+  }
+}

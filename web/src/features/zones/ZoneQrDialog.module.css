@@ -1,0 +1,69 @@
+.body {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-4);
+}
+
+.single {
+  margin-top: var(--space-1);
+}
+
+.grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+  width: 100%;
+}
+
+.cell {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+}
+
+.name {
+  font-weight: var(--weight-medium);
+  text-align: center;
+}
+
+.hint {
+  max-width: 30rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- Druck (nur @media print sichtbar) */
+.sheet {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10mm;
+  font-family: var(--font-sans);
+}
+
+.label {
+  display: grid;
+  justify-items: center;
+  gap: 2mm;
+  width: 80mm;
+  padding: 4mm;
+  border: 0.3mm dashed currentColor;
+  break-inside: avoid;
+  text-align: center;
+}
+
+/* Im Druck bestimmt das Blatt die Größe des Codes, nicht die Angabe für den Bildschirm. */
+.label .printCode {
+  width: 66mm !important;
+}
+
+.printName {
+  font-size: 18pt;
+  font-weight: 700;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.printSub {
+  font-size: 9pt;
+}

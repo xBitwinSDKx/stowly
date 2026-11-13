@@ -1,0 +1,20 @@
+.qr {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  background: var(--qr-bg);
+  color: var(--qr-fg);
+  overflow: hidden;
+}
+
+.code {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+@media print {
+  .qr {
+    border-radius: 0;
+  }
+}

@@ -1,0 +1,89 @@
+.muted {
+  color: var(--color-text-muted);
+}
+
+.value {
+  color: var(--color-text-muted);
+  text-align: right;
+}
+
+.error {
+  color: var(--color-danger);
+}
+
+.unit {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Zeile mit Schalter rechts, wie im Entwurf; der Schalter bringt Beschriftung und Hinweis selbst mit. */
+.switchRow {
+  padding: var(--space-1) var(--space-4);
+}
+
+/* Der Umschalter soll am Desktop nicht über die ganze Karte laufen. */
+.theme {
+  max-width: 26rem;
+}
+
+/* Zahl mit Einheit */
+.number {
+  width: 7.5rem;
+}
+
+.number :global(input) {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Akzentfarbe: jedes Feld in seiner Farbe (data-accent setzt Farbton und Sättigung, tokens.css) */
+.accents {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.accent {
+  position: relative;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.accent::before {
+  content: "";
+  position: absolute;
+  inset: 0.55rem;
+  border-radius: 50%;
+  background: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
+  transition: inset var(--duration-fast) var(--ease-out);
+}
+
+.accent:hover::before {
+  inset: 0.45rem;
+}
+
+/* Die gewählte Farbe: Ring in derselben Farbe */
+.accentOn::after {
+  content: "";
+  position: absolute;
+  inset: 0.2rem;
+  border: 2px solid oklch(var(--accent-l) var(--accent-c) var(--accent-h));
+  border-radius: 50%;
+}
+
+.deviceName {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+@media (min-width: 48rem) {
+  .switchRow {
+    padding-right: var(--space-5);
+    padding-left: var(--space-5);
+  }
+}

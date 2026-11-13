@@ -14,12 +14,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, Response
-from starlette.routing import Route
+from starlette.routing import Match, Route
 
 from stowly.contract.api import ErrorCode
 from stowly.errors import error_response
 
 RESERVED_PREFIXES = ("api", "print")
+ALL_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
 # Nicht mimetypes: Unter Windows liest das Modul die Registry und liefert für .js
 # mitunter text/plain. Dann lädt der Browser keine Module.
@@ -39,6 +40,16 @@ CONTENT_TYPES = {
     ".webp": "image/webp",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".gif": "image/gif",
+    ".avif": "image/avif",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".xml": "application/xml",
     ".txt": "text/plain; charset=utf-8",
 }
 
@@ -77,15 +88,47 @@ def _file_response(path: Path, cache_control: str) -> Response:
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": cache_control})
 
 
+def _method_not_allowed(allowed: list[str]) -> Response:
+    return error_response(
+        405,
+        ErrorCode.INVALID_REQUEST,
+        "Diese Methode ist hier nicht erlaubt.",
+        headers={"Allow": ", ".join(allowed)},
+    )
+
+
 def install_web(app: FastAPI, web_dir: Path | None) -> None:
     """Hängt die Auslieferung der Web-App an. **Muss der letzte Schritt beim Aufbau der App sein:**
     Die Route fängt alle Pfade, die vor ihr niemand beantwortet hat.
+
+    Sie fängt jede Methode: Unbekannte Pfade unter ``/api`` und ``/print`` antworten so immer
+    mit 404 im Fehlerformat, nicht nur bei GET. Die Web-App selbst kennt nur GET und HEAD.
     """
+
+    def methods_of_known_path(request: Request) -> list[str]:
+        """Die erlaubten Methoden, falls es den Pfad gibt und nur die Methode nicht passt.
+
+        Gefragt wird jede Route davor, ob sie den Pfad mit einer anderen Methode nähme.
+        Das braucht nur ``matches`` und hängt nicht davon ab, wie FastAPI eingebundene
+        Router intern ablegt.
+        """
+        others = [route for route in app.router.routes if route is not catch_all]
+        allowed = []
+        for method in ALL_METHODS:
+            scope = {**request.scope, "method": method}
+            if any(route.matches(scope)[0] == Match.FULL for route in others):
+                allowed.append(method)
+        return sorted(allowed)
 
     async def serve(request: Request) -> Response:
         path = request.path_params.get("path", "")
         if _is_reserved(path):
+            allowed = methods_of_known_path(request)
+            if allowed:
+                return _method_not_allowed(allowed)
             return error_response(404, ErrorCode.NOT_FOUND, "Nicht gefunden.")
+        if request.method not in ("GET", "HEAD"):
+            return _method_not_allowed(["GET", "HEAD"])
 
         index = None if web_dir is None else web_dir / "index.html"
         if web_dir is None or index is None or not index.is_file():
@@ -103,6 +146,5 @@ def install_web(app: FastAPI, web_dir: Path | None) -> None:
 
         return _file_response(index, REVALIDATE)
 
-    app.router.routes.append(
-        Route("/{path:path}", endpoint=serve, methods=["GET", "HEAD"], include_in_schema=False)
-    )
+    catch_all = Route("/{path:path}", endpoint=serve, methods=ALL_METHODS, include_in_schema=False)
+    app.router.routes.append(catch_all)

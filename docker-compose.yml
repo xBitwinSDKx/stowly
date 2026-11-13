@@ -1,20 +1,36 @@
 # Start:  docker compose up -d --build
 # Vorher: .env.example nach .env kopieren und STOWLY_PASSWORD setzen.
+# Anleitung und Prüfliste: docs/betrieb.md
 #
 # In der Zielumgebung noch nicht gestartet: Auf dem Entwicklungsrechner gibt es kein Docker.
 services:
   stowly:
     build: .
+    image: stowly:local
     container_name: stowly
     restart: unless-stopped
     env_file:
       - .env
     ports:
-      # Nur für den Reverse Proxy auf demselben Rechner. Läuft der Proxy woanders,
-      # "8010:8010" eintragen und den Port in der Firewall auf das Heimnetz beschränken.
-      - "127.0.0.1:8010:8010"
+      # Vorgabe: nur für einen Reverse Proxy auf demselben Rechner (auch Tailscale Serve).
+      # Läuft der Proxy auf einem anderen Rechner, in .env STOWLY_PUBLISH=8010 setzen und den
+      # Port in der Firewall auf das Heimnetz beschränken. Läuft er als Container auf diesem
+      # Rechner, erreicht er 127.0.0.1 nicht: dann ein gemeinsames Netz, siehe docs/betrieb.md.
+      - "${STOWLY_PUBLISH:-127.0.0.1:8010}:8010"
     volumes:
+      # Die Datenbank (/data/stowly.sqlite3) samt Bildern: alles, was Stowly speichert.
+      # Sichern und Zurückspielen: docs/betrieb.md, Abschnitt 8.
       - stowly-data:/data
+    # Der Prozess läuft ohne root und braucht keine besonderen Rechte.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   stowly-data:

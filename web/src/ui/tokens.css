@@ -62,6 +62,14 @@
   --border-width: 1px;
   --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
 
+  /* Schwebender Knopf zum Scannen (Handy) und der Platz, den er am Seitenende braucht */
+  --fab-size: 3.75rem;
+  --fab-gap: var(--space-4);
+  --fab-clearance: calc(var(--fab-size) + 2 * var(--fab-gap));
+
+  /* Seitenrand des Inhalts; am Desktop breiter (siehe unten) */
+  --page-gutter: var(--space-4);
+
   /* Bewegung */
   --duration-fast: 120ms;
   --duration-normal: 200ms;
@@ -71,6 +79,7 @@
   --z-header: 10;
   --z-nav: 20;
   --z-fab: 30;
+  --z-menu: 40;
   --z-dialog: 100;
   --z-toast: 200;
 
@@ -79,21 +88,44 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
+
+  /*
+   * QR-Codes sind in jedem Thema schwarz auf weiß: Scanner lesen helle Codes auf
+   * dunklem Grund nicht zuverlässig, und gedruckt wird ohnehin auf Papier.
+   */
+  --qr-bg: #ffffff;
+  --qr-fg: #000000;
 }
 
-:root[data-accent="blue"] {
+@media (min-width: 64rem) {
+  :root {
+    --page-gutter: var(--space-8);
+  }
+}
+
+/*
+ * Die Akzentfarben. Die Selektoren gelten für <html> und für einzelne Elemente:
+ * So zeigt die Auswahl in den Einstellungen jede Farbe in ihrem eigenen Feld
+ * (background: oklch(var(--accent-l) var(--accent-c) var(--accent-h))).
+ */
+[data-accent="mint"] {
+  --accent-h: 172;
+  --accent-c: 0.13;
+}
+[data-accent="blue"] {
   --accent-h: 248;
   --accent-c: 0.14;
 }
-:root[data-accent="violet"] {
+[data-accent="violet"] {
   --accent-h: 295;
   --accent-c: 0.15;
 }
-:root[data-accent="rose"] {
-  --accent-h: 12;
+/* Rosé liegt bewusst im Pink: Abstand zum Rot von „Löschen" und „abgelaufen". */
+[data-accent="rose"] {
+  --accent-h: 354;
   --accent-c: 0.15;
 }
-:root[data-accent="lime"] {
+[data-accent="lime"] {
   --accent-h: 132;
   --accent-c: 0.16;
 }
@@ -105,22 +137,28 @@
 
   /* Flächen: fast schwarz mit Blaugrün-Stich, Karten eine Stufe heller */
   --color-bg: #0b1214;
-  --color-surface: #121c1f;
-  --color-surface-2: #18262a;
-  --color-surface-3: #20333a;
+  --color-surface: #111b1e;
+  --color-surface-2: #17252a;
+  --color-surface-3: #1f3238;
   --color-overlay: rgb(3 8 9 / 0.66);
+  /* Seitenleiste und Leisten: zwischen Hintergrund und Karte */
+  --color-chrome: #0e171a;
+  /* Zeile unter dem Zeiger, aufgeklappte Bereiche in Tabellen */
+  --color-hover: rgb(255 255 255 / 0.03);
+  --color-sunken: #0d1518;
 
   /* Konturen: fein, kaum sichtbar */
-  --color-border: #1f2e32;
-  --color-border-strong: #2e444a;
+  --color-border: #1c2a2e;
+  --color-border-strong: #2c4147;
 
   /* Text: hell, Beschriftungen gedämpft */
   --color-text: #e6efef;
   --color-text-muted: #93a5a8;
-  --color-text-faint: #64777b;
+  --color-text-faint: #66797d;
 
   /* Akzent: Mint/Türkis für Navigation, Schaltflächen, Balken, Symbole */
-  --color-accent: oklch(0.8 var(--accent-c) var(--accent-h));
+  --accent-l: 0.8;
+  --color-accent: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
   --color-accent-hover: oklch(0.86 var(--accent-c) var(--accent-h));
   --color-accent-contrast: oklch(0.2 0.04 var(--accent-h));
   --color-accent-soft: oklch(0.8 var(--accent-c) var(--accent-h) / 0.13);
@@ -152,6 +190,9 @@
   --palette-lime: oklch(0.82 0.16 132);
   --palette-slate: oklch(0.72 0.03 230);
 
+  /* Wie stark eine Fläche in ihrer Markierungsfarbe getönt wird (aktive Zonen-Karte) */
+  --tint-strength: 15%;
+
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-md: 0 6px 20px rgb(0 0 0 / 0.45);
   --shadow-lg: 0 18px 48px rgb(0 0 0 / 0.55);
@@ -166,21 +207,25 @@
   --color-surface-2: #edf2f2;
   --color-surface-3: #e0e8e9;
   --color-overlay: rgb(15 28 31 / 0.42);
+  --color-chrome: #fafcfc;
+  --color-hover: rgb(15 40 45 / 0.035);
+  --color-sunken: #f6f9f9;
 
   --color-border: #dde5e6;
   --color-border-strong: #bfcdd0;
 
   --color-text: #142022;
-  --color-text-muted: #55676a;
-  --color-text-faint: #7f9093;
+  --color-text-muted: #52646a;
+  --color-text-faint: #76878b;
 
-  --color-accent: oklch(0.55 var(--accent-c) var(--accent-h));
-  --color-accent-hover: oklch(0.49 var(--accent-c) var(--accent-h));
+  --accent-l: 0.5;
+  --color-accent: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
+  --color-accent-hover: oklch(0.44 var(--accent-c) var(--accent-h));
   --color-accent-contrast: #ffffff;
   --color-accent-soft: oklch(0.55 var(--accent-c) var(--accent-h) / 0.11);
   --color-accent-border: oklch(0.55 var(--accent-c) var(--accent-h) / 0.45);
 
-  --color-warn: oklch(0.6 0.15 62);
+  --color-warn: oklch(0.53 0.14 62);
   --color-warn-soft: oklch(0.75 0.15 75 / 0.2);
   --color-warn-contrast: #ffffff;
 
@@ -192,15 +237,17 @@
   --color-info: oklch(0.52 0.15 250);
   --color-info-soft: oklch(0.52 0.15 250 / 0.1);
 
-  --color-success: oklch(0.52 0.14 152);
+  --color-success: oklch(0.5 0.14 152);
   --color-success-soft: oklch(0.52 0.14 152 / 0.12);
 
   --palette-blue: oklch(0.52 0.15 250);
-  --palette-amber: oklch(0.6 0.15 62);
+  --palette-amber: oklch(0.53 0.14 62);
   --palette-violet: oklch(0.52 0.17 300);
   --palette-rose: oklch(0.55 0.18 12);
-  --palette-lime: oklch(0.55 0.15 132);
+  --palette-lime: oklch(0.52 0.15 132);
   --palette-slate: oklch(0.5 0.03 230);
+
+  --tint-strength: 11%;
 
   --shadow-sm: 0 1px 2px rgb(20 32 34 / 0.08);
   --shadow-md: 0 6px 20px rgb(20 32 34 / 0.1);

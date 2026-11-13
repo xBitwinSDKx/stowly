@@ -52,8 +52,21 @@ def test_dev_mode_supplies_a_password_only_if_none_is_set():
 
 
 @pytest.mark.parametrize(
-    "env", [{"STOWLY_PORT": "achtzig"}, {"STOWLY_DEV": "vielleicht"}, {"STOWLY_OFF_ENABLED": "2"}]
+    "env",
+    [
+        {"STOWLY_PORT": "achtzig"},
+        {"STOWLY_DEV": "vielleicht"},
+        {"STOWLY_OFF_ENABLED": "2"},
+        {"STOWLY_LOG_LEVEL": "laut"},
+    ],
 )
 def test_invalid_values_are_reported(env):
     with pytest.raises(ValueError, match="STOWLY_"):
         Settings.from_env(env)
+
+
+def test_open_food_facts_settings():
+    settings = Settings.from_env({"STOWLY_OFF_CONTACT": " betreiber@example.org ", "STOWLY_OFF_URL": ""})
+    assert settings.off_contact == "betreiber@example.org"
+    assert settings.off_url == "https://world.openfoodfacts.org"  # leer heißt: Vorgabe
+    assert Settings.from_env({"STOWLY_LOG_LEVEL": "Trace"}).log_level == "trace"

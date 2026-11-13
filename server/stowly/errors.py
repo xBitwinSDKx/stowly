@@ -4,12 +4,12 @@ Jede Fehlerantwort unter ``/api`` hat den Rumpf ``{"error": {"code", "message", 
 Im Code genügt ``raise ApiError(status, ErrorCode.X, "deutsche Meldung")``.
 """
 
+import json
 import logging
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from stowly.contract.api import ErrorCode
@@ -64,23 +64,22 @@ def error_response(
     message: str,
     details: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
-) -> JSONResponse:
+) -> Response:
     body = {"error": {"code": code.value, "message": message, "details": details}}
-    return JSONResponse(body, status_code=status, headers=headers)
-
-
-def not_implemented(what: str) -> ApiError:
-    """Platzhalter des Grundgerüsts für Endpunkte, die Runde 1 füllt."""
-    return ApiError(501, ErrorCode.NOT_IMPLEMENTED, f"{what} ist noch nicht umgesetzt.")
+    # Als reines ASCII (Umlaute als \uXXXX): Die Einzelheiten zitieren Eingaben, und die können
+    # halbe Zeichen enthalten, die sich als UTF-8 nicht senden ließen. Ein Fehler beim
+    # Melden eines Fehlers wäre ein 500 ohne Fehlerformat.
+    content = json.dumps(body, ensure_ascii=True, separators=(",", ":"), default=str)
+    return Response(content, status_code=status, headers=headers, media_type="application/json")
 
 
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
-    async def _api_error(_request: Request, exc: ApiError) -> JSONResponse:
+    async def _api_error(_request: Request, exc: ApiError) -> Response:
         return error_response(exc.status, exc.code, exc.message, exc.details, exc.headers)
 
     @app.exception_handler(RequestValidationError)
-    async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def _validation_error(_request: Request, exc: RequestValidationError) -> Response:
         problems = [
             {
                 "loc": [str(part) for part in error.get("loc", ())],
@@ -94,12 +93,12 @@ def install_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def _http_error(_request: Request, exc: StarletteHTTPException) -> Response:
         code = _STATUS_CODES.get(exc.status_code, ErrorCode.INTERNAL)
         message = _STATUS_MESSAGES.get(exc.status_code) or str(exc.detail)
         return error_response(exc.status_code, code, message, None, getattr(exc, "headers", None))
 
     @app.exception_handler(Exception)
-    async def _unexpected(_request: Request, exc: Exception) -> JSONResponse:
+    async def _unexpected(_request: Request, exc: Exception) -> Response:
         log.exception("Unerwarteter Fehler", exc_info=exc)
         return error_response(500, ErrorCode.INTERNAL, "Interner Fehler des Servers.")

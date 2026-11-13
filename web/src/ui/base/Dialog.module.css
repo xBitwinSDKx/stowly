@@ -82,6 +82,13 @@
   border-top: var(--border-width) solid var(--color-border);
 }
 
+@media (pointer: coarse) {
+  .close {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+}
+
 /* Am Handy: "sheet" sitzt am unteren Rand und ist mit dem Daumen erreichbar. */
 @media (max-width: 40rem) {
   .sheet {
@@ -102,5 +109,10 @@
 
   .footer > :global(*) {
     flex: 1;
+  }
+
+  /* Die Hauptaktion steht zuletzt und bekommt mehr Platz als „Abbrechen". */
+  .footer > :global(:last-child:not(:only-child)) {
+    flex: 1.5;
   }
 }

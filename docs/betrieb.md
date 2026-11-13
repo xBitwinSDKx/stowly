@@ -1,0 +1,342 @@
+# Betrieb
+
+Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar machen, auf den Handys installieren, sichern, aktualisieren. Was Stowly ist und wie es aufgebaut ist, steht in [`../README.md`](../README.md) und [`plan-stufe-1.md`](plan-stufe-1.md).
+
+> **Stand.** `Dockerfile` und `docker-compose.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst (automatische Tests und ein Durchlauf von Hand unter Windows). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden.
+
+## 1. Überblick
+
+- Stowly läuft als **ein Container mit einem Prozess**. Er liefert die Web-App und die Schnittstelle auf Port 8010 und spricht nur HTTP.
+- **HTTPS stellt ein Reverse Proxy davor bereit.** Beschrieben sind zwei Wege: Nginx Proxy Manager mit eigener Zertifizierungsstelle (Abschnitt 4) und Tailscale (Abschnitt 5).
+- **Offline-Betrieb, Kamera und die Installation als App gehen nur über die HTTPS-Adresse** (Abschnitt 6).
+- Alle Daten liegen in **einer SQLite-Datei** in einem Docker-Volume (Abschnitt 10).
+
+## 2. Voraussetzungen
+
+| Was | Wofür |
+|---|---|
+| Rechner mit Debian 13, ohne Bildschirm | Zielsystem; jedes Linux mit Docker sollte genauso gehen |
+| Docker Engine mit Compose-Plugin (`docker compose version` zeigt Version 2 oder neuer) | Bau und Betrieb des Containers |
+| Internet beim Bauen | lädt die Basis-Images und die Pakete von npm und PyPI |
+| etwa 1 GB Plattenplatz für den Bau, danach wenige hundert MB | Images; die Datenbank selbst bleibt klein |
+| ein Reverse Proxy mit HTTPS: Nginx Proxy Manager **oder** Tailscale | siehe Abschnitte 4 und 5 |
+| im Betrieb optional Internet | nur für das Nachschlagen bei Open Food Facts |
+
+## 3. Start mit Docker Compose
+
+Im Ordner des Repositorys auf dem Server:
+
+```
+cp .env.example .env
+nano .env                      # STOWLY_PASSWORD setzen
+docker compose up -d --build
+```
+
+Der erste Bau dauert einige Minuten (die Web-App wird im Image mitgebaut). Danach:
+
+```
+docker compose ps                              # Zustand "healthy" nach etwa 30 Sekunden
+curl -s http://127.0.0.1:8010/api/health       # {"app":"stowly","status":"ok",...,"configured":true}
+docker compose logs -f stowly                  # Meldungen des Servers
+```
+
+Die Einstellungen stehen in `.env` und sind dort beschrieben ([`.env.example`](../.env.example)):
+
+| Variable | Bedeutung |
+|---|---|
+| `STOWLY_PASSWORD` | Haushalts-Passwort. **Pflicht.** Ohne Passwort startet der Server, aber niemand kann sich anmelden (`"configured": false`). |
+| `STOWLY_OFF_ENABLED` | `1`: unbekannte Barcodes bei Open Food Facts nachschlagen (höchstens 10 Abfragen je Minute). `0`: nie. |
+| `STOWLY_OFF_CONTACT` | freiwilliger Kontakt im `User-Agent` gegenüber Open Food Facts |
+| `STOWLY_LOG_LEVEL` | `info` (Vorgabe), `debug`, `warning` … |
+| `STOWLY_PUBLISH` | unter welcher Adresse des Rechners der Container erreichbar ist; Vorgabe `127.0.0.1:8010` |
+| `TZ` | Zeitzone, wirkt nur auf das Datum im Dateinamen der Sicherung |
+
+Hinweise:
+
+- Enthält das Passwort Sonderzeichen (`#`, `$`, Leerzeichen, Anführungszeichen), in einfache Anführungszeichen setzen: `STOWLY_PASSWORD='mein#Passwort'`.
+- Geänderte Werte gelten nach `docker compose up -d`.
+- Ein geändertes Passwort lässt angemeldete Geräte angemeldet. Einzelne Geräte meldet man in der App unter „Einstellungen → Geräte" ab; das sperrt ihr Token.
+- Nach 5 falschen Passwörtern innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab, für alle gemeinsam.
+- Der Container läuft als eigener Benutzer ohne Rechte (UID 10001). Wer statt des Volumes einen Ordner des Rechners einhängt (`./data:/data`), muss ihn diesem Benutzer geben: `sudo chown 10001:10001 data`.
+
+## 4. Nginx Proxy Manager mit eigener Zertifizierungsstelle
+
+Ziel: Die App ist im Heimnetz unter `https://stowly.home` erreichbar, mit einem Zertifikat der eigenen Zertifizierungsstelle, der die Geräte bereits vertrauen.
+
+### 4.1 Name: Pi-hole
+
+In Pi-hole unter „Local DNS → DNS Records" einen Eintrag anlegen: `stowly.home` → IP-Adresse des Rechners, auf dem **Nginx Proxy Manager** läuft. Die Handys müssen Pi-hole als DNS-Server benutzen (üblicherweise über DHCP des Routers).
+
+Löst ein Handy den Namen nicht auf:
+
+- Android: „Privates DNS" auf „Automatisch" oder „Aus" stellen. Ein fest eingetragener Anbieter umgeht Pi-hole.
+- iPhone: für dieses WLAN „IP-Adress-Tracking beschränken" bzw. iCloud Privat-Relay prüfen.
+
+### 4.2 Zertifikat
+
+Mit der eigenen Zertifizierungsstelle ein Serverzertifikat für `stowly.home` ausstellen. Damit auch das iPhone es annimmt:
+
+- der Name steht als **Subject Alternative Name** (`DNS:stowly.home`); der Common Name allein genügt nicht,
+- erweiterte Schlüsselverwendung `serverAuth`,
+- Gültigkeit **höchstens 825 Tage**,
+- RSA mit mindestens 2048 Bit oder ECDSA, Signatur mit SHA-256.
+
+In Nginx Proxy Manager unter „SSL Certificates → Add SSL Certificate → Custom" Zertifikat und Schlüssel hochladen (ein Zwischenzertifikat, falls es eines gibt, dazu).
+
+Das Wurzelzertifikat muss auf jedem Handy installiert sein:
+
+- Android: Einstellungen → Sicherheit → Verschlüsselung und Anmeldedaten → Zertifikat installieren → CA-Zertifikat.
+- iPhone: Zertifikat öffnen (Mail, AirDrop, Download in Safari) → Einstellungen → „Profil geladen" → Installieren. Danach **zusätzlich** Einstellungen → Allgemein → Info → Zertifikatsvertrauenseinstellungen → volles Vertrauen für das Wurzelzertifikat einschalten.
+
+### 4.3 Proxy Host
+
+In Nginx Proxy Manager unter „Hosts → Proxy Hosts → Add Proxy Host":
+
+| Feld | Wert |
+|---|---|
+| Domain Names | `stowly.home` |
+| Scheme | `http` |
+| Forward Hostname / IP, Forward Port | siehe unten; Port `8010` |
+| **Cache Assets** | **aus** |
+| Block Common Exploits | nach Belieben |
+| Websockets Support | nicht nötig |
+| SSL → SSL Certificate | das Zertifikat aus 4.2 |
+| SSL → Force SSL, HTTP/2 Support | an |
+
+**„Cache Assets" muss aus bleiben.** Die Option speichert Skripte im Proxy zwischen und entfernt die `Cache-Control`-Angaben des Servers. Der Service Worker (`/sw.js`) käme dann verspätet auf die Geräte, und eine neue Version der App bliebe hängen.
+
+Wohin der Proxy weiterleitet, hängt davon ab, wo er läuft:
+
+| Nginx Proxy Manager läuft … | Forward Hostname / IP | zusätzlich |
+|---|---|---|
+| als Container **auf demselben Rechner** (der übliche Fall) | `stowly` | gemeinsames Docker-Netz, siehe unten |
+| auf demselben Rechner mit `network_mode: host` oder ohne Docker | `127.0.0.1` | nichts |
+| auf einem **anderen** Rechner | IP-Adresse des Stowly-Rechners | in `.env`: `STOWLY_PUBLISH=8010`; Port 8010 in der Firewall auf den Proxy beschränken |
+
+Ein Container erreicht `127.0.0.1` des Rechners nicht. Läuft Nginx Proxy Manager als Container auf demselben Rechner, bekommt Stowly deshalb Zugang zu dessen Netz. Den Namen des Netzes zeigt
+
+```
+docker inspect <Name des NPM-Containers> --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}'
+```
+
+Damit neben `docker-compose.yml` eine Datei `docker-compose.override.yml` anlegen; Compose liest sie von selbst mit, und ein späteres `git pull` überschreibt sie nicht:
+
+```yaml
+services:
+  stowly:
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: <Name des Netzes von Nginx Proxy Manager>
+```
+
+Danach `docker compose up -d`. Im Proxy Host steht dann `stowly` als Forward Hostname.
+
+Probe von einem Rechner im Heimnetz: `https://stowly.home/api/health` zeigt `"app":"stowly"`, ohne Zertifikatswarnung.
+
+## 5. Tailscale
+
+Die Alternative ohne eigene Zertifizierungsstelle: Tailscale stellt den Namen und ein öffentlich gültiges Zertifikat. Die App ist dann auf allen Geräten des eigenen Tailnets erreichbar, zu Hause wie unterwegs, und nirgends sonst.
+
+1. Tailscale auf dem Stowly-Rechner installieren und anmelden (`tailscale up`).
+2. In der Verwaltung von Tailscale **MagicDNS** und **HTTPS-Zertifikate** einschalten.
+3. Auf dem Stowly-Rechner:
+
+   ```
+   sudo tailscale serve --bg 8010
+   tailscale serve status
+   ```
+
+   Das veröffentlicht `http://127.0.0.1:8010` als `https://<rechnername>.<tailnet>.ts.net` innerhalb des Tailnets. `STOWLY_PUBLISH` bleibt bei der Vorgabe. (Die Schreibweise von `tailscale serve` hat sich über die Versionen geändert; im Zweifel `tailscale serve --help`.)
+4. Auf jedem Handy die Tailscale-App installieren und im selben Tailnet anmelden.
+
+**Nicht** `tailscale funnel` verwenden: Das stellte Stowly ins offene Internet. Dafür ist die Anmeldung mit einem einzigen Haushalts-Passwort nicht gedacht.
+
+## 6. Warum nur die HTTPS-Adresse zählt
+
+Browser erlauben eine Reihe von Funktionen nur in einem „sicheren Kontext", also über HTTPS. Für Stowly sind das genau die wichtigen:
+
+- **Service Worker**: ohne ihn keine App ohne Netz, keine Installation, kein Abgleich im Hintergrund,
+- **Kamera**: ohne sie kein Scannen,
+- dauerhafter Speicher für die lokale Kopie, „Bildschirm wach halten" und die eingebaute Barcode-Erkennung.
+
+Über `http://<IP-Adresse>:8010` läuft Stowly deshalb nur als gewöhnliche Online-Webseite: Bestand ansehen und bearbeiten geht, Scannen und Arbeiten ohne Netz nicht. Das taugt für eine schnelle Probe am Rechner, nicht für den Alltag. Auf den Handys immer die HTTPS-Adresse verwenden, und immer **dieselbe**: Jede Adresse hat im Browser ihren eigenen Speicher, also ihre eigene lokale Kopie und ihre eigene Anmeldung.
+
+## 7. Installation als App
+
+Auf jedem Handy einmal. Danach meldet sich das Gerät mit dem Haushalts-Passwort an und gibt sich einen Namen (etwa „Handy Küche"); unter diesem Namen erscheint es in der Geräteliste.
+
+**Android (Chrome)**
+
+1. `https://stowly.home` (oder die Tailscale-Adresse) in Chrome öffnen. Es darf keine Zertifikatswarnung erscheinen.
+2. Menü ⋮ → „App installieren" (je nach Version „Zum Startbildschirm hinzufügen") → Installieren.
+3. Stowly vom Startbildschirm öffnen, anmelden, beim ersten Scannen den Zugriff auf die Kamera erlauben.
+
+**iPhone (Safari)**
+
+1. Die Adresse in **Safari** öffnen (nicht in einem anderen Browser).
+2. Teilen-Symbol → „Zum Home-Bildschirm" → Hinzufügen.
+3. Stowly **vom Home-Bildschirm** öffnen und dort anmelden. Die installierte App hat einen eigenen Speicher: Eine Anmeldung in Safari gilt für sie nicht.
+4. Beim ersten Scannen den Zugriff auf die Kamera erlauben.
+
+Auf dem iPhone ist die Installation nötig: Safari löscht die lokalen Daten einer Webseite, die sieben Tage lang nicht besucht wurde. Apps auf dem Home-Bildschirm sind davon ausgenommen.
+
+## 8. Sicherung
+
+Die Sicherung ist eine vollständige, in sich stimmige Kopie der Datenbank als eine Datei `stowly-JJJJ-MM-TT.sqlite3`. Sie lässt sich bei laufendem Betrieb ziehen.
+
+**Herunterladen:** in der App unter „Einstellungen → Sicherung". Die Datei enthält den ganzen Haushalt: Bestand, Lösch-Historie, Ereignisprotokoll, Produktbilder, die Liste der Geräte (ohne deren Tokens, nur Prüfsummen) und die Zugangsdaten eingerichteter Drucker. Entsprechend aufbewahren.
+
+Automatische, verschlüsselte Sicherungen folgen in Stufe 2. Bis dahin: regelmäßig von Hand, auf jeden Fall vor jedem Aktualisieren.
+
+**Wieder einspielen:** Server anhalten, Datei ersetzen, starten. Wer den jetzigen Stand noch brauchen könnte, zieht vorher auch davon eine Sicherung.
+
+```
+docker compose stop
+docker compose run --rm -T --no-deps stowly sh -c \
+  'rm -f /data/stowly.sqlite3-wal /data/stowly.sqlite3-shm && cat > /data/stowly.sqlite3' \
+  < stowly-2026-11-13.sqlite3
+docker compose up -d
+```
+
+Der mittlere Befehl schreibt die Datei als der Benutzer des Containers ins Volume; so stimmen die Rechte. Was danach geschieht:
+
+- Der Server erkennt an der Kennung des Datenbestands, dass er einen anderen Stand hat. **Alle Geräte holen den Bestand beim nächsten Abgleich von selbst vollständig neu.** Auf den Handys ist nichts zu tun.
+- Änderungen, die ein Gerät noch nicht abgeglichen hatte, sendet es erneut. Was schon in der Sicherung steckt, erkennt der Server und führt es nicht doppelt aus.
+- Was nach der Sicherung geschah und schon abgeglichen war, ist weg: Das ist der Sinn des Zurückspielens.
+- Geräte, die erst nach der Sicherung angemeldet wurden, kennt der eingespielte Stand nicht. Sie melden sich neu an; ihre lokalen Daten und ungesendeten Änderungen bleiben dabei erhalten.
+
+**Andere Kopien der Datenbank** (Schnappschuss des Volumes, Kopie der Datei bei angehaltenem Server, Sicherung des ganzen Rechners) lassen sich genauso zurückspielen, brauchen aber einen Schritt mehr. Nur die Sicherung aus der App trägt von sich aus eine neue Kennung des Datenbestands. Jede andere Kopie trägt die alte, und die Geräte bemerkten das Zurückspielen nicht zuverlässig: Sie behielten Packungen, die es auf dem Server nicht mehr gibt. Deshalb nach dem Zurückspielen einer solchen Kopie, vor dem Start:
+
+```
+docker compose run --rm --no-deps stowly python -m stowly --new-dataset
+docker compose up -d
+```
+
+Der Befehl gibt dem Datenbestand eine neue Kennung und endet. Danach verhält sich alles wie oben beschrieben.
+
+## 9. Aktualisieren
+
+```
+# vorher eine Sicherung herunterladen (Abschnitt 8)
+git pull
+docker compose up -d --build
+docker compose logs --tail 50 stowly
+```
+
+- Die Datenbank bringt der Server beim Start selbst auf den neuen Stand (Migrationen).
+- Zurück auf eine ältere Version geht nicht mit einer neueren Datenbank: Der Server verweigert dann den Start mit einer Meldung. Dafür ist die Sicherung von vorher da.
+- Die Web-App auf den Handys aktualisiert sich selbst, sobald sie den Server das nächste Mal erreicht. Passen App und Server einmal nicht zusammen, fordert die App zum Aktualisieren auf; ungesendete Änderungen bleiben erhalten.
+
+Alte Images räumt `docker image prune` weg.
+
+## 10. Wo die Daten liegen
+
+| Was | Wo |
+|---|---|
+| Datenbank mit allem: Bestand, Produktbilder, Geräte, Ereignisprotokoll | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
+| Einstellungen des Servers samt Passwort | `.env` im Ordner des Repositorys |
+| eigene Anpassung an den Proxy | `docker-compose.override.yml`, falls angelegt |
+| lokale Kopie je Gerät, ungesendete Änderungen, Token | im Browser-Speicher des Handys (IndexedDB) |
+
+Das Volume findet `docker volume inspect <ordnername>_stowly-data` (unter Debian üblicherweise `/var/lib/docker/volumes/…/_data`). `docker compose down` lässt es bestehen; erst `docker compose down -v` löscht es und damit den ganzen Haushalt.
+
+Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, nie Passwort oder Tokens.
+
+## 11. Wenn etwas nicht geht
+
+| Beobachtung | Wahrscheinliche Ursache |
+|---|---|
+| `/api/health` zeigt `"configured": false`; die App meldet, dass kein Passwort gesetzt ist | `STOWLY_PASSWORD` in `.env` ist leer. Setzen, dann `docker compose up -d`. |
+| `docker compose up` bricht ab: „env file … not found" | `.env` fehlt: `cp .env.example .env` |
+| Die Startseite zeigt „die Web-App ist noch nicht gebaut" (Status 503) | Die Web-App fehlt im Image: Der Bau der ersten Stufe ist gescheitert oder `STOWLY_WEB_DIR` wurde verstellt. |
+| Der Proxy meldet „502 Bad Gateway" | Er erreicht den Container nicht: Tabelle in Abschnitt 4.3 (gemeinsames Netz oder `STOWLY_PUBLISH`). |
+| Zertifikatswarnung auf dem Handy | Wurzelzertifikat nicht installiert, auf dem iPhone das volle Vertrauen nicht eingeschaltet, oder dem Zertifikat fehlt der Subject Alternative Name. |
+| Die App meldet, der Server sei nicht erreichbar, obwohl die Adresse im Browser aufgeht | Der Proxy liefert unter `/api/health` etwas anderes als Stowly; Probe B3. |
+| Scannen fehlt oder die App lässt sich nicht installieren | Die App läuft über `http://` statt über die HTTPS-Adresse (Abschnitt 6). |
+| Eine neue Version kommt nicht auf den Handys an | „Cache Assets" im Proxy ist an; Probe B4. |
+| Gescannte Produkte bleiben ohne Namen | Der Container kommt nicht ins Internet, oder Open Food Facts kennt den Barcode nicht; Probe A14. Der Name lässt sich immer von Hand eintragen. |
+| Nach dem Zurückspielen: Fehler „readonly database" im Log | Die Datei gehört nicht dem Benutzer des Containers. Nach Abschnitt 8 einspielen oder `chown 10001:10001` auf die Datei im Volume. |
+| Die Anmeldung wird trotz richtigem Passwort abgelehnt (zu viele Fehlversuche) | Sperre nach 5 falschen Passwörtern; 60 Sekunden warten. |
+
+## Prüfliste für die Zielumgebung
+
+Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe nach; hinter jedem Schritt steht, was zu sehen sein muss.
+
+### A. Container auf Debian 13
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| A1 | `docker --version`, `docker compose version` | Docker Engine vorhanden, Compose in Version 2 oder neuer |
+| A2 | `cp .env.example .env`, `STOWLY_PASSWORD` setzen | – |
+| A3 | `docker compose build` | Beide Stufen laufen durch: `npm ci` und `npm run build` (Web-App), `pip install` (Server). Kein Fehler, am Ende ein Image `stowly:local`. |
+| A4 | `docker compose up -d`, nach 40 Sekunden `docker compose ps` | Zustand `running (healthy)` |
+| A5 | `curl -s http://127.0.0.1:8010/api/health` | JSON mit `"app":"stowly"` und `"configured":true` |
+| A6 | `curl -sI http://127.0.0.1:8010/` | `200`, `content-type: text/html`. (Ein `503` hieße: Die Web-App fehlt im Image.) |
+| A7 | `curl -sI http://127.0.0.1:8010/sw.js` | `200`, `content-type: text/javascript`, `cache-control: no-cache` |
+| A8 | `docker compose exec stowly id` und `docker compose exec stowly ls -l /data` | `uid=10001(stowly)`; `stowly.sqlite3` gehört `stowly` |
+| A9 | `docker compose logs stowly` | kein Traceback; beim ersten Start „Etikett-Vorlagen übernommen: package, zone" |
+| A10 | Anmelden: `curl -s -X POST http://127.0.0.1:8010/api/auth/login -H 'Content-Type: application/json' -d '{"password":"<Passwort>","device_name":"Prüfung"}'` | JSON mit `token` und `device`. Mit falschem Passwort: `401` und `invalid_password`. (Das Gerät „Prüfung" später in der App sperren.) |
+| A11 | `docker compose restart`, danach A5 | antwortet wieder; das Gerät „Prüfung" steht noch in der Geräteliste (Daten überleben den Neustart) |
+| A12 | `docker compose down`, `docker compose up -d`, danach A5 | wie A11: Das Volume bleibt |
+| A13 | Vom Netz aus, ohne Proxy: `curl http://<IP des Rechners>:8010/api/health` von einem anderen Rechner | **keine** Verbindung, solange `STOWLY_PUBLISH` nicht gesetzt ist |
+| A14 | In der App ein Produkt mit echtem Barcode einlagern, dann `docker compose logs stowly \| grep "Open Food Facts"` | Zeile mit „gefunden" oder „unbekannt"; das Produkt bekommt Name und Bild. „fehlgeschlagen (ConnectError)" hieße: Der Container kommt nicht ins Internet. |
+| A15 | `docker compose stop` | endet binnen weniger Sekunden, ohne dass Docker nach 10 Sekunden hart beendet |
+
+### B. Reverse Proxy
+
+Variante Nginx Proxy Manager:
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| B1 | Auf einem Rechner im Heimnetz: `nslookup stowly.home` | die IP-Adresse des Proxys |
+| B2 | Proxy Host nach Abschnitt 4.3 anlegen, „Cache Assets" aus | – |
+| B3 | `https://stowly.home/api/health` im Browser | JSON mit `"app":"stowly"`, Schloss-Symbol ohne Warnung |
+| B4 | `curl -sI https://stowly.home/sw.js` | `cache-control: no-cache` (der Proxy hat die Angabe nicht verändert) |
+| B5 | `http://stowly.home` | leitet auf `https://` um |
+
+Variante Tailscale:
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| B6 | `tailscale serve status` | zeigt die Weiterleitung auf `http://127.0.0.1:8010` |
+| B7 | `https://<rechnername>.<tailnet>.ts.net/api/health` auf einem Gerät im Tailnet | JSON mit `"app":"stowly"`, gültiges Zertifikat |
+| B8 | dieselbe Adresse von einem Gerät **außerhalb** des Tailnets | nicht erreichbar |
+
+### C. Handys
+
+Je einmal auf dem Android-Gerät und dem iPhone, über die HTTPS-Adresse:
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| C1 | Adresse im Browser öffnen (Android: Chrome, iPhone: Safari) | Anmeldeseite, keine Zertifikatswarnung |
+| C2 | Als App installieren (Abschnitt 7) | Symbol auf dem Startbildschirm; Android: bitte notieren, ob „App installieren" oder nur „Zum Startbildschirm hinzufügen" angeboten wird |
+| C3 | App vom Startbildschirm öffnen, anmelden | öffnet ohne Adressleiste; der Bestand erscheint |
+| C4 | Scannen öffnen | Nachfrage nach der Kamera, danach Kamerabild |
+| C5 | Flugmodus an, App schließen und neu öffnen | App startet und zeigt den Bestand |
+| C6 | Im Flugmodus eine Packung einlagern, Flugmodus aus | die Änderung erscheint binnen einer Minute auf dem zweiten Gerät |
+| C7 | Dasselbe Feld derselben Packung auf beiden Geräten ohne Netz ändern, dann beide ans Netz | beide zeigen danach denselben Wert: den der späteren Änderung |
+| C8 | In der App: Einstellungen → Geräte | beide Handys mit Namen und „zuletzt gesehen" |
+| C9 | Ein Gerät dort sperren | das gesperrte Gerät verlangt beim nächsten Abgleich die Anmeldung; seine Daten sind noch da |
+| C10 | iPhone: die App acht Tage nicht öffnen, dann im Flugmodus öffnen | Bestand ist noch da (die installierte App verliert ihre Daten nicht) |
+
+### D. Sicherung und Zurückspielen
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| D1 | In der App die Sicherung herunterladen | Datei `stowly-JJJJ-MM-TT.sqlite3` |
+| D2 | Auf einem Rechner: `sqlite3 stowly-….sqlite3 "PRAGMA integrity_check; SELECT COUNT(*) FROM packages;"` | `ok` und die Zahl der Packungen |
+| D3 | Danach in der App eine Packung einlagern (sie fehlt in der Sicherung) | – |
+| D4 | Zurückspielen nach Abschnitt 8 | Befehle laufen ohne Fehler; `docker compose exec stowly ls -l /data` zeigt die Datei im Besitz von `stowly` |
+| D5 | Beide Handys öffnen | Sie gleichen ab und zeigen den Stand der Sicherung; die Packung aus D3 ist weg; niemand muss sich neu anmelden |
+| D6 | Nur wer Schnappschüsse des Volumes zurückspielen will: `docker compose run --rm --no-deps stowly python -m stowly --new-dataset` | Ausgabe „Neue Kennung des Datenbestands: …"; nach dem Start holen beide Handys den Bestand neu |
+
+### E. Aktualisieren
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| E1 | `git pull`, `docker compose up -d --build` | neuer Container, `healthy`; Bestand unverändert |
+| E2 | App auf einem Handy öffnen | arbeitet weiter; zeigt gegebenenfalls, dass eine neue Version bereitsteht |

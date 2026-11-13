@@ -1,21 +1,69 @@
 """Gemeinsame Bausteine der Server-Tests.
 
 Jeder Test bekommt eine eigene, leere Datenbank in einem temporären Verzeichnis.
-Kein Test spricht mit einem fremden Dienst; Open Food Facts ist abgeschaltet.
+Kein Test spricht mit einem fremden Dienst: Open Food Facts ist abgeschaltet und wird
+nur in den Tests eingeschaltet, die es prüfen, und dann mit einem Ersatz-Transport.
 """
 
 import json
-from collections.abc import Iterator
+import logging
+import sqlite3
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
+from support import TEST_PASSWORD, Device, ServerClock
 
+from stowly import db
 from stowly.app import create_app
 from stowly.config import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TEST_PASSWORD = "test-passwort"
+
+__all__ = ["REPO_ROOT", "TEST_PASSWORD"]
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sicherheitsnetz: Kein Test kommt je wirklich ins Netz, auch nicht aus Versehen.
+
+    Der Test-Client und ``httpx2.MockTransport`` sind davon nicht berührt; nur der echte
+    Transport von httpx2 verweigert den Dienst.
+    """
+
+    def refuse(_self: object, request: httpx2.Request) -> httpx2.Response:
+        raise AssertionError(f"Ein Test wollte wirklich ins Netz: {request.method} {request.url}")
+
+    async def refuse_async(_self: object, request: httpx2.Request) -> httpx2.Response:
+        raise AssertionError(f"Ein Test wollte wirklich ins Netz: {request.method} {request.url}")
+
+    monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", refuse)
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", refuse_async)
+
+
+@pytest.fixture(autouse=True)
+def responses_keep_the_contract(
+    request: pytest.FixtureRequest, caplog: pytest.LogCaptureFixture
+) -> Iterator[None]:
+    """Jede Sync-Antwort muss dem Vertrag entsprechen.
+
+    Im Betrieb liefert der Server eine Antwort, die den Vertrag verletzt, trotzdem aus
+    und meldet es im Log (damit die Geräte nicht stecken bleiben). Im Test ist genau
+    diese Meldung ein Fehler, außer der Test prüft das Verhalten selbst.
+    """
+    yield
+    if request.node.get_closest_marker("allow_contract_violation"):
+        return
+    broken = [
+        record
+        for record in caplog.get_records("call")
+        if record.name == "stowly.sync"
+        and record.levelno >= logging.ERROR
+        and "verletzt den Vertrag" in record.message
+    ]
+    assert not broken, f"Sync-Antwort verletzt den Vertrag: {broken[0].exc_text or broken[0].message}"
 
 
 @pytest.fixture
@@ -55,3 +103,32 @@ def client(settings: Settings) -> Iterator[TestClient]:
 def vectors() -> dict:
     """Die gemeinsamen Beispiele von Server und Web-App."""
     return json.loads((REPO_ROOT / "docs" / "vectors.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> ServerClock:
+    """Hält die Serveruhr an: Wirksame Zeitpunkte lassen sich so genau vorhersagen."""
+    server_clock = ServerClock()
+    monkeypatch.setattr("stowly.api.sync.server_now", server_clock.now)
+    return server_clock
+
+
+@pytest.fixture
+def make_device(client: TestClient, clock: ServerClock) -> Callable[..., Device]:
+    """Meldet ein Gerät an und holt mit einem ersten Sync den Bestand."""
+
+    def factory(name: str = "Testgerät", *, clock_offset_s: float = 0.0, sync: bool = True) -> Device:
+        device = Device(client, name, clock=clock, clock_offset_s=clock_offset_s)
+        if sync:
+            device.sync()
+        return device
+
+    return factory
+
+
+@pytest.fixture
+def con(settings: Settings, client: TestClient) -> Iterator[sqlite3.Connection]:
+    """Direkter Blick in die Datenbank des laufenden Servers."""
+    connection = db.connect(settings.database_path)
+    yield connection
+    connection.close()

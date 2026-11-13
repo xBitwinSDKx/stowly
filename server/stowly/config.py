@@ -14,9 +14,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DEV_PASSWORD = "stowly"
 DEFAULT_PORT = 8010
+# Obergrenze für den Rumpf einer Anfrage. 500 Befehle eines Sync bleiben weit darunter.
+MAX_REQUEST_BYTES = 4 * 1024 * 1024
 
 _TRUE = {"1", "true", "yes", "on", "ja"}
 _FALSE = {"0", "false", "no", "off", "nein", ""}
+# Die Stufen, die uvicorn kennt.
+LOG_LEVELS = ("critical", "error", "warning", "info", "debug", "trace")
 
 
 def _in_source_checkout() -> bool:
@@ -100,6 +104,12 @@ class Settings:
         except ValueError as exc:
             raise ValueError(f"STOWLY_PORT: '{port_raw}' ist keine Zahl.") from exc
 
+        log_level = (_text(env, "STOWLY_LOG_LEVEL") or "info").lower()
+        if log_level not in LOG_LEVELS:
+            raise ValueError(
+                f"STOWLY_LOG_LEVEL: '{log_level}' ist keine Stufe (erwartet {', '.join(LOG_LEVELS)})."
+            )
+
         return cls(
             host=_text(env, "STOWLY_HOST") or "127.0.0.1",
             port=port,
@@ -110,5 +120,5 @@ class Settings:
             off_enabled=_flag(env, "STOWLY_OFF_ENABLED", True),
             off_url=(_text(env, "STOWLY_OFF_URL") or "https://world.openfoodfacts.org").rstrip("/"),
             off_contact=_text(env, "STOWLY_OFF_CONTACT"),
-            log_level=(_text(env, "STOWLY_LOG_LEVEL") or "info").lower(),
+            log_level=log_level,
         )

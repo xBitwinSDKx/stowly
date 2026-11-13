@@ -1,0 +1,106 @@
+.panel {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--color-sunken);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.title {
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.name {
+  color: var(--color-text);
+  font-weight: var(--weight-bold);
+}
+
+.headActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+/* Die kleine Tabelle der Chargen: eine eigene Karte in der aufgeklappten Fläche */
+.table {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.table :global(th),
+.table :global(td) {
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.table :global(th:first-child),
+.table :global(td:first-child) {
+  padding-left: var(--space-4);
+}
+
+.table :global(th:last-child),
+.table :global(td:last-child) {
+  padding-right: var(--space-3);
+}
+
+/* Am Handy: jede Charge als Block */
+.list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.item {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.itemHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.amount {
+  flex: none;
+  font-weight: var(--weight-bold);
+  white-space: nowrap;
+}
+
+.zone {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.itemActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.itemActions > :global(*) {
+  flex: 1;
+}
+
+@media (min-width: 48rem) {
+  .panel {
+    padding: var(--space-3) var(--space-5) var(--space-5);
+  }
+}

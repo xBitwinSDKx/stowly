@@ -1,0 +1,11 @@
+.sheet {
+  display: none;
+}
+
+@media print {
+  .sheet {
+    display: block;
+    background: var(--qr-bg);
+    color: var(--qr-fg);
+  }
+}

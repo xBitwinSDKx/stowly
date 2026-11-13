@@ -77,6 +77,17 @@
   color: var(--color-text);
 }
 
+@media (pointer: coarse) {
+  .action {
+    min-height: var(--touch-target);
+  }
+
+  .close {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+}
+
 @keyframes rise {
   from {
     opacity: 0;

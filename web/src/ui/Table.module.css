@@ -1,0 +1,98 @@
+/*
+ * Gemeinsames Aussehen der Tabellen: eine Karte, Kopfzeile in gedämpfter Schrift,
+ * Zeilen mit feinen Trennlinien. Die Ansichten setzen diese Klassen an ihre <table>.
+ */
+
+.wrap {
+  min-width: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  /* Reicht der Platz ausnahmsweise nicht, scrollt die Tabelle statt der Seite. */
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.th {
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.td {
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--border-width) solid var(--color-border);
+  vertical-align: middle;
+}
+
+.th:first-child,
+.td:first-child {
+  padding-left: var(--space-5);
+}
+
+.th:last-child,
+.td:last-child {
+  padding-right: var(--space-5);
+}
+
+/* Viele Spalten: Die Zellen rücken zusammen. */
+.dense .th,
+.dense .td {
+  padding-right: var(--space-2);
+  padding-left: var(--space-2);
+}
+
+.dense .th:first-child,
+.dense .td:first-child {
+  padding-left: var(--space-4);
+}
+
+.dense .th:last-child,
+.dense .td:last-child {
+  padding-right: var(--space-4);
+}
+
+/* Zahlen: rechtsbündig, gleich breite Ziffern */
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.narrow {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.row:hover > .td {
+  background: var(--color-hover);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* Schaltflächen behalten ihre Breite; lieber wächst die Spalte, als dass Text abgeschnitten wird. */
+.actions > :global(*) {
+  flex: none;
+}
+
+/* Zwei Zeilen in einer Zelle: Hauptwert und gedämpfter Zusatz */
+.primary {
+  font-weight: var(--weight-medium);
+}
+
+.secondary {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}

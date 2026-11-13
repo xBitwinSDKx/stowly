@@ -1,0 +1,14 @@
+.body {
+  display: grid;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+}
+
+.body :global(strong) {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.error {
+  color: var(--color-danger);
+}

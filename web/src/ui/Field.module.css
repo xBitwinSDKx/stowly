@@ -1,0 +1,247 @@
+/* Gemeinsames Aussehen der Eingaben, die auf den Grundbausteinen aufbauen. Passt zu base/TextField. */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.label {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.message {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.error {
+  color: var(--color-danger);
+}
+
+/* ---------------------------------------------------------------- Auswahlfeld */
+.selectWrap {
+  position: relative;
+  display: flex;
+}
+
+.select {
+  flex: 1;
+  min-width: 0;
+  height: var(--control-md);
+  padding: 0 calc(var(--space-3) + 1.5rem) 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  /* 16 Pixel: iOS vergrößert die Seite sonst beim Antippen */
+  font-size: 1rem;
+  text-overflow: ellipsis;
+  appearance: none;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.select:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+.select:disabled {
+  opacity: 0.5;
+}
+
+.invalid,
+.invalid:focus-visible {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 1px var(--color-danger);
+}
+
+.chevron {
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  display: inline-flex;
+  color: var(--color-text-muted);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .select {
+    height: var(--touch-target);
+  }
+}
+
+/* ---------------------------------------------------------------- Mengenwähler */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  align-self: flex-start;
+  height: var(--control-lg);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  overflow: hidden;
+}
+
+.stepper:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--control-lg);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+}
+
+.step:hover:not(:disabled) {
+  background: var(--color-surface-3);
+}
+
+.step:disabled {
+  opacity: 0.35;
+}
+
+.step:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.stepValue {
+  width: 4rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-right: var(--border-width) solid var(--color-border);
+  border-left: var(--border-width) solid var(--color-border);
+  outline: 0;
+  background: transparent;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.stepValue:focus-visible {
+  box-shadow: none;
+}
+
+/* ---------------------------------------------------------------- Ankreuzfeld */
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: var(--touch-target);
+  cursor: pointer;
+}
+
+/* Eigenes Kästchen statt des Browser-Kästchens: folgt Thema und Akzentfarbe. */
+.checkInput {
+  display: inline-grid;
+  flex: none;
+  place-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  border: 1.5px solid var(--color-border-strong);
+  border-radius: 5px;
+  background: var(--color-surface-2);
+  appearance: none;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.checkInput:hover {
+  border-color: var(--color-accent);
+}
+
+.checkInput:checked,
+.checkInput:indeterminate {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+
+/* Haken */
+.checkInput:checked::after {
+  content: "";
+  width: 0.65rem;
+  height: 0.35rem;
+  border-bottom: 2px solid var(--color-accent-contrast);
+  border-left: 2px solid var(--color-accent-contrast);
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+/* Strich: einige, nicht alle */
+.checkInput:indeterminate::after {
+  content: "";
+  width: 0.6rem;
+  height: 2px;
+  border: 0;
+  border-radius: 1px;
+  background: var(--color-accent-contrast);
+  transform: none;
+}
+
+.checkInput:disabled,
+.checkInput:disabled + .checkText {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.checkText {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- Auswahl aus Kacheln */
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  padding: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.tile:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.tileSelected,
+.tileSelected:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+  color: var(--color-text);
+}
+
+.swatch {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  background: currentColor;
+}

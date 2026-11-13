@@ -1,0 +1,29 @@
+/**
+ * Das Design-System oberhalb der Grundbausteine: `import { StatCard, useToday } from "@/ui"`.
+ *
+ * Die Grundbausteine selbst (Button, Dialog, TextField, …) kommen aus "@/ui/base";
+ * was hier liegt, baut darauf auf und gehört der Oberfläche.
+ */
+export { BEST_BEFORE_EXAMPLES, BestBeforeField, describeBestBefore, readBestBefore, type BestBeforeFieldProps, type BestBeforeInput } from "./BestBeforeField";
+export { Checkbox, type CheckboxProps } from "./Checkbox";
+export { ConfirmDialog, type ConfirmDialogProps } from "./ConfirmDialog";
+export { EmptyState, type EmptyStateProps } from "./EmptyState";
+export { errorText } from "./errors";
+export { ExpiryLabel, type ExpiryLabelProps } from "./ExpiryLabel";
+export { FieldGroup, type FieldGroupProps } from "./Field";
+export { FilterCard, type FilterCardProps } from "./FilterCard";
+export { expiryText, packagesText, plural, relativeDays, REMOVAL_REASON_LABELS, REMOVAL_REASON_OPTIONS, timeAgo } from "./format";
+export { DESKTOP_QUERY, focusOnOpen, ROOMY_QUERY, useMediaQuery, useNow, useReturnFocus, useToday, useUiFlag, WIDE_QUERY } from "./hooks";
+export { LinkButton, type LinkButtonProps } from "./LinkButton";
+export { List, ListLink, ListRow, Section, type ListLinkProps, type ListRowProps, type SectionProps } from "./List";
+export { Logo, type LogoProps } from "./Logo";
+export { Menu, type MenuItem, type MenuProps } from "./Menu";
+export { Notice, type NoticeProps, type NoticeTone } from "./Notice";
+export { PackageId, PackageIds, type PackageIdsProps } from "./PackageIds";
+export { PrintSheet } from "./PrintSheet";
+export { Select, type SelectOption, type SelectProps } from "./Select";
+export { StatCard, type StatCardProps, type StatTone } from "./StatCard";
+export { Stepper, type StepperProps } from "./Stepper";
+export { TextLink } from "./TextLink";
+export { Swatch, TileChoice, type TileChoiceProps, type TileOption } from "./TileChoice";
+export { ZoneLabel, type ZoneLabelProps } from "./ZoneLabel";

@@ -11,24 +11,32 @@ import { WarningsPage } from "@/features/warnings";
 import { ZonesPage } from "@/features/zones";
 
 import { NotFoundPage } from "./NotFoundPage";
+import { RouteError } from "./RouteError";
 import { Shell } from "./Shell";
 
 /** Alle Routen der App. Die Adressen stehen in src/contract/routes.ts. */
 export function appRoutes(ScanPage: ComponentType): RouteObject[] {
   return [
     // Vollbild, ohne Rahmen
-    { path: ROUTES.scan, element: <ScanPage /> },
+    { path: ROUTES.scan, element: <ScanPage />, errorElement: <RouteError /> },
     {
       element: <Shell />,
+      errorElement: <RouteError />,
       children: [
-        { path: ROUTES.stock, element: <StockPage /> },
-        { path: ROUTES.zones, element: <ZonesPage /> },
-        { path: ROUTES.warnings, element: <WarningsPage /> },
-        { path: ROUTES.history, element: <HistoryPage /> },
-        { path: ROUTES.printers, element: <PrintersPage /> },
-        { path: ROUTES.settings, element: <SettingsPage /> },
-        { path: ROUTES.sync, element: <SyncPage /> },
-        { path: "*", element: <NotFoundPage /> },
+        {
+          // Ein Fehler in einer Ansicht lässt den Rahmen stehen: Die Navigation bleibt benutzbar.
+          errorElement: <RouteError />,
+          children: [
+            { path: ROUTES.stock, element: <StockPage /> },
+            { path: ROUTES.zones, element: <ZonesPage /> },
+            { path: ROUTES.warnings, element: <WarningsPage /> },
+            { path: ROUTES.history, element: <HistoryPage /> },
+            { path: ROUTES.printers, element: <PrintersPage /> },
+            { path: ROUTES.settings, element: <SettingsPage /> },
+            { path: ROUTES.sync, element: <SyncPage /> },
+            { path: "*", element: <NotFoundPage /> },
+          ],
+        },
       ],
     },
   ];

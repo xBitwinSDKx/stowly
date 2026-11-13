@@ -1,0 +1,129 @@
+.root {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* Der Auslöser bringt nur das Nötigste mit; sein Aussehen bestimmt der Aufrufer über className. */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.menu {
+  position: absolute;
+  z-index: var(--z-menu);
+  top: calc(100% + var(--space-2));
+  display: grid;
+  min-width: 14rem;
+  max-width: min(20rem, 100vw - 2 * var(--space-4));
+  padding: var(--space-1);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  box-shadow: var(--shadow-md);
+  animation: appear var(--duration-fast) var(--ease-out);
+}
+
+.end {
+  right: 0;
+}
+.start {
+  left: 0;
+}
+
+.header {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--border-width) solid var(--color-border);
+  margin-bottom: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-md);
+  text-align: left;
+  text-decoration: none;
+}
+
+.item:hover {
+  background: var(--color-surface-3);
+  text-decoration: none;
+}
+
+/* Der Ring liegt innen: Außen würde ihn die Kante des Menüs abschneiden. */
+.item:focus-visible {
+  background: var(--color-surface-3);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.separated {
+  margin-top: var(--space-1);
+  position: relative;
+}
+
+.separated::before {
+  content: "";
+  position: absolute;
+  top: calc(-1 * var(--space-1) / 2 - 0.5px);
+  right: calc(-1 * var(--space-1));
+  left: calc(-1 * var(--space-1));
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.danger {
+  color: var(--color-danger);
+}
+
+.icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.danger .icon {
+  color: inherit;
+}
+
+.icon :global(svg) {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.label {
+  flex: 1;
+  min-width: 0;
+}
+
+.trailing {
+  flex: none;
+}
+
+@media (pointer: coarse) {
+  .item {
+    min-height: var(--touch-target);
+  }
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+}

@@ -1,27 +1,26 @@
 /**
- * Die Scan-Ansicht. GRUNDGERÜST: Worker 3 ersetzt diese Datei in Runde 1.
+ * Die Scan-Ansicht.
  *
- * Fest steht nur die Nahtstelle zu src/entry.real.ts:
+ * Die Nahtstelle zu src/entry.real.ts:
  *
  *   export function ScanPage(): JSX.Element     (ohne Props, füllt den ganzen Bildschirm)
  *
- * Die Ansicht liegt unter ROUTES.scan außerhalb des Rahmens der App, aber innerhalb von
- * Router, <CoreProvider> und <ToastProvider>: `useCore()`, `useToast()` und die
- * Navigation von react-router stehen zur Verfügung.
+ * Sie liegt unter ROUTES.scan außerhalb des Rahmens der App, aber innerhalb von Router,
+ * <CoreProvider> und <ToastProvider>. Sie benutzt nur die Schnittstelle `Core` und den
+ * Scanner (src/core/scanner) und läuft deshalb auch auf der Attrappe.
+ *
+ *   ScanPage.tsx      die Ansicht: Kamerabild, Zonenleiste, Menge, Meldungen
+ *   scan-flow.ts      was ein Scan bedeutet; Eingabe von Hand
+ *   zone-logic.ts     in welche Zone eingelagert wird (Modus „Primärzone" und „gleichwertig")
+ *   StoreSheet.tsx    MHD und Menge beim Einlagern
+ *   useScanner.ts     Kamera an und aus mit der Ansicht
  */
-import { Link } from "react-router";
+import { installAudioUnlock } from "@/core/scanner";
 
-import { ROUTES } from "@/contract";
-import { Card } from "@/ui/base";
-
-export function ScanPage() {
-  return (
-    <main style={{ display: "grid", gap: "var(--space-4)", maxWidth: "32rem", margin: "0 auto", padding: "var(--space-6) var(--space-4)" }}>
-      <h1>Scannen</h1>
-      <Card tone="info">
-        <p>Die Scan-Ansicht ist noch nicht gebaut (Runde 1).</p>
-      </Card>
-      <Link to={ROUTES.stock}>Zurück zum Bestand</Link>
-    </main>
-  );
+// Der Ton braucht eine Berührung, bevor er spielen darf. Die erste Berührung irgendwo in der
+// App (meist das Tippen auf „Jetzt scannen") entsperrt ihn, noch bevor die Ansicht offen ist.
+if (typeof document !== "undefined") {
+  installAudioUnlock(document);
 }
+
+export { ScanPage } from "./ScanPage";

@@ -17,6 +17,7 @@
 }
 
 .segment {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -34,6 +35,13 @@
   transition:
     background-color var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out);
+}
+
+/* Die Tippfläche reicht bis an den Rand der Leiste: so hoch wie die Leiste selbst. */
+.segment::before {
+  content: "";
+  position: absolute;
+  inset: -4px -1px;
 }
 
 .lg .segment {

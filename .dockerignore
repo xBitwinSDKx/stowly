@@ -1,9 +1,16 @@
 # Was nicht ins Image gehört
 .git
+.gitignore
+.gitattributes
 .venv
 .env
 .env.*
 !.env.example
+.claude
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml
+.dockerignore
 data
 data-*
 docs
@@ -14,10 +21,15 @@ pi
 **/.pytest_cache
 **/.ruff_cache
 **/tests
+server/build
+print/build
 web/node_modules
 web/dist
 web/dist-mock
 web/dev-dist
 web/coverage
+web/.vite
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 *.md

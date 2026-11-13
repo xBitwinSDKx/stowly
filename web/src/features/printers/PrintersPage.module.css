@@ -1,0 +1,10 @@
+.value {
+  display: grid;
+  color: var(--color-text-muted);
+  text-align: right;
+}
+
+.time {
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}

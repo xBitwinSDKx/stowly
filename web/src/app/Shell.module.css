@@ -4,28 +4,49 @@
   min-height: 0;
 }
 
+/* Für die Tastatur: als erstes Element erreichbar, sonst unsichtbar */
+.skip {
+  position: fixed;
+  z-index: var(--z-toast);
+  top: calc(var(--space-2) + var(--safe-top));
+  left: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: var(--weight-bold);
+  transform: translateY(-200%);
+}
+
+.skip:focus {
+  transform: none;
+}
+
 /* ---------------------------------------------------------------- Seitenleiste (Desktop) */
 .sidebar {
-  display: none;
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex: none;
   flex-direction: column;
   gap: var(--space-6);
   width: var(--sidebar-width);
-  padding: var(--space-5) var(--space-4);
+  height: 100vh;
+  height: 100dvh;
+  padding: var(--space-5) var(--space-4) var(--space-4);
   border-right: var(--border-width) solid var(--color-border);
-  background: var(--color-surface);
+  background: var(--color-chrome);
 }
 
 .brand {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  display: inline-flex;
+  align-self: flex-start;
   padding: 0 var(--space-2);
-  font-size: var(--text-xl);
-  font-weight: var(--weight-bold);
+  border-radius: var(--radius-md);
 }
 
-.brand img {
-  border-radius: var(--radius-sm);
+.brand:hover {
+  text-decoration: none;
 }
 
 .nav {
@@ -33,6 +54,7 @@
   flex: 1;
   flex-direction: column;
   gap: var(--space-1);
+  min-height: 0;
 }
 
 .link {
@@ -44,6 +66,9 @@
   border-radius: var(--radius-md);
   color: var(--color-text-muted);
   font-weight: var(--weight-medium);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .link:hover {
@@ -52,9 +77,89 @@
   text-decoration: none;
 }
 
+/* Der aktive Eintrag: in der Akzentfarbe hinterlegt */
 .link.active {
   background: var(--color-accent-soft);
   color: var(--color-accent);
+}
+
+.sidebarEnd {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* Die Reihe kleiner Symbole: Zugänge zu den weiteren Bereichen */
+.quick {
+  display: flex;
+  justify-content: space-between;
+}
+
+.quickLink {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.quickLink:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.quickLink.active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+/* Beschriftung, die sofort erscheint: Die Symbole allein sagen nicht jedem, wohin sie führen. */
+.quickLink::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: var(--z-menu);
+  bottom: calc(100% + var(--space-2));
+  left: 50%;
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-3);
+  color: var(--color-text);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-50%);
+  transition: opacity var(--duration-fast) var(--ease-out);
+  pointer-events: none;
+}
+
+.quickLink:first-child::after {
+  left: 0;
+  transform: none;
+}
+
+.quickLink:hover::after,
+.quickLink:focus-visible::after {
+  opacity: 1;
+}
+
+/* Punkt am Symbol: Dort gibt es etwas zu sehen (Warnungen, Sync-Störung). */
+.dot {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  border: 2px solid var(--color-chrome);
+  border-radius: 50%;
+  background: var(--color-warn);
+  box-sizing: content-box;
 }
 
 /* ---------------------------------------------------------------- Hauptbereich */
@@ -71,160 +176,175 @@
   top: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  min-height: var(--header-height);
-  padding: var(--safe-top) calc(var(--space-4) + var(--safe-right)) 0 calc(var(--space-4) + var(--safe-left));
+  gap: var(--space-2);
+  min-height: calc(var(--header-height) + var(--safe-top));
+  padding: var(--safe-top) calc(var(--page-gutter) + var(--safe-right)) 0 calc(var(--page-gutter) + var(--safe-left));
   border-bottom: var(--border-width) solid var(--color-border);
   background: var(--color-bg);
 }
 
-.brandSmall {
-  font-size: var(--text-lg);
-  font-weight: var(--weight-bold);
+.search {
+  flex: 1;
+  min-width: 0;
+  max-width: 30rem;
+}
+
+/* Der Browser bringt bei type="search" ein eigenes Kreuz mit; es gibt schon eines. */
+.search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .headerEnd {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: var(--space-3);
-  min-width: 0;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
-.sync,
-.pill {
+/* Pillen der Kopfzeile: Sync-Anzeiger, MHD-Warnungen, Geräte-Menü */
+.header .pill {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: var(--control-md);
+  height: var(--control-md);
   padding: 0 var(--space-3);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-pill);
   background: var(--color-surface);
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
-.sync:hover,
-.pill:hover {
+.header .pill:hover {
   border-color: var(--color-border-strong);
   color: var(--color-text);
   text-decoration: none;
 }
 
-.sync span,
-.pillLabel,
-.device {
-  display: none;
+.header .warnings {
+  padding-right: var(--space-2);
+  color: var(--color-text);
 }
 
-.device {
+.header .attention {
+  border-color: color-mix(in oklch, var(--color-warn) 45%, transparent);
+  color: var(--color-warn);
+}
+
+/* Am Handy nur das Symbol, der Zähler sitzt an der Ecke. */
+.header .compact {
+  position: relative;
+  justify-content: center;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.header .compact.attention {
+  border-color: transparent;
+}
+
+.header .counter {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 var(--space-1);
+}
+
+.header .device {
+  max-width: 16rem;
+  color: var(--color-text);
+}
+
+.deviceName {
   overflow: hidden;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.deviceStrong {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
 }
 
 .content {
   display: flex;
   flex: 1;
   flex-direction: column;
-  /* Platz für Leiste und Scan-Knopf am Handy */
-  padding-bottom: calc(var(--tabbar-height) + var(--safe-bottom) + var(--space-8));
-}
-
-/* ---------------------------------------------------------------- Leiste unten (Handy) */
-.tabbar {
-  position: fixed;
-  z-index: var(--z-nav);
-  right: 0;
-  bottom: 0;
-  left: 0;
-  display: flex;
-  height: calc(var(--tabbar-height) + var(--safe-bottom));
-  padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
-  border-top: var(--border-width) solid var(--color-border);
-  background: var(--color-surface);
-}
-
-.tab {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
   min-width: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
 }
 
-.tab:hover {
-  text-decoration: none;
+/* Sprungziel des Verweises „Zum Inhalt springen": kein Ring um die ganze Seite */
+.content:focus-visible {
+  box-shadow: none;
 }
 
-.tab.active {
-  color: var(--color-accent);
+/* Platz am Seitenende, damit der schwebende Knopf nichts verdeckt */
+.withFab {
+  padding-bottom: calc(var(--fab-clearance) + var(--safe-bottom));
 }
 
-/* Schwebender Knopf zum Scannen, mit dem Daumen erreichbar */
+/* ---------------------------------------------------------------- Scan-Knopf (Handy) */
 .fab {
   position: fixed;
   z-index: var(--z-fab);
-  right: calc(var(--space-4) + var(--safe-right));
-  bottom: calc(var(--tabbar-height) + var(--safe-bottom) + var(--space-4));
+  bottom: calc(var(--fab-gap) + var(--safe-bottom));
+  left: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 3.75rem;
-  height: 3.75rem;
-  padding: 0;
-  border: 0;
+  width: var(--fab-size);
+  height: var(--fab-size);
   border-radius: 50%;
   background: var(--color-accent);
   color: var(--color-accent-contrast);
   box-shadow: var(--shadow-md);
+  transform: translateX(-50%);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 
 .fab:hover {
   background: var(--color-accent-hover);
 }
 
-/* ---------------------------------------------------------------- Desktop */
-@media (min-width: 60rem) {
-  .sidebar {
-    position: sticky;
-    top: 0;
-    display: flex;
-    height: 100dvh;
-  }
+.fab:active {
+  transform: translateX(-50%) scale(0.95);
+}
 
-  .tabbar,
-  .brandSmall,
-  .logoutSmall {
-    display: none;
-  }
+.fab:focus-visible {
+  box-shadow:
+    var(--focus-ring),
+    var(--shadow-md);
+}
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (min-width: 64rem) {
   .header {
-    justify-content: flex-end;
-    padding-right: var(--space-8);
-    padding-left: var(--space-8);
+    gap: var(--space-4);
   }
 
-  .sync span,
-  .pillLabel,
-  .device {
-    display: inline;
-  }
-
-  .content {
-    padding-bottom: 0;
-  }
-
-  .fab {
-    bottom: var(--space-6);
-    right: var(--space-8);
+  .headerEnd {
+    gap: var(--space-3);
   }
 }
