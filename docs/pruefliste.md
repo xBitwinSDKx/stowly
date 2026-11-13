@@ -117,4 +117,4 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
 - [ ] **36.** Das Aussehen der gedruckten Etiketten (V3). Mit der mitgelieferten Schrift DejaVu ist es auf dem Entwicklungsrechner als Bild geprüft und nachgemessen, aber nicht auf Papier:
   - Lange Produktnamen stehen in zwei Zeilen, werden kleiner und enden notfalls mit „…".
   - ID und Einlagerdatum stehen vollständig da. **Bitte melden, falls eines davon mit „…" endet.**
-  - Bei sehr langen Markennamen schneidet die Zeile darunter die Packungsgröße ab („COCA-COLA SERVICES SA…"). Stört das, lässt sich die Reihenfolge in dieser Zeile umdrehen.
+  - In der Zeile darunter steht die Packungsgröße vor der Marke. Ein sehr langer Markenname endet mit „…", die Größe bleibt stehen („330 ml · COCA-COLA SERVIC…").

@@ -68,7 +68,7 @@ def job_body(device: Device, printer_id: str | None, title: str = "Basmati Reis"
             "qr": "STOWLY/P/A2B3C",
             "id": "A2B3C",
             "title": title,
-            "subtitle": "Kornhaus · 1 kg",
+            "subtitle": "1 kg · Kornhaus",
             "best_before": "25.03.2027",
             "stored": "13.11.2026",
             "zone": "",

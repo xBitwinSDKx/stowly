@@ -25,12 +25,24 @@ export function productTitle(product: Pick<Product, "name" | "barcodes"> | undef
   return product.barcodes[0] ?? "Unbekanntes Produkt";
 }
 
-/** Marke und Packungsgröße in einer Zeile; leer, wenn beides fehlt. */
+/** Marke und Packungsgröße in einer Zeile, wie die App sie zeigt; leer, wenn beides fehlt. */
 export function productSubtitle(product: Pick<Product, "brand" | "quantity"> | undefined): string {
   if (!product) {
     return "";
   }
   return [product.brand.trim(), product.quantity.trim()].filter((part) => part !== "").join(" · ");
+}
+
+/**
+ * Die Zeile unter dem Produktnamen auf dem Etikett: Packungsgröße und Marke; leer, wenn beides
+ * fehlt. Anders als in der App steht die Größe vorn: Ist die Zeile zu lang, kürzt der Renderer
+ * sie am Ende, und das trifft dann die Marke, nicht die Größe (docs/etiketten.md, 3.3).
+ */
+export function labelSubtitle(product: Pick<Product, "brand" | "quantity"> | undefined): string {
+  if (!product) {
+    return "";
+  }
+  return [product.quantity.trim(), product.brand.trim()].filter((part) => part !== "").join(" · ");
 }
 
 export interface PackageLabelOptions {
@@ -49,7 +61,7 @@ export function packageLabelData(
     qr: packageQr(pkg.id),
     id: pkg.id,
     title: productTitle(product),
-    subtitle: productSubtitle(product),
+    subtitle: labelSubtitle(product),
     best_before: pkg.best_before === null ? "" : formatDate(pkg.best_before),
     stored: formatDate(toLocalDate(new Date(pkg.created_at))),
     zone: options.show_zone && zone ? zone.name : "",

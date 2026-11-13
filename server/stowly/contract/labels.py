@@ -14,7 +14,9 @@ class PackageLabelData(Model):
     qr: str = Field(description="QR-Inhalt, z. B. 'STOWLY/P/A2B3C'.")
     id: str = Field(description="Packungs-ID im Klartext, z. B. 'A2B3C'.")
     title: str = Field(description="Produktname; bei Platzhaltern der Barcode.")
-    subtitle: str = Field(description="Marke und Packungsgröße, mit ' · ' verbunden; darf leer sein.")
+    subtitle: str = Field(
+        description="Packungsgröße und Marke, mit ' · ' verbunden; darf leer sein. Die Größe steht vorn."
+    )
     best_before: str = Field(description="MHD als 'TT.MM.JJJJ'; leer = keines.")
     stored: str = Field(description="Tag des Einlagerns als 'TT.MM.JJJJ'.")
     zone: str = Field(description="Name der Zone; leer, wenn es nur eine gibt.")

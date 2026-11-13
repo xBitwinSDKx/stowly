@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Package, Product, Zone } from "./api.gen";
 import { willLookUp } from "./barcode";
-import { isPlaceholder, packageLabelData, printerIdForJob, productSubtitle, productTitle, zoneLabelData } from "./labels";
+import { isPlaceholder, labelSubtitle, packageLabelData, printerIdForJob, productSubtitle, productTitle, zoneLabelData } from "./labels";
 import { daysUntil, expiryState, parseBestBefore, warnDaysFor } from "./mhd";
 import { classifyScan, PRODUCT_BARCODE_FORMATS, SCAN_FORMATS } from "./qr";
 import { addDays, daysBetween, formatDate, lastDayOfMonth, makeDate, toLocalDate } from "./time";
@@ -166,12 +166,23 @@ describe("Etikett-Daten", () => {
       qr: "STOWLY/P/A2B3C",
       id: "A2B3C",
       title: "Basmati Reis",
-      subtitle: "Kornhaus · 1 kg",
+      subtitle: "1 kg · Kornhaus",
       best_before: "25.03.2027",
       stored: formatDate(toLocalDate(new Date(pkg.created_at))),
       zone: "Keller",
     });
     expect(Object.values(data).every((value) => typeof value === "string")).toBe(true);
+  });
+
+  it("stellt auf dem Etikett die Packungsgröße vor die Marke: Gekürzt wird am Ende der Zeile", () => {
+    expect(labelSubtitle(product)).toBe("1 kg · Kornhaus");
+    expect(labelSubtitle({ brand: " COCA-COLA SERVICES SA/NV ", quantity: " 330 ml " })).toBe("330 ml · COCA-COLA SERVICES SA/NV");
+    expect(labelSubtitle({ brand: "Kornhaus", quantity: "" })).toBe("Kornhaus");
+    expect(labelSubtitle({ brand: "", quantity: "500 g" })).toBe("500 g");
+    expect(labelSubtitle({ brand: " ", quantity: "" })).toBe("");
+    expect(labelSubtitle(undefined)).toBe("");
+    // In der App bleibt die Marke vorn.
+    expect(productSubtitle(product)).toBe("Kornhaus · 1 kg");
   });
 
   it("lässt leer, was fehlt", () => {

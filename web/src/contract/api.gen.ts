@@ -568,7 +568,7 @@ export interface PackageLabelData {
   id: string;
   /** Produktname; bei Platzhaltern der Barcode. */
   title: string;
-  /** Marke und Packungsgröße, mit ' · ' verbunden; darf leer sein. */
+  /** Packungsgröße und Marke, mit ' · ' verbunden; darf leer sein. Die Größe steht vorn. */
   subtitle: string;
   /** MHD als 'TT.MM.JJJJ'; leer = keines. */
   best_before: string;

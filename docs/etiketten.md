@@ -42,7 +42,7 @@ Verbindlicher Vertrag für alles rund ums Etikett in Stufe 1: was im QR-Code ste
 ```
 +--------------------------------------------------------------+
 |  +-----------+   Basmati Reis                                |
-|  |           |   Kornhaus · 1 kg                             |
+|  |           |   1 kg · Kornhaus                             |
 |  |    QR     |   MHD 25.03.2027                              |
 |  |           |   -----------------------------------------   |
 |  +-----------+   A2B3C                          13.11.2026   |
@@ -50,7 +50,7 @@ Verbindlicher Vertrag für alles rund ums Etikett in Stufe 1: was im QR-Code ste
 ```
 
 - Links der QR-Code in einem Feld von 24 mm. Module sind immer ganze Pixel: Bei 300 dpi ergibt das für das Packungs-Etikett 9 Pixel je Modul, der Code ohne Ruhezone ist 16 mm breit. Untergrenze sind 6 Pixel je Modul; darunter verweigert der Renderer.
-- Rechts Produktname (bis zu zwei Zeilen, wird bei Bedarf kleiner), Marke und Packungsgröße, das MHD, darunter die ID groß in Festbreitenschrift und klein das Datum des Einlagerns.
+- Rechts Produktname (bis zu zwei Zeilen, wird bei Bedarf kleiner), Packungsgröße und Marke, das MHD, darunter die ID groß in Festbreitenschrift und klein das Datum des Einlagerns.
 - Das Zonen-Etikett zeigt links den QR-Code (27 mm), rechts groß den Namen der Zone und darunter „Lagerzone".
 
 ### 3.3 Daten
@@ -64,7 +64,7 @@ Packung (`PackageLabelData`, erzeugt von `packageLabelData()` in `web/src/contra
 | `qr` | QR-Inhalt | `STOWLY/P/A2B3C` |
 | `id` | Packungs-ID | `A2B3C` |
 | `title` | Produktname; bei Platzhaltern der Barcode | `Basmati Reis` |
-| `subtitle` | Marke und Packungsgröße, mit ` · ` verbunden; darf leer sein | `Kornhaus · 1 kg` |
+| `subtitle` | Packungsgröße und Marke, mit ` · ` verbunden; darf leer sein. Die Größe steht vorn, anders als in der App: Eine zu lange Zeile kürzt der Renderer am Ende, und das trifft dann die Marke (`labelSubtitle()`) | `1 kg · Kornhaus` |
 | `best_before` | MHD als `TT.MM.JJJJ`; leer = keines | `25.03.2027` |
 | `stored` | Tag des Einlagerns als `TT.MM.JJJJ` | `13.11.2026` |
 | `zone` | Name der Zone; leer, wenn es nur eine gibt | `Keller` |

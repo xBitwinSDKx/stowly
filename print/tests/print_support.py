@@ -19,7 +19,7 @@ PACKAGE = {
     "qr": "STOWLY/P/A2B3C",
     "id": "A2B3C",
     "title": "Basmati Reis",
-    "subtitle": "Kornhaus · 1 kg",
+    "subtitle": "1 kg · Kornhaus",
     "best_before": "25.03.2027",
     "stored": "13.11.2026",
     "zone": "",

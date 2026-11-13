@@ -139,7 +139,7 @@ describe("Etikett an den Drucker am Server", () => {
 
     // Genau ein Druck, mit den Daten des Etiketts und der Vorlage des Haushalts.
     expect(server.print.printed).toEqual([jobId]);
-    expect(server.print.prints[0]?.data).toMatchObject({ qr: `STOWLY/P/${stored.packages[0]?.id}`, id: stored.packages[0]?.id, title: "Basmati Reis", subtitle: "Kornhaus · 1 kg", best_before: "25.03.2027", zone: "" });
+    expect(server.print.prints[0]?.data).toMatchObject({ qr: `STOWLY/P/${stored.packages[0]?.id}`, id: stored.packages[0]?.id, title: "Basmati Reis", subtitle: "1 kg · Kornhaus", best_before: "25.03.2027", zone: "" });
 
     // Am Server: Geräte-Token im Kopf, gewöhnliches JSON, der Drucker unter seiner Kennung.
     // Auf Wunsch des Anwenders (`flush`) wird eingereicht, ohne auf den Druck zu warten.

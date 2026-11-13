@@ -127,7 +127,7 @@ describe("Drucker am Server mit Bild-Treiber", () => {
       copies: 1,
       cut: true,
       template: { schema: 1, name: "package-62x29" },
-      data: { title: "Linsen E1", subtitle: "Hof · 500 g", best_before: "31.03.2027", zone: "" },
+      data: { title: "Linsen E1", subtitle: "500 g · Hof", best_before: "31.03.2027", zone: "" },
     });
     expect(typeof submit?.body?.expect_boot_id).toBe("string");
 

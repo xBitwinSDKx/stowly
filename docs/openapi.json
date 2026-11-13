@@ -1815,7 +1815,7 @@
             "type": "string"
           },
           "subtitle": {
-            "description": "Marke und Packungsgröße, mit ' · ' verbunden; darf leer sein.",
+            "description": "Packungsgröße und Marke, mit ' · ' verbunden; darf leer sein. Die Größe steht vorn.",
             "type": "string"
           },
           "title": {
