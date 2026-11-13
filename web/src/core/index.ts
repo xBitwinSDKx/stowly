@@ -504,8 +504,15 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     print: createPrintApi(runtime),
 
     devices: {
-      list(): Promise<Device[]> {
-        return runtime.server((token) => api.listDevices(token));
+      async list(): Promise<Device[]> {
+        const devices = await runtime.server((token) => api.listDevices(token));
+        // Hat ein anderes Gerät dieses hier umbenannt, gilt der neue Name auch in der Sitzung:
+        // Sonst zeigte die Oberfläche in der Kopfzeile einen anderen Namen als in der Geräteliste.
+        const own = devices.find((device) => device.current);
+        if (own) {
+          await store.renameDevice(own.id, own.name).catch(() => undefined);
+        }
+        return devices;
       },
       async rename(id, name) {
         const wanted = clean(name);

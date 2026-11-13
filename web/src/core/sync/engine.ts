@@ -49,8 +49,6 @@ const MAX_RESTARTS = 3;
 
 interface RoundResult {
   report: SyncApplyReport;
-  /** Sollgröße des ID-Vorrats laut Server. */
-  target: number;
   /** Zahl der in dieser Runde gesendeten Befehle. */
   sent: number;
 }
@@ -107,9 +105,8 @@ export class SyncEngine {
       }
 
       let login: StoredSession | undefined = options.login ? { status: "signed_in", token: options.login.token, device: options.login.device } : undefined;
-      let toppedUp = false;
       for (let round = 0; round < MAX_ROUNDS; round += 1) {
-        const { report, target, sent } = await this.round(token, login);
+        const { report, sent } = await this.round(token, login);
         this.lastContactMs = this.deps.now().getTime();
         if (!report.applied) {
           // Inzwischen abgemeldet oder gesperrt: Die Antwort gehört zu keiner Sitzung mehr.
@@ -120,12 +117,9 @@ export class SyncEngine {
         if (sent > 0 && report.confirmed === 0) {
           throw new CoreError("internal", "Der Server hat die gesendeten Änderungen nicht bestätigt.");
         }
-        let again = after.meta.full_resync || !report.changes_applied || after.outbox.length > 0;
-        if (!again && report.reset && !toppedUp && after.pool.length < target) {
-          // Nach einem unerwarteten Abzug ist der Vorrat kleiner als zugedacht: einmal auffüllen.
-          toppedUp = true;
-          again = true;
-        }
+        // Auch nach einem unerwarteten Abzug (`reset`) genügt die eine Runde: Der Server teilt dann
+        // unabhängig von `have` einen vollen ID-Vorrat zu (docs/sync-protokoll.md, Abschnitt 8).
+        const again = after.meta.full_resync || !report.changes_applied || after.outbox.length > 0;
         if (!again) {
           return { ok: true, synced: true };
         }
@@ -202,6 +196,6 @@ export class SyncEngine {
     }
 
     const report = await store.applySync({ basedOn, token, full, pages, receivedAt: now(), login });
-    return { report, target: response.id_pool.target, sent: batch.length };
+    return { report, sent: batch.length };
   }
 }

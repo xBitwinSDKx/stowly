@@ -3,7 +3,8 @@
  * Gespeichert werden nur EAN-13 und EAN-8 mit stimmender Prüfziffer.
  */
 
-const BARCODE_RE = /^(\d{8}|\d{13})$/;
+// Dasselbe Muster wie BARCODE_PATTERN im Server: Ziffern sind 0 bis 9, nichts sonst.
+const BARCODE_RE = /^([0-9]{8}|[0-9]{13})$/;
 const DIGITS_RE = /^[0-9]+$/;
 
 /** Prüfziffer nach GS1 für die Ziffern ohne Prüfziffer (7 oder 12 Stellen). */

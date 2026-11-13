@@ -5,13 +5,16 @@ Zeitstempel sind immer UTC, ISO 8601, genau drei Nachkommastellen und ``Z``:
 und sortieren, in SQLite wie in JavaScript (``new Date().toISOString()`` liefert es).
 """
 
-import re
 from datetime import UTC, date, datetime, timedelta
 
-TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
-DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
-_TIMESTAMP_RE = re.compile(TIMESTAMP_PATTERN)
-_DATE_RE = re.compile(DATE_PATTERN)
+from stowly.contract.ids import exact
+
+# Ziffern als [0-9], nicht \d: Das träfe je nach Auswerter auch vollbreite und andere Ziffern.
+# Gültig sind die Jahre 0001 bis 9999; das Jahr 0000 kennt der Kalender des Servers nicht.
+TIMESTAMP_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$"
+DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+_TIMESTAMP_RE = exact(TIMESTAMP_PATTERN)
+_DATE_RE = exact(DATE_PATTERN)
 
 
 def format_timestamp(moment: datetime) -> str:
@@ -19,7 +22,12 @@ def format_timestamp(moment: datetime) -> str:
     if moment.tzinfo is None:
         raise ValueError("Zeitpunkt ohne Zeitzone")
     utc = moment.astimezone(UTC)
-    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond // 1000:03d}Z"
+    # Von Hand statt mit strftime: "%Y" schreibt Jahre vor 1000 je nach System ohne führende
+    # Nullen, und der Zeitstempel ließe sich dann nicht mehr als Text vergleichen.
+    return (
+        f"{utc.year:04d}-{utc.month:02d}-{utc.day:02d}"
+        f"T{utc.hour:02d}:{utc.minute:02d}:{utc.second:02d}.{utc.microsecond // 1000:03d}Z"
+    )
 
 
 def parse_timestamp(text: str) -> datetime:

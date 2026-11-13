@@ -34,6 +34,9 @@
 .label {
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Eigene Zeilenhöhe: Mit der `1` der Schaltfläche schnitte `overflow: hidden` die Unterlängen
+     ab („g" in „Einlagern"). Die Höhe der Schaltfläche steht fest, sie ändert sich dadurch nicht. */
+  line-height: var(--leading-normal);
 }
 
 .icon {

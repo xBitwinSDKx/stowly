@@ -3,7 +3,11 @@
 Die Serveruhr steht in diesen Tests still (Fixture ``clock``). ``age`` ist das Alter
 eines Befehls beim Absenden: Der wirksame Zeitpunkt ist dann genau ``clock.stamp(age)``.
 Nach dem Anlegen der Ausgangslage rückt die Uhr eine Stunde vor (``clock.advance``),
-damit auch ein „vor 60 Sekunden" noch nach dem Einlagern liegt.
+damit auch ein „vor 60 Sekunden" noch nach dem Einlagern liegt: Die wirksamen Zeitpunkte
+eines Geräts laufen nie rückwärts (Abschnitt 4), ein Befehl bekäme sonst den Zeitpunkt
+des Einlagerns. Aus demselben Grund kommt eine Änderung, die älter ist als eine schon
+verarbeitete, in diesen Tests immer von einem anderen Gerät: Ein Gerät sendet seine
+Befehle in der Reihenfolge, in der sie entstanden sind.
 """
 
 from support import events_of, statuses
@@ -18,6 +22,7 @@ def test_the_later_change_wins_whatever_arrives_first(make_device, clock):
     _, package_id = phone.store("Reis", best_before="2027-01-01")
     _, other_id = phone.store("Nudeln", best_before="2027-01-01")
     tablet.sync()
+    clock.advance(3600)
 
     old = phone.cmd("package.update", age=60, package_id=package_id, changes={"best_before": "2027-06-06"})
     new = tablet.cmd("package.update", age=5, package_id=package_id, changes={"best_before": "2027-05-05"})
@@ -36,11 +41,12 @@ def test_the_later_change_wins_whatever_arrives_first(make_device, clock):
     assert phone.packages[other_id]["best_before"] == tablet.packages[other_id]["best_before"] == "2027-05-05"
 
 
-def test_the_loser_gets_the_winning_record_back(make_device):
+def test_the_loser_gets_the_winning_record_back(make_device, clock):
     """Echo: Wer verliert, bekommt in derselben Antwort den Stand des Servers."""
     phone, tablet = make_device("Handy"), make_device("Tablet")
     _, package_id = phone.store("Reis")
     tablet.sync()
+    clock.advance(3600)
     tablet.sync(
         [tablet.cmd("package.update", age=5, package_id=package_id, changes={"best_before": "2027-05-05"})]
     )
@@ -74,6 +80,7 @@ def test_at_the_same_instant_the_later_processed_change_wins(make_device, clock)
     phone, tablet = make_device("Handy"), make_device("Tablet")
     _, package_id = phone.store("Reis")
     tablet.sync()
+    clock.advance(3600)
 
     first = phone.cmd("package.update", age=30, package_id=package_id, changes={"best_before": "2027-01-01"})
     second = tablet.cmd(
@@ -92,6 +99,7 @@ def test_overwritten_and_superseded_values_are_in_the_event_log(make_device, clo
     phone, tablet = make_device("Handy"), make_device("Tablet")
     _, package_id = phone.store("Reis", best_before="2027-01-01")
     tablet.sync()
+    clock.advance(3600)
 
     new = tablet.cmd("package.update", age=5, package_id=package_id, changes={"best_before": "2027-05-05"})
     old = phone.cmd(
@@ -179,6 +187,7 @@ def test_effective_time_is_server_time_never_device_time(make_device, clock, con
     slow.sync()
     # Beide eben eingelagert: created_at ist die Serverzeit, bei beiden dieselbe.
     assert slow.packages[first]["created_at"] == slow.packages[second]["created_at"] == clock.stamp()
+    clock.advance(3600)
 
     # Alter 90 s: Der Befehl gilt 90 s vor dem Empfang, gleich was die Geräteuhr sagt.
     product_id, create = fast.product("Mehl", age=90)
@@ -197,6 +206,7 @@ def test_effective_time_is_server_time_never_device_time(make_device, clock, con
 def test_removing_a_package(make_device, clock):
     device = make_device()
     product_id, package_id = device.store("Reis", best_before="2027-01-01")
+    clock.advance(3600)
     remove = device.cmd("package.remove", age=20, package_id=package_id, reason="consumed")
     assert statuses(device.sync([remove])) == [("applied", None)]
 
@@ -226,6 +236,7 @@ def test_an_edit_after_removal_is_displaced(make_device, clock):
     phone, tablet = make_device("Handy"), make_device("Tablet")
     product_id, package_id = phone.store("Reis", best_before="2027-01-01")
     tablet.sync()
+    clock.advance(3600)
 
     phone.sync([phone.cmd("package.remove", age=30, package_id=package_id, reason="consumed")])
     # Das Tablet weiß noch nichts davon und bearbeitet die Packung.
@@ -339,6 +350,7 @@ def test_several_displaced_edits_keep_the_later_value_per_field(make_device, clo
     cellar = ids.new_uuid()
     phone.sync([create, phone.cmd("zone.create", zone_id=cellar, name="Keller")])
     tablet.sync()
+    clock.advance(3600)
     phone.sync([phone.cmd("package.remove", age=100, package_id=package_id, reason="consumed")])
 
     tablet.sync(
@@ -405,9 +417,10 @@ def test_restore_without_the_displaced_edit(make_device, clock):
 
 
 def test_restore_with_the_displaced_edit(make_device, clock):
-    device = make_device()
+    device, other = make_device(), make_device("Tablet")
     _, package_id = device.store("Reis", best_before="2027-01-01")
     home, cellar = device.zone_id, ids.new_uuid()
+    other.sync()
     clock.advance(3600)
     device.sync(
         [
@@ -447,10 +460,10 @@ def test_restore_with_the_displaced_edit(make_device, clock):
         ),
     ]
     # Die verdrängten Werte gelten mit dem Zeitpunkt des Wiederherstellens: Eine Änderung
-    # von davor, die erst jetzt eintrifft, verliert gegen sie.
-    stale = device.cmd("package.update", age=15, package_id=package_id, changes={"best_before": "2027-04-04"})
-    device.sync([stale])
-    assert device.packages[package_id]["best_before"] == "2027-09-09"
+    # von davor, die erst jetzt von einem anderen Gerät eintrifft, verliert gegen sie.
+    stale = other.cmd("package.update", age=15, package_id=package_id, changes={"best_before": "2027-04-04"})
+    other.sync([stale])
+    assert other.packages[package_id]["best_before"] == "2027-09-09"
 
 
 def test_apply_displaced_without_a_displaced_edit_just_restores(make_device):
@@ -480,6 +493,7 @@ def test_remove_against_restore_the_later_one_wins(make_device, clock):
     phone, tablet = make_device("Handy"), make_device("Tablet")
     _, kept = phone.store("Reis")
     _, gone = phone.store("Nudeln")
+    clock.advance(3600)
     phone.sync(
         [
             phone.cmd("package.remove", age=100, package_id=kept, reason="consumed"),
@@ -502,11 +516,12 @@ def test_remove_against_restore_the_later_one_wins(make_device, clock):
     assert phone.packages[gone]["removal_reason"] == "discarded"
 
 
-def test_a_restore_also_beats_a_removal_that_arrives_later(make_device):
+def test_a_restore_also_beats_a_removal_that_arrives_later(make_device, clock):
     """Unabhängig von der Reihenfolge des Eintreffens: erst das Wiederherstellen, dann das ältere Entnehmen."""
     phone, tablet = make_device("Handy"), make_device("Tablet")
     _, package_id = phone.store("Reis")
     tablet.sync()
+    clock.advance(3600)
     # Das Tablet stellt wieder her (vor 5 s); auf dem Server ist die Packung noch gar nicht entnommen.
     tablet.sync([tablet.cmd("package.restore", age=5, package_id=package_id)])
     phone.sync([phone.cmd("package.remove", age=50, package_id=package_id, reason="consumed")])
@@ -516,6 +531,7 @@ def test_a_restore_also_beats_a_removal_that_arrives_later(make_device):
 def test_removing_again_only_changes_the_reason(make_device, clock):
     device = make_device()
     _, package_id = device.store("Reis")
+    clock.advance(3600)
     device.sync([device.cmd("package.remove", age=60, package_id=package_id, reason="consumed")])
     removed_at = device.packages[package_id]["removed_at"]
     assert removed_at == clock.stamp(60)
@@ -563,13 +579,115 @@ def test_undo_wins_even_if_the_device_clock_was_set_back(make_device, clock):
     assert log[1]["at"] == log[2]["at"] == clock.stamp()
 
 
-def test_without_the_floor_the_same_two_commands_would_end_removed(make_device):
-    """Gegenprobe: In zwei Anfragen zählt nur das Alter, das Rückgängig verliert."""
+def test_undo_wins_although_the_removal_was_under_way_for_longer(make_device, clock):
+    """Das Beispiel aus Abschnitt 4: Der wirksame Zeitpunkt enthält die Laufzeit der Anfrage.
+
+    Entnehmen bei t, die Anfrage ist fünf Sekunden unterwegs. Das Rückgängig entsteht bei
+    t + 2 s und kommt in einer zweiten, schnellen Anfrage. Nach dem Alter allein läge es
+    vor dem Entnehmen und verlöre; die Untergrenze je Gerät hält die Reihenfolge, in der
+    der Anwender gehandelt hat.
+    """
+    device = make_device()
+    _, package_id = device.store("Reis")
+    clock.advance(3600)
+
+    # t: Der Anwender entnimmt, die App sendet sofort ab.
+    remove = device.cmd("package.remove", package_id=package_id, reason="consumed")
+    slow = device.request([remove])
+    # t + 2 s: „Rückgängig".
+    clock.advance(2)
+    restore = device.cmd("package.restore", package_id=package_id)
+    # t + 5 s: Erst jetzt kommt die erste Anfrage beim Server an.
+    clock.advance(3)
+    removed_at = clock.stamp()
+    response = device.client.post("/api/sync", json=slow, headers=device.headers)
+    assert response.status_code == 200
+    device.apply(response.json())
+    assert device.packages[package_id]["removed_at"] == removed_at
+
+    # t + 5,5 s: Die zweite Anfrage geht hinaus und ist nach 50 ms da. Ihr Befehl ist 3,5 s alt.
+    clock.advance(0.5)
+    fast = device.request([restore])
+    clock.advance(0.05)
+    assert clock.stamp(3.5) < removed_at  # nach dem Alter allein: vor dem Entnehmen
+    response = device.client.post("/api/sync", json=fast, headers=device.headers)
+    assert response.status_code == 200
+    device.apply(response.json())
+
+    assert statuses(response.json()) == [("applied", None)]
+    assert device.packages[package_id]["removed_at"] is None
+    log = events_of(device.client, device, entity="package", entity_id=package_id)
+    assert [e["type"] for e in log] == ["package.created", "package.removed", "package.restored"]
+    # Das Rückgängig bekam den wirksamen Zeitpunkt des Entnehmens davor.
+    assert log[1]["at"] == log[2]["at"] == removed_at
+
+
+def test_the_floor_holds_across_requests_when_the_device_clock_was_set_back(make_device, clock):
+    """Dieselben zwei Befehle wie oben, nur in zwei Anfragen: Auch dann gewinnt das Rückgängig."""
     device = make_device()
     _, package_id = device.store("Reis")
     device.sync([device.cmd("package.remove", age=-3595, package_id=package_id, reason="consumed")])
     device.sync([device.cmd("package.restore", age=5, package_id=package_id)])
-    assert device.packages[package_id]["removed_at"] is not None
+    assert device.packages[package_id]["removed_at"] is None
+
+
+def test_the_floor_belongs_to_one_device(make_device, clock):
+    """Gegenprobe: Zwischen zwei Geräten zählt allein das Alter, das frühere Rückgängig verliert."""
+    phone, tablet = make_device("Handy"), make_device("Tablet")
+    _, package_id = phone.store("Reis")
+    tablet.sync()
+    clock.advance(3600)
+    phone.sync([phone.cmd("package.remove", package_id=package_id, reason="consumed")])
+    tablet.sync([tablet.cmd("package.restore", age=5, package_id=package_id)])
+    assert tablet.packages[package_id]["removed_at"] == clock.stamp()
+
+
+def test_the_floor_is_the_last_valid_command_of_the_device(make_device, clock, con):
+    def stored(device) -> str | None:
+        return con.execute("SELECT last_command_at FROM devices WHERE id = ?", (device.id,)).fetchone()[0]
+
+    device, idle = make_device("Handy"), make_device("Tablet")
+    assert stored(device) is None and stored(idle) is None
+
+    clock.advance(3600)
+    _, create = device.product("Reis", age=100)
+    device.sync([create])
+    assert stored(device) == clock.stamp(100)
+    assert stored(idle) is None
+
+    # Ein Befehl, der schon an der Form scheitert, hat keinen wirksamen Zeitpunkt und zählt nicht.
+    broken = device.cmd("product.create", age=10, product_id="keine-uuid", name="Kaputt")
+    assert statuses(device.sync([broken])) == [("rejected", "invalid")]
+    assert stored(device) == clock.stamp(100)
+
+    # Ein abgelehnter, aber gültiger Befehl zählt: Er hat einen wirksamen Zeitpunkt.
+    missing = device.cmd("package.remove", age=50, package_id="ZZZZZ", reason="consumed")
+    assert statuses(device.sync([missing])) == [("rejected", "not_found")]
+    assert stored(device) == clock.stamp(50)
+
+    # Ein Abgleich ohne Befehle ändert nichts.
+    device.sync()
+    assert stored(device) == clock.stamp(50)
+
+    # Der nächste Befehl wäre nach seinem Alter früher: Er bekommt die Untergrenze.
+    product_id, create = device.product("Nudeln", age=80)
+    device.sync([create])
+    assert device.products[product_id]["created_at"] == clock.stamp(50)
+
+
+def test_a_floor_from_the_future_is_capped_at_the_receive_time(make_device, clock):
+    """Die Uhr des Servers wurde zurückgestellt: Wirksame Zeitpunkte liegen trotzdem nie in der Zukunft."""
+    device = make_device()
+    first_id, first = device.product("Reis")
+    device.sync([first])
+    wrong = clock.stamp()
+
+    clock.advance(-3600)  # die Serveruhr ging eine Stunde vor und ist jetzt berichtigt
+    second_id, second = device.product("Nudeln")
+    device.sync([second])
+    assert device.products[first_id]["created_at"] == wrong
+    assert device.products[second_id]["created_at"] == clock.stamp()
+    assert device.products[second_id]["created_at"] < wrong
 
 
 def test_the_floor_also_holds_behind_a_command_that_was_already_processed(make_device, clock):

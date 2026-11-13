@@ -278,13 +278,20 @@ export function foldText(text: string): string {
     .replace(/[̀-ͯ]/g, "");
 }
 
+/**
+ * Ab so vielen Zeichen gilt ein Suchwort auch als Anfang einer Packungs-ID. Kürzere Wörter
+ * träfen zufällig: Wer „ba" für Basmati tippt, bekäme sonst jede Packung dazu, deren ID mit
+ * „BA" beginnt.
+ */
+export const MIN_ID_PREFIX = 3;
+
 /** Ein Suchwort in den drei Lesarten, in denen es treffen kann. */
 interface SearchToken {
   /** für Name und Marke */
   text: string;
   /** für Barcodes: nur wenn das Wort ganz aus Ziffern besteht */
   digits: string | null;
-  /** für Packungs-IDs: groß, O als 0, I und L als 1 (wie `normalizePackageId`) */
+  /** für Packungs-IDs: groß, O als 0, I und L als 1 (wie `normalizePackageId`); leer, wenn das Wort dafür zu kurz ist */
   id: string;
 }
 
@@ -294,18 +301,21 @@ export function searchTokens(query: string): SearchToken[] {
     .trim()
     .split(/\s+/)
     .filter((word) => word !== "")
-    .map((word) => ({
-      text: foldText(word),
-      digits: /^\d+$/.test(word) ? word : null,
-      id: word.replace(/-/g, "").toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1"),
-    }));
+    .map((word) => {
+      const id = word.replace(/-/g, "").toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1");
+      return {
+        text: foldText(word),
+        digits: /^\d+$/.test(word) ? word : null,
+        id: id.length >= MIN_ID_PREFIX ? id : "",
+      };
+    });
 }
 
 /**
  * Trifft die Suche diese Packung? Jedes Wort muss treffen, und zwar
  * - im Namen oder in der Marke des Produkts (irgendwo im Text),
  * - in einem Barcode des Produkts (irgendwo, nur für reine Ziffern) oder
- * - am Anfang der Packungs-ID.
+ * - am Anfang der Packungs-ID (erst ab `MIN_ID_PREFIX` Zeichen).
  */
 export function matchesSearch(entry: StockEntry, tokens: readonly SearchToken[]): boolean {
   if (tokens.length === 0) {

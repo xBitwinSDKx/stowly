@@ -537,12 +537,14 @@ function printReport(ws: Draft, cmd: CmdPrintReport, ctx: ApplyContext): ApplyOu
   if (ctx.authoritative && job.updated_at > ctx.at) {
     return APPLIED;
   }
-  // Zustand samt Drucker, boot_id und Fehler gelten als ein Feld (7.1).
+  // Zustand samt Drucker, boot_id und Fehler gelten als ein Feld (7.1): Die Meldung ersetzt
+  // alle vier Werte so, wie sie im Befehl stehen; was er nicht nennt, ist null. Wer den
+  // Drucker behalten will, schickt ihn mit (so tun es `print.cancel` und `print.resolveUnknown`).
   ws.put("print_jobs", {
     ...job,
     state: cmd.state,
-    printer_id: "printer_id" in cmd ? (cmd.printer_id ?? null) : job.printer_id,
-    boot_id: "boot_id" in cmd ? (cmd.boot_id ?? null) : job.boot_id,
+    printer_id: cmd.printer_id ?? null,
+    boot_id: cmd.boot_id ?? null,
     error: cmd.error ?? null,
     updated_at: ctx.at,
   });

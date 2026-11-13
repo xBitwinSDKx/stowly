@@ -703,6 +703,22 @@ describe("Geräte und Sicherung (brauchen den Server)", () => {
     await expectCoreError(core.devices.list(), "unauthorized");
   });
 
+  it("übernimmt den eigenen Namen aus der Geräteliste, wenn ein anderes Gerät dieses umbenannt hat", async () => {
+    const { core, network } = await household();
+    const mine = (await core.devices.list()).find((device) => device.current);
+    // Ein zweites Gerät meldet sich an und benennt das erste um.
+    const login = await network.fetch("/api/auth/login", { method: "POST", body: JSON.stringify({ password: FAKE_PASSWORD, device_name: "Tablet" }) });
+    const { token } = (await login.json()) as { token: string };
+    const renamed = await network.fetch(`/api/devices/${mine?.id ?? ""}`, { method: "PATCH", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ name: "Handy Keller" }) });
+    expect(renamed.status).toBe(200);
+    // Bis zur nächsten Geräteliste kennt die Sitzung noch den alten Namen.
+    expect(value(core.session.state)).toMatchObject({ status: "signed_in", device: { name: "Dieses Gerät" } });
+
+    const devices = await core.devices.list();
+    expect(devices.find((device) => device.current)?.name).toBe("Handy Keller");
+    expect(value(core.session.state)).toMatchObject({ status: "signed_in", device: { id: mine?.id, name: "Handy Keller" } });
+  });
+
   it("merkt beim nächsten Aufruf, dass das Token gesperrt wurde", async () => {
     const { core, server } = await household();
     server.revoke();

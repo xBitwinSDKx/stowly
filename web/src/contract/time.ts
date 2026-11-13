@@ -5,11 +5,25 @@
  *              von `new Date().toISOString()`. Als Text vergleich- und sortierbar.
  * Datum (MHD): "YYYY-MM-DD", ein Kalendertag ohne Uhrzeit und ohne Zeitzone.
  *              "Heute" ist immer der Kalendertag in der Zeitzone des Geräts.
+ *
+ * Gültig sind die Jahre 0001 bis 9999, wie im Server (server/stowly/contract/timeutil.py):
+ * Dessen Kalender kennt kein Jahr 0000. Ziffern sind immer 0 bis 9.
  */
 
-const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const TIMESTAMP_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
+const DATE_RE = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/;
 const DAY_MS = 86_400_000;
+
+/**
+ * Mitternacht (UTC) eines Kalendertags in Millisekunden. Tag und Monat dürfen überlaufen
+ * (Tag 0 ist der letzte des Vormonats). Nicht `Date.UTC`: Das deutet die Jahre 0 bis 99
+ * als 1900 bis 1999.
+ */
+function utcDay(year: number, month: number, day: number): number {
+  const moment = new Date(0);
+  moment.setUTCFullYear(year, month - 1, day);
+  return moment.getTime();
+}
 
 /** Aktuelle Geräteuhr als Vertrags-Zeitstempel. */
 export function nowTimestamp(now: Date = new Date()): string {
@@ -17,7 +31,7 @@ export function nowTimestamp(now: Date = new Date()): string {
 }
 
 export function isTimestamp(text: string): boolean {
-  if (!TIMESTAMP_RE.test(text)) {
+  if (!TIMESTAMP_RE.test(text) || text.startsWith("0000")) {
     return false;
   }
   const ms = Date.parse(text);
@@ -33,8 +47,8 @@ function parts(text: string): [number, number, number] | null {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const probe = new Date(Date.UTC(year, month - 1, day));
-  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+  const probe = new Date(utcDay(year, month, day));
+  if (year < 1 || probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
     return null;
   }
   return [year, month, day];
@@ -71,7 +85,7 @@ export function daysBetween(from: string, to: string): number {
   if (!a || !b) {
     throw new Error(`Kein gültiges Datum: ${!a ? from : to}`);
   }
-  return Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / DAY_MS);
+  return Math.round((utcDay(b[0], b[1], b[2]) - utcDay(a[0], a[1], a[2])) / DAY_MS);
 }
 
 /** Verschiebt ein Datum um ganze Tage. */
@@ -80,13 +94,13 @@ export function addDays(date: string, days: number): string {
   if (!p) {
     throw new Error(`Kein gültiges Datum: ${date}`);
   }
-  const moved = new Date(Date.UTC(p[0], p[1] - 1, p[2] + days));
+  const moved = new Date(utcDay(p[0], p[1], p[2] + days));
   return `${String(moved.getUTCFullYear()).padStart(4, "0")}-${String(moved.getUTCMonth() + 1).padStart(2, "0")}-${String(moved.getUTCDate()).padStart(2, "0")}`;
 }
 
 /** Letzter Tag eines Monats (1-12) als "YYYY-MM-DD". */
 export function lastDayOfMonth(year: number, month: number): string {
-  const last = new Date(Date.UTC(year, month, 0));
+  const last = new Date(utcDay(year, month + 1, 0));
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(last.getUTCDate()).padStart(2, "0")}`;
 }
 

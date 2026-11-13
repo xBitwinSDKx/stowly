@@ -2,34 +2,53 @@
 
 Gegenstück in der Web-App: ``web/src/contract/ids.ts``, ``qr.ts`` und ``barcode.ts``.
 Beide Seiten werden gegen dieselben Beispiele in ``docs/vectors.json`` getestet.
+
+Die Konstanten ``*_PATTERN`` stehen so im Vertrag (``docs/openapi.json``) und prüfen in den
+Modellen die Form. Sie sind in der Schreibweise von JSON Schema gehalten: Ziffern als
+``[0-9]`` (die Kurzform für „Ziffer" träfe je nach Auswerter auch vollbreite und andere
+Ziffern), das Ende als ``$``. Für Pythons ``re`` übersetzt sie ``exact``: Dort ließe
+``$`` ein Zeilenende am Schluss durch.
 """
 
 import re
 import secrets
 import uuid
 
+
+def exact(pattern: str) -> re.Pattern[str]:
+    r"""Ein Muster des Vertrags für Pythons ``re``: ``\Z`` statt ``$`` am Ende.
+
+    ``re.match("^abc$", "abc\n")`` trifft, weil ``$`` in Python auch vor einem Zeilenende am
+    Schluss gilt; ``\Z`` gilt nur am wirklichen Ende. In den Konstanten selbst kann ``\Z``
+    nicht stehen: JSON Schema und der Auswerter der Modelle kennen es nicht.
+    """
+    if not pattern.endswith("$") or pattern.endswith("\\$"):
+        raise ValueError(f"Das Muster endet nicht auf $: {pattern!r}")
+    return re.compile(pattern[:-1] + r"\Z")
+
+
 # --- Packungs-IDs ---------------------------------------------------------------------
 # 5 Zeichen aus 32 (Crockford-Base32): keine I, L, O, U. 32^5 = 33.554.432 Kombinationen.
 PACKAGE_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 PACKAGE_ID_LENGTH = 5
 PACKAGE_ID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{5}$"
-_PACKAGE_ID_RE = re.compile(PACKAGE_ID_PATTERN)
+_PACKAGE_ID_RE = exact(PACKAGE_ID_PATTERN)
 # Beim Eintippen verwechselte Zeichen werden auf das gemeinte abgebildet. U bleibt ungültig.
 _TYPO_MAP = str.maketrans({"O": "0", "I": "1", "L": "1"})
 
 # --- UUIDs ----------------------------------------------------------------------------
 UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-_UUID_RE = re.compile(UUID_PATTERN)
+_UUID_RE = exact(UUID_PATTERN)
 
 # --- QR-Inhalte -----------------------------------------------------------------------
 QR_PACKAGE_PREFIX = "STOWLY/P/"
 QR_ZONE_PREFIX = "STOWLY/Z/"
-_QR_PACKAGE_RE = re.compile(r"^STOWLY/P/([0-9A-HJKMNP-TV-Z]{5})$")
-_QR_ZONE_RE = re.compile(r"^STOWLY/Z/([0-9A-F]{32})$")
+_QR_PACKAGE_RE = exact(r"^STOWLY/P/([0-9A-HJKMNP-TV-Z]{5})$")
+_QR_ZONE_RE = exact(r"^STOWLY/Z/([0-9A-F]{32})$")
 
 # --- Barcodes -------------------------------------------------------------------------
-BARCODE_PATTERN = r"^(\d{8}|\d{13})$"
-_BARCODE_RE = re.compile(BARCODE_PATTERN)
+BARCODE_PATTERN = r"^([0-9]{8}|[0-9]{13})$"
+_BARCODE_RE = exact(BARCODE_PATTERN)
 
 
 def is_package_id(value: str) -> bool:

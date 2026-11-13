@@ -221,6 +221,18 @@ describe("Suche", () => {
     expect(find("K9M")).toEqual([]);
   });
 
+  it("zählt ein Wort erst ab drei Zeichen als Anfang einer Packungs-ID", () => {
+    // „ba" meint Basmati, nicht die Butter, deren ID zufällig mit BA beginnt.
+    const withLookalike = entries([...PACKAGES, pkg("BA7K2", BUTTER, FRIDGE, 30)]);
+    const search = (query: string) => filterEntries(withLookalike, { ...NO_FILTER, query }).map((entry) => entry.pkg.id);
+    expect(search("ba")).toEqual(["A2B3C", "A2B3D", "B7K9M", "C1C1C"]);
+    expect(search("b7")).toEqual([]);
+    expect(search("ba7")).toEqual(["BA7K2"]);
+    // Bindestriche zählen nicht mit: „b-a" bleibt zu kurz.
+    expect(search("b-a")).toEqual([]);
+    expect(searchTokens("ba b7k").map((token) => token.id)).toEqual(["", "B7K"]);
+  });
+
   it("verbindet Produkt und ID: Reis mit einer bestimmten ID", () => {
     expect(find("reis a2b3d")).toEqual(["A2B3D"]);
   });

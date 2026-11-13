@@ -17,6 +17,10 @@ interface Vectors {
     invalid: string[];
     normalize: { input: string; output: string | null }[];
   };
+  uuids: {
+    valid: string[];
+    invalid: string[];
+  };
   qr: {
     package: { id: string; text: string }[];
     zone: { id: string; text: string }[];
@@ -66,6 +70,15 @@ describe("Packungs-IDs", () => {
       seen.add(id);
     }
     expect(seen.size).toBeGreaterThan(490);
+  });
+
+  it("erkennt gültige und ungültige UUIDs", () => {
+    for (const value of vectors.uuids.valid) {
+      expect(isUuid(value), value).toBe(true);
+    }
+    for (const value of vectors.uuids.invalid) {
+      expect(isUuid(value), JSON.stringify(value)).toBe(false);
+    }
   });
 
   it("erzeugt UUIDs in kanonischer Schreibweise", () => {

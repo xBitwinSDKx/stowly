@@ -6,14 +6,35 @@
  * Befehl, Änderungsfolge (`rev`, `cursor`, `has_more`), `reset`, Aufbewahrung im
  * vollständigen Abzug, ID-Vorrat, wirksamer Zeitpunkt.
  *
- * Bewusst vereinfacht:
- * - Feldänderungen gewinnen in der Reihenfolge ihres Eintreffens; die Uhren je Feld (7.1) fehlen.
- * - Open Food Facts wird nachgespielt: gerade Endziffer des Barcodes = gefunden.
- * - Es gibt kein Ereignisprotokoll und keinen Druckdienst.
- *
  * Die Wirkung der Befehle teilt sie mit dem Kern (src/core/commands/apply.ts). Die Prüfung
  * der Befehle ist dagegen eigens nach server/stowly/contract/commands.py geschrieben: Schickt
  * der Kern etwas, das der echte Server als `invalid` ablehnen würde, fällt es hier auf.
+ *
+ * WAS SIE NICHT IST: der Maßstab. Ob Kern und Server zusammenpassen, prüft `npm run test:e2e`
+ * (web/e2e) gegen den echten Server. Weil sich Nachbildung und Kern `applyCommand` teilen,
+ * bemerkt hier kein Test einen Lesefehler im Protokoll: Er steckte auf beiden Seiten.
+ *
+ * Wo die Nachbildung vom echten Server (server/stowly/sync) abweicht:
+ * - Keine Uhren je Feld (7.1) und keine Uhr für Entnehmen/Wiederherstellen (7.2): Es gewinnt,
+ *   was zuletzt eintrifft, nicht was zuletzt geschah. Nur die Meldungen zu Druckern und
+ *   Etiketten vergleichen ihren Zeitpunkt. Konflikte zwischen Geräten lassen sich hier also
+ *   nicht prüfen.
+ * - Ein Schritt der Änderungsfolge je Befehl: Alles, was er anfasst, teilt sich einen `rev`.
+ *   Der echte Server gibt jedem Datensatz seinen eigenen; nur Packungen, die ein Befehl
+ *   gemeinsam verschiebt, teilen sich einen. Ein Befehl ohne Wirkung liefert hier nichts
+ *   zurück, der echte Server liefert den Datensatz trotzdem mit (Echo).
+ * - `print.request` prüft den genannten Drucker nicht; der echte Server lehnt einen Drucker,
+ *   den es nie gab, mit `not_found` ab.
+ * - Ein schon bekannter Befehl (`duplicate`) zählt nicht als Untergrenze der wirksamen
+ *   Zeitpunkte (Abschnitt 4); es fehlt auch die Schranke für ein unmögliches Alter.
+ * - Open Food Facts wird nachgespielt: gerade Endziffer des Barcodes = gefunden, nach
+ *   `lookupDelayMs`. `product.add_barcode` und ein Zusammenführen setzen `lookup` nicht auf
+ *   `pending`. Bilder gibt es nicht (404).
+ * - `last_seen_at` rückt bei jedem Abgleich vor, im echten Server höchstens einmal je Minute.
+ * - Es gibt kein Ereignisprotokoll, keinen Druckdienst, keine Grenze für die Größe einer
+ *   Anfrage; die Sicherung ist keine SQLite-Datei; die Klartexte der Meldungen sind eigene,
+ *   und `details.errors` ist bei 422 leer.
+ * - Längen von Texten zählen hier in UTF-16-Einheiten, im Server in Zeichen.
  *
  * Ohne DOM und ohne Node: Die Datei läuft in den Tests (jsdom) und im Entwicklungsserver.
  */
@@ -38,7 +59,7 @@ import {
   type SyncResponse,
   type Zone,
 } from "@/contract/api.gen";
-import { gtinCheckDigit, isStoreInternalBarcode } from "@/contract/barcode";
+import { gtinCheckDigit, isStoreInternalBarcode, isValidBarcode } from "@/contract/barcode";
 import { isPackageId, isUuid, newUuid, randomPackageId } from "@/contract/ids";
 import { isDate, isTimestamp } from "@/contract/time";
 
@@ -88,6 +109,8 @@ interface FakeDevice {
   created_at: string;
   last_seen_at: string | null;
   revoked_at: string | null;
+  /** Wirksamer Zeitpunkt des letzten gültigen Befehls dieses Geräts in Millisekunden; 0 = noch keiner. */
+  last_command_ms: number;
 }
 
 type CommandBody = Record<string, unknown>;
@@ -123,7 +146,8 @@ const integer =
     typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 const uuid: Check = (value) => typeof value === "string" && isUuid(value);
 const packageId: Check = (value) => typeof value === "string" && isPackageId(value);
-const barcode: Check = (value) => typeof value === "string" && /^(\d{8}|\d{13})$/.test(value);
+// Wie der Server: Form und Prüfziffer (server/stowly/sync/handlers.py, check_semantics).
+const barcode: Check = (value) => typeof value === "string" && isValidBarcode(value);
 const date: Check = (value) => typeof value === "string" && isDate(value);
 const timestamp: Check = (value) => typeof value === "string" && isTimestamp(value);
 const bool: Check = (value) => typeof value === "boolean";
@@ -623,8 +647,13 @@ export class FakeServer {
       return failure(422, "invalid_request", "Die Anfrage ist kein JSON-Objekt.");
     }
     this.syncRequests.push(body);
-    if (body.protocol !== this.protocol) {
+    // Reihenfolge der Prüfungen wie im Server (6.2): Protokollversion (409, nur wenn sie eine
+    // Zahl ist), Zahl der Befehle (413), dann der Rahmen (422, auch bei fehlendem `protocol`).
+    if (anyInt(body.protocol) && body.protocol !== this.protocol) {
       return failure(409, "protocol_mismatch", "App und Server sprechen verschiedene Protokollversionen.", { server: this.protocol, client: body.protocol });
+    }
+    if (Array.isArray(body.commands) && body.commands.length > MAX_COMMANDS_PER_SYNC) {
+      return failure(413, "payload_too_large", "Zu viele Befehle in einem Aufruf.");
     }
     const frame = object({
       protocol: req(anyInt),
@@ -639,32 +668,36 @@ export class FakeServer {
       return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
     }
     const commands = body.commands as CommandBody[];
-    if (commands.length > MAX_COMMANDS_PER_SYNC) {
-      return failure(413, "payload_too_large", "Zu viele Befehle in einem Aufruf.");
-    }
 
-    // Befehle einzeln, in Reihenfolge; die wirksamen Zeitpunkte laufen nie rückwärts (Abschnitt 4).
+    // Ob das Gerät einen vollständigen Abzug braucht, entscheidet der Stand vor seinen Befehlen (6.4).
+    const cursor = body.cursor as number;
+    const reset = body.dataset_id !== this.datasetId || cursor > this.rev;
+
+    // Befehle einzeln, in Reihenfolge. Die wirksamen Zeitpunkte eines Geräts laufen nie rückwärts,
+    // auch nicht über Anfragen hinweg (Abschnitt 4); Befehle, die an der Form scheitern, zählen nicht.
     const received = this.now().getTime();
     const sentAt = Date.parse(body.sent_at as string);
-    let floor = 0;
+    let floor = Math.min(device.last_command_ms, received);
     const results = commands.map((command) => {
       const at = typeof command.at === "string" ? Date.parse(command.at) : Number.NaN;
       const age = Number.isFinite(at) ? Math.max(0, sentAt - at) : 0;
       const effective = Math.max(received - age, floor);
-      floor = effective;
-      return this.execute(command, device, new Date(effective).toISOString());
+      const result = this.execute(command, device, new Date(effective).toISOString());
+      if (!result.duplicate && result.code !== "invalid") {
+        floor = effective;
+      }
+      return result;
     });
+    device.last_command_ms = floor;
 
     this.resolveLookups();
 
-    const cursor = body.cursor as number;
-    const reset = body.dataset_id !== this.datasetId || cursor > this.rev;
     const page = this.collect(reset ? 0 : cursor, reset);
 
-    // ID-Vorrat auffüllen (Abschnitt 8).
+    // ID-Vorrat auffüllen (Abschnitt 8); bei `reset` verwirft die App ihren Vorrat: dann ein voller.
     const have = (body.id_pool as { have: number }).have;
     const grant: string[] = [];
-    for (let missing = Math.max(0, ID_POOL_TARGET - have); missing > 0; missing -= 1) {
+    for (let missing = reset ? ID_POOL_TARGET : Math.max(0, ID_POOL_TARGET - have); missing > 0; missing -= 1) {
       const id = this.freeId();
       this.reservations.set(id, device.id);
       grant.push(id);
@@ -780,7 +813,7 @@ export class FakeServer {
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
     const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    const device: FakeDevice = { id: newUuid(), name, token, created_at: this.stamp(), last_seen_at: null, revoked_at: null };
+    const device: FakeDevice = { id: newUuid(), name, token, created_at: this.stamp(), last_seen_at: null, revoked_at: null, last_command_ms: 0 };
     this.devices.set(device.id, device);
     return json(200, { token, device: this.describe(device, device) });
   }

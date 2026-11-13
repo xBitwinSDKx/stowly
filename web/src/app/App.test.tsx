@@ -385,4 +385,10 @@ describe("Titel des Browser-Tabs", () => {
     await screen.findByRole("heading", { name: "Einstellungen" });
     expect(document.title).toBe("Einstellungen · Stowly");
   });
+
+  it("nennt auch die Scan-Ansicht, die außerhalb des Rahmens liegt", async () => {
+    renderApp({}, ROUTES.scan);
+    await screen.findByRole("heading", { name: "Scannen", level: 1 });
+    expect(document.title).toBe("Scannen · Stowly");
+  });
 });

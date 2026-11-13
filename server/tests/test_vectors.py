@@ -3,7 +3,12 @@
 Dieselbe Datei (docs/vectors.json) prüft auch die Web-App: web/src/contract/vectors.test.ts.
 """
 
-from stowly.contract import ids, timeutil
+from datetime import UTC, datetime
+
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
+from stowly.contract import entities, ids, timeutil
 
 
 def test_package_ids(vectors):
@@ -25,7 +30,12 @@ def test_random_package_ids_use_the_alphabet():
     assert len(seen) > 490
 
 
-def test_uuids():
+def test_uuids(vectors):
+    data = vectors["uuids"]
+    for value in data["valid"]:
+        assert ids.is_uuid(value), value
+    for value in data["invalid"]:
+        assert not ids.is_uuid(value), value
     value = ids.new_uuid()
     assert ids.is_uuid(value)
     assert not ids.is_uuid(value.upper())
@@ -88,3 +98,68 @@ def test_effective_time(vectors):
         assert timeutil.effective_time(case["at"], case["sent_at"], received) == case["effective"], case[
             "_fall"
         ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "section", "key"),
+    [
+        (entities.PackageId, "package_ids", "valid"),
+        (entities.Uuid, "uuids", "valid"),
+        (entities.Barcode, "barcodes", "valid"),
+        (entities.Timestamp, "timestamps", "valid"),
+        (entities.DateStr, "timestamps", "dates_valid"),
+    ],
+)
+def test_the_patterns_of_the_models_are_as_strict_as_the_functions(vectors, kind, section, key):
+    """Die Muster stehen im Vertrag (docs/openapi.json) und prüfen in den Modellen die Form.
+
+    Sie nehmen jedes gültige Beispiel an und lehnen dasselbe Beispiel ab, sobald ein
+    Zeilenende dazukommt oder eine Ziffer vollbreit geschrieben ist.
+    """
+    adapter = TypeAdapter(kind)
+
+    def accepted(value: str) -> bool:
+        try:
+            adapter.validate_python(value)
+        except ValidationError:
+            return False
+        return True
+
+    for value in vectors[section][key]:
+        assert accepted(value), value
+        assert not accepted(value + "\n"), value
+        assert not accepted("\n" + value), value
+        digit = next((char for char in value if char in "0123456789"), None)
+        if digit is not None:
+            wide = value.replace(digit, chr(0xFF10 + int(digit)), 1)
+            assert not accepted(wide), wide
+
+
+def test_checks_answer_false_instead_of_raising():
+    """Auch Unsinn ergibt ``False``, keinen Fehler."""
+    wide_four, arabic_four = chr(0xFF14), chr(0x0664)
+    strange = [
+        "4006381333931\n",
+        "\n",
+        wide_four * 13,
+        arabic_four * 8,
+        "",
+        " ",
+        "x" * 13,
+        "9638507" + wide_four,
+    ]
+    for value in strange:
+        assert ids.is_valid_barcode(value) is False, value
+        assert ids.is_package_id(value) is False, value
+        assert ids.is_uuid(value) is False, value
+        assert timeutil.is_timestamp(value) is False, value
+        assert timeutil.is_date(value) is False, value
+        assert ids.parse_qr(value) is None, value
+
+
+def test_timestamps_always_have_a_four_digit_year():
+    """``strftime("%Y")`` schriebe Jahre vor 1000 je nach System ohne führende Nullen."""
+    early = datetime(999, 1, 2, 3, 4, 5, 6000, tzinfo=UTC)
+    assert timeutil.format_timestamp(early) == "0999-01-02T03:04:05.006Z"
+    assert timeutil.format_timestamp(datetime(1, 1, 1, tzinfo=UTC)) == "0001-01-01T00:00:00.000Z"
+    assert timeutil.parse_timestamp("0999-01-02T03:04:05.006Z") == early

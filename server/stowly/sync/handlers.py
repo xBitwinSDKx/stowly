@@ -75,8 +75,9 @@ def check_semantics(command: Any) -> None:
 
     * Ein Zeitstempel im 13. Monat, der 30. Februar und ein Barcode mit falscher Prüfziffer
       passen auf das Muster und sind trotzdem ungültig (docs/vectors.json).
-    * ``\\d`` in den Mustern lässt auch Ziffern anderer Schriften durch (etwa vollbreite).
-      Gemeint sind 0 bis 9: Sonst gäbe es denselben Barcode zweimal, einmal je Schreibweise.
+    * Ziffern sind 0 bis 9, nichts sonst: Sonst gäbe es denselben Barcode zweimal, einmal je
+      Schreibweise. Die Muster des Vertrags lassen andere Ziffern (etwa vollbreite) inzwischen
+      selbst nicht mehr durch; die Prüfung auf ASCII hier ist die zweite Sicherung.
     * ``sort`` ist im Modell unbegrenzt, die Spalte fasst 64 Bit.
     """
     if not command.at.isascii() or not is_timestamp(command.at):

@@ -19,6 +19,14 @@
  * 4. Ausnahmen davon brauchen den Server und sind am Kommentar „braucht den Server"
  *    zu erkennen: Sie scheitern offline mit CoreError "offline".
  * 5. Fehler sind immer `CoreError` (src/contract/errors.ts).
+ * 6. Eingaben prüft der Kern nach den Grenzen des Servers, bevor ein Befehl entsteht; was
+ *    sie verletzt, scheitert sofort mit "invalid" statt später als Sync-Problem: Produktname
+ *    120 Zeichen, Marke 80, Packungsgröße 40, Zonenname 60, Geräte- und Druckername 60,
+ *    höchstens 20 Barcodes je Produkt, Vorlaufzeit 0 bis 3650 Tage, Aufbewahrung 1 bis 3650
+ *    Tage. Texte werden an den Rändern gekürzt (trim). Die Attrappe ist hier großzügiger.
+ * 7. Ein Aufruf ohne Wirkung gelingt und erzeugt keinen Befehl: derselbe Grund auf eine schon
+ *    entnommene Packung, Wiederherstellen einer Packung im Bestand, `update` ohne Felder,
+ *    Umsortieren ohne Änderung, ein Barcode, den das Produkt nicht hat, `merge(a, a)`.
  *
  * Schreibweise: Alles, was Daten trägt, hat Feldnamen in snake_case wie im Sync, auch
  * Eingaben und Optionen (`zone_id`, `apply_displaced`). Methoden und die Zugänge der
@@ -97,13 +105,19 @@ export interface SessionApi {
    * Erfüllt sich erst, wenn der erste Abgleich gelungen ist. Deshalb gilt, solange
    * `state.status === "signed_in"` ist: Es gibt mindestens eine Zone, und die Einstellungen
    * des Haushalts sind geladen. Scheitert der erste Abgleich, bleibt das Gerät abgemeldet.
-   * @throws CoreError invalid_password | rate_limited | not_configured | protocol_mismatch | offline | invalid
+   *
+   * Ein zweiter Aufruf während einer laufenden Anmeldung (Doppeltipp) wartet auf die erste,
+   * statt ein zweites Gerät anzulegen. "invalid" heißt: Der Gerätename ist leer oder länger
+   * als 60 Zeichen, oder das Gerät ist schon angemeldet. "rate_limited" trägt die Wartezeit
+   * in `details.retry_after_s`. "not_supported": Der Browser lässt keine lokale Datenbank zu.
+   * @throws CoreError invalid_password | rate_limited | not_configured | protocol_mismatch | offline | invalid | not_supported
    */
   login(password: string, deviceName: string): Promise<void>;
 
   /**
-   * Meldet ab und löscht die lokale Kopie samt ID-Vorrat. Gelingt auch offline;
-   * das Token wird beim Server gesperrt, sobald er erreichbar ist.
+   * Meldet ab und löscht die lokale Kopie samt ID-Vorrat, dazu die Sync-Probleme und die
+   * vorab geladenen Produktbilder. Von den Geräte-Einstellungen fällt nur `scan_zone_id` weg.
+   * Gelingt auch offline; das Token wird beim Server gesperrt, sobald er erreichbar ist.
    * @throws CoreError pending_changes, wenn ungesendete Änderungen vorliegen und
    *         `discard_pending` nicht gesetzt ist (`details.pending` = Anzahl)
    */
@@ -122,7 +136,10 @@ export interface SyncStatus {
   online: boolean | null;
   /** "syncing" während eines laufenden Abgleichs, "error" wenn der letzte Versuch scheiterte. */
   phase: "idle" | "syncing" | "error";
-  /** Änderungen, die noch nicht beim Server angekommen sind. */
+  /**
+   * Änderungen, die noch nicht beim Server angekommen sind. Gezählt werden Befehle, nicht
+   * Vorgänge: Drei Packungen eines neuen Produkts einzulagern sind vier.
+   */
   pending: number;
   /** Letzter erfolgreicher Abgleich (Vertrags-Zeitstempel) oder null. */
   last_synced_at: string | null;
@@ -271,6 +288,9 @@ export interface StockApi {
   /**
    * Ändert MHD, Zone oder Produkt mehrerer Packungen. Nur die in `changes` vorhandenen
    * Schlüssel werden geändert; `best_before: null` entfernt das MHD.
+   * Trifft die Änderung eine entnommene Packung, wird sie nicht angewendet, sondern in
+   * `Package.displaced` aufgehoben (Sync-Protokoll 7.2); `restore` mit `apply_displaced`
+   * übernimmt sie. Die Attrappe wendet sie stattdessen an.
    * @throws CoreError not_found | invalid
    */
   update(packageIds: string[], changes: PackageChanges): Promise<void>;
@@ -435,11 +455,18 @@ export interface PrintApi {
 // --------------------------------------------------------------------------------------
 
 export interface DevicesApi {
-  /** Alle angemeldeten Geräte des Haushalts. Braucht den Server. */
+  /**
+   * Alle Geräte des Haushalts, auch gesperrte (`revoked_at`); das eigene mit `current: true`.
+   * Braucht den Server. Hat ein anderes Gerät dieses hier umbenannt, gilt der neue Name
+   * danach auch in `session.state`.
+   */
   list(): Promise<Device[]>;
-  /** Braucht den Server. */
+  /** Braucht den Server. Der neue Name des eigenen Geräts gilt sofort in `session.state`. */
   rename(id: string, name: string): Promise<Device>;
-  /** Sperrt das Token eines Geräts. Braucht den Server. */
+  /**
+   * Sperrt das Token eines Geräts. Braucht den Server. Sperrt ein Gerät sich selbst, wechselt
+   * es sofort nach `signed_out` mit Grund "revoked"; Daten und Outbox bleiben.
+   */
   revoke(id: string): Promise<void>;
 }
 

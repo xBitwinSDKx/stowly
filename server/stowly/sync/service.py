@@ -123,7 +123,8 @@ def parse_frame(body: Any) -> Frame:
 def _is_command_id(value: Any) -> bool:
     """Eine UUID in kanonischer Schreibweise, genau 36 Zeichen.
 
-    Die Länge eigens: ``$`` in Pythons Mustern ließe ein Zeilenende am Schluss durch.
+    ``is_uuid`` lässt ein Zeilenende am Schluss inzwischen selbst nicht mehr durch. Die Länge
+    wird trotzdem eigens geprüft: An dieser Kennung hängt die Zuordnung der Ergebnisse.
     """
     return isinstance(value, str) and len(value) == 36 and is_uuid(value)
 
@@ -211,17 +212,25 @@ class _Batch:
     """Die Befehle eines Aufrufs in ihrer Reihenfolge."""
 
     def __init__(
-        self, con: sqlite3.Connection, runner: CommandRunner, *, sent_at: str, received: datetime
+        self,
+        con: sqlite3.Connection,
+        runner: CommandRunner,
+        *,
+        sent_at: str,
+        received: datetime,
+        floor: str | None,
     ) -> None:
         self.con = con
         self.runner = runner
         self.sent_at = sent_at
         self.received = received
         self.now = runner.recorded_at
-        # Innerhalb einer Anfrage laufen die wirksamen Zeitpunkte nie rückwärts (Abschnitt 4):
-        # Die Outbox ist die Reihenfolge, in der der Anwender gehandelt hat, auch wenn die
-        # Geräteuhr dazwischen zurückgestellt wurde.
-        self.floor: str | None = None
+        # Die wirksamen Zeitpunkte eines Geräts laufen nie rückwärts (Abschnitt 4), auch nicht
+        # über Anfragen hinweg: Die Outbox ist die Reihenfolge, in der der Anwender gehandelt
+        # hat, auch wenn die Geräteuhr dazwischen zurückgestellt wurde oder eine Anfrage
+        # lange unterwegs war. ``floor`` ist der wirksame Zeitpunkt des letzten gültigen
+        # Befehls dieses Geräts, anfangs der aus seiner vorigen Anfrage.
+        self.floor = floor
         # Wirksamer Zeitpunkt des Befehls, der gerade verarbeitet wird, sobald er feststeht.
         self._at: str | None = None
 
@@ -321,7 +330,8 @@ class _Batch:
                 at = self.now
             return CommandStatus.REJECTED, RejectCode.INVALID, message, at
 
-        # 3. Wirksamer Zeitpunkt, nie vor dem des Vorgängers in derselben Anfrage.
+        # 3. Wirksamer Zeitpunkt, nie vor dem des Vorgängers: des Befehls davor in dieser
+        # Anfrage oder des letzten aus der vorigen.
         at = self._at = self._raise_floor(effective_time(command.at, self.sent_at, self.received))
         # 4. Ausführen. Eine Ablehnung nach Katalog macht rückgängig, was bis dahin geschrieben wurde.
         try:
@@ -330,6 +340,21 @@ class _Batch:
             self.con.execute("ROLLBACK TO command")
             return CommandStatus.REJECTED, exc.code, exc.message, at
         return status, None, None, at
+
+
+def _device_floor(device: sqlite3.Row, now: str) -> str | None:
+    """Die Untergrenze, mit der die Befehle dieser Anfrage beginnen (Abschnitt 4).
+
+    Das ist der wirksame Zeitpunkt des letzten gültigen Befehls, den der Server von dem
+    Gerät verarbeitet hat, höchstens aber die Empfangszeit dieser Anfrage: Ein wirksamer
+    Zeitpunkt liegt nie in der Zukunft. Die Schranke greift nur, wenn die Uhr des Servers
+    inzwischen zurückgestellt wurde; ohne sie trügen alle weiteren Befehle des Geräts auf
+    Dauer den zu späten Zeitpunkt von damals und gewännen jeden Konflikt.
+    """
+    floor = device["last_command_at"]
+    if floor is not None and floor > now:
+        return now
+    return floor
 
 
 def _touch_device(con: sqlite3.Connection, device_id: str, received: datetime) -> None:
@@ -351,15 +376,19 @@ def run(
     request = frame.request
     now = timeutil.format_timestamp(received)
     runner = CommandRunner(con, device_id=device_id, recorded_at=now, off_enabled=off_enabled)
-    batch = _Batch(con, runner, sent_at=request.sent_at, received=received)
 
     with db.transaction(con):
         # Das Token wurde vor der Transaktion geprüft; inzwischen kann es gesperrt worden sein.
-        device = con.execute("SELECT revoked_at FROM devices WHERE id = ?", (device_id,)).fetchone()
+        device = con.execute(
+            "SELECT revoked_at, last_command_at FROM devices WHERE id = ?", (device_id,)
+        ).fetchone()
         if device is None or device["revoked_at"] is not None:
             raise ApiError(
                 401, ErrorCode.UNAUTHORIZED, "Nicht angemeldet.", headers={"WWW-Authenticate": "Bearer"}
             )
+        batch = _Batch(
+            con, runner, sent_at=request.sent_at, received=received, floor=_device_floor(device, now)
+        )
 
         # Ob das Gerät einen vollständigen Abzug braucht, entscheidet der Stand **vor** seinen
         # Befehlen: Die heben ihn selbst an und überdeckten sonst einen cursor, der dem Server
@@ -368,6 +397,10 @@ def run(
         reset = request.dataset_id != dataset_id or request.cursor > db.current_rev(con)
 
         results = [batch.process(raw) for raw in frame.commands]
+        if batch.floor != device["last_command_at"]:
+            # Gemerkt in derselben Transaktion wie die Befehle: Die nächste Anfrage des Geräts
+            # beginnt mit dieser Untergrenze.
+            con.execute("UPDATE devices SET last_command_at = ? WHERE id = ?", (batch.floor, device_id))
 
         page = changes.collect(con, cursor=request.cursor, reset=reset, now=received)
         granted = idpool.grant(con, device_id=device_id, have=request.id_pool.have, reset=reset, now=now)

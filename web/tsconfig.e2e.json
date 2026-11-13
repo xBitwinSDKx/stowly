@@ -1,0 +1,14 @@
+{
+  // Typprüfung für die Tests des Kerns gegen den echten Server: npm run typecheck:e2e
+  // Sieht e2e/ und, was davon importiert wird (src/core, src/contract). Diese Tests laufen
+  // unter Node und starten Prozesse, deshalb gehören hier die Typen von Node dazu.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node"],
+    "paths": {
+      "@entry": ["./src/entry.real.ts"],
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/vite-env.d.ts", "e2e", "vitest.e2e.config.ts"]
+}

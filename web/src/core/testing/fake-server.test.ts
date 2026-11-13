@@ -95,6 +95,31 @@ describe("Sync", () => {
     // Ein cursor jenseits des Stands des Servers ergibt wieder einen vollständigen Abzug.
     const beyond = await sync(network, token, { protocol: PROTOCOL_VERSION, dataset_id: first.body.dataset_id, cursor: first.body.cursor + 100, sent_at: AT, commands: [], id_pool: { have: 300 } });
     expect(beyond.body.reset).toBe(true);
+    // Bei reset verwirft die App ihren Vorrat: Es gibt einen vollen, gleich was `have` sagt (Abschnitt 8).
+    expect(beyond.body.id_pool.grant).toHaveLength(ID_POOL_TARGET);
+    expect(beyond.body.id_pool.grant.filter((id) => first.body.id_pool.grant.includes(id))).toEqual([]);
+  });
+
+  it("hält die Reihenfolge eines Geräts auch über Anfragen hinweg (Abschnitt 4)", async () => {
+    let now = new Date("2026-11-13T11:00:00.000Z");
+    const server = new FakeServer({ now: () => now });
+    const network = createFakeNetwork(server);
+    const [token, other] = [await login(network), await login(network)];
+    const zone = [...server.data.zones.keys()][0] ?? "";
+    const frame = { protocol: PROTOCOL_VERSION, dataset_id: server.datasetId, cursor: 0, id_pool: { have: 300 } };
+    server.act({ type: "product.create", product_id: PRODUCT, name: "Reis" }, { type: "package.create", package_id: "A2B3C", product_id: PRODUCT, zone_id: zone }, { type: "package.create", package_id: "A2B3D", product_id: PRODUCT, zone_id: zone });
+
+    // Das Entnehmen ist beim Absenden frisch, das Rückgängig danach 30 Sekunden alt (Uhr verstellt, Anfrage lange unterwegs).
+    await sync(network, token, { ...frame, sent_at: "2026-11-13T10:00:00.000Z", commands: [{ id: "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4b01", at: "2026-11-13T10:00:00.000Z", type: "package.remove", package_id: "A2B3C", reason: "consumed" }] });
+    now = new Date("2026-11-13T11:00:01.000Z");
+    await sync(network, token, { ...frame, sent_at: "2026-11-13T10:00:31.000Z", commands: [{ id: "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4b02", at: "2026-11-13T10:00:01.000Z", type: "package.update", package_id: "A2B3D", changes: { best_before: "2027-01-01" } }] });
+    // Nach dem Alter allein wäre der zweite Befehl um 10:59:31 wirksam; er bekommt den Zeitpunkt des ersten.
+    expect(server.data.packages.get("A2B3D")?.updated_at).toBe("2026-11-13T11:00:00.000Z");
+
+    // Die Untergrenze gehört dem einen Gerät: Ein anderes rechnet nur mit dem Alter.
+    const second = "20000000-0000-4000-8000-000000000002";
+    await sync(network, other, { ...frame, sent_at: "2026-11-13T10:00:31.000Z", commands: [{ id: "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4b03", at: "2026-11-13T10:00:01.000Z", type: "product.create", product_id: second, name: "Nudeln" }] });
+    expect(server.data.products.get(second)?.created_at).toBe("2026-11-13T10:59:31.000Z");
   });
 
   it("führt jeden Befehl höchstens einmal aus und rechnet mit dem Alter statt mit der Geräteuhr", async () => {
@@ -192,6 +217,10 @@ describe("Sync", () => {
     };
     expect(await status(good, "falsch")).toEqual([401, "unauthorized"]);
     expect(await status({ ...good, protocol: 2 })).toEqual([409, "protocol_mismatch"]);
+    // Wie der Server: Nur eine andere Zahl ist eine andere Protokollversion; fehlt das Feld, verletzt der Rahmen den Vertrag.
+    const { protocol: _protocol, ...withoutProtocol } = good;
+    expect(await status(withoutProtocol)).toEqual([422, "invalid_request"]);
+    expect(await status({ ...good, protocol: "1" })).toEqual([422, "invalid_request"]);
     expect(await status({ ...good, extra: true })).toEqual([422, "invalid_request"]);
     expect(await status({ ...good, sent_at: "2026-11-13T10:00:00Z" })).toEqual([422, "invalid_request"]);
     expect(await status({ ...good, commands: [{ type: "zone.create" }] })).toEqual([422, "invalid_request"]);

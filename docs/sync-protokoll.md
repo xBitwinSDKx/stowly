@@ -22,6 +22,7 @@ Etiketten, QR-Inhalte und der Druckdienst stehen in [`etiketten.md`](etiketten.m
 - **Packungs-IDs:** genau 5 Zeichen aus `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (32 Zeichen, kein I, L, O, U; 33.554.432 Kombinationen), immer groß. Bei Eingabe von Hand werden Leerraum und Bindestriche entfernt, Kleinbuchstaben groß, `O` zu `0`, `I` und `L` zu `1`; `U` bleibt ungültig.
 - **Barcodes:** nur Ziffern, 8 oder 13 Stellen (EAN-8, EAN-13) mit gültiger Prüfziffer. UPC-A (12 Stellen) wird mit führender `0` gespeichert. Codes mit Präfix `2` sind ladenintern: Sie werden gespeichert, aber nie nachgeschlagen.
 - **Zeitstempel:** siehe Abschnitt 4.
+- **Strenge Formen:** In Kennungen, Barcodes, Zeitstempeln und Datumsangaben sind Ziffern immer `0` bis `9`, keine vollbreiten oder anderen Schriften: Sonst gäbe es denselben Barcode in zwei Schreibweisen. Vor und nach dem Wert darf nichts stehen, auch kein Zeilenende. Nur die Eingabehilfen (`normalizePackageId`, `normalizeBarcode`, `parseQr`) entfernen Leerraum am Rand.
 - Gemeinsame Beispiele für beide Seiten: [`vectors.json`](vectors.json).
 
 ## 3. Datenmodell
@@ -103,6 +104,7 @@ Einstellungen einzelner Geräte (Thema, Akzentfarbe, Ton, Kamera) werden nicht s
 
 - **Zeitstempel** sind immer UTC, ISO 8601, genau drei Nachkommastellen und `Z`: `2026-11-13T10:15:30.123Z`. Das ist das Format von `new Date().toISOString()`. Es lässt sich als Text vergleichen und sortieren. Andere Schreibweisen (Zeitzonen-Offset, andere Genauigkeit) sind ungültig.
 - **Datum** (MHD) ist `YYYY-MM-DD`: ein Kalendertag ohne Uhrzeit und ohne Zeitzone.
+- Gültig sind auf beiden Seiten die Jahre `0001` bis `9999`, immer vierstellig geschrieben. Das Jahr `0000` gibt es nicht: Der Kalender des Servers kennt es nicht.
 - **Der Server vertraut nie der absoluten Uhr eines Geräts, nur dem Alter eines Befehls.** Jeder Befehl trägt `at` (Geräteuhr im Moment der Änderung), jede Sync-Anfrage `sent_at` (Geräteuhr im Moment des Absendens). Der Server rechnet:
 
   ```
@@ -110,8 +112,12 @@ Einstellungen einzelner Geräte (Thema, Akzentfarbe, Ton, Kamera) werden nicht s
   wirksam    = empfangszeit_des_servers − alter
   ```
 
-  `wirksam` ist der Zeitpunkt, mit dem der Server arbeitet: Er entscheidet Konflikte und steht in `created_at`, `updated_at`, `removed_at` und im Ereignisprotokoll. Eine falsch gehende Geräteuhr verfälscht so nichts, solange sie zwischen Änderung und Absenden nicht springt; `wirksam` liegt nie in der Zukunft. Referenz: `effective_time()` in `server/stowly/contract/timeutil.py`, Beispiele in `vectors.json`.
-- **Innerhalb einer Anfrage laufen die wirksamen Zeitpunkte nie rückwärts:** Ein Befehl bekommt mindestens den wirksamen Zeitpunkt des Befehls, der in derselben Anfrage vor ihm steht (`wirksam = max(wirksam, wirksam des Vorgängers)`). Die Reihenfolge der Outbox ist die Reihenfolge, in der der Anwender gehandelt hat; sie bleibt so auch erhalten, wenn die Geräteuhr dazwischen zurückgestellt wurde. Sonst verlöre etwa ein „Rückgängig" gegen das Entnehmen unmittelbar davor. `effective_time()` bleibt die Rechnung für einen einzelnen Befehl; die Untergrenze setzt der Sync-Ablauf.
+  `wirksam` ist der Zeitpunkt, mit dem der Server arbeitet: Er entscheidet Konflikte und steht in `created_at`, `updated_at`, `removed_at` und im Ereignisprotokoll. Eine falsch gehende Geräteuhr verfälscht so nichts, solange sie zwischen Änderung und Absenden nicht springt; `wirksam` liegt nie in der Zukunft. Referenz: `effective_time()` in `server/stowly/contract/timeutil.py`, Beispiele in `vectors.json`. Ein unmögliches Alter begrenzt der Server: `wirksam` liegt nie vor dem 1. Januar 2000 (eine um Jahrzehnte verstellte Geräteuhr ließe die Rechnung sonst aus dem darstellbaren Bereich laufen).
+- **Die wirksamen Zeitpunkte eines Geräts laufen nie rückwärts, auch nicht über mehrere Anfragen hinweg:** Ein Befehl bekommt mindestens den wirksamen Zeitpunkt des letzten gültigen Befehls, den der Server zuvor von demselben Gerät verarbeitet hat (`wirksam = max(wirksam, wirksam des Vorgängers)`). Der Vorgänger ist der Befehl davor in derselben Anfrage, für den ersten Befehl einer Anfrage der letzte aus der vorigen. Die Reihenfolge der Outbox ist die Reihenfolge, in der der Anwender gehandelt hat, und sie bleibt so erhalten:
+  - wenn die Geräteuhr zwischen zwei Änderungen zurückgestellt wurde,
+  - wenn eine Anfrage lange unterwegs war. `wirksam` enthält die Laufzeit der Anfrage: Ein „Entnehmen", das fünf Sekunden unterwegs war, schlüge sonst das „Rückgängig", das zwei Sekunden später entstand und in einer schnellen zweiten Anfrage kam.
+
+  Einzelheiten: „Gerät" ist die Anmeldung, also das Token; nach erneuter Anmeldung beginnt die Untergrenze neu. Ein Befehl, der schon an der Form scheitert (`invalid`), hat keinen wirksamen Zeitpunkt und zählt nicht als Vorgänger; jeder andere zählt, auch ein abgelehnter. Ein schon bekannter Befehl (`duplicate`) zählt mit seinem Zeitpunkt von damals. Die Untergrenze reicht höchstens bis zur Empfangszeit der Anfrage, `wirksam` liegt also weiterhin nie in der Zukunft (das greift nur, wenn die Uhr des Servers inzwischen zurückgestellt wurde). Zwischen verschiedenen Geräten gibt es keine Untergrenze: Dort entscheidet allein das Alter. `effective_time()` bleibt die Rechnung für einen einzelnen Befehl; die Untergrenze setzt der Sync-Ablauf und merkt sie je Gerät (`devices.last_command_at`).
 - Alle Zeitstempel, die die App vom Server bekommt, sind Serverzeit. Für die Anzeige rechnet die App in die Zeitzone des Geräts um.
 - Der Raspberry Pi im Keller hat keine Uhr. Was er meldet, trägt keine Uhrzeit; die Zeit einer Beobachtung setzt das Handy (Befehl `printer.report`, Feld `at`).
 
@@ -132,9 +138,11 @@ Es gibt ein Haushalts-Passwort und beliebig viele Geräte. Jedes Gerät bekommt 
 | `PATCH /api/devices/{device_id}` | Token | `DeviceUpdate { name }` | 200 `Device` |
 | `DELETE /api/devices/{device_id}` | Token | – | 204; sperrt das Token dieses Geräts. Wiederholbar. Unbekannt: 404. |
 
-Fehler der Anmeldung: 401 `invalid_password`; 429 `rate_limited` mit Kopfzeile `Retry-After` und `details.retry_after_s`; 503 `not_configured`. Der Passwortvergleich läuft in konstanter Zeit. Nach 5 Fehlversuchen innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab. Die Sperre gilt für alle, nicht je Adresse: Hinter einem Reverse Proxy ist die Adresse des Aufrufers nicht verlässlich.
+Fehler der Anmeldung: 401 `invalid_password`; 429 `rate_limited` mit Kopfzeile `Retry-After` und `details.retry_after_s`; 503 `not_configured`. Der Passwortvergleich läuft in konstanter Zeit. Nach 5 Fehlversuchen innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab, auch eine mit dem richtigen Passwort. Die Sperre gilt für alle, nicht je Adresse: Hinter einem Reverse Proxy ist die Adresse des Aufrufers nicht verlässlich. Die Fehlversuche bleiben über die Sperre hinaus im Fenster von 5 Minuten stehen: Wer danach weiter falsch rät, löst mit jedem Versuch sofort die nächste Sperre aus. Eine gelungene Anmeldung setzt den Zähler zurück. Der Stand liegt im Arbeitsspeicher des Servers und beginnt mit seinem Start neu. Geräte, die schon angemeldet sind, berührt die Sperre nicht.
 
-Jedes angemeldete Gerät darf jedes Gerät umbenennen und sperren, auch sich selbst. `last_seen_at` aktualisiert der Server beim Sync.
+Jedes angemeldete Gerät darf jedes Gerät umbenennen und sperren, auch sich selbst; die App meldet ein Gerät, das sich selbst sperrt, sofort ab (`signed_out` / `revoked`). `last_seen_at` ist nach der Anmeldung `null`; der Server schreibt es beim Sync fort, höchstens einmal je Minute.
+
+Die App meldet ein Gerät erst an, wenn auch der erste Abgleich gelungen ist: Dann liegen Zonen und Einstellungen vor. Scheitert er, bleibt das Gerät abgemeldet, und die App sperrt das eben ausgestellte Token wieder.
 
 ## 6. Sync-Aufruf
 
@@ -171,17 +179,23 @@ Jedes angemeldete Gerät darf jedes Gerät umbenennen und sperren, auch sich sel
 
 Der ganze Aufruf läuft in **einer** Transaktion (`BEGIN IMMEDIATE`): entweder ist alles verbucht und beantwortet oder nichts.
 
-1. Token prüfen (401). `protocol` prüfen: ungleich `1` ergibt 409 `protocol_mismatch` mit `details: { "server": 1, "client": n }`.
-2. Rahmen prüfen: `dataset_id`, `cursor`, `sent_at`, `id_pool` und dass `commands` eine Liste von Objekten mit gültiger `id` ist. Sonst 422 `invalid_request`. Mehr als 500 Befehle: 413 `payload_too_large`.
-3. **Jeden Befehl einzeln** in Reihenfolge verarbeiten (Abschnitt 6.3). Ein einzelner ungültiger oder fehlschlagender Befehl lässt nie die ganze Anfrage scheitern: Sonst bliebe die Outbox des Geräts für immer stecken.
+1. Die Anfrage prüfen, in dieser Reihenfolge; die erste Verletzung bestimmt die Antwort:
+   - Token (401 `unauthorized`).
+   - `protocol` ist eine Zahl ungleich `1`: 409 `protocol_mismatch` mit `details: { "server": 1, "client": n }`.
+   - Mehr als 500 Befehle: 413 `payload_too_large`.
+   - Der Rahmen: `protocol`, `dataset_id`, `cursor`, `sent_at`, `id_pool` und dass `commands` eine Liste von Objekten mit gültiger `id` ist. Sonst 422 `invalid_request`, auch wenn `protocol` fehlt oder keine Zahl ist.
+
+   Ein Rumpf über 4 MiB wird schon davor mit 413 abgewiesen; 500 Befehle bleiben weit darunter. Ein Rumpf, der kein JSON ist oder tiefer als 32 Ebenen verschachtelt, ergibt 422.
+2. Feststellen, ob die Antwort ein vollständiger Abzug wird (`reset`, Abschnitt 6.4). Das entscheidet der Stand **vor** den Befehlen dieser Anfrage: Sie heben ihn selbst an und überdeckten sonst einen `cursor`, der dem Server voraus ist.
+3. **Jeden Befehl einzeln** in Reihenfolge verarbeiten (Abschnitt 6.3). Ein einzelner ungültiger oder fehlschlagender Befehl lässt nie die ganze Anfrage scheitern: Sonst bliebe die Outbox des Geräts für immer stecken. Streikt dagegen die Datenbank selbst (Platte voll, E/A-Fehler), scheitert die ganze Anfrage mit 500, nichts ist verbucht, und das Gerät versucht es später erneut.
 4. Änderungen seit `cursor` einsammeln (Abschnitt 6.4). Die Wirkung der eben verarbeiteten Befehle ist darin enthalten.
 5. Packungs-IDs zuteilen (Abschnitt 8).
 
 ### 6.3 Verarbeitung eines Befehls
 
 1. Ist die `id` schon in der Tabelle `commands`, wird nichts ausgeführt. Das Ergebnis ist das gespeicherte von damals mit `duplicate: true`.
-2. Der Befehl wird gegen den Katalog geprüft (`Command`, Abschnitt 6.6). Unbekannte `type`, fehlende oder zusätzliche Felder, falsche Formate: Ergebnis `rejected` mit `code: "invalid"`.
-3. Der wirksame Zeitpunkt wird berechnet (Abschnitt 4).
+2. Der Befehl wird gegen den Katalog geprüft (`Command`, Abschnitt 6.6). Unbekannte `type`, fehlende oder zusätzliche Felder, falsche Formate: Ergebnis `rejected` mit `code: "invalid"`. Dazu zählt auch, was der Form nach stimmt und trotzdem nichts bezeichnet: ein Zeitpunkt oder Datum, das es nicht gibt, ein Barcode mit falscher Prüfziffer.
+3. Der wirksame Zeitpunkt wird berechnet, mit der Untergrenze des Geräts (Abschnitt 4).
 4. Der Befehl wird in einem eigenen Sicherungspunkt ausgeführt. Wirft die Ausführung unerwartet, wird der Sicherungspunkt zurückgerollt; das Ergebnis ist `rejected` mit `code: "internal"`, der Fehler steht im Server-Log.
 5. Befehl und Ergebnis werden in `commands` gespeichert, die Wirkung im Ereignisprotokoll vermerkt (Abschnitt 12).
 
@@ -192,10 +206,12 @@ Ergebnis je Befehl (`CommandResult`), in der Reihenfolge der Anfrage:
 | `id` | Kennung des Befehls |
 | `status` | `applied` (ausgeführt), `displaced` (traf eine entnommene Packung, Abschnitt 7.2), `rejected` (nicht ausgeführt) |
 | `code` | nur bei `rejected`: `invalid`, `not_found`, `id_conflict`, `last_zone`, `internal` |
-| `message` | deutscher Klartext zum `code` oder `null` |
+| `message` | deutscher Klartext zum `code`; nur bei `rejected` gesetzt, sonst `null` |
 | `duplicate` | `true`, wenn der Befehl schon bekannt war; `status` ist dann das Ergebnis von damals |
 
 `applied` heißt: verarbeitet. Einzelne Felder können dabei gegen neuere Änderungen verloren haben (Abschnitt 7.1); das ist kein Fehler und wird nicht gemeldet.
+
+**Echo:** Jeder ausgeführte Befehl (`applied` oder `displaced`) gibt dem Datensatz, den er anspricht, einen neuen Stand der Änderungsfolge, auch wenn sich dadurch nichts geändert hat (das Feld hat verloren, der Befehl blieb ohne Wirkung). Das Gerät bekommt so in derselben Antwort den Stand des Servers und muss nicht raten, ob seine lokale Vorwegnahme noch stimmt. Ein abgelehnter Befehl liefert nichts zurück; seine Wirkung verschwindet aus der Anzeige, sobald er die Outbox verlässt (Abschnitt 9.1).
 
 Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
 
@@ -223,8 +239,8 @@ Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
 
 - **`changes`** enthält jeden Datensatz, der sich seit `cursor` geändert hat, vollständig und in seinem aktuellen Zustand. `settings` ist `null`, wenn unverändert. Technisch: Jede Zeile trägt den Stand der Änderungsfolge (`rev`) ihres letzten Schreibens; geliefert wird alles mit `rev > cursor`.
 - **`cursor`** schickt die App beim nächsten Aufruf zurück. Für die App ist er eine undurchsichtige Zahl.
-- **`has_more`:** Eine Antwort enthält höchstens 5000 Datensätze. Bei `true` ruft die App sofort erneut ab (ohne Befehle, mit dem neuen `cursor`), bis `false` kommt. Verweise können zwischen den Seiten vorübergehend ins Leere zeigen; die App wendet deshalb alle Seiten gemeinsam an (Abschnitt 9). Beim Blättern geht nichts verloren: Der gelieferte `cursor` ist immer ein Stand, bis zu dem die Antworten zusammen alles enthalten, über alle Tabellen hinweg. Tragen mehrere Zeilen denselben `rev` (ein Befehl, der viele Packungen auf einmal verschiebt), endet eine Seite nie mitten in diesem `rev`; sie darf dafür größer als 5000 werden.
-- **`dataset_id`** kennzeichnet den Datenbestand. **`reset: true`** kommt, wenn die `dataset_id` der Anfrage nicht die des Servers ist (auch beim ersten Sync) oder der `cursor` der Anfrage größer ist als der Stand des Servers. Die Antwort ist dann ein vollständiger Abzug ab `cursor = 0`; die App leert ihre Kopie vorher (Abschnitt 9.3).
+- **`has_more`:** Eine Antwort enthält höchstens 5000 Datensätze. Bei `true` ruft die App sofort erneut ab, bis `false` kommt: ohne Befehle, mit `dataset_id` und `cursor` der Seite davor; als `have` nennt sie ihren Vorrat einschließlich dessen, was dieser Abgleich schon zugeteilt hat. Meldet eine Folgeseite selbst `reset: true` (der Bestand hat mitten im Blättern gewechselt), wendet die App nichts davon an und beginnt den Abgleich neu. Verweise können zwischen den Seiten vorübergehend ins Leere zeigen; die App wendet deshalb alle Seiten gemeinsam an (Abschnitt 9). Beim Blättern geht nichts verloren: Der gelieferte `cursor` ist immer ein Stand, bis zu dem die Antworten zusammen alles enthalten, über alle Tabellen hinweg. Tragen mehrere Zeilen denselben `rev` (ein Befehl, der viele Packungen auf einmal verschiebt), endet eine Seite nie mitten in diesem `rev`; sie darf dafür größer als 5000 werden.
+- **`dataset_id`** kennzeichnet den Datenbestand. **`reset: true`** kommt, wenn die `dataset_id` der Anfrage nicht die des Servers ist (auch beim ersten Sync) oder der `cursor` der Anfrage größer ist als der Stand des Servers vor den Befehlen dieser Anfrage. Die Antwort ist dann ein vollständiger Abzug ab `cursor = 0`; die App leert ihre Kopie vorher (Abschnitt 9.3). Die Befehle der Anfrage sind trotzdem verarbeitet, ihre Wirkung steckt im Abzug. Eine neue Kennung bekommt der Bestand mit jeder Sicherung (Abschnitt 11) und mit `python -m stowly --new-dataset`, nachdem eine Kopie der Datenbank auf anderem Weg zurückgespielt wurde.
 - **Was ein vollständiger Abzug weglässt:** Eine Antwort mit `reset: true` enthält keine entnommenen Packungen, deren `removed_at` länger zurückliegt als `trash_retention_days`, und keine Etiketten in einem Endzustand (`printed`, `sent`, `failed`, `cancelled`), deren `updated_at` länger als 30 Tage zurückliegt. **Jede andere Antwort liefert ausnahmslos alles mit `rev > cursor`, egal wie alt**, auch die Folgeseiten eines Abzugs. Ein Gerät, das länger offline war als die Aufbewahrungsdauer, muss erfahren, dass eine Packung inzwischen entnommen oder ein Etikett erledigt ist: Sonst zeigte es die Packung für immer im Bestand und stellte das Etikett noch einmal zu. Die App verwirft beides nach derselben Regel, beim Empfang und beim Start; was sie so verwirft, verschwindet auch dann aus ihrer Kopie, wenn es dort bis eben noch als Bestand oder als ausstehend geführt war. Gelöschte Zonen und zusammengeführte Produkte kommen immer mit: Die App braucht sie, um alten Verweisen zu folgen.
 - **Längere Aufbewahrung:** Vergrößert sich `trash_retention_days` in der Kopie der App (durch eine eigene Änderung oder durch eine Antwort), holt sie den Bestand beim nächsten Abgleich einmal vollständig neu (`dataset_id: null`, `cursor: 0`; der Server antwortet mit `reset: true`). Nur so reicht ihre Lösch-Historie wieder so weit zurück wie die des Servers.
 
@@ -262,6 +278,17 @@ Jeder Befehl hat `id` (UUID, vom Gerät erzeugt), `at` (Geräteuhr im Moment der
 
 Alle Befehle des Katalogs gehören zum Sync von Anfang an, auch die für Drucker und Etiketten: Sie sind reine Datenhaltung. Gedruckt wird über den Druckdienst ([`etiketten.md`](etiketten.md)).
 
+Genauer, wo die Tabelle es offen lässt:
+
+- **`package.update` auf eine entnommene Packung** ist immer `displaced`, auch ohne Felder. Die gewünschten Werte werden abgelegt, wie sie sind, und nicht geprüft: Verweisen auf eine gelöschte Zone oder ein zusammengeführtes Produkt folgt erst das Wiederherstellen mit `apply_displaced`. Was sich dann nicht auflösen lässt, bleibt weg; der Rest gilt.
+- **`package.restore` ohne Wirkung** (die Packung ist nicht entnommen) rückt die Uhr für Entnehmen und Wiederherstellen trotzdem vor: Ein Entnehmen mit früherem Zeitpunkt, das erst später eintrifft, verliert dann wie vorgesehen (7.2).
+- **`zone.delete`** prüft in dieser Reihenfolge: Zone unbekannt (`not_found`); schon gelöscht (ohne Wirkung, `applied`); letzte Zone (`last_zone`); `move_to` ist dieselbe Zone (`invalid`); Ziel unbekannt (`not_found`). `move_to` folgt dabei `moved_to`; führt das zurück zur Zone selbst, ist es ebenfalls `invalid`.
+- **`product.merge`** mit einem Paar, das schon dasselbe Produkt ist (zweimal derselbe Wunsch, oder mit sich selbst): `applied` ohne Wirkung.
+- **`print.request`** lehnt nur ab, was es nie gab. Eine entnommene Packung, eine gelöschte Zone und ein gelöschter Drucker gelten: Das Entnehmen oder Löschen kann von einem anderen Gerät stammen. Ein Drucker, den es nie gab, ist `not_found`.
+- **`print.report`:** Eine Meldung, die gewinnt (7.1), ersetzt Zustand, `printer_id`, `boot_id` und `error` als Ganzes, wörtlich so, wie sie im Befehl stehen. Was der Befehl nicht nennt, ist danach `null`. Nur so hängt das Ergebnis nicht von der Reihenfolge ab, in der Meldungen eintreffen. Wer den Drucker am Etikett behalten will, schickt ihn mit; die App tut das beim Verwerfen und bei der Antwort auf „Wurde gedruckt?". `error` ist freier Text bis 200 Zeichen: der Fehlercode des Druckdienstes, oder `not_printed`, wenn der Anwender auf diese Frage mit Nein antwortet.
+- **`product.remove_barcode`** verlangt wie jeder Befehl mit Barcode eine gültige Prüfziffer.
+- **Befehle ohne Wirkung** schreiben nichts ins Ereignisprotokoll. Die App erzeugt sie gar nicht erst, wo sie es schon lokal erkennt (derselbe Grund auf eine entnommene Packung, Wiederherstellen einer Packung im Bestand, Umsortieren ohne Änderung, `changes` ohne Felder).
+
 ## 7. Konfliktregeln
 
 ### 7.1 Feldänderungen: der spätere Zeitstempel gewinnt
@@ -272,6 +299,8 @@ Für jedes änderbare Feld jedes Datensatzes merkt sich der Server den wirksamen
 - Bei gleichem Zeitpunkt gewinnt, was der Server später verarbeitet.
 - Der überschriebene Wert steht im Ereignisprotokoll (`old`), ebenso eine Änderung, die verloren hat (`superseded`).
 - `updated_at` eines Datensatzes ist der späteste wirksame Zeitpunkt einer angewendeten Änderung.
+- Eine Uhr stellt nur, wer ein Feld bearbeitet. Anlegen, Zusammenführen, das Löschen einer Zone oder eines Druckers und Open Food Facts stellen keine: Jede Eingabe eines Anwenders gewinnt gegen sie, davor wie danach. Eine Änderung auf den Wert, den das Feld schon hat, stellt die Uhr, steht aber nicht im Ereignisprotokoll.
+- Die App entscheidet lokal nichts nach Zeitstempeln: Bis zur Antwort des Servers gilt in ihrer Anzeige der eigene, noch unbestätigte Befehl (Abschnitt 9.1).
 
 Felder mit dieser Regel: Produkt `name`, `brand`, `quantity`, `warn_days`; Packung `best_before`, `zone_id`, `product_id`; Zone `name`, `icon`, `color`, `sort`, `printer_id`; jede Einstellung; Drucker `name`, `server`, `direct` (das Objekt als Ganzes); Etikett: Zustand samt `printer_id`, `boot_id`, `error` als ein Feld; Druckerzustand als Ganzes.
 
@@ -280,7 +309,7 @@ Felder mit dieser Regel: Produkt `name`, `brand`, `quantity`, `warn_days`; Packu
 Die Packung ist physisch weg, also zählt das Entnehmen mehr als eine gleichzeitige Bearbeitung.
 
 - **Entnehmen und Wiederherstellen** teilen sich eine eigene Uhr (`removed`). `package.remove` und `package.restore` wirken, wenn ihr Zeitpunkt nicht vor dieser Uhr liegt. Der spätere der beiden gewinnt, unabhängig von der Reihenfolge ihres Eintreffens.
-- **`package.update` auf eine entnommene Packung** wird nicht angewendet, egal welchen Zeitpunkt die Bearbeitung trägt. Der Server legt die gewünschten Feldwerte in `Package.displaced` ab und antwortet mit `status: "displaced"`. Kommen mehrere solche Bearbeitungen, wird je Feld die spätere behalten.
+- **`package.update` auf eine entnommene Packung** wird nicht angewendet, egal welchen Zeitpunkt die Bearbeitung trägt. Der Server legt die gewünschten Feldwerte in `Package.displaced` ab und antwortet mit `status: "displaced"`. Kommen mehrere solche Bearbeitungen, wird je Feld die spätere behalten; `displaced.at` ist der späteste Zeitpunkt der behaltenen Werte. `updated_at` der Packung bleibt, denn angewendet wurde nichts.
 - Die Lösch-Historie zeigt die verdrängte Bearbeitung. **`package.restore` mit `apply_displaced: true`** stellt die Packung wieder her und wendet die verdrängten Werte mit dem Zeitpunkt des Wiederherstellens an. In jedem Fall ist `displaced` danach `null`.
 - `removed_at` ist der wirksame Zeitpunkt des Entnehmens. `package.remove` auf eine schon entnommene Packung ändert nur `removal_reason` (so wird aus „verbraucht" nachträglich „entsorgt").
 
@@ -319,19 +348,19 @@ Legt ein Befehl etwas mit einer Kennung an, die es schon gibt, wird er abgelehnt
 
 Eine gedruckte ID lässt sich nicht mehr ändern, also dürfen zwei Geräte offline nie dieselbe vergeben.
 
-- Bei jedem Sync füllt der Server den Vorrat des Geräts auf: Er teilt `max(0, 300 − have)` neue IDs zu (`id_pool.grant`), zufällig gewählt, nicht in `packages` vorhanden und für kein Gerät reserviert, und merkt sie in `id_reservations`.
+- Bei jedem Sync füllt der Server den Vorrat des Geräts auf: Er teilt `max(0, 300 − have)` neue IDs zu (`id_pool.grant`; bei `reset` einen vollen Vorrat, siehe unten), zufällig gewählt, nicht in `packages` vorhanden und für kein Gerät reserviert, und merkt sie in `id_reservations`.
 - Die App speichert den Vorrat und entnimmt für jede neue Packung eine ID. `have` ist die Zahl der noch unbenutzten.
 - **Vorrat leer** (offline mehr als 300 Packungen ohne einen einzigen Sync): Die App erzeugt Zufalls-IDs (`randomPackageId()`). Ein Zusammenstoß ist dann möglich, aber unwahrscheinlich, und endet in `id_conflict` (7.5).
 - Die Reservierung schützt nur davor, dass der Server eine ID zweimal zuteilt. Wer eine freie ID zuerst anlegt, bekommt sie, gleich welches Gerät sie reserviert hatte; die Reservierung verfällt mit dem Anlegen. So scheitern auch die wartenden Befehle eines Geräts nicht, das sich nach einer Sperre neu anmelden musste.
 - Geht eine Antwort verloren, sind die darin zugeteilten IDs verschenkt. Das ist bei 33,5 Millionen Kombinationen unerheblich.
-- Bei `reset: true` verwirft die App ihren Vorrat und nimmt den neuen aus dieser Antwort.
+- Bei `reset: true` verwirft die App ihren Vorrat und nimmt den neuen aus dieser Antwort. Der Server teilt dann **unabhängig von `have` einen vollen Vorrat** zu (300 IDs): Mit der Differenz stünde das Gerät nach dem Verwerfen fast leer da. Fordert die App selbst einen vollständigen Abzug an (`dataset_id: null`, `cursor: 0`), sendet sie `have: 0`.
 
 ## 9. Pflichten der App
 
 ### 9.1 Lokale Kopie und Outbox
 
 - Jede Änderung schreibt die App sofort in ihre lokale Kopie und als Befehl in die Outbox, beides in einer Transaktion.
-- Die Outbox wird in der Reihenfolge der Entstehung gesendet, höchstens 500 Befehle je Aufruf. Ein Befehl verlässt sie erst, wenn sein Ergebnis da ist.
+- Die Outbox wird in der Reihenfolge der Entstehung gesendet, höchstens 500 Befehle je Aufruf. Ein Befehl verlässt sie erst, wenn sein Ergebnis da ist. Hat sie mehr als 500 Befehle, folgen weitere Aufrufe im selben Abgleich (höchstens 20; der Rest geht mit dem nächsten Anlass).
 - **Was die App anzeigt, ist immer: Stand des Servers plus die noch nicht bestätigten Befehle, in ihrer Reihenfolge.** Nach jeder Antwort übernimmt die App die gelieferten Datensätze und wendet die Befehle, die inzwischen neu in der Outbox stehen, erneut darauf an. Bestätigte Befehle stecken bereits in den gelieferten Datensätzen.
 
 ### 9.2 Ergebnisse
@@ -341,15 +370,19 @@ Eine gedruckte ID lässt sich nicht mehr ändern, also dürfen zwei Geräte offl
 | `applied` | entfernt den Befehl aus der Outbox |
 | `displaced` | entfernt ihn und zeigt ihn unter den Sync-Problemen („liegt in der Lösch-Historie") |
 | `rejected` | entfernt ihn und zeigt ihn unter den Sync-Problemen mit `code`. Ihre lokale Kopie folgt wieder dem Server: Was nur wegen dieses Befehls da war, verschwindet. |
-| 401 | wechselt nach `signed_out` / `revoked`, behält Daten und Outbox |
-| 409 `protocol_mismatch` | sendet nicht weiter, fordert zum Aktualisieren auf |
-| Netzfehler, 5xx | lässt alles, wie es ist, und versucht es später erneut |
+| 401 `unauthorized` | wechselt nach `signed_out` / `revoked`, behält Daten und Outbox |
+| 409 `protocol_mismatch` | sendet nicht mehr von selbst, fordert zum Aktualisieren auf; ein Abgleich auf Wunsch des Anwenders versucht es einmal |
+| Netzfehler, Zeitüberschreitung | „nicht erreichbar": lässt alles, wie es ist, und versucht es später erneut |
+| Antwort ohne das Fehlerformat aus Abschnitt 13 (502 bis 504 eines Proxys ohne Server dahinter, Anmeldeseite eines WLANs) | ebenso „nicht erreichbar", auch bei 401: Nur der Server selbst meldet ein Gerät ab |
+| 413, 422, 500 im Fehlerformat des Servers | lässt alles, wie es ist, zeigt den Fehler in `sync.status` und versucht es später erneut. Das ist ein Fehler im Programm, nichts, was der Anwender beheben kann. |
+
+Bestätigt eine Antwort keinen einzigen der gesendeten Befehle, gilt der Versuch als gescheitert (`internal`); die Outbox bleibt, wie sie ist.
 
 ### 9.3 Antwort anwenden
 
 1. Bei `has_more` weiter abrufen und alle Seiten sammeln.
 2. In einer lokalen Transaktion: bei `reset` zuerst alle synchronisierten Tabellen und den ID-Vorrat leeren (Outbox, Geräte-Einstellungen und Token bleiben); dann alle Datensätze übernehmen; `dataset_id`, `cursor` und den zugeteilten ID-Vorrat speichern.
-3. Entnommene Packungen jenseits der Aufbewahrungsdauer und alte abgeschlossene Etiketten verwerfen (Abschnitt 6.4), auch wenn sie eben erst geliefert wurden.
+3. Entnommene Packungen jenseits der Aufbewahrungsdauer und alte abgeschlossene Etiketten verwerfen (Abschnitt 6.4), auch wenn sie eben erst geliefert wurden. Gerechnet wird dabei mit `server_time` der Antwort; beim Start und in der Anzeige mit der Geräteuhr plus dem Abstand zur Serverzeit, den der letzte Abgleich gemessen hat.
 4. Die verbliebenen Befehle der Outbox erneut auf die lokale Kopie anwenden.
 5. Hat sich `trash_retention_days` vergrößert: den Bestand beim nächsten Abgleich vollständig neu holen (Abschnitt 6.4).
 
@@ -369,7 +402,9 @@ Es läuft immer nur ein Abgleich je Gerät, auch über mehrere Tabs und den Serv
 
 ### 9.5 Ist der Server erreichbar?
 
-`navigator.onLine` meldet auf jeder Verbindung `true`, auch im WLAN des Pi ohne Internet. Nur `false` ist verlässlich. Die App prüft deshalb selbst: `GET /api/health` mit `cache: "no-store"`, Abbruch nach 3 Sekunden, und die Antwort gilt nur, wenn `app === "stowly"` ist.
+`navigator.onLine` meldet auf jeder Verbindung `true`, auch im WLAN des Pi ohne Internet. Nur `false` ist verlässlich. Die App prüft deshalb selbst: `GET /api/health` mit `cache: "no-store"`, Abbruch nach 3 Sekunden, und die Antwort gilt nur, wenn `app === "stowly"` ist. Einem Abgleich geht die Prüfung voraus, wenn der letzte Kontakt zum Server länger als 30 Sekunden zurückliegt oder das Gerät nicht angemeldet ist.
+
+Zeitgrenzen der übrigen Aufrufe: Abgleich 45 Sekunden (der erste Abzug eines großen Bestands ist kein kleiner Aufruf), Sicherung 120 Sekunden, alles andere 15 Sekunden. Eine Zeitüberschreitung gilt als „nicht erreichbar". Hat der Server die Anfrage trotzdem verbucht, erkennt er die Befehle beim nächsten Versuch als bekannt (`duplicate`).
 
 ### 9.6 Bilder
 
@@ -379,13 +414,13 @@ Nach einem Abgleich lädt die App die Bilder der Produkte im Bestand, die sie no
 
 Unbekannte Barcodes werden nie im Vordergrund nachgeschlagen: Das Produkt entsteht sofort als Platzhalter, der Server ergänzt Name und Bild später. Das gilt offline wie online, weil Open Food Facts nur 15 Abfragen je Minute und Adresse erlaubt.
 
-- **Wann:** Ein Produkt mit mindestens einem nicht ladeninternen Barcode bekommt beim Anlegen `lookup = pending`. Der Server arbeitet die Wartenden im Hintergrund ab, höchstens 10 Abfragen je Minute.
+- **Wann:** Ein Produkt mit mindestens einem nicht ladeninternen Barcode bekommt beim Anlegen `lookup = pending`, ebenso nach `product.add_barcode` und nach einem Zusammenführen, wenn es danach etwas nachzuschlagen gibt und noch nichts gefunden ist. Der Server arbeitet die Wartenden im Hintergrund ab, höchstens 10 Abfragen je Minute. Die App zeigt ein eben angelegtes Produkt mit nachschlagbarem Barcode schon vor dem Abgleich als `pending`; maßgeblich ist danach, was der Server liefert.
 - **Abruf:** `GET {STOWLY_OFF_URL}/api/v3/product/{barcode}?product_type=all&lc=de&fields=product_name_de,product_name,brands,quantity,image_front_small_url` mit `User-Agent: Stowly/<Version>`, ergänzt um `(<Kontakt>)`, wenn `STOWLY_OFF_CONTACT` gesetzt ist. Im Code steht nie eine persönliche Adresse.
 - **Ergebnis:** Gefunden: `lookup = found`. 404 mit `product_not_found`: `lookup = not_found`, endgültig. Netzfehler, 429 und 5xx: Das Produkt bleibt `pending`; neue Versuche nach 1 Minute, 5 Minuten, 30 Minuten, 3 Stunden, danach täglich.
 - **Übernahme:** Die Daten füllen **nur leere Felder** des Produkts (`name` aus `product_name_de`, sonst `product_name`; `brand` aus dem ersten Eintrag von `brands`; `quantity`; `image`). Die Uhren der Felder bleiben unberührt: Jede Eingabe eines Anwenders gewinnt, davor wie danach.
 - **Bild:** Der Server lädt `image_front_small_url` einmal herunter (nur JPEG, PNG, WebP, höchstens 300 KB) und speichert es in der Datenbank. Die Bild-ID ist der Anfang des SHA-256 des Inhalts (32 Hex-Zeichen) plus Endung, z. B. `9f2c…e1.jpg`.
 - **Dauerhaft:** Jedes Ergebnis steht in `off_lookups` und wird nie erneut abgefragt. Die Tabelle ist von `products` getrennt, damit die Daten trennbar bleiben (ODbL). Die App nennt die Quelle: „Open Food Facts (ODbL)".
-- `STOWLY_OFF_ENABLED=0` schaltet das Nachschlagen ab; Produkte bekommen dann `lookup = none`.
+- `STOWLY_OFF_ENABLED=0` schaltet das Nachschlagen ab; Produkte bekommen dann `lookup = none`. Beim Start gleicht der Server `lookup` an die Einstellung an: Wartende werden `none`, und nach dem Wiedereinschalten warten Produkte mit nachschlagbarem Barcode erneut.
 - Tests rufen den echten Dienst nie auf.
 
 ## 11. Weitere Endpunkte
@@ -430,7 +465,7 @@ Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `
 | `device.login`, `device.revoked`, `device.renamed` | `device` | `name` |
 | `command.rejected` | Art des Befehls | `code`, `type` |
 
-`printer.report` erzeugt keinen Eintrag (zu häufig, kein bleibender Wert). Tokens und das Passwort stehen nie im Protokoll.
+`printer.report` erzeugt keinen Eintrag (zu häufig, kein bleibender Wert), ebenso wenig ein Befehl ohne Wirkung. Tokens und das Passwort stehen nie im Protokoll. `data` darf weitere Schlüssel tragen als hier genannt (derzeit: `barcodes` und `filled` bei `product.merged`, `package_id` und `zone_id` bei `print.requested`, `old` bei `print.reported` und `device.renamed`, `message` bei `command.rejected`, `token_changed` bei `printer.updated`); wer das Protokoll auswertet, übergeht Unbekanntes.
 
 ## 13. Fehlerformat
 
@@ -440,21 +475,21 @@ Jede Fehlerantwort unter `/api` hat denselben Rumpf (`ErrorBody`):
 { "error": { "code": "invalid_password", "message": "Das Passwort stimmt nicht.", "details": null } }
 ```
 
-| HTTP | `code` | Wann |
-|---|---|---|
-| 401 | `unauthorized` | Token fehlt, ist unbekannt oder gesperrt |
-| 401 | `invalid_password` | falsches Haushalts-Passwort |
-| 404 | `not_found` | Pfad oder Datensatz gibt es nicht |
-| 405, 422 | `invalid_request` | Anfrage verletzt den Vertrag; bei 422 nennt `details.errors` die Stellen (`loc`, `msg`, `type`) |
-| 409 | `conflict` | Zustand passt nicht zur Anfrage |
-| 409 | `protocol_mismatch` | verschiedene Protokollversionen; `details: { server, client }` |
-| 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf |
-| 429 | `rate_limited` | zu viele Fehlversuche; `Retry-After`, `details.retry_after_s` |
-| 500 | `internal` | Fehler im Server; Einzelheiten nur im Log |
-| 501 | `not_implemented` | Endpunkt ist noch nicht umgesetzt |
-| 503 | `not_configured` | `STOWLY_PASSWORD` ist nicht gesetzt |
+| HTTP | `code` | Wann | In der App (`CoreError`) |
+|---|---|---|---|
+| 401 | `unauthorized` | Token fehlt, ist unbekannt oder gesperrt | `unauthorized`; das Gerät gilt als abgemeldet (`revoked`) |
+| 401 | `invalid_password` | falsches Haushalts-Passwort | `invalid_password` |
+| 404 | `not_found` | Pfad oder Datensatz gibt es nicht | `not_found` |
+| 405, 422 | `invalid_request` | Anfrage verletzt den Vertrag; bei 422 nennt `details.errors` die Stellen (`loc`, `msg`, `type`) | `invalid` |
+| 409 | `conflict` | Zustand passt nicht zur Anfrage | `invalid` |
+| 409 | `protocol_mismatch` | verschiedene Protokollversionen; `details: { server, client }` | `protocol_mismatch` |
+| 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf | `internal` |
+| 429 | `rate_limited` | zu viele Fehlversuche; `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
+| 500 | `internal` | Fehler im Server; Einzelheiten nur im Log | `internal` |
+| 501 | `not_implemented` | Endpunkt ist noch nicht umgesetzt | `not_supported` |
+| 503 | `not_configured` | `STOWLY_PASSWORD` ist nicht gesetzt | `not_configured` |
 
-`message` ist deutscher Klartext und als Rückfall anzeigbar. Die App unterscheidet nach `code` und zeigt dazu ihren eigenen Text. Im Server: `raise ApiError(status, ErrorCode.X, "…")` aus `stowly/errors.py`.
+`message` ist deutscher Klartext und als Rückfall anzeigbar. Die App unterscheidet nach `code` und zeigt dazu ihren eigenen Text; die letzte Spalte nennt, als welchen Fehler ihr Kern die Antwort an die Oberfläche weitergibt (`web/src/core/http.ts`). Eine Fehlerantwort ohne diesen Rumpf stammt nicht vom Stowly-Server und gilt in der App als `offline` (Abschnitt 9.2). Im Server: `raise ApiError(status, ErrorCode.X, "…")` aus `stowly/errors.py`. Unbekannte Pfade unter `/api` und `/print` antworten bei jeder Methode mit 404, ein bekannter Pfad mit falscher Methode mit 405 und der Kopfzeile `Allow`; 401 trägt `WWW-Authenticate: Bearer`.
 
 Die Ergebnisse einzelner Befehle (`CommandResult.code`) sind davon getrennt: Ein abgelehnter Befehl ist kein HTTP-Fehler.
 
@@ -489,11 +524,16 @@ Die Schnittstelle zwischen Oberfläche und Offline-Kern steht in `web/src/contra
 
 Das Schema für die gesamte Stufe 1 steht in `server/stowly/migrations/0001_initial.sql` und ist Teil dieses Vertrags. Die Datei wird nicht mehr geändert; Ergänzungen kommen als weitere, nummerierte Migrationen. `stowly.db.migrate` wendet sie beim Start an und merkt sich den Stand in `PRAGMA user_version`.
 
+| Migration | Inhalt |
+|---|---|
+| `0001_initial.sql` | das Schema |
+| `0002_device_command_floor.sql` | `devices.last_command_at`: wirksamer Zeitpunkt des letzten gültigen Befehls je Gerät (Abschnitt 4). Bestehende Datenbanken bekommen den spätesten Zeitpunkt aus `commands`. |
+
 | Tabelle | Inhalt |
 |---|---|
 | `meta` | Einzelwerte, vor allem `dataset_id` |
 | `counters` | `rev` (Änderungsfolge), `settings_rev` |
-| `devices` | Geräte mit Token-Hash, `last_seen_at`, `revoked_at` |
+| `devices` | Geräte mit Token-Hash, `last_seen_at`, `revoked_at`, `last_command_at` |
 | `zones`, `products`, `product_barcodes`, `packages` | der Bestand |
 | `field_clocks` | Uhr je Datensatz und Feld (7.1), dazu `removed` je Packung (7.2) |
 | `settings` | Einstellungen des Haushalts, ein Schlüssel je Zeile |

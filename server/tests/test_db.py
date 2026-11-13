@@ -3,11 +3,14 @@
 import json
 import re
 import sqlite3
+from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
-from stowly import db
-from stowly.contract import ids, timeutil
+from stowly import auth, db
+from stowly.app import create_app
+from stowly.contract import PROTOCOL_VERSION, ids, timeutil
 
 EXPECTED_TABLES = {
     "meta",
@@ -174,4 +177,115 @@ def test_a_newer_database_is_refused(tmp_path):
     con.execute(f"PRAGMA user_version = {len(db.list_migrations()) + 1}")
     with pytest.raises(RuntimeError, match="neueren Server"):
         db.migrate(con)
+    con.close()
+
+
+# --- Der Weg über die Migrationen -------------------------------------------------------
+
+
+def database_at_version(path: Path, version: int) -> sqlite3.Connection:
+    """Eine Datenbank, wie sie ein Server mit Schema-Version ``version`` hinterlassen hat."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = db.connect(path)
+    for number, _name, sql in db.list_migrations()[:version]:
+        con.executescript(f"BEGIN IMMEDIATE;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;")
+    db.seed_defaults(con)
+    return con
+
+
+def test_migration_2_adds_the_command_floor_of_each_device(tmp_path):
+    """Schema-Version 1 kannte ``devices.last_command_at`` nicht (Abschnitt 4 des Protokolls)."""
+    path = tmp_path / "data" / "stowly.sqlite3"
+    con = database_at_version(path, 1)
+    assert db.schema_version(con) == 1
+    assert "last_command_at" not in {row["name"] for row in con.execute("PRAGMA table_info(devices)")}
+
+    busy, idle, broken = ids.new_uuid(), ids.new_uuid(), ids.new_uuid()
+    stamp = timeutil.now()
+    commands = [
+        (busy, "2026-11-01T10:00:00.000Z", "applied", None),
+        (busy, "2026-11-03T10:00:00.000Z", "rejected", "not_found"),
+        (busy, "2026-11-02T10:00:00.000Z", "displaced", None),
+        # Schon an der Form gescheitert: zählt nicht, auch wenn der Zeitpunkt der späteste ist.
+        (busy, "2026-11-09T10:00:00.000Z", "rejected", "invalid"),
+        (broken, "2026-11-05T10:00:00.000Z", "rejected", "invalid"),
+    ]
+    with db.transaction(con):
+        for device_id in (busy, idle, broken):
+            con.execute(
+                "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, 'Gerät', ?, ?)",
+                (device_id, f"hash-{device_id}", stamp),
+            )
+        for device_id, at, status, code in commands:
+            con.execute(
+                "INSERT INTO commands (id, device_id, type, at, received_at, body, status, code) "
+                "VALUES (?, ?, 'package.update', ?, ?, '{}', ?, ?)",
+                (ids.new_uuid(), device_id, at, stamp, status, code),
+            )
+    dataset_id, zones = (
+        db.get_meta(con, "dataset_id"),
+        con.execute("SELECT COUNT(*) FROM zones").fetchone()[0],
+    )
+    con.close()
+
+    db.initialise(path)
+    con = db.connect(path)
+    assert db.schema_version(con) == len(db.list_migrations()) >= 2
+    floors = {
+        row["id"]: row["last_command_at"] for row in con.execute("SELECT id, last_command_at FROM devices")
+    }
+    assert floors == {busy: "2026-11-03T10:00:00.000Z", idle: None, broken: None}
+    # Der Rest der Datenbank ist unberührt.
+    assert db.get_meta(con, "dataset_id") == dataset_id
+    assert con.execute("SELECT COUNT(*) FROM zones").fetchone()[0] == zones
+    assert con.execute("SELECT COUNT(*) FROM commands").fetchone()[0] == len(commands)
+    con.close()
+
+
+def test_a_server_started_on_a_version_1_database_keeps_the_order_of_its_devices(settings, clock):
+    """Ein Gerät aus der Zeit vor der Migration gleicht weiter ab, und seine Reihenfolge gilt."""
+    con = database_at_version(settings.database_path, 1)
+    token, device_id = "token-aus-schema-version-1", ids.new_uuid()
+    last = clock.stamp(10)  # sein letzter Befehl, zehn Sekunden vor „jetzt"
+    with db.transaction(con):
+        con.execute(
+            "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, 'Altes Handy', ?, ?)",
+            (device_id, auth.hash_token(token), clock.stamp(3600)),
+        )
+        con.execute(
+            "INSERT INTO commands (id, device_id, type, at, received_at, body, status) "
+            "VALUES (?, ?, 'package.remove', ?, ?, '{}', 'applied')",
+            (ids.new_uuid(), device_id, last, last),
+        )
+    con.close()
+
+    product_id = ids.new_uuid()
+    body = {
+        "protocol": PROTOCOL_VERSION,
+        "dataset_id": None,
+        "cursor": 0,
+        "sent_at": clock.stamp(),
+        "commands": [
+            # Nach seinem Alter (60 s) läge der Befehl vor dem letzten aus der Zeit vor der Migration.
+            {
+                "id": ids.new_uuid(),
+                "at": clock.stamp(60),
+                "type": "product.create",
+                "product_id": product_id,
+                "name": "Reis",
+            }
+        ],
+        "id_pool": {"have": 0},
+    }
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/sync", json=body, headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert [result["status"] for result in data["results"]] == ["applied"]
+    created = [product for product in data["changes"]["products"] if product["id"] == product_id]
+    assert [product["created_at"] for product in created] == [last]
+
+    con = db.connect(settings.database_path)
+    assert db.schema_version(con) == len(db.list_migrations())
+    assert con.execute("SELECT last_command_at FROM devices WHERE id = ?", (device_id,)).fetchone()[0] == last
     con.close()

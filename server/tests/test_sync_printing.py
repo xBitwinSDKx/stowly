@@ -482,8 +482,13 @@ def test_a_changed_template_reaches_every_device(make_device, con):
 
 
 def test_the_state_of_a_label_does_not_depend_on_the_order_of_arrival(make_device, clock):
-    """Dieselben drei Meldungen, in jeder Reihenfolge des Eintreffens: ein Endzustand."""
+    """Dieselben drei Meldungen, in jeder Reihenfolge des Eintreffens: ein Endzustand.
+
+    Jede Meldung stammt von einem anderen Gerät: Die Befehle eines einzelnen Geräts treffen
+    immer in der Reihenfolge ein, in der sie entstanden sind (Abschnitt 4).
+    """
     device = make_device()
+    reporters = [make_device("Handy 1"), make_device("Handy 2"), make_device("Handy 3")]
     pi, create = new_printer(device)
     _, package_id = device.store("Reis")
     device.sync([create])
@@ -494,12 +499,17 @@ def test_the_state_of_a_label_does_not_depend_on_the_order_of_arrival(make_devic
         job = ids.new_uuid()
         device.sync([device.cmd("print.request", age=100, job_id=job, kind="package", package_id=package_id)])
         reports = [
-            device.cmd("print.report", age=60, job_id=job, state="queued", printer_id=pi, boot_id="boot-1"),
-            device.cmd("print.report", age=40, job_id=job, state="printing", printer_id=pi, boot_id="boot-1"),
-            device.cmd("print.report", age=20, job_id=job, state="failed", error="not_printed"),
+            reporters[0].cmd(
+                "print.report", age=60, job_id=job, state="queued", printer_id=pi, boot_id="boot-1"
+            ),
+            reporters[1].cmd(
+                "print.report", age=40, job_id=job, state="printing", printer_id=pi, boot_id="boot-1"
+            ),
+            reporters[2].cmd("print.report", age=20, job_id=job, state="failed", error="not_printed"),
         ]
         for index in order:
-            device.sync([reports[index]])
+            assert statuses(reporters[index].sync([reports[index]])) == [("applied", None)]
+        device.sync()
         label = device.print_jobs[job]
         final.add(
             (label["state"], label["error"], label["printer_id"], label["boot_id"], label["updated_at"])

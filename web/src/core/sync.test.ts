@@ -558,6 +558,8 @@ describe("Antwort anwenden", () => {
     expect(value(core.data.packages).map((pkg) => pkg.id)).toEqual([pending.packages[0]?.id]);
     expect(server.data.packages.has(pending.packages[0]?.id ?? "")).toBe(true);
     expect(value(core.sync.status).pending).toBe(0);
+    // Ab jetzt gilt die Kennung des neuen Bestands.
+    await core.sync.now();
     expect((server.syncRequests.at(-1) as unknown as SyncRequest).dataset_id).toBe(server.datasetId);
   });
 
@@ -715,8 +717,10 @@ describe("ID-Vorrat", () => {
     const before = server.syncRequests.length;
     await core.sync.now();
     const requests = server.syncRequests.slice(before) as unknown as SyncRequest[];
-    // Unerwarteter Abzug: Der alte Vorrat ist verworfen, eine zweite Runde füllt ihn wieder auf.
-    expect(requests.map((request) => request.id_pool.have)).toEqual([300, 0]);
+    // Unerwarteter Abzug: Der alte Vorrat ist verworfen. Der Server teilt bei `reset` unabhängig
+    // von `have` einen vollen zu (Protokoll, Abschnitt 8): Der eine Aufruf genügt.
+    expect(requests.map((request) => request.id_pool.have)).toEqual([300]);
+    expect(server.reservedIds.filter((id) => !discarded.has(id))).toHaveLength(300);
 
     const next = await core.stock.store({ product: { kind: "existing", product_id: old.product.id }, zone_id: zone, best_before: null, count: 50, labels: false });
     // Die neuen IDs stammen aus der neuen Zuteilung, keine aus dem verworfenen Vorrat.

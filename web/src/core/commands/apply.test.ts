@@ -268,6 +268,24 @@ describe("Drucker und Etiketten", () => {
     expect(state.print_jobs.get(uuid(4, 1))).toMatchObject({ kind: "package", package_id: "AAAAA", zone_id: null, state: "failed", error: "no_media", boot_id: "boot-1", printer_id: uuid(3, 1), device_id: uuid(5, 1) });
     expect(state.print_jobs.get(uuid(4, 2))).toMatchObject({ kind: "zone", zone_id: uuid(1, 1), package_id: null, state: "cancelled", error: null, created_at: T1 });
   });
+
+  it("ersetzt bei einer Meldung alle vier Werte wörtlich: Was der Befehl nicht nennt, ist null", () => {
+    // Wie der Server (docs/sync-protokoll.md, 7.1): Sonst zeigte das Gerät bis zum Abgleich einen
+    // Drucker, den der Server für dieses Etikett gar nicht mehr führt.
+    const start = tables({ packages: [pkg("AAAAA")] });
+    const { state, outcomes } = run(
+      start,
+      { type: "print.request", job_id: uuid(4, 1), kind: "package", package_id: "AAAAA", printer_id: uuid(3, 1) },
+      { type: "print.report", job_id: uuid(4, 1), state: "queued", printer_id: uuid(3, 1), boot_id: "boot-1" },
+      { type: "print.report", job_id: uuid(4, 1), state: "failed", error: "not_printed" },
+      { type: "print.request", job_id: uuid(4, 2), kind: "package", package_id: "AAAAA", printer_id: uuid(3, 1) },
+      { type: "print.report", job_id: uuid(4, 2), state: "queued", printer_id: uuid(3, 1), boot_id: "boot-1", error: "alt" },
+      { type: "print.report", job_id: uuid(4, 2), state: "printed", printer_id: uuid(3, 2), boot_id: null },
+    );
+    expect(statuses(outcomes)).toEqual(["applied", "applied", "applied", "applied", "applied", "applied"]);
+    expect(state.print_jobs.get(uuid(4, 1))).toMatchObject({ state: "failed", error: "not_printed", printer_id: null, boot_id: null });
+    expect(state.print_jobs.get(uuid(4, 2))).toMatchObject({ state: "printed", error: null, printer_id: uuid(3, 2), boot_id: null });
+  });
 });
 
 describe("Erneut anwenden", () => {
