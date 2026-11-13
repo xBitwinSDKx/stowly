@@ -265,7 +265,7 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 | Nach dem Zurückspielen: Fehler „readonly database" im Log | Die Datei gehört nicht dem Benutzer des Containers. Nach Abschnitt 8 einspielen oder `chown 10001:10001` auf die Datei im Volume. |
 | Die Anmeldung wird trotz richtigem Passwort abgelehnt (zu viele Fehlversuche) | Sperre nach 5 falschen Passwörtern; 60 Sekunden warten. |
 | Etiketten für einen Drucker am Server bleiben „ausstehend" | Sagt die App „Der Druckdienst des Servers läuft nicht": Im Log steht „Der Druckdienst des Servers ließ sich nicht starten", meist ist `/data/print` nicht beschreibbar (`docker compose exec stowly ls -ld /data/print`); `/print/…` antwortet dann mit 503. Sonst ist das Etikett noch nicht abgeglichen; die App versucht es nach dem nächsten Abgleich wieder („Jetzt drucken" gleicht vorher ab). |
-| Im Log „Schrift DejaVuSans… fehlt" | Die Etiketten entstehen mit einer Ersatzschrift ohne Umlaute. Im Image ist `fonts-dejavu-core` installiert; ohne Docker: `sudo apt install fonts-dejavu-core`, Server neu starten. |
+| Im Log „Schrift DejaVuSans… fehlt" | Die Etiketten entstehen mit einer Ersatzschrift ohne Umlaute. Die Schriften liegen im Paket `stowly_print` (Ordner `fonts`) und im Image zusätzlich als `fonts-dejavu-core`; fehlen sie an beiden Stellen, ist die Installation unvollständig: Image neu bauen (`docker compose build --no-cache`), ohne Docker `sudo apt install fonts-dejavu-core` und den Server neu starten. |
 | Ein Brother am Server meldet `config` | Modell, Adresse oder Rolle passen nicht, oder die Brother-Bibliothek fehlt; Grund im Log (Abschnitt 14). |
 | Die App bleibt nach einer Änderung an `STOWLY_CSP` leer, oder die Konsole des Browsers meldet „Content Security Policy" | Die eigene Policy verbietet etwas, das die App braucht: zurück zur Vorgabe (`STOWLY_CSP` leer) und Abschnitt 13. |
 
@@ -389,7 +389,7 @@ Eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
 
 ### 14.5 Schriften und Brother-Bibliothek
 
-- Die Etiketten werden mit DejaVu gesetzt (Paket `fonts-dejavu-core`, im Image enthalten). Beim Start nennt der Druckdienst im Log, welche Schrift er nimmt („Schriften der Etiketten: regular: …/DejaVuSans.ttf, …“). Fehlt die Schrift, druckt Stowly mit einer Ersatzschrift ohne Umlaute („ü“ wird „ue“) und meldet das im Log.
+- Die Etiketten werden mit DejaVu gesetzt. Die drei Schriftdateien liefert Stowly selbst mit (Paket `stowly_print`, Ordner `fonts`: DejaVu 2.37 samt Lizenztext `DejaVu-LICENSE.txt`); so sehen die Etiketten am Server und am Pi gleich aus. Das Image enthält sie zusätzlich als Systempaket `fonts-dejavu-core`, als Rückfall. Beim Start nennt der Druckdienst im Log, welche Schrift er nimmt („Schriften der Etiketten: regular: …/stowly_print/fonts/DejaVuSans.ttf, …“). Fehlt die Schrift an beiden Stellen, druckt Stowly mit einer Ersatzschrift ohne Umlaute („ü“ wird „ue“) und meldet das im Log. Die Lizenz von DejaVu erlaubt das Weitergeben, solange ihr Text dabei bleibt.
 - Die Brother-Bibliothek `brother_ql_next` steht unter der GPL-3.0. Sie gehört nicht zum Quelltext von Stowly: Das Image lädt sie beim Bau auf Version und Prüfsumme festgelegt von PyPI nach (`print/requirements-brother.txt`), und nur der Brother-Treiber lädt sie, erst beim Benutzen. Wer ein Image mit ihr an andere weitergibt, muss deren GPL-Bedingungen einhalten.
 
 ## Prüfliste für die Zielumgebung
@@ -477,9 +477,9 @@ Je einmal auf dem Android-Gerät und dem iPhone, über die HTTPS-Adresse:
 | # | Schritt | Erwartet |
 |---|---|---|
 | F1 | `docker compose build` | Im zweiten Teil laufen `apt-get install fonts-dejavu-core libusb-1.0-0` und `pip install --require-hashes -r …/requirements-brother.txt` durch (packbits wird dabei gebaut) |
-| F2 | `docker compose exec stowly ls /usr/share/fonts/truetype/dejavu/` | `DejaVuSans.ttf`, `DejaVuSans-Bold.ttf`, `DejaVuSansMono-Bold.ttf` |
+| F2 | `docker compose exec stowly python -c "import stowly_print, pathlib; print(sorted(p.name for p in (pathlib.Path(stowly_print.__file__).parent / 'fonts').iterdir()))"` | `DejaVu-LICENSE.txt`, `DejaVuSans-Bold.ttf`, `DejaVuSans.ttf`, `DejaVuSansMono-Bold.ttf`; dieselben drei Schriften liegen als Rückfall unter `/usr/share/fonts/truetype/dejavu/` |
 | F3 | `docker compose exec stowly python -c "import brother_ql, usb; print('ok')"` | `ok` |
-| F4 | `docker compose logs stowly` nach dem Start | „Druckdienst unter /print bereit (boot_id …)"; „Schriften der Etiketten:“ nennt dreimal eine Datei unter `/usr/share/fonts/truetype/dejavu/`, nicht „eingebaut“; keine Meldung „Schrift … fehlt" |
+| F4 | `docker compose logs stowly` nach dem Start | „Druckdienst unter /print bereit (boot_id …)"; „Schriften der Etiketten:“ nennt dreimal eine Datei unter `…/stowly_print/fonts/` (die mitgelieferten DejaVu-Schriften), nicht „eingebaut“; keine Meldung „Schrift … fehlt" |
 | F5 | `docker compose exec stowly ls -l /data/print` | `jobs.sqlite3` und `images/`, beide im Besitz von `stowly` |
 | F6 | In der App einen Drucker „am Server" mit dem Bild-Treiber anlegen, als Standarddrucker wählen, eine Packung einlagern | Etikett „gedruckt"; „Etikett ansehen" zeigt es mit echten Umlauten; auf dem zweiten Handy erscheint „gedruckt" nach dem nächsten Abgleich |
 | F7 | `curl -s https://stowly.home/print/v1/health` (ohne Token) | `401` mit `"code":"unauthorized"` |

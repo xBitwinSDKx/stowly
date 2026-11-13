@@ -1,12 +1,14 @@
 """Der Renderer: Vorlage und Daten werden zum 1-Bit-Bild (docs/etiketten.md, 3.4).
 
 Die Schriftquelle legen die Tests selbst fest (``Fonts.builtin()``, die in Pillow eingebaute
-Schrift), damit kein Ergebnis davon abhängt, welche Schriften auf dem Rechner liegen.
+Schrift), damit kein Ergebnis davon abhängt, welche Schriften auf dem Rechner liegen. Nur die
+Tests unter „Schriften" nehmen ausdrücklich die mitgelieferten DejaVu-Dateien aus dem Paket.
 
 Referenzbilder neu schreiben: ``python -m pytest tests/test_render.py --update-references``
 """
 
 import base64
+import hashlib
 import io
 import logging
 from pathlib import Path
@@ -18,7 +20,7 @@ from print_support import REFERENCE_DIR
 from stowly_print.model import Capabilities, Media
 from stowly_print.render import (
     FONT_FILES,
-    SYSTEM_FONT_DIR,
+    PACKAGE_FONT_DIR,
     Fonts,
     Placed,
     RenderError,
@@ -514,13 +516,35 @@ def test_builtin_font_spells_out_umlauts_instead_of_drawing_boxes():
     )
 
 
-def test_dejavu_draws_real_umlauts_when_the_system_has_it():
-    if not all((SYSTEM_FONT_DIR / filename).is_file() for filename in FONT_FILES.values()):
-        pytest.skip("DejaVu ist auf diesem Rechner nicht installiert (Debian: fonts-dejavu-core).")
-    fonts = Fonts(directories=[SYSTEM_FONT_DIR])
+# Die mitgelieferten Schriften: DejaVu 2.37, unverändert aus ``dejavu-fonts-ttf-2.37.tar.bz2`` von
+# der Seite des Projekts (docs/etiketten.md, 3.4).
+SHIPPED_FONTS = {
+    "DejaVuSans.ttf": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+    "DejaVuSans-Bold.ttf": "e6476c1b80502924294eed40894c5b18e06c181444ca953e5334262df9c27724",
+    "DejaVuSansMono-Bold.ttf": "bce60f1b4421acd9ea51ba6623d7024ecbe6817a953e3654df62a5e6bdf8f769",
+}
+
+
+def test_package_ships_the_dejavu_fonts_unchanged_and_with_their_licence():
+    assert set(SHIPPED_FONTS) == set(FONT_FILES.values())
+    for filename, digest in SHIPPED_FONTS.items():
+        assert hashlib.sha256((PACKAGE_FONT_DIR / filename).read_bytes()).hexdigest() == digest, filename
+    # Die Lizenz verlangt, dass ihr Text jede Kopie der Schriften begleitet.
+    licence = (PACKAGE_FONT_DIR / "DejaVu-LICENSE.txt").read_text(encoding="utf-8")
+    assert "Bitstream Vera Fonts Copyright" in licence
+    assert "DejaVu changes are in public domain" in licence
+    # Die Schriftquelle des Betriebs nimmt sie von dort, vor den Schriften des Systems.
+    assert Fonts().describe() == {
+        name: str(PACKAGE_FONT_DIR / filename) for name, filename in FONT_FILES.items()
+    }
+
+
+def test_shipped_dejavu_draws_real_umlauts_and_keeps_id_and_date_complete():
+    fonts = Fonts(directories=[PACKAGE_FONT_DIR])
     assert "eingebaut" not in fonts.describe().values()
     for kind, data in (
         ("package", {**PACKAGE, "title": "Grüße aus Österreich", "subtitle": "Käse · süß"}),
+        ("package", PACKAGE_LONG),
         ("zone", ZONE),
     ):
         image, report = render_with_report(load_builtin(kind), data, fonts=fonts)
@@ -539,6 +563,15 @@ def test_dejavu_draws_real_umlauts_when_the_system_has_it():
     ]
     assert {placed.size_mm for placed in ids} == {6.0}
     assert not any(placed.truncated for placed in ids)
+    # Das Einlagerdatum steht in der Größe der Vorlage vollständig da, gleich welche Ziffern es hat.
+    dates = ("13.11.2026", "28.08.2088", "11.11.2111")
+    stored = [
+        texts(render_with_report(load_builtin("package"), {**PACKAGE, "stored": value}, fonts=fonts)[1])[4]
+        for value in dates
+    ]
+    assert [placed.lines for placed in stored] == [(value,) for value in dates]
+    assert {placed.size_mm for placed in stored} == {2.4}
+    assert not any(placed.truncated for placed in stored)
 
 
 def test_missing_font_files_fall_back_to_the_builtin_font_and_say_so_once(tmp_path, caplog):

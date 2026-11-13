@@ -23,8 +23,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Für den Druck: die Schriften der Etiketten (DejaVu, docs/etiketten.md 3.4) und libusb für einen
-# Brother-Drucker am USB (zuschaltbar über docker-compose.usb.yml).
+# Für den Druck: die Schriften der Etiketten als Rückfall (DejaVu; der Druckdienst bringt sie in
+# seinem Paket selbst mit, docs/etiketten.md 3.4) und libusb für einen Brother-Drucker am USB
+# (zuschaltbar über docker-compose.usb.yml).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-dejavu-core libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*

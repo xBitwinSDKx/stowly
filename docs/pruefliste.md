@@ -12,7 +12,7 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - kein Traceback
   - „Etikett-Vorlagen übernommen"
   - „Druckdienst unter /print bereit"
-  - „Schriften der Etiketten:" nennt dreimal eine DejaVu-Datei, nicht „eingebaut"
+  - „Schriften der Etiketten:" nennt dreimal eine Datei unter `…/stowly_print/fonts/`, nicht „eingebaut"
   - `brother_ql` und `usb` lassen sich importieren
 - [ ] **4.** Anmelden per `curl`. Nach `restart` und nach `down`/`up` sind die Daten noch da. Ohne `STOWLY_PUBLISH` ist der Port von außen nicht erreichbar. Im Log steht die Zeile zu Open Food Facts. `docker compose stop` endet in höchstens 15 Sekunden, auch während eine App auf ein Etikett wartet. (A10–A15, F9)
 
@@ -114,7 +114,7 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
 ## L. Nach vier Wochen
 
 - [ ] **35.** Gefrierdose und Regal: Das Etikett haftet, der QR-Code ist mit beiden Handys lesbar, auch bereift (V1, V2, F15). Das iPhone hat seinen Bestand nach acht Tagen Pause noch (C10).
-- [ ] **36.** Das Aussehen der Etiketten mit der Schrift DejaVu (V3). Auf dem Entwicklungsrechner gab es nur die Ersatzschrift:
+- [ ] **36.** Das Aussehen der gedruckten Etiketten (V3). Mit der mitgelieferten Schrift DejaVu ist es auf dem Entwicklungsrechner als Bild geprüft und nachgemessen, aber nicht auf Papier:
   - Lange Produktnamen stehen in zwei Zeilen, werden kleiner und enden notfalls mit „…".
   - ID und Einlagerdatum stehen vollständig da. **Bitte melden, falls eines davon mit „…" endet.**
-  - Bei sehr langen Markennamen kann die Zeile darunter die Packungsgröße abschneiden („COCA-COLA SERVICES SA/NV ·…"). Stört das, lässt sich die Reihenfolge in dieser Zeile umdrehen.
+  - Bei sehr langen Markennamen schneidet die Zeile darunter die Packungsgröße ab („COCA-COLA SERVICES SA…"). Stört das, lässt sich die Reihenfolge in dieser Zeile umdrehen.

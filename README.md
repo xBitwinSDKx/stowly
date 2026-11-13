@@ -9,7 +9,7 @@ Selbst gehostete Lagerverwaltung für Lebensmittel. Jede Packung bekommt beim Ei
 | Ordner | Inhalt |
 |---|---|
 | `server/` | Python 3.12, FastAPI, SQLite: maßgeblicher Bestand, Sync, Anmeldung. Paket `stowly`. |
-| `print/` | Paket `stowly_print`: Etikett rendern, Druckertreiber, Auftragsdienst. Läuft im Server und eigenständig auf dem Raspberry Pi; ohne FastAPI und pydantic. |
+| `print/` | Paket `stowly_print`: Etikett rendern, Druckertreiber, Auftragsdienst. Läuft im Server und eigenständig auf dem Raspberry Pi; ohne FastAPI und pydantic. Die Schriften der Etiketten (DejaVu, frei lizenziert) liegen samt Lizenztext im Paket. |
 | `web/` | React, TypeScript, Vite: eine App für Desktop und Handy, die immer auf ihrer lokalen Kopie arbeitet. |
 | `pi/` | Installation des Druckdienstes auf dem Raspberry Pi samt Anleitung und Prüfliste. |
 | `docs/` | Plan, technische Grundlagen und die Verträge. |
