@@ -7,7 +7,7 @@ import { CircleCheckIcon, ExternalLinkIcon, ImageIcon, LabelsIcon, PrinterIcon, 
 
 import type { LabelActions } from "./labelActions";
 import { LabelImage } from "./LabelImage";
-import { flushSummary, JOB_STATES, jobErrorText, type JobView } from "./model";
+import { flushSummary, JOB_STATES, jobErrorText, type JobGroup, type JobView } from "./model";
 import { ProblemNotice } from "./PrinterCard";
 import styles from "./PrintersPage.module.css";
 import type { Printing } from "./usePrinting";
@@ -85,10 +85,23 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
     setReport(await actions.flush());
   }
 
-  // Eine Antwort oder ein Verwerfen räumt die Zeile weg und mit ihr die Schaltfläche, die den Fokus
-  // hatte. Damit er nicht verloren geht: weiter zur selben Packung an ihrem neuen Platz („Erneut
-  // drucken" nach einem Nein), sonst zur nächsten Nachfrage, sonst zur ersten Schaltfläche hier.
-  const acted = useRef<{ id: string; at: number } | null>(null);
+  // Während des Versuchs ist „Jetzt drucken" gesperrt und verliert dabei den Fokus (oder ist danach
+  // ganz weg). Der Fokus geht dann an das Ergebnis, das der Versuch gebracht hat.
+  const reportRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (report !== null && (active === null || active === document.body)) {
+      reportRef.current?.focus({ preventScroll: true });
+    }
+  }, [report]);
+
+  // Eine Antwort, ein Verwerfen oder „Hier drucken" räumt die Zeile weg und mit ihr die
+  // Schaltfläche, die den Fokus hatte. Damit er nicht verloren geht:
+  // - nach einem Nein zur selben Packung an ihrem neuen Platz: Dort steht „Erneut drucken";
+  // - sonst zur Zeile, die jetzt an dieser Stelle der Gruppe steht (oder der davor), und zwar
+  //   an die Zeile selbst, nicht an eine ihrer Schaltflächen: Ein zweites Enter löst so nichts aus;
+  // - ist die Gruppe leer, zur nächsten Nachfrage oder zur ersten Schaltfläche des Abschnitts.
+  const acted = useRef<{ id: string; group: JobGroup; index: number; follow: boolean; at: number } | null>(null);
   const jobsKey = printing.jobs.map((view) => `${view.job.id}:${view.job.state}`).join("|");
   const idle = actions.busy === null;
   useEffect(() => {
@@ -105,17 +118,23 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
       return; // Der Fokus ist nicht verloren gegangen.
     }
     const section = document.getElementById("etiketten");
+    const rows = Array.from(section?.querySelectorAll<HTMLElement>(`[data-group="${last.group}"] > li`) ?? []);
     const target =
-      section?.querySelector<HTMLElement>(`[data-job="${last.id}"] button`) ??
-      section?.querySelector<HTMLElement>("[data-asking] button") ??
+      (last.follow ? section?.querySelector<HTMLElement>(`[data-job="${last.id}"] button`) : null) ??
+      rows[Math.min(last.index, rows.length - 1)] ??
+      section?.querySelector<HTMLElement>('[data-group="ask"] > li') ??
       section?.querySelector<HTMLElement>("button");
     target?.focus({ preventScroll: true });
     acted.current = null;
   }, [jobsKey, idle]);
 
-  /** Merkt sich, an welcher Zeile gehandelt wurde, und führt die Handlung aus. */
-  function act(view: JobView, run: () => Promise<void>) {
-    acted.current = { id: view.job.id, at: Date.now() };
+  /**
+   * Merkt sich, an welcher Zeile gehandelt wurde, und führt die Handlung aus.
+   * @param follow danach der Zeile an ihren neuen Platz folgen (nach einem Nein)
+   */
+  function act(view: JobView, run: () => Promise<void>, follow = false) {
+    const list = view.group === "ask" ? printing.asking : view.group === "waiting" ? printing.waiting : done;
+    acted.current = { id: view.job.id, group: view.group, index: Math.max(0, list.indexOf(view)), follow, at: Date.now() };
     void run();
   }
 
@@ -130,7 +149,8 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
     const foreign = waiting && !view.own;
     const unassigned = waiting && !view.printer;
     return (
-      <li key={job.id} className={styles.job} data-job={job.id}>
+      // tabIndex -1: Verschwindet die Nachbarzeile, kann der Fokus hierher wechseln (siehe oben).
+      <li key={job.id} className={styles.job} data-job={job.id} tabIndex={-1}>
         <div className={styles.jobText}>
           <div className={styles.jobHead}>
             <span className={styles.jobTitle}>{view.title}</span>
@@ -155,22 +175,22 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
             </Button>
           ) : null}
           {foreign ? (
-            <Button size="sm" icon={<PrinterIcon />} busy={busy} aria-label={`Hier drucken: ${view.title}`} onClick={() => act(view, () => actions.retry(view))}>
+            <Button size="sm" icon={<PrinterIcon />} busy={busy} aria-label={`Hier drucken: ${view.label}`} onClick={() => act(view, () => actions.retry(view))}>
               Hier drucken
             </Button>
           ) : null}
           {job.state === "pending" || job.state === "queued" ? (
-            <Button size="sm" variant="ghost" disabled={busy} aria-label={`Verwerfen: ${view.title}`} onClick={() => act(view, () => actions.cancel(view))}>
+            <Button size="sm" variant="ghost" disabled={busy} aria-label={`Verwerfen: ${view.label}`} onClick={() => act(view, () => actions.cancel(view))}>
               Verwerfen
             </Button>
           ) : null}
           {job.state === "failed" || job.state === "cancelled" ? (
-            <Button size="sm" icon={<RetryIcon />} busy={busy} aria-label={`Erneut drucken: ${view.title}`} onClick={() => void actions.retry(view)}>
+            <Button size="sm" icon={<RetryIcon />} busy={busy} aria-label={`Erneut drucken: ${view.label}`} onClick={() => void actions.retry(view)}>
               Erneut drucken
             </Button>
           ) : null}
           {view.hasImage ? (
-            <Button size="sm" variant="ghost" icon={<ImageIcon />} aria-label={`Etikett ansehen: ${view.title}`} onClick={() => setViewing(job.id)}>
+            <Button size="sm" variant="ghost" icon={<ImageIcon />} aria-label={`Etikett ansehen: ${view.label}`} onClick={() => setViewing(job.id)}>
               Etikett ansehen
             </Button>
           ) : null}
@@ -197,7 +217,7 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
       ) : null}
 
       {report ? (
-        <div className={styles.report} aria-label="Ergebnis des Druckversuchs">
+        <div ref={reportRef} className={styles.report} role="group" aria-label="Ergebnis des Druckversuchs" tabIndex={-1}>
           <Notice tone={report.problems.length > 0 ? "neutral" : "success"} role="status" icon={report.problems.length > 0 ? undefined : <CircleCheckIcon />}>
             {flushSummary(report)}
           </Notice>
@@ -255,9 +275,9 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
             ) : null}
           </div>
           <p className={styles.muted}>Bei diesen Etiketten kennt Stowly den Ausgang nicht. Ein Blick auf den Drucker klärt es; nichts wird von selbst noch einmal gedruckt.</p>
-          <ul className={cx(styles.jobs, styles.asking)} data-asking="">
+          <ul className={cx(styles.jobs, styles.asking)} data-group="ask">
             {printing.asking.map((view) => (
-              <li key={view.job.id} className={styles.job}>
+              <li key={view.job.id} className={styles.job} data-job={view.job.id} tabIndex={-1}>
                 <div className={styles.jobText}>
                   <div className={styles.jobHead}>
                     <span className={styles.jobTitle}>{view.title}</span>
@@ -266,11 +286,16 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
                   <div className={styles.muted}>{[view.detail, printerName(view), `Stand ${timeAgo(view.job.updated_at, now)}`].filter((part) => part !== "").join(" · ")}</div>
                   {view.job.error ? <div className={styles.reason}>{jobErrorText(view.job.error)}</div> : null}
                 </div>
-                <div className={styles.jobActions} role="group" aria-label={`Wurde das Etikett gedruckt? ${view.title}`}>
-                  <Button size="sm" variant="primary" disabled={actions.busy !== null} aria-label={`Ja, gedruckt: ${view.title}`} onClick={() => act(view, () => actions.resolve(view, true))}>
+                <div className={styles.jobActions} role="group" aria-label={`Wurde das Etikett gedruckt? ${view.label}`}>
+                  <Button size="sm" variant="primary" disabled={actions.busy !== null} aria-label={`Ja, gedruckt: ${view.label}`} onClick={() => act(view, () => actions.resolve(view, true))}>
                     Ja
                   </Button>
-                  <Button size="sm" disabled={actions.busy !== null} aria-label={`Nein, nicht gedruckt: ${view.title}`} onClick={() => act(view, () => actions.resolve(view, false))}>
+                  <Button
+                    size="sm"
+                    disabled={actions.busy !== null}
+                    aria-label={`Nein, nicht gedruckt: ${view.label}`}
+                    onClick={() => act(view, () => actions.resolve(view, false), true)}
+                  >
                     Nein
                   </Button>
                 </div>
@@ -283,14 +308,18 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
       {printing.waiting.length > 0 ? (
         <div className={styles.group}>
           <h3 className={styles.groupTitle}>Ausstehend</h3>
-          <ul className={styles.jobs}>{printing.waiting.map(row)}</ul>
+          <ul className={styles.jobs} data-group="waiting">
+            {printing.waiting.map(row)}
+          </ul>
         </div>
       ) : null}
 
       {done.length > 0 ? (
         <div className={styles.group}>
           <h3 className={styles.groupTitle}>Verlauf</h3>
-          <ul className={styles.jobs}>{done.slice(0, shown).map(row)}</ul>
+          <ul className={styles.jobs} data-group="done">
+            {done.slice(0, shown).map(row)}
+          </ul>
           {done.length > shown ? (
             <Button variant="ghost" className={styles.more} onClick={() => setShown(shown + 4 * HISTORY_STEP)}>
               {plural(done.length - shown, "älteres Etikett", "ältere Etiketten")} zeigen

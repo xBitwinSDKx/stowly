@@ -11,6 +11,8 @@
  *   abgelehnt     es geht keine Anfrage hinaus ("permission")
  *   noch offen    die Anfrage würde die Nachfrage des Browsers auslösen; das darf nur auf eine
  *                 Handlung des Anwenders hin geschehen (`manual`). Selbsttätig wird gewartet.
+ *                 Auf Wunsch des Anwenders bekommt diese Anfrage statt 1,5 s bis zu 15 s, damit
+ *                 er die Nachfrage beantworten kann (`PERMISSION_PROMPT_TIMEOUT_MS`).
  *                 Ausnahme: Der Browser meldet „noch offen" auch dort, wo er gar nicht fragt,
  *                 nämlich wenn die App selbst aus dem lokalen Netzwerk kommt (der übliche Fall
  *                 beim Server zu Hause). Hat eine Anfrage auf Wunsch des Anwenders einmal eine
@@ -23,9 +25,40 @@ import type { Printer, ServiceHealth, ServicePrinter } from "@/contract/api.gen"
 import type { PrinterProblem } from "@/contract/core";
 
 import { addressSpaceOf, baseOf, newNonce, proofOf, sameProof, type AddressSpace, type PermissionReader } from "./address";
-import type { PrintServiceClient, ServiceEndpoint } from "./client";
+import { HEALTH_TIMEOUT_MS, type PrintServiceClient, type ServiceEndpoint } from "./client";
 
 export const PRINT_SERVICE_APP = "stowly-print";
+
+/**
+ * Zeitgrenze einer Abfrage, die die Nachfrage des Browsers nach dem lokalen Netzwerk auslösen
+ * kann: Die Erlaubnis steht auf „noch offen", der Adressraum ist nicht als „fragt nie" bekannt,
+ * und der Versuch kommt vom Anwender (`flush`, `probe`). Der Browser hält die Anfrage an, bis der
+ * Anwender geantwortet hat; die üblichen 1,5 s reichen nicht einmal zum Lesen. Ob die Nachfrage
+ * stehen bleibt, wenn die Anfrage vorher aufgibt, ist nicht sicher; also bekommt der Anwender
+ * Zeit, sie zu lesen und zu beantworten, bevor die Anfrage aufgibt.
+ */
+export const PERMISSION_PROMPT_TIMEOUT_MS = 15_000;
+
+/**
+ * So lange dauert eine solche Abfrage über alle Adressen eines Druckers zusammen höchstens: Wer
+ * nicht im WLAN des Pi ist, wartet dort auf „nicht erreichbar", und das soll nicht über alle
+ * Adressen hinweg je 15 s dauern. Die erste Adresse bekommt bis zu 15 s, jede weitere, die die
+ * Nachfrage auslösen kann, den Rest bis hierhin, mindestens aber die üblichen 1,5 s. Die beiden
+ * vorgesehenen Adressen (HTTPS, dann HTTP) brauchen so zusammen höchstens 20 s.
+ */
+export const PERMISSION_PROMPT_BUDGET_MS = 20_000;
+
+/**
+ * Die Zeitgrenze einer Abfrage des Zustands. `mayPrompt`: Die Anfrage kann die Nachfrage des
+ * Browsers auslösen (siehe oben); sonst gelten immer die üblichen 1,5 s.
+ */
+export function healthTimeout(mayPrompt: boolean, startedAtMs: number, nowMs: number): number {
+  if (!mayPrompt) {
+    return HEALTH_TIMEOUT_MS;
+  }
+  const left = startedAtMs + PERMISSION_PROMPT_BUDGET_MS - nowMs;
+  return Math.max(HEALTH_TIMEOUT_MS, Math.min(PERMISSION_PROMPT_TIMEOUT_MS, left));
+}
 
 export interface Connection {
   printer: Printer;
@@ -92,6 +125,7 @@ async function connectDirect(printer: Printer, options: ConnectOptions): Promise
   let denied = false;
   let waiting = false;
   let answered: PrinterProblem | null = null;
+  const startedAt = Date.now();
   for (const raw of direct.urls) {
     const base = baseOf(raw);
     const space = addressSpaceOf(base);
@@ -100,13 +134,15 @@ async function connectDirect(printer: Printer, options: ConnectOptions): Promise
       denied = true;
       continue;
     }
-    if (permission === "prompt" && !options.manual && !options.promptFree(space)) {
+    const mayPrompt = permission === "prompt" && !options.promptFree(space);
+    if (mayPrompt && !options.manual) {
       waiting = true;
       continue;
     }
     const endpoint: ServiceEndpoint = { kind: "direct", base, token: direct.token };
     const nonce = newNonce();
-    const reply = await options.client.health(endpoint, nonce);
+    // Kann diese Anfrage die Nachfrage des Browsers auslösen, bekommt der Anwender Zeit für seine Antwort.
+    const reply = await options.client.health(endpoint, nonce, healthTimeout(mayPrompt, startedAt, Date.now()));
     if (permission === "prompt" && (reply.ok || reply.reached) && (await options.readPermission(space)) === "prompt") {
       // Beantwortet, ohne dass der Browser gefragt hätte: In diesem Adressraum fragt er nicht.
       options.learnPromptFree(space);
@@ -138,7 +174,15 @@ async function connectDirect(printer: Printer, options: ConnectOptions): Promise
       denied = true;
       continue;
     }
-    // Ist dort überhaupt etwas? Dann fehlt nur der Ursprung der App in der Konfiguration des Dienstes.
+    if (reply.timedOut) {
+      // Bis zur Zeitgrenze kam nichts: Dort ist niemand (falsches WLAN), oder der Browser wartet
+      // noch auf die Antwort des Anwenders auf seine Nachfrage. Eine zweite Anfrage ohne CORS
+      // kostete nur Zeit und könnte die Nachfrage ein zweites Mal auslösen. Erteilt der
+      // Anwender die Erlaubnis danach, stellt der Kern von selbst zu (src/core/index.ts).
+      continue;
+    }
+    // Die Anfrage scheiterte sofort. Ist dort überhaupt etwas? Dann fehlt nur der Ursprung der
+    // App in der Konfiguration des Dienstes.
     if (await options.client.respondsWithoutCors(base)) {
       answered ??= "blocked";
     }

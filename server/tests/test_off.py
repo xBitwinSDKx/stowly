@@ -275,6 +275,48 @@ def test_the_plain_product_name_is_the_fallback(bench):
     assert (len(product["name"]), len(product["brand"]), len(product["quantity"])) == (120, 80, 40)
 
 
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("400 g e", "400 g"),
+        ("250 ml e", "250 ml"),
+        ("400 g ℮", "400 g"),
+        ("400 g℮", "400 g"),
+        ("1 kg  e ", "1 kg"),
+        ("1 Flasche", "1 Flasche"),  # ein „e" am Wortende ist kein Schätzzeichen
+        ("6 x 0,5 l", "6 x 0,5 l"),
+        ("e 400 g", "e 400 g"),  # nur am Ende
+        ("400 g E", "400 g E"),  # nur das kleine „e"
+        ("Tee", "Tee"),
+        ("℮", ""),
+    ],
+)
+def test_the_estimate_sign_is_not_taken_over(given, expected):
+    assert off.quantity_without_estimate_sign(given) == expected
+    result = off.parse_lookup(*_text(found(quantity=given)))
+    assert result.quantity == expected
+
+
+def test_the_estimate_sign_through_the_whole_lookup_and_stored_values_stay(bench):
+    bench.service.products[EAN_A] = found(product_name_de="Basmati Reis", quantity="400 g e")
+    bench.service.products[EAN_B] = found(product_name_de="Spülmittel", quantity="1 Flasche")
+    first, second = bench.create(barcodes=[EAN_A]), bench.create(barcodes=[EAN_B])
+    bench.drain()
+    assert bench.product(first)["quantity"] == "400 g"
+    assert bench.device.products[second]["quantity"] == "1 Flasche"
+    assert bench.lookup_row(EAN_A)["quantity"] == "400 g"
+    # Was schon gespeichert ist, bleibt, wie es ist: kein nachträgliches Umschreiben.
+    con = db.connect(bench.settings.database_path)
+    try:
+        with db.transaction(con):
+            con.execute("UPDATE off_lookups SET quantity = '500 g e' WHERE barcode = ?", (EAN_A,))
+    finally:
+        con.close()
+    bench.drain()
+    assert bench.lookup_row(EAN_A)["quantity"] == "500 g e"
+    assert bench.product(first)["quantity"] == "400 g"
+
+
 def test_found_without_any_data_is_still_found(bench):
     bench.service.products[EAN_A] = found()
     product_id = bench.create(barcodes=[EAN_A])

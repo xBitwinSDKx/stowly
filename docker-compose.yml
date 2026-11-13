@@ -1,6 +1,7 @@
 # Start:  docker compose up -d --build
 # Vorher: .env.example nach .env kopieren und STOWLY_PASSWORD setzen.
 # Anleitung und Prüfliste: docs/betrieb.md
+# USB-Drucker direkt am Server (zuschaltbar): docker-compose.usb.yml
 #
 # In der Zielumgebung noch nicht gestartet: Auf dem Entwicklungsrechner gibt es kein Docker.
 services:
@@ -18,7 +19,8 @@ services:
       # Rechner, erreicht er 127.0.0.1 nicht: dann ein gemeinsames Netz, siehe docs/betrieb.md.
       - "${STOWLY_PUBLISH:-127.0.0.1:8010}:8010"
     volumes:
-      # Die Datenbank (/data/stowly.sqlite3) samt Bildern: alles, was Stowly speichert.
+      # Alles, was Stowly speichert: die Datenbank (/data/stowly.sqlite3) samt Bildern, dazu der
+      # Druck (/data/print: Auftragsspeicher jobs.sqlite3 und die PNG-Dateien des Bild-Treibers).
       # Sichern und Zurückspielen: docs/betrieb.md, Abschnitt 8.
       - stowly-data:/data
     # Der Prozess läuft ohne root und braucht keine besonderen Rechte.
@@ -26,6 +28,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Beim Beenden wartet der Server höchstens 5 Sekunden auf laufende Anfragen.
+    stop_grace_period: 15s
     logging:
       driver: json-file
       options:

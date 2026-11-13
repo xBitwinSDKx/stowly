@@ -304,16 +304,26 @@ class PrintService:
     # ------------------------------------------------------------------ Aufträge
 
     def submit(self, job_id: str, request: JobRequest) -> tuple[Job, bool]:
-        """Reicht einen Auftrag ein. Liefert ``(auftrag, neu)``; ``neu`` ist falsch, wenn er schon bekannt war."""
+        """Reicht einen Auftrag ein. Liefert ``(auftrag, neu)``; ``neu`` ist falsch, wenn er schon bekannt war.
+
+        Reihenfolge der Prüfungen: Lauf (``boot_mismatch``) und Kennung (bekannt oder
+        ``job_conflict``), dann ``admit`` (am Server: gibt es das Etikett, wartet es noch?), dann
+        der Drucker (``unknown_printer``), der Platz in der Warteschlange (``queue_full``) und
+        zuletzt das Rendern (``render_failed``). Ein verworfenes Etikett meldet so ``not_pending``,
+        auch wenn sein Drucker inzwischen gelöscht ist: Die App gleicht dann ab, statt das
+        Etikett als gescheitert zu melden.
+        """
         content_hash = request.content_hash()
         with self._lock:
             known = self._recognise(job_id, request, content_hash)
             if known is not None:
                 return known, False
-            entry = self._resolve(request.printer)
-            self._check_room()
         if self._admit is not None:
             self._admit(job_id, request)
+        # Die Drucker kommen am Server aus der Datenbank: nachschlagen, ohne die Warteschlange zu sperren.
+        entry = self._resolve(request.printer)
+        with self._lock:
+            self._check_room()
         capabilities = entry.driver.capabilities()
         image = self._render(request, capabilities)
 

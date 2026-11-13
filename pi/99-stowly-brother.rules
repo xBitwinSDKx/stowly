@@ -1,0 +1,4 @@
+# Brother-Etikettendrucker (Hersteller 04f9) am USB: Die Gruppe plugdev darf das Gerät öffnen.
+# Der Druckdienst läuft als Benutzer stowly-print in dieser Gruppe (pi/stowly-print.service).
+# Installiert von pi/install.sh nach /etc/udev/rules.d/99-stowly-brother.rules.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04f9", MODE="0660", GROUP="plugdev"

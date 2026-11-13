@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 
 import { useCore, useLive, type Zone, type ZoneChanges } from "@/contract";
-import { errorText, Notice, Select, Swatch, TileChoice } from "@/ui";
+import { errorText, focusFirstInvalid, Notice, Select, Swatch, TileChoice } from "@/ui";
 import {
   Button,
   DEFAULT_ZONE_ICON,
@@ -67,6 +67,7 @@ export function ZoneDialog({ zone, onClose }: ZoneDialogProps) {
     event.preventDefault();
     setTried(true);
     if (nameError) {
+      focusFirstInvalid(formId);
       return;
     }
     setBusy(true);

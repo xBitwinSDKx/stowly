@@ -3,17 +3,24 @@ import { useLocation } from "react-router";
 
 import { useCore, type Printer } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
-import { ConfirmDialog, EmptyState, errorText, List, ListRow, plural, Section, Select, useNow, ZoneLabel } from "@/ui";
+import { ConfirmDialog, EmptyState, errorText, List, ListRow, Section, Select, useNow, ZoneLabel } from "@/ui";
 import { Button, useToast } from "@/ui/base";
 import { PlusIcon, PrinterIcon } from "@/ui/icons";
 
 import { useLabelActions } from "./labelActions";
 import { Labels, pendingFor } from "./Labels";
-import { describeHealth, printerDuties, printerForZone } from "./model";
+import { describeHealth, describeRemoval, printerDuties, printerForZone } from "./model";
 import { PrinterCard, type ProbeState } from "./PrinterCard";
 import { PrinterDialog } from "./PrinterDialog";
 import styles from "./PrintersPage.module.css";
 import { usePrinting } from "./usePrinting";
+
+/** Ergebnis einer Abfrage, zusammen mit dem Stand des Druckers, für den es galt. */
+interface ProbeEntry {
+  state: ProbeState;
+  /** `Printer.updated_at` beim Abfragen: Ändern sich die Angaben, gilt das Ergebnis nicht mehr. */
+  version: string;
+}
 
 /** Wert der Auswahl für „kein eigener Drucker" bzw. „kein Standarddrucker". */
 const NONE = "";
@@ -40,7 +47,7 @@ export function PrintersPage() {
   const now = useNow();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [serial, setSerial] = useState(0);
-  const [probes, setProbes] = useState<ReadonlyMap<string, ProbeState>>(new Map());
+  const [probes, setProbes] = useState<ReadonlyMap<string, ProbeEntry>>(new Map());
   const [fresh, setFresh] = useState<string | null>(null);
   const { hash } = useLocation();
 
@@ -64,6 +71,26 @@ export function PrintersPage() {
       addRef.current?.focus();
     }
   }, [removed, none]);
+
+  // Eben angelegt: Der nächste Schritt ist „Verbindung prüfen" an der neuen Karte. Dorthin gehen
+  // Blick und Fokus, statt zurück zu „Drucker hinzufügen" (die Karte steht oft weiter unten).
+  const focusedFresh = useRef<string | null>(null);
+  const printerCount = printing.printers.length;
+  useEffect(() => {
+    if (fresh === null || focusedFresh.current === fresh) {
+      return;
+    }
+    const button = document.querySelector<HTMLElement>(`[data-printer="${fresh}"] [data-probe]`);
+    if (!button) {
+      return; // Die Karte ist noch nicht da: beim nächsten Zeichnen.
+    }
+    focusedFresh.current = fresh;
+    const card = button.closest("li");
+    if (card && typeof card.scrollIntoView === "function") {
+      card.scrollIntoView({ block: "center" });
+    }
+    button.focus({ preventScroll: true });
+  }, [fresh, printerCount]);
 
   if (!printing.ready) {
     return (
@@ -90,18 +117,31 @@ export function PrintersPage() {
     toast.show({ message: errorText(error), tone: "danger" });
   }
 
-  function setProbe(id: string, state: ProbeState) {
-    setProbes((current) => new Map(current).set(id, state));
+  function setProbe(printer: Printer, state: ProbeState) {
+    setProbes((current) => new Map(current).set(printer.id, { state, version: printer.updated_at }));
+  }
+
+  /** Das Ergebnis der letzten Abfrage, solange die Angaben zum Drucker seither dieselben sind. */
+  function probeOf(printer: Printer): ProbeState | undefined {
+    const entry = probes.get(printer.id);
+    return entry && (entry.version === printer.updated_at || entry.state.status === "busy") ? entry.state : undefined;
   }
 
   /** Fragt den Druckdienst jetzt ab. Nur auf eine Handlung des Anwenders hin: Der Browser darf dabei nach dem lokalen Netzwerk fragen. */
   async function probe(printer: Printer) {
-    setProbe(printer.id, { status: "busy" });
+    setProbe(printer, { status: "busy" });
     try {
-      setProbe(printer.id, { status: "done", probe: await core.printers.probe(printer.id) });
+      setProbe(printer, { status: "done", probe: await core.printers.probe(printer.id) });
     } catch (error) {
-      setProbe(printer.id, { status: "failed", message: errorText(error, { not_found: "Diesen Drucker gibt es nicht mehr." }) });
+      setProbe(printer, { status: "failed", message: errorText(error, { not_found: "Diesen Drucker gibt es nicht mehr." }) });
     }
+    // Solange die Abfrage lief, war die Schaltfläche gesperrt und hat dabei den Fokus verloren.
+    setTimeout(() => {
+      const active = document.activeElement;
+      if (active === null || active === document.body) {
+        document.querySelector<HTMLElement>(`[data-printer="${printer.id}"] [data-probe]`)?.focus({ preventScroll: true });
+      }
+    }, 0);
   }
 
   async function remove(printer: Printer) {
@@ -112,8 +152,7 @@ export function PrintersPage() {
   }
 
   const printerOptions = printers.map((printer) => ({ value: printer.id, label: printer.name }));
-  const deletingDuties = deleting ? printerDuties(deleting, zones, settings) : undefined;
-  const deletingPending = deleting ? printing.waiting.filter((view) => view.printer?.id === deleting.id).length : 0;
+  const removal = deleting ? describeRemoval(deleting, zones, data, printing.waiting, multiZone) : { duties: [], labels: [] };
 
   return (
     <Page
@@ -154,7 +193,7 @@ export function PrintersPage() {
                   isDefault={duties.isDefault}
                   zones={duties.zones}
                   multiZone={multiZone}
-                  probe={probes.get(printer.id)}
+                  probe={probeOf(printer)}
                   fresh={fresh === printer.id}
                   pendingOwn={pendingFor(printing, printer)}
                   handoffBusy={actions.busy === `handoff:${printer.id}`}
@@ -239,17 +278,9 @@ export function PrintersPage() {
         onConfirm={() => (deleting ? remove(deleting) : undefined)}
         errorText={(error) => errorText(error, { not_found: "Diesen Drucker gibt es nicht mehr." })}
       >
-        <p>
-          {deletingDuties && (deletingDuties.isDefault || deletingDuties.zones.length > 0)
-            ? `${[deletingDuties.isDefault ? "Er ist der Standarddrucker" : null, deletingDuties.zones.length > 0 ? `${deletingDuties.isDefault ? "und " : "Er "}druckt für ${deletingDuties.zones.map((zone) => `„${zone.name}“`).join(", ")}` : null].filter(Boolean).join(" ")}. `
-            : ""}
-          Zonen mit diesem Drucker nutzen danach wieder den Standarddrucker{deletingDuties?.isDefault ? "; einen Standarddrucker gibt es dann nicht mehr, bis ein anderer gewählt ist" : ""}.
-        </p>
-        <p>
-          {deletingPending > 0
-            ? `${plural(deletingPending, "ausstehendes Etikett bleibt", "ausstehende Etiketten bleiben")} stehen und ${deletingPending === 1 ? "wird" : "werden"} gedruckt, sobald ein anderer Drucker zuständig ist.`
-            : "Ausstehende Etiketten bleiben stehen, bis ein anderer Drucker zuständig ist."}
-        </p>
+        {/* Wofür er zuständig ist und wer danach druckt; wohin die ausstehenden Etiketten gehen. */}
+        <p>{removal.duties.join(" ")}</p>
+        <p>{removal.labels.join(" ")}</p>
       </ConfirmDialog>
     </Page>
   );

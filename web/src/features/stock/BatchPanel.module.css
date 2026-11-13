@@ -99,6 +99,11 @@
   flex: 1;
 }
 
+/* „Etikett drucken" nur als Symbol: so breit wie hoch, den Rest teilen sich die beiden Wörter. */
+.itemActions > .labelButton {
+  flex: none;
+}
+
 @media (min-width: 48rem) {
   .panel {
     padding: var(--space-3) var(--space-5) var(--space-5);

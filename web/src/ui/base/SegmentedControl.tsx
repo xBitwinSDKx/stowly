@@ -1,7 +1,17 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 
 import { cx } from "./cx";
 import styles from "./SegmentedControl.module.css";
+
+/** Pfeiltasten wie bei einer Gruppe von Optionsfeldern: wohin sie führen. */
+const STEPS: Record<string, "next" | "previous" | "first" | "last"> = {
+  ArrowRight: "next",
+  ArrowDown: "next",
+  ArrowLeft: "previous",
+  ArrowUp: "previous",
+  Home: "first",
+  End: "last",
+};
 
 export interface SegmentedOption<T extends string> {
   value: T;
@@ -22,7 +32,10 @@ export interface SegmentedControlProps<T extends string> {
   className?: string;
 }
 
-/** Umschalter für wenige, sich ausschließende Möglichkeiten („Dunkel / Hell"). */
+/**
+ * Umschalter für wenige, sich ausschließende Möglichkeiten („Dunkel / Hell").
+ * Mit der Tastatur wie Optionsfelder: Pfeiltasten (und Pos1, Ende) wählen die nächste Möglichkeit.
+ */
 export function SegmentedControl<T extends string>({
   label,
   options,
@@ -32,8 +45,40 @@ export function SegmentedControl<T extends string>({
   size = "md",
   className,
 }: SegmentedControlProps<T>) {
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const step = STEPS[event.key];
+    const enabled = options.filter((option) => !option.disabled);
+    if (step === undefined || enabled.length === 0 || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const current = enabled.findIndex((option) => option.value === value);
+    const last = enabled.length - 1;
+    const index =
+      step === "first"
+        ? 0
+        : step === "last"
+          ? last
+          : step === "next"
+            ? current === -1 || current === last
+              ? 0
+              : current + 1
+            : current <= 0
+              ? last
+              : current - 1;
+    const target = enabled[index];
+    if (!target) {
+      return;
+    }
+    if (target.value !== value) {
+      onChange(target.value);
+    }
+    const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button");
+    buttons[options.indexOf(target)]?.focus();
+  }
+
   return (
-    <div role="radiogroup" aria-label={label} className={cx(styles.group, styles[size], block && styles.block, className)}>
+    <div role="radiogroup" aria-label={label} className={cx(styles.group, styles[size], block && styles.block, className)} onKeyDown={handleKeyDown}>
       {options.map((option) => {
         const selected = option.value === value;
         return (

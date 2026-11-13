@@ -144,6 +144,39 @@ def test_unknown_printer_and_service_without_default():
     service.close()
 
 
+def test_admission_is_asked_for_new_jobs_only_and_before_the_printer():
+    """Am Server entscheidet ``admit`` (gibt es das Etikett, wartet es noch?), bevor der Drucker zählt."""
+    driver = FakeDriver()
+    asked: list[str] = []
+    refused: set[str] = set()
+
+    def admit(job_id: str, _request: JobRequest) -> None:
+        asked.append(job_id)
+        if job_id in refused:
+            raise ServiceFault(ServiceError.NOT_PENDING, "Das Etikett ist verworfen.")
+
+    service, recorder = make_service(driver, admit=admit)
+    accepted, rejected = new_id(), new_id()
+    refused.add(rejected)
+    # Unbekannter Drucker und verworfenes Etikett zugleich: Das Etikett zählt zuerst.
+    with fault(ServiceError.NOT_PENDING):
+        service.submit(rejected, package_request(printer="gibt-es-nicht"))
+    with fault(ServiceError.NOT_PENDING):
+        service.submit(rejected, package_request())
+    with fault(ServiceError.NOT_FOUND):
+        service.get(rejected)
+    assert recorder.events == [] and driver.calls == 0
+
+    assert service.submit(accepted, package_request())[1] is True
+    finished(service, accepted)
+    # Ein schon bekannter Auftrag liefert seinen Zustand, ohne erneut zu fragen.
+    refused.add(accepted)
+    assert service.submit(accepted, package_request())[0].state == JobState.PRINTED
+    assert asked == [rejected, rejected, accepted]
+    assert driver.calls == 1
+    service.close()
+
+
 def test_copies_print_the_same_image_several_times():
     driver = FakeDriver()
     service, _recorder = make_service(driver)

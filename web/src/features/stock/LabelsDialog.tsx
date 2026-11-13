@@ -7,7 +7,7 @@ import { printerForPackage } from "@/features/printers/model";
 import { usePrinting } from "@/features/printers/usePrinting";
 import { Checkbox, errorText, FieldGroup, Notice, PackageId, plural, ZoneLabel } from "@/ui";
 import { Button, Dialog } from "@/ui/base";
-import { CircleCheckIcon, PrinterIcon } from "@/ui/icons";
+import { PrinterIcon } from "@/ui/icons";
 
 import styles from "./dialogs.module.css";
 import type { StockData } from "./useStock";
@@ -76,10 +76,8 @@ export function LabelsDialog({ stock, packageIds, onClose }: LabelsDialogProps) 
           </Button>
         }
       >
-        <div className={styles.done}>
-          <CircleCheckIcon size={28} aria-hidden="true" className={styles.doneIcon} />
-          <LabelStatus jobIds={result.map((job) => job.id)} className={styles.grow} />
-        </div>
+        {/* Das Symbol folgt dem Stand: gedruckt, unterwegs, unklar oder gescheitert. */}
+        <LabelStatus jobIds={result.map((job) => job.id)} icon />
       </Dialog>
     );
   }

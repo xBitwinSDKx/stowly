@@ -22,6 +22,31 @@ _FALSE = {"0", "false", "no", "off", "nein", ""}
 # Die Stufen, die uvicorn kennt.
 LOG_LEVELS = ("critical", "error", "warning", "info", "debug", "trace")
 
+# Content-Security-Policy der ausgelieferten Web-App (STOWLY_CSP: leer = diese Vorgabe, "off" = keine).
+# Vorsichtig gewählt, sie darf nichts brechen:
+# - script-src: nur eigene Dateien (es gibt kein Inline-Skript), dazu WebAssembly für die
+#   Barcode-Erkennung ('wasm-unsafe-eval'; ältere Safari vor 16 kennen das nicht und verweigern
+#   dann das WebAssembly, siehe docs/betrieb.md).
+# - style-src 'unsafe-inline': Die App setzt Stil-Attribute.
+# - img-src: Bilder aus /api/images, dazu blob: (Etikett-Vorschau) und data:.
+# - connect-src http: https:: Der Direktdruck spricht frei eingetragene Adressen im Heimnetz an.
+# - worker-src: der Erkennungs-Worker und der Service Worker aus eigener Datei.
+DEFAULT_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'wasm-unsafe-eval'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' blob: data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self' http: https:; "
+    "media-src 'self' blob: data:; "
+    "worker-src 'self' blob:; "
+    "manifest-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
 
 def _in_source_checkout() -> bool:
     """Wahr, wenn das Paket aus dem Repository läuft (pip install -e), nicht aus site-packages."""
@@ -47,6 +72,20 @@ def _text(env: Mapping[str, str], name: str) -> str | None:
     return raw.strip()
 
 
+def _csp(env: Mapping[str, str]) -> str | None:
+    """``STOWLY_CSP``: nicht gesetzt oder leer = Vorgabe, ``off`` = kein Kopf, sonst der Wert selbst."""
+    raw = _text(env, "STOWLY_CSP")
+    if raw is None:
+        return DEFAULT_CSP
+    if raw.lower() == "off":
+        return None
+    # Zeilenumbrüche und Tabulatoren werden zu Leerzeichen: Eine Kopfzeile ist eine Zeile.
+    value = " ".join(raw.split())
+    if not value.isascii() or not value.isprintable():
+        raise ValueError("STOWLY_CSP: Erlaubt sind nur druckbare ASCII-Zeichen.")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     """Alle Einstellungen des Servers. Unveränderlich, einmal beim Start gelesen."""
@@ -61,6 +100,8 @@ class Settings:
     off_url: str
     off_contact: str | None  # optionaler Kontakt für den User-Agent, nie fest eingetragen
     log_level: str
+    # Content-Security-Policy der Web-App; None = keine (STOWLY_CSP=off).
+    csp: str | None = DEFAULT_CSP
 
     @property
     def database_path(self) -> Path:
@@ -121,4 +162,5 @@ class Settings:
             off_url=(_text(env, "STOWLY_OFF_URL") or "https://world.openfoodfacts.org").rstrip("/"),
             off_contact=_text(env, "STOWLY_OFF_CONTACT"),
             log_level=log_level,
+            csp=_csp(env),
         )

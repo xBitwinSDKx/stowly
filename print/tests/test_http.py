@@ -63,7 +63,10 @@ def bench(tmp_path):
     )
     service.start()
     app = create_app(
-        service, authorize=TokenAuthorizer(TOKEN), origins=[ORIGIN + "/", "http://LOCALHOST:5173"], standalone=True
+        service,
+        authorize=TokenAuthorizer(TOKEN),
+        origins=[ORIGIN + "/", "http://LOCALHOST:5173"],
+        standalone=True,
     )
     with TestClient(app) as client:
         client.fake = fake
@@ -105,7 +108,18 @@ def test_health_proves_that_the_service_knows_the_token(bench):
     assert bench.get("/v1/health", params={"nonce": "y" * 64}).status_code == 200
 
 
-@pytest.mark.parametrize("nonce", ["", "zu-kurz-15-zeic", "z" * 65, "mit leerzeichen 1234", "umlaut-äöü-12345678", "a/b+c=1234567890", "%00" * 16])
+@pytest.mark.parametrize(
+    "nonce",
+    [
+        "",
+        "zu-kurz-15-zeic",
+        "z" * 65,
+        "mit leerzeichen 1234",
+        "umlaut-äöü-12345678",
+        "a/b+c=1234567890",
+        "%00" * 16,
+    ],
+)
 def test_health_rejects_an_unusable_nonce(bench, nonce):
     response = bench.get("/v1/health", params={"nonce": nonce})
     assert response.status_code == 400
@@ -170,7 +184,9 @@ def test_submit_with_put_and_bearer_header(bench):
     assert bench.put(f"/v1/jobs/{job_id}", json=payload(), headers=AUTH).status_code == 200
 
 
-@pytest.mark.parametrize("content_type", ["text/plain", "application/json", "application/octet-stream", "quatsch", None])
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/json", "application/octet-stream", "quatsch", None]
+)
 def test_body_is_read_as_json_whatever_the_content_type_says(bench, content_type):
     headers = {} if content_type is None else {"Content-Type": content_type}
     body = json.dumps({"token": TOKEN, **payload()}).encode("utf-8")
@@ -196,7 +212,15 @@ def test_submit_without_wait_answers_at_once(bench):
     assert bench.get(f"/v1/jobs/{first}?wait=10").json()["state"] == "printed"
 
 
-@pytest.mark.parametrize("request_kwargs", [{}, {"headers": {"Authorization": "Bearer falsch"}}, {"headers": {"Authorization": f"Basic {TOKEN}"}}, {"headers": {"Authorization": "Bearer"}}])
+@pytest.mark.parametrize(
+    "request_kwargs",
+    [
+        {},
+        {"headers": {"Authorization": "Bearer falsch"}},
+        {"headers": {"Authorization": f"Basic {TOKEN}"}},
+        {"headers": {"Authorization": "Bearer"}},
+    ],
+)
 def test_writing_needs_the_token(bench, request_kwargs):
     job_id = new_id()
     response = bench.post(f"/v1/jobs/{job_id}", json=payload(), **request_kwargs)
@@ -214,11 +238,15 @@ def test_wrong_token_in_the_body_and_header_beats_body(bench):
     assert bench.post(f"/v1/jobs/{job_id}", content=json.dumps({"token": 5, **payload()})).status_code == 401
     # Steht ein Token im Kopf, gilt dieses, auch wenn im Rumpf das richtige stünde.
     response = bench.post(
-        f"/v1/jobs/{job_id}", headers={"Authorization": "Bearer falsch"}, content=json.dumps({"token": TOKEN, **payload()})
+        f"/v1/jobs/{job_id}",
+        headers={"Authorization": "Bearer falsch"},
+        content=json.dumps({"token": TOKEN, **payload()}),
     )
     assert response.status_code == 401
     assert bench.get(f"/v1/jobs/{job_id}").status_code == 404
-    assert bench.post(f"/v1/jobs/{job_id}", content=json.dumps({"token": TOKEN, **payload()})).status_code == 201
+    assert (
+        bench.post(f"/v1/jobs/{job_id}", content=json.dumps({"token": TOKEN, **payload()})).status_code == 201
+    )
 
 
 @pytest.mark.parametrize(
@@ -341,7 +369,9 @@ def test_cancel_with_post_and_with_delete(bench):
     bench.fake.gate.clear()
     printing, by_post, by_delete = new_id(), new_id(), new_id()
     for job_id, title in ((printing, "eins"), (by_post, "zwei"), (by_delete, "drei")):
-        assert bench.post(f"/v1/jobs/{job_id}", **as_text(payload(title, printer="keller"))).status_code == 201
+        assert (
+            bench.post(f"/v1/jobs/{job_id}", **as_text(payload(title, printer="keller"))).status_code == 201
+        )
     wait_until(bench.fake.entered.is_set)
 
     # Wie der Browser: POST mit dem Token im Rumpf.
@@ -451,7 +481,9 @@ def test_allowed_origin_may_read_the_answers(bench):
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
-@pytest.mark.parametrize("origin", ["https://fremd.example", "http://stowly.home", "https://stowly.home:8443", "null"])
+@pytest.mark.parametrize(
+    "origin", ["https://fremd.example", "http://stowly.home", "https://stowly.home:8443", "null"]
+)
 def test_foreign_origin_gets_an_answer_it_cannot_read(bench, origin):
     response = bench.get("/v1/health", headers={"Origin": origin})
     # Der Dienst antwortet (so erkennt die App „da, aber nicht für mich"), erlaubt das Lesen aber nicht.
@@ -482,7 +514,9 @@ def test_preflight_is_answered_including_private_network_access(bench):
     assert response.headers["access-control-allow-origin"] == ORIGIN
     methods = {method.strip() for method in response.headers["access-control-allow-methods"].split(",")}
     assert {"GET", "POST", "PUT", "DELETE"} <= methods
-    allowed = {header.strip().lower() for header in response.headers["access-control-allow-headers"].split(",")}
+    allowed = {
+        header.strip().lower() for header in response.headers["access-control-allow-headers"].split(",")
+    }
     assert {"authorization", "content-type"} <= allowed
     assert int(response.headers["access-control-max-age"]) >= 600
     assert response.headers["access-control-allow-private-network"] == "true"
@@ -531,6 +565,9 @@ def test_page_is_served_as_one_self_contained_file(bench):
     assert "/v1/health" in html and "/v1/jobs/" in html
     assert "innerHTML" not in html and "document.write" not in html and "eval(" not in html
     assert "location.href =" not in html and "location.assign" not in html and "location.replace" not in html
+    # Das Token bleibt nicht in der Adresszeile; eine neue Übergabe im selben Tab lädt die Seite neu.
+    assert 'history.replaceState(null, "", location.pathname)' in html
+    assert re.search(r'addEventListener\("hashchange".*?location\.reload\(\)', html, re.S)
 
     # Die Seite darf nur ihr eigenes Skript ausführen und nur ihren eigenen Ursprung ansprechen.
     policy = response.headers["content-security-policy"]
@@ -557,7 +594,9 @@ def test_unknown_paths_and_methods_answer_in_the_error_format(bench):
     assert (response.status_code, error_code(response)) == (404, "not_found")
     response = bench.patch(f"/v1/jobs/{new_id()}", headers=AUTH)
     assert (response.status_code, error_code(response)) == (405, "invalid_request")
-    assert {"GET", "POST", "PUT", "DELETE"} <= {method.strip() for method in response.headers["allow"].split(",")}
+    assert {"GET", "POST", "PUT", "DELETE"} <= {
+        method.strip() for method in response.headers["allow"].split(",")
+    }
     assert bench.post("/v1/health").status_code == 405
 
 
@@ -576,12 +615,16 @@ def test_the_token_never_appears_in_the_log(bench, caplog):
 
 
 class DeviceTokens:
-    """Wie der Server prüft: Jeder Aufruf braucht ein gültiges Geräte-Token, auch der lesende."""
+    """Wie der Server prüft: Jeder Aufruf braucht ein gültiges Geräte-Token, auch der lesende.
+
+    Einen Schlüssel für den Nachweis gibt es dort nicht (``None``): Am Server bürgt die
+    Verbindung selbst (docs/etiketten.md, 5.5), ``proof`` ist deshalb immer ``null``.
+    """
 
     def __call__(self, token: str | None, *, write: bool) -> str | None:
         if token != "geraet-token":
             raise unauthorized()
-        return token
+        return None
 
 
 @pytest.fixture
@@ -617,11 +660,33 @@ def test_mounted_service_needs_a_token_for_every_call(mounted):
         assert wrong.status_code == 401, (method, path)
 
     assert mounted.get("/v1/health", headers=device).status_code == 200
-    assert mounted.put(f"/v1/jobs/{job_id}?wait=5", json=payload(), headers=device).json()["state"] == "printed"
+    assert (
+        mounted.put(f"/v1/jobs/{job_id}?wait=5", json=payload(), headers=device).json()["state"] == "printed"
+    )
     assert mounted.get(f"/v1/jobs/{job_id}/image", headers=device).status_code == 200
-    # Der Nachweis rechnet am Server mit dem Geräte-Token.
-    proof = mounted.get("/v1/health", params={"nonce": "n" * 16}, headers=device).json()["proof"]
-    assert proof == hmac.new(b"geraet-token", b"n" * 16, hashlib.sha256).hexdigest()
+    # Ohne Schlüssel kein Nachweis, auch mit nonce.
+    assert mounted.get("/v1/health", params={"nonce": "n" * 16}, headers=device).json()["proof"] is None
+
+
+def test_without_a_token_nothing_else_is_revealed(mounted):
+    """Wer sich nicht ausweist, erfährt nur „unauthorized", auch bei kaputten Angaben."""
+    job_id = new_id()
+    for method, path, kwargs in (
+        ("GET", "/v1/health", {"params": {"nonce": "zu-kurz"}}),
+        ("GET", f"/v1/jobs/{job_id}", {"params": {"wait": "99"}}),
+        ("POST", f"/v1/jobs/{job_id}", {"content": b"kein json"}),
+        ("POST", "/v1/jobs/mit%20leerzeichen", {"content": b"{}"}),
+        ("POST", f"/v1/jobs/{job_id}/cancel", {"content": b"[1]"}),
+        ("POST", "/v1/render", {"content": b"\xff"}),
+    ):
+        response = mounted.request(method, path, **kwargs)
+        assert (response.status_code, error_code(response)) == (401, "unauthorized"), (method, path)
+    # Mit Token kommt der eigentliche Fehler.
+    device = {"Authorization": "Bearer geraet-token"}
+    response = mounted.post(f"/v1/jobs/{job_id}", content=b"kein json", headers=device)
+    assert (response.status_code, error_code(response)) == (400, "invalid_request")
+    response = mounted.get("/v1/health", params={"nonce": "zu-kurz"}, headers=device)
+    assert (response.status_code, error_code(response)) == (400, "invalid_request")
 
 
 def test_mounted_service_has_neither_cors_nor_the_page(mounted):
@@ -631,7 +696,9 @@ def test_mounted_service_has_neither_cors_nor_the_page(mounted):
     assert "access-control-allow-origin" not in response.headers
     assert response.json()["host"] is None
     assert mounted.get("/p", headers=device).status_code == 404
-    response = mounted.options("/v1/health", headers={"Origin": ORIGIN, "Access-Control-Request-Method": "GET"})
+    response = mounted.options(
+        "/v1/health", headers={"Origin": ORIGIN, "Access-Control-Request-Method": "GET"}
+    )
     assert response.status_code == 405
     assert "access-control-allow-origin" not in response.headers
 

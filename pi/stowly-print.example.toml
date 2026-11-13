@@ -1,0 +1,42 @@
+# Stowly-Druckdienst auf dem Raspberry Pi: Beispiel-Konfiguration.
+#
+# Auf dem Pi liegt die Datei unter /etc/stowly-print/stowly-print.toml. Das Installationsskript
+# (install.sh) legt sie beim ersten Lauf aus seinen Angaben an; danach ändert es sie nicht mehr.
+# Nach jeder Änderung: sudo systemctl restart stowly-print
+# Das Format ist in pi/README.md beschrieben (Abschnitt „Konfiguration").
+
+# Dasselbe Token trägt Stowly beim Drucker ein (Einstellungen → Drucker → Token).
+# Mindestens 16 Zeichen; mit diesem Platzhalter startet der Dienst nicht.
+token = "HIER-EIN-EIGENES-LANGES-TOKEN-EINTRAGEN"
+
+# Ursprünge der App, die direkt drucken dürfen: Schema, Rechner und gegebenenfalls Port,
+# ohne Pfad. Fehlt der Ursprung hier, sieht die App den Drucker als „blockiert".
+origins = ["https://stowly.home"]
+
+# Meldungen im Journal: critical, error, warning, info, debug
+log_level = "info"
+
+[http]
+host = "0.0.0.0"
+port = 8080
+
+# HTTPS nur mit Zertifikat und Schlüssel (pi/make-cert.sh). Ohne diesen Abschnitt nur HTTP.
+[https]
+host = "0.0.0.0"
+port = 8443
+certificate = "/etc/stowly-print/tls/pi.crt"
+key = "/etc/stowly-print/tls/pi.key"
+
+# Der erste Drucker ist der Standarddrucker (Stowly: „Drucker im Dienst" leer lassen).
+[[printers]]
+name = "keller"
+driver = "brother_ql"
+model = "QL-800"               # QL-800, QL-810W, QL-820NWB (auch QL-820NWBc)
+address = "usb://04f9"          # erster Brother am USB; genauer: usb://04f9:209b
+media = "62"                    # 62-mm-Endlosrolle
+
+# Zum Ausprobieren ohne Drucker: Der Bild-Treiber schreibt jedes Etikett als PNG.
+# [[printers]]
+# name = "bild"
+# driver = "image"
+# directory = "/var/lib/stowly-print/etiketten"

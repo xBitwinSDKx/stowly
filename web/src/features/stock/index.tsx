@@ -5,7 +5,7 @@ import { PageBody, PageLoading, usePageTitle } from "@/app/Page";
 import { useSearch } from "@/app/search";
 import { EmptyState, FilterCard, Notice, packagesText, plural, ROOMY_QUERY, StatCard, useMediaQuery, useProgressiveCount, useUiFlag, WIDE_QUERY } from "@/ui";
 import { Button, ButtonLink, cx, IconButton, zoneColor, ZoneIcon } from "@/ui/base";
-import { CloseIcon, HistoryIcon, PackageIcon, PackageOpenIcon, PackagePlusIcon, ScanIcon, SearchIcon, WarningIcon, ZonesIcon } from "@/ui/icons";
+import { CloseIcon, HistoryIcon, PackageIcon, PackageOpenIcon, PackagePlusIcon, ScanIcon, SearchIcon, StockIcon, WarningIcon, ZonesIcon } from "@/ui/icons";
 
 import { useStockDialogs } from "./dialogs";
 import {
@@ -58,15 +58,24 @@ export function StockPage() {
   const zoneId = multiZone && zones.some((zone) => zone.id === zoneFilter) ? zoneFilter : null;
   const filter: StockFilter = useMemo(() => ({ query: deferredQuery, zone_id: zoneId, expiring }), [deferredQuery, zoneId, expiring]);
 
+  // Der ungefilterte Bestand wird nur neu gebaut, wenn sich Daten oder Reihenfolge ändern: So
+  // kostet das Leeren der Suche bei Hunderten Produkten nichts mehr, die Gruppen liegen schon da.
+  const allGroups = useMemo(() => sortGroups(groupByProduct(entries, zones), sort), [entries, zones, sort]);
   // Unveränderte Produkte behalten ihr Objekt: Ihre Zeilen werden dann nicht neu gezeichnet.
   const known = useRef<ReadonlyMap<string, ProductGroup>>(new Map());
   const groups = useMemo(() => {
-    const next = reuseGroups(known.current, sortGroups(groupByProduct(filterEntries(entries, filter), zones), sort));
+    const fresh = isFiltered(filter) ? sortGroups(groupByProduct(filterEntries(entries, filter), zones), sort) : allGroups;
+    const next = reuseGroups(known.current, fresh);
     known.current = new Map(next.map((group) => [group.product_id, group]));
     return next;
-  }, [entries, filter, zones, sort]);
-  // Lange Listen in Abschnitten: Wechselt das Aussehen aller Zeilen, beginnt die Liste wieder vorn.
-  const shownCount = useProgressiveCount(groups.length, `${String(detailsAll)}|${sort.key}|${String(sort.descending)}`);
+  }, [entries, filter, zones, sort, allGroups]);
+  // Lange Listen in Abschnitten: Wechselt das Aussehen aller Zeilen, die Reihenfolge oder die Auswahl
+  // (Suche, Zone, „Läuft bald ab"), beginnt die Liste wieder vorn. So steht nach dem Leeren der Suche
+  // gleich der Anfang da, und der Rest folgt, statt dass alle Zeilen auf einmal gezeichnet werden.
+  const shownCount = useProgressiveCount(
+    groups.length,
+    `${String(detailsAll)}|${sort.key}|${String(sort.descending)}|${filter.query}|${filter.zone_id ?? ""}|${String(filter.expiring)}`,
+  );
   const shownGroups = useMemo(() => (shownCount >= groups.length ? groups : groups.slice(0, shownCount)), [groups, shownCount]);
   // Die Liste braucht von den Dialogen nur das Öffnen; so bleibt die Eigenschaft über das Zeichnen hinweg dieselbe.
   const openDialog = dialogs.open;
@@ -140,8 +149,8 @@ export function StockPage() {
           />
           {!wide && multiZone ? (
             <>
-              <StatCard label="Aktive Zonen" tone="info" value={zones.length} to={ROUTES.zones} />
-              <StatCard label="Produkte" value={productCount} />
+              <StatCard label="Aktive Zonen" tone="info" value={zones.length} icon={<ZonesIcon size={22} />} to={ROUTES.zones} />
+              <StatCard label="Produkte" value={productCount} icon={<StockIcon size={22} />} />
             </>
           ) : null}
         </div>

@@ -22,6 +22,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import time
 from collections import deque
@@ -62,6 +63,8 @@ IMAGE_SOURCE = "openfoodfacts"
 
 NAME_LIMIT, BRAND_LIMIT, QUANTITY_LIMIT = 120, 80, 40  # wie ProductName, BrandName, QuantityText
 RAW_LIMIT = 20_000
+# Schätzzeichen am Ende der Packungsgröße: „℮" mit oder ohne Leerzeichen, „e" nur als eigenes Zeichen.
+_ESTIMATE_SIGN = re.compile(r"(?:\s*℮|\s+e)\s*\Z")
 TIMEOUT_S = 10.0
 # So lange schläft der Ablauf höchstens, auch wenn nichts ansteht.
 IDLE_MAX_S = 300.0
@@ -192,6 +195,21 @@ def _clean(value: Any, limit: int) -> str:
     return " ".join(printable.split())[:limit].rstrip()
 
 
+def quantity_without_estimate_sign(text: str) -> str:
+    """Die Packungsgröße ohne Schätzzeichen am Ende (docs/sync-protokoll.md, Abschnitt 10).
+
+    „℮" am Ende fällt weg, mit oder ohne Leerzeichen davor („400 g℮", „400 g ℮"). Ein „e" nur
+    als eigenes Zeichen hinter einem Leerzeichen („400 g e", „250 ml e"), nie als Ende eines
+    Wortes („1 Flasche" bleibt).
+    """
+    return _ESTIMATE_SIGN.sub("", text).rstrip()
+
+
+def _quantity(value: Any) -> str:
+    cleaned = _clean(value, RAW_LIMIT)
+    return quantity_without_estimate_sign(cleaned)[:QUANTITY_LIMIT].rstrip()
+
+
 def _first_brand(value: Any) -> str:
     """Der erste Eintrag von ``brands`` (Text mit Kommas oder Liste)."""
     if isinstance(value, list):
@@ -239,7 +257,7 @@ def parse_lookup(status_code: int, text: str) -> Found | NotFound | Failed:
         return Found(
             name=name,
             brand=_first_brand(product.get("brands")),
-            quantity=_clean(product.get("quantity"), QUANTITY_LIMIT),
+            quantity=_quantity(product.get("quantity")),
             image_url=image_url if is_allowed_image_url(image_url) else None,
             raw=raw if len(raw) <= RAW_LIMIT else None,
         )

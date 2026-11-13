@@ -67,8 +67,8 @@ function DisplacedNote({ pkg, lines, onApply }: { pkg: Package; lines: Displaced
       icon={<InfoIcon />}
       title="Verdrängte Bearbeitung"
       action={
-        <Button size="sm" aria-label={`Wiederherstellen und Bearbeitung übernehmen: ${pkg.id}`} onClick={onApply}>
-          Wiederherstellen und Bearbeitung übernehmen
+        <Button size="sm" aria-label={`Mit Bearbeitung wiederherstellen: ${pkg.id}`} onClick={onApply}>
+          Mit Bearbeitung wiederherstellen
         </Button>
       }
     >

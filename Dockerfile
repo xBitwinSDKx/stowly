@@ -1,6 +1,6 @@
 # Stowly: ein Container, ein Prozess. Er liefert die Schnittstelle (/api), den Druckdienst
-# (/print, ab Runde 2) und die gebaute Web-App auf Port 8010 und spricht nur HTTP. HTTPS stellt
-# der Reverse Proxy davor bereit (Nginx Proxy Manager oder Tailscale), siehe docs/betrieb.md.
+# (/print) und die gebaute Web-App auf Port 8010 und spricht nur HTTP. HTTPS stellt der Reverse
+# Proxy davor bereit (Nginx Proxy Manager oder Tailscale), siehe docs/betrieb.md.
 #
 # In der Zielumgebung noch nicht gebaut: Auf dem Entwicklungsrechner gibt es kein Docker.
 # Die Prüfliste dafür steht in docs/betrieb.md.
@@ -23,17 +23,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Erst der Druckdienst, dann der Server, der ihn als Abhängigkeit braucht. Installiert wird
-# nach site-packages; die Quellen bleiben nicht im Image.
+# Für den Druck: die Schriften der Etiketten (DejaVu, docs/etiketten.md 3.4) und libusb für einen
+# Brother-Drucker am USB (zuschaltbar über docker-compose.usb.yml).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-dejavu-core libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Erst der Druckdienst, dann der Server, der ihn als Abhängigkeit braucht. Dazu die Brother-
+# Bibliothek, auf Version und Prüfsumme festgelegt (GPL-3.0, nur im Treiber-Modul geladen).
+# Installiert wird nach site-packages; die Quellen bleiben nicht im Image.
 COPY print/ /src/print/
 COPY server/ /src/server/
 RUN pip install /src/print /src/server \
+    && pip install --no-deps --require-hashes -r /src/print/requirements-brother.txt \
     && rm -rf /src
 
 WORKDIR /app
 COPY --from=web /src/web/dist ./web
 
-# Eigener Benutzer ohne Rechte; die Datenbank liegt im Volume /data.
+# Eigener Benutzer ohne Rechte; Datenbank, Auftragsspeicher und Etikett-Bilder liegen im
+# Volume /data (/data/stowly.sqlite3, /data/print/).
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin stowly \
     && mkdir -p /data \
     && chown stowly:stowly /data

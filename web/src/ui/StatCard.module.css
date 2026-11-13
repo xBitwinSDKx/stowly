@@ -1,7 +1,7 @@
 .stat {
-  /* Zahl in der Textfarbe, Symbol im Akzent; die Töne unten färben beides um. */
+  /* Zahl in der Textfarbe, Symbol gedämpft wie im Entwurf; die Töne unten färben beides um. */
   --stat-color: var(--color-text);
-  --stat-mark: var(--color-accent);
+  --stat-mark: var(--color-text-muted);
 
   display: flex;
   align-items: flex-start;
@@ -50,10 +50,11 @@
   font-size: var(--text-sm);
 }
 
+/* Große Zahl, im Entwurf kräftig, aber nicht fett */
 .value {
   color: var(--stat-color);
   font-size: var(--text-3xl);
-  font-weight: var(--weight-bold);
+  font-weight: var(--weight-medium);
   line-height: 1.1;
 }
 
@@ -64,10 +65,16 @@
   white-space: nowrap;
 }
 
+/* Kleines Linien-Symbol rechts oben, ohne Fläche dahinter: wie die Kennzahl-Karten des Entwurfs */
 .icon {
-  display: none;
+  display: inline-flex;
   flex: none;
   color: var(--stat-mark);
+}
+
+.icon :global(svg) {
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 @media (min-width: 48rem) {
@@ -83,13 +90,8 @@
     font-size: var(--text-md);
   }
 
-  .icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 2.75rem;
-    height: 2.75rem;
-    border-radius: var(--radius-md);
-    background: color-mix(in oklch, var(--stat-mark) var(--tint-strength), transparent);
+  .icon :global(svg) {
+    width: 1.25rem;
+    height: 1.25rem;
   }
 }

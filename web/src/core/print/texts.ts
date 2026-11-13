@@ -17,6 +17,7 @@ export const PROBLEM_TEXTS: Record<PrinterProblem | "no_printer", string> = {
 
 export const PRINT_TEXTS = {
   not_cancellable: "Das Etikett wird schon gedruckt und lässt sich nicht mehr verwerfen.",
+  not_pending: "Das Etikett ist nicht mehr ausstehend.",
   cancel_offline: "Der Druckdienst ist nicht erreichbar. Das Etikett wartet dort und lässt sich erst verwerfen, wenn er wieder antwortet.",
   cancel_lost: "Der Druckdienst kennt das Etikett nicht mehr. Ob es gedruckt wurde, ist offen.",
   no_job: "Das Etikett gibt es nicht.",
@@ -27,4 +28,6 @@ export const PRINT_TEXTS = {
   no_template: "Die Vorlage für dieses Etikett fehlt noch. Sie kommt mit dem nächsten Abgleich.",
   handoff_only_direct: "Die Seite des Druckdienstes gibt es nur bei einem direkten Drucker.",
   handoff_nothing: "Für diesen Drucker steht kein eigenes Etikett aus.",
+  handoff_maybe_sent:
+    "Die ausstehenden Etiketten dieses Druckers sind vielleicht schon beim Drucker angekommen und gehen deshalb nicht über die Seite des Druckdienstes. Erst klären: noch einmal drucken lassen, sobald der Drucker erreichbar ist, oder die Etiketten verwerfen.",
 } as const;

@@ -5,6 +5,7 @@ import { Notice, useUiFlag } from "@/ui";
 import { Button, ButtonLink } from "@/ui/base";
 import { InstallIcon, ShareIcon } from "@/ui/icons";
 
+import { refocusContent } from "./focus";
 import styles from "./Shell.module.css";
 
 /**
@@ -31,7 +32,13 @@ export function InstallHint() {
       await core.app.promptInstall();
     } finally {
       setBusy(false);
+      refocusContent();
     }
+  }
+
+  function later() {
+    setDismissed(true);
+    refocusContent();
   }
 
   if (app.can_install) {
@@ -46,7 +53,7 @@ export function InstallHint() {
             <Button size="sm" variant="primary" busy={busy} onClick={() => void install()}>
               Installieren
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>
+            <Button size="sm" variant="ghost" onClick={later}>
               Später
             </Button>
           </div>
@@ -68,7 +75,7 @@ export function InstallHint() {
             <ButtonLink size="sm" to={{ pathname: ROUTES.settings, hash: "#app" }}>
               Anleitung
             </ButtonLink>
-            <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>
+            <Button size="sm" variant="ghost" onClick={later}>
               Später
             </Button>
           </div>

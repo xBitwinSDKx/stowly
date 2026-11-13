@@ -13,7 +13,19 @@ export { ExpiryLabel, type ExpiryLabelProps } from "./ExpiryLabel";
 export { FieldGroup, type FieldGroupProps } from "./Field";
 export { FilterCard, type FilterCardProps } from "./FilterCard";
 export { expiryText, packagesText, plural, relativeDays, REMOVAL_REASON_LABELS, REMOVAL_REASON_OPTIONS, timeAgo } from "./format";
-export { DESKTOP_QUERY, LIST_FIRST, LIST_STEP, ROOMY_QUERY, useMediaQuery, useNow, useProgressiveCount, useToday, useUiFlag, WIDE_QUERY } from "./hooks";
+export {
+  DESKTOP_QUERY,
+  focusFirstInvalid,
+  LIST_FIRST,
+  LIST_STEP,
+  ROOMY_QUERY,
+  useMediaQuery,
+  useNow,
+  useProgressiveCount,
+  useToday,
+  useUiFlag,
+  WIDE_QUERY,
+} from "./hooks";
 export { List, ListLink, ListRow, Section, type ListLinkProps, type ListRowProps, type SectionProps } from "./List";
 export { Logo, type LogoProps } from "./Logo";
 export { Menu, type MenuItem, type MenuProps } from "./Menu";

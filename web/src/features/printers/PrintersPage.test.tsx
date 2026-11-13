@@ -78,7 +78,10 @@ describe("Drucker", () => {
 
     const cellar = card("Keller (Pi)");
     expect(cellar).toHaveTextContent("direkt (Raspberry Pi)");
-    expect(cellar).toHaveTextContent("https://10.71.83.1:8443 · http://10.71.83.1:8080");
+    // Die Adressen in der Reihenfolge der Versuche, je eine Zeile.
+    expect(within(cellar).getByText("https://10.71.83.1:8443")).toBeInTheDocument();
+    expect(within(cellar).getByText("http://10.71.83.1:8080")).toBeInTheDocument();
+    expect(cellar.textContent?.indexOf("https://10.71.83.1:8443")).toBeLessThan(cellar.textContent?.indexOf("http://10.71.83.1:8080") ?? 0);
     // Das Token ist ein Geheimnis und steht nirgends in der Ansicht.
     expect(document.body).not.toHaveTextContent("attrappe");
     expect(cellar).toHaveTextContent("Druckt für");
@@ -278,9 +281,11 @@ describe("Drucker", () => {
     await ready();
     await userEvent.click(within(card("Keller (Pi)")).getByRole("button", { name: "Löschen: Keller (Pi)" }));
     const dialog = screen.getByRole("dialog", { name: "Drucker „Keller (Pi)“ löschen?" });
-    expect(dialog).toHaveTextContent("Er druckt für „Keller“, „Gefrierschrank“.");
-    expect(dialog).toHaveTextContent("Zonen mit diesem Drucker nutzen danach wieder den Standarddrucker.");
-    expect(dialog).toHaveTextContent("3 ausstehende Etiketten bleiben stehen");
+    expect(dialog).toHaveTextContent("Er druckt für „Keller“ und „Gefrierschrank“.");
+    expect(dialog).toHaveTextContent("Diese Zonen nutzen danach wieder den Standarddrucker „Küche (Bild)“.");
+    // Wohin die ausstehenden Etiketten danach gehen: zwei eigene und eines eines anderen Geräts.
+    expect(dialog).toHaveTextContent("3 ausstehende Etiketten gehen danach an „Küche (Bild)“.");
+    expect(dialog).toHaveTextContent("Etiketten werden dabei nicht gelöscht.");
     // Der Fokus liegt auf der sicheren Wahl.
     expect(within(dialog).getByRole("button", { name: "Abbrechen" })).toHaveFocus();
     await userEvent.click(within(dialog).getByRole("button", { name: "Drucker löschen" }));
@@ -294,7 +299,11 @@ describe("Drucker", () => {
     expect(value(core.data.printJobs).filter((entry) => entry.state === "pending").length).toBeGreaterThan(0);
 
     await userEvent.click(within(card("Küche (Bild)")).getByRole("button", { name: "Löschen: Küche (Bild)" }));
-    expect(screen.getByRole("dialog", { name: "Drucker „Küche (Bild)“ löschen?" })).toHaveTextContent("Er ist der Standarddrucker.");
+    const last = screen.getByRole("dialog", { name: "Drucker „Küche (Bild)“ löschen?" });
+    expect(last).toHaveTextContent("Er ist der Standarddrucker.");
+    expect(last).toHaveTextContent("Einen Standarddrucker gibt es danach nicht mehr, bis ein anderer gewählt ist.");
+    // Ohne ihn hätten die ausstehenden Etiketten keinen Drucker mehr.
+    expect(last).toHaveTextContent("ausstehende Etiketten bleiben stehen, bis ein Drucker zuständig ist.");
   });
 });
 
@@ -542,7 +551,7 @@ describe("Etiketten", () => {
     await userEvent.click(within(labelRow(packageOf(3))).getByRole("button", { name: /^Nein, nicht gedruckt/ }));
     await waitFor(() => expect(job(core, sampleUuid(4, 3))).toMatchObject({ state: "failed", error: "not_printed" }));
     const row = labelRow(packageOf(3));
-    expect(row).toHaveTextContent("Laut Antwort nicht gedruckt.");
+    expect(row).toHaveTextContent("Auf Nachfrage als nicht gedruckt vermerkt.");
 
     // Zweimal angeboten: in der Meldung und an der Zeile.
     const before = value(core.data.printJobs).length;
@@ -556,14 +565,31 @@ describe("Etiketten", () => {
     const jobs = data.printJobs.map((entry) => (entry.id === sampleUuid(4, 1) || entry.id === sampleUuid(4, 2) ? { ...entry, state: "unknown" as const, error: "handoff" } : entry));
     const core = renderApp({ data: { printJobs: jobs } }, ROUTES.printers);
     await ready();
-    // Ja: weiter zur nächsten Nachfrage.
-    await userEvent.click(within(labelRow(packageOf(1))).getByRole("button", { name: /^Ja, gedruckt/ }));
-    await waitFor(() => expect(job(core, sampleUuid(4, 1)).state).toBe("printed"));
-    await waitFor(() => expect(document.activeElement).toHaveAccessibleName(/^Ja, gedruckt/));
+    // Ja: weiter zur nächsten Nachfrage, und zwar an die Zeile selbst. Ein zweites Enter beantwortet so nichts.
+    const asking = within(section("Etiketten")).getByRole("heading", { name: "Wurden diese Etiketten gedruckt?" }).closest("div")?.parentElement as HTMLElement;
+    const first = within(asking).getAllByRole("listitem")[0];
+    await userEvent.click(within(first as HTMLElement).getByRole("button", { name: /^Ja, gedruckt/ }));
+    await waitFor(() => expect(value(core.data.printJobs).filter((entry) => entry.state === "unknown")).toHaveLength(2));
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("LI"));
+    expect(within(document.activeElement as HTMLElement).getByRole("button", { name: /^Ja, gedruckt/ })).toBeInTheDocument();
     // Nein: weiter zu „Erneut drucken“ an derselben Packung.
     await userEvent.click(within(labelRow(packageOf(2))).getByRole("button", { name: /^Nein, nicht gedruckt/ }));
     await waitFor(() => expect(job(core, sampleUuid(4, 2)).state).toBe("failed"));
     await waitFor(() => expect(within(labelRow(packageOf(2))).getByRole("button", { name: /^Erneut drucken/ })).toHaveFocus());
+  });
+
+  it("lässt den Fokus nach „Verwerfen“ und „Hier drucken“ bei den ausstehenden Etiketten, nicht an „Erneut drucken“", async () => {
+    const core = renderApp({}, ROUTES.printers);
+    await ready();
+    await userEvent.click(within(labelRow(packageOf(6))).getByRole("button", { name: /^Hier drucken/ }));
+    await waitFor(() => expect(job(core, sampleUuid(4, 6)).state).toBe("cancelled"));
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("LI"));
+    expect(document.activeElement?.closest('[data-group="waiting"]')).not.toBeNull();
+
+    await userEvent.click(within(labelRow(packageOf(1))).getByRole("button", { name: /^Verwerfen/ }));
+    await waitFor(() => expect(job(core, sampleUuid(4, 1)).state).toBe("cancelled"));
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("LI"));
+    expect(document.activeElement?.closest('[data-group="waiting"]')).not.toBeNull();
   });
 
   it("klärt mehrere unklare Etiketten auf einmal", async () => {

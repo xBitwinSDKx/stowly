@@ -236,8 +236,13 @@ def create_app(
     ``host_health`` liefert den Zustand des Rechners für ``/v1/health``; ohne ist ``host`` null.
     """
 
-    async def read_body(request: Request) -> dict[str, Any]:
-        """Der Rumpf als JSON-Objekt, gleich welcher ``Content-Type``. Ein leerer Rumpf ist ``{}``."""
+    async def read_body(request: Request) -> tuple[dict[str, Any], ServiceFault | None]:
+        """Der Rumpf als JSON-Objekt, gleich welcher ``Content-Type``. Ein leerer Rumpf ist ``{}``.
+
+        Ein zu großer Rumpf wird sofort abgewiesen. Ein unlesbarer liefert ``({}, fehler)``: Den
+        Fehler meldet der Aufruf erst nach der Anmeldung, damit ein Aufrufer ohne Token nur
+        „unauthorized" erfährt. Das Token kann dann nur noch im Kopf stehen.
+        """
         declared = request.headers.get("content-length", "")
         if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
             raise invalid("Der Auftrag ist zu groß.", {"max_bytes": MAX_BODY_BYTES})
@@ -250,16 +255,16 @@ def create_app(
             chunks.append(chunk)
         raw = b"".join(chunks)
         if not raw.strip():
-            return {}
+            return {}, None
         try:
             body = json.loads(raw)
-        except RecursionError as exc:
-            raise invalid("Der Rumpf ist zu tief verschachtelt.") from exc
-        except ValueError as exc:  # auch UnicodeDecodeError
-            raise invalid("Der Rumpf ist kein gültiges JSON.") from exc
+        except RecursionError:
+            return {}, invalid("Der Rumpf ist zu tief verschachtelt.")
+        except ValueError:  # auch UnicodeDecodeError
+            return {}, invalid("Der Rumpf ist kein gültiges JSON.")
         if not isinstance(body, dict):
-            raise invalid("Der Rumpf muss ein JSON-Objekt sein.")
-        return body
+            return {}, invalid("Der Rumpf muss ein JSON-Objekt sein.")
+        return body, None
 
     def token_of(request: Request, body: dict[str, Any] | None = None) -> str | None:
         token = bearer_token(request.headers.get("authorization"))
@@ -288,14 +293,15 @@ def create_app(
         return json_response(to_dict(job), status)
 
     # --- Aufrufe ---------------------------------------------------------------------
+    # Jeder Aufruf prüft zuerst die Anmeldung (am Server braucht jeder ein Token), dann die Angaben.
 
     async def health(request: Request) -> Response:
         nonce = request.query_params.get("nonce")
-        if nonce is not None and not NONCE.fullmatch(nonce):
-            raise invalid("'nonce' muss aus 16 bis 64 Zeichen A–Z, a–z, 0–9, _ und - bestehen.")
 
         def build() -> Health:
             key = authorize(token_of(request), write=False)
+            if nonce is not None and not NONCE.fullmatch(nonce):
+                raise invalid("'nonce' muss aus 16 bis 64 Zeichen A–Z, a–z, 0–9, _ und - bestehen.")
             proof = None
             if nonce is not None and key:
                 proof = hmac.new(key.encode("utf-8"), nonce.encode("ascii"), hashlib.sha256).hexdigest()
@@ -320,12 +326,14 @@ def create_app(
         return json_response(await run_in_threadpool(build))
 
     async def submit(request: Request) -> Response:
-        body = await read_body(request)
-        wait = wait_of(request)
+        body, unreadable = await read_body(request)
         job_id = job_id_of(request)
 
         def run() -> tuple[Any, bool]:
             authorize(token_of(request, body), write=True)
+            if unreadable is not None:
+                raise unreadable
+            wait = wait_of(request)
             if not JOB_ID.fullmatch(job_id):
                 raise invalid("Die Kennung des Auftrags darf nur aus A–Z, a–z, 0–9, _ und - bestehen.")
             try:
@@ -341,30 +349,34 @@ def create_app(
         return job_response(job, 201 if created else 200)
 
     async def job_status(request: Request) -> Response:
-        wait = wait_of(request)
         job_id = job_id_of(request)
 
         def run() -> Any:
             authorize(token_of(request), write=False)
+            wait = wait_of(request)
             return service.wait(job_id, wait) if wait > 0 else service.get(job_id)
 
         return job_response(await run_in_threadpool(run))
 
     async def cancel(request: Request) -> Response:
-        body = await read_body(request)
+        body, unreadable = await read_body(request)
         job_id = job_id_of(request)
 
         def run() -> Any:
             authorize(token_of(request, body), write=True)
+            if unreadable is not None:
+                raise unreadable
             return service.cancel(job_id)
 
         return job_response(await run_in_threadpool(run))
 
     async def render(request: Request) -> Response:
-        body = await read_body(request)
+        body, unreadable = await read_body(request)
 
         def run() -> bytes:
             authorize(token_of(request, body), write=True)
+            if unreadable is not None:
+                raise unreadable
             try:
                 job_request = JobRequest.from_dict(
                     {

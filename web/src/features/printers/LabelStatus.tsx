@@ -1,7 +1,37 @@
 import { plural } from "@/ui";
+import { cx } from "@/ui/base";
+import { CircleCheckIcon, PrinterIcon, QuestionIcon, WarningIcon, type IconType } from "@/ui/icons";
 
+import styles from "./LabelStatus.module.css";
 import { jobErrorText, type JobView } from "./model";
 import { usePrinting } from "./usePrinting";
+
+/** Wie es um eben angeforderte Etiketten steht, als Farbe: gedruckt, unterwegs, ausstehend, unklar, gescheitert. */
+export type LabelStatusTone = "success" | "busy" | "pending" | "warn" | "danger";
+
+/** Der Gesamteindruck: Das Schlechteste bestimmt die Farbe. */
+export function labelStatusTone(views: readonly JobView[]): LabelStatusTone {
+  const has = (states: readonly string[]) => views.some((view) => states.includes(view.job.state));
+  if (has(["failed"])) {
+    return "danger";
+  }
+  if (has(["unknown"])) {
+    return "warn";
+  }
+  if (has(["pending"])) {
+    return "pending";
+  }
+  if (has(["queued", "printing"])) {
+    return "busy";
+  }
+  return "success";
+}
+
+/** Ein Satz eines Fehlers als Einschub: „(es sind keine Etiketten eingelegt)". */
+function aside(code: string): string {
+  const text = jobErrorText(code).replace(/\.$/, "");
+  return text === code ? text : `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+}
 
 /** Was aus eben angeforderten Etiketten gerade wird, in einem Satz. */
 export function labelStatusText(views: readonly JobView[]): string {
@@ -42,10 +72,10 @@ export function labelStatusText(views: readonly JobView[]): string {
   }
   if (failed.length > 0) {
     const reason = failed[0]?.job.error;
-    parts.push(`${plural(failed.length, "Etikett wurde", "Etiketten wurden")} nicht gedruckt${reason ? ` (${jobErrorText(reason).replace(/\.$/, "")})` : ""}`);
+    parts.push(`${plural(failed.length, "Etikett wurde", "Etiketten wurden")} nicht gedruckt${reason ? ` (${aside(reason)})` : ""}`);
   }
   if (unknown > 0) {
-    parts.push(`bei ${plural(unknown, "Etikett", "Etiketten")} ist der Ausgang unklar`);
+    parts.push(`bei ${plural(unknown, "Etikett", "Etiketten")} ist der Ausgang unklar: Stowly fragt nach, ob ${unknown === 1 ? "es" : "sie"} gedruckt wurde${unknown === 1 ? "" : "n"}`);
   }
   if (cancelled > 0) {
     parts.push(`${String(cancelled)} verworfen`);
@@ -54,19 +84,38 @@ export function labelStatusText(views: readonly JobView[]): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }
 
+const TONE_ICONS: Record<LabelStatusTone, IconType> = {
+  success: CircleCheckIcon,
+  busy: PrinterIcon,
+  pending: PrinterIcon,
+  warn: QuestionIcon,
+  danger: WarningIcon,
+};
+
 /**
  * Sagt nach dem Anfordern, was mit den Etiketten ist, und bleibt dabei auf dem Laufenden:
  * „werden gerade gedruckt", „sind gedruckt", „stehen aus".
+ * @param icon mit einem Symbol in der Farbe des Stands davor (Ergebnis eines Dialogs)
  */
-export function LabelStatus({ jobIds, className }: { jobIds: readonly string[]; className?: string }) {
+export function LabelStatus({ jobIds, className, icon = false }: { jobIds: readonly string[]; className?: string; icon?: boolean }) {
   const printing = usePrinting();
   const views = printing.jobs.filter((view) => jobIds.includes(view.job.id));
   if (views.length === 0) {
     return null;
   }
+  if (!icon) {
+    return (
+      <p className={className} role="status">
+        {labelStatusText(views)}
+      </p>
+    );
+  }
+  const tone = labelStatusTone(views);
+  const Icon = TONE_ICONS[tone];
   return (
-    <p className={className} role="status">
-      {labelStatusText(views)}
+    <p className={cx(styles.status, styles[tone], className)} role="status">
+      <Icon size={24} aria-hidden="true" className={styles.icon} />
+      <span className={styles.text}>{labelStatusText(views)}</span>
     </p>
   );
 }

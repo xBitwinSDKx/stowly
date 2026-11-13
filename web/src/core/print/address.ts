@@ -71,6 +71,50 @@ export const readPermission: PermissionReader = async (space) => {
   return "unknown";
 };
 
+/**
+ * Meldet, wenn sich die Erlaubnis für das lokale Netzwerk ändert, und liefert die Funktion zum
+ * Abmelden. Gebraucht wird das vor allem für einen Fall: Der Browser fragt den Anwender, und der
+ * antwortet erst, nachdem die Anfrage des Kerns schon an ihrer Zeitgrenze aufgegeben hat.
+ */
+export type PermissionWatcher = (onChange: () => void) => () => void;
+
+interface PermissionStatusLike {
+  addEventListener?(type: "change", listener: () => void): void;
+  removeEventListener?(type: "change", listener: () => void): void;
+}
+
+/** Beobachtet die Erlaubnis unter allen Namen, die ein Browser dafür kennt; unbekannte Namen werden übergangen. */
+export const watchPermissions: PermissionWatcher = (onChange) => {
+  const permissions = (globalThis.navigator as { permissions?: { query(descriptor: { name: string }): Promise<PermissionStatusLike> } } | undefined)?.permissions;
+  if (!permissions || typeof permissions.query !== "function") {
+    return () => undefined;
+  }
+  let stopped = false;
+  const listener = () => {
+    if (!stopped) {
+      onChange();
+    }
+  };
+  const watched: PermissionStatusLike[] = [];
+  for (const name of ["local-network", "loopback-network", "local-network-access"]) {
+    permissions.query({ name }).then(
+      (status) => {
+        if (!stopped && typeof status.addEventListener === "function") {
+          status.addEventListener("change", listener);
+          watched.push(status);
+        }
+      },
+      () => undefined,
+    );
+  }
+  return () => {
+    stopped = true;
+    for (const status of watched.splice(0)) {
+      status.removeEventListener?.("change", listener);
+    }
+  };
+};
+
 const NONCE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
 
 /** Eine frische Zufallsfolge für `GET /v1/health?nonce=…`: 32 Zeichen aus `A–Z a–z 0–9 _ -`. */

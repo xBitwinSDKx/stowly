@@ -245,6 +245,18 @@ export interface FakeLink {
   /** false: Unter dieser Adresse antwortet nichts (falsches WLAN, Pi aus, Zertifikat nicht anerkannt). */
   reachable: boolean;
   /**
+   * true: Die Anfrage bleibt ohne Antwort hängen, bis die App sie an ihrer Zeitgrenze abbricht
+   * (Pakete versickern, oder der Browser wartet noch auf die Antwort des Anwenders auf seine
+   * Nachfrage nach dem lokalen Netzwerk). `reachable: false` scheitert dagegen sofort.
+   */
+  silent: boolean;
+  /**
+   * Hält jede Anfrage an diese Adresse an, bis sich das Versprechen erfüllt, so wie der Browser
+   * eine Anfrage anhält, solange seine Nachfrage nach dem lokalen Netzwerk offen ist. Bricht die
+   * App vorher ab, scheitert die Anfrage. null = keine Pause.
+   */
+  hold: Promise<void> | null;
+  /**
    * false: Der Ursprung der App fehlt in der Konfiguration des Dienstes. Der Browser lässt die
    * Seite dann keine Antwort lesen; nur eine Anfrage ohne CORS kommt (undurchsichtig) zurück.
    */
@@ -299,6 +311,35 @@ function toResponse(data: FakeResponseData): Response {
   return new Response(data.body as BodyInit | null, { status: data.status, headers: data.headers });
 }
 
+/**
+ * Wie im Browser: Wird eine Anfrage abgebrochen, scheitert `fetch` sofort, auch wenn die
+ * Gegenstelle noch arbeitet (etwa mit `wait` auf den Endzustand eines Auftrags wartet). Was sie
+ * dabei tut, tut sie trotzdem; nur die Antwort kommt nicht mehr an.
+ */
+function abortable<T>(work: Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  const aborted = () => new DOMException("The operation was aborted.", "AbortError");
+  if (!signal) {
+    return work;
+  }
+  if (signal.aborted) {
+    return Promise.reject(aborted());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(aborted());
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /** Ein `fetch`, das die nachgebauten Gegenstellen direkt aufruft, ohne Netz. */
 export function createFakeNetwork(server: FakeServer): FakeNetwork {
   const links: FakeLink[] = [];
@@ -314,7 +355,7 @@ export function createFakeNetwork(server: FakeServer): FakeNetwork {
     calls: [],
     attempts: [],
     attach(base, service) {
-      const link: FakeLink = { base: base.replace(/\/+$/, ""), service, reachable: true, cors: true };
+      const link: FakeLink = { base: base.replace(/\/+$/, ""), service, reachable: true, silent: false, hold: null, cors: true };
       links.push(link);
       return link;
     },
@@ -360,6 +401,21 @@ export function createFakeNetwork(server: FakeServer): FakeNetwork {
         if (!link || !link.reachable) {
           throw failed();
         }
+        if (link.silent) {
+          // Keine Antwort, bis die App aufgibt (ohne Zeitgrenze: nie).
+          const signal = init?.signal;
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) {
+              resolve();
+            } else {
+              signal?.addEventListener("abort", () => resolve(), { once: true });
+            }
+          });
+          throw new DOMException("The operation was aborted.", "AbortError");
+        }
+        if (link.hold) {
+          await abortable(link.hold, init?.signal);
+        }
         await network.beforeRequest?.(call);
         if (call.mode === "no-cors") {
           // Ohne CORS kommt eine Antwort zurück, sobald etwas da ist; lesen kann die Seite sie nicht.
@@ -370,7 +426,7 @@ export function createFakeNetwork(server: FakeServer): FakeNetwork {
           throw failed();
         }
         network.calls.push(call);
-        const data = await link.service.handle({ method, path, query, headers, body: text });
+        const data = await abortable(link.service.handle({ method, path, query, headers, body: text }), init?.signal);
         await network.beforeResponse?.(call);
         if (network.dropWhen?.(call) || init?.signal?.aborted) {
           throw failed();
@@ -390,7 +446,7 @@ export function createFakeNetwork(server: FakeServer): FakeNetwork {
         return foreign;
       }
       network.calls.push(call);
-      const data = await server.respond({ method, path, query, headers, body: text });
+      const data = await abortable(server.respond({ method, path, query, headers, body: text }), init?.signal);
       await network.beforeResponse?.(call);
       if (network.dropResponses > 0) {
         network.dropResponses -= 1;

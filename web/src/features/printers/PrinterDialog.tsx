@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { LIMITS, useCore, type DirectPrinterConfig, type Printer, type PrinterChanges, type PrinterConnection, type PrinterDriver, type ServerPrinterConfig } from "@/contract";
-import { errorText, FieldGroup, Notice, Select } from "@/ui";
+import { errorText, FieldGroup, focusFirstInvalid, Notice, Select } from "@/ui";
 import { Button, Dialog, dialogFocus, IconButton, SegmentedControl, TextField, useToast } from "@/ui/base";
 import { CloseIcon, EyeIcon, EyeOffIcon, PlusIcon } from "@/ui/icons";
 
@@ -131,6 +131,7 @@ export function PrinterDialog({ printer, onClose, onCreated }: PrinterDialogProp
     event.preventDefault();
     setTried(true);
     if (invalid) {
+      focusFirstInvalid(formId);
       return;
     }
     setBusy(true);

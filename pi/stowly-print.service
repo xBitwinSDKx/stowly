@@ -1,0 +1,42 @@
+# Stowly-Druckdienst als Systemdienst (installiert von pi/install.sh nach
+# /etc/systemd/system/stowly-print.service).
+#
+#   systemctl status stowly-print      läuft er?
+#   journalctl -u stowly-print -e      Meldungen (ohne Token)
+#   sudo systemctl restart stowly-print
+
+[Unit]
+Description=Stowly-Druckdienst (Etiketten)
+Documentation=file:///opt/stowly-print/README.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=stowly-print
+Group=stowly-print
+# plugdev: Zugriff auf den Brother am USB (udev-Regel 99-stowly-brother.rules)
+SupplementaryGroups=plugdev
+ExecStart=/opt/stowly-print/venv/bin/python -m stowly_print serve --config /etc/stowly-print/stowly-print.toml
+# Immer wieder starten, auch nach einem Absturz: Der Pi im Keller hat niemanden, der nachsieht.
+Restart=always
+RestartSec=3
+# Beim Beenden höchstens so lange auf laufende Antworten warten.
+TimeoutStopSec=20
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# Härtung. Schreiben darf der Dienst nur in /var/lib/stowly-print (Bilder des Bild-Treibers).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+StateDirectory=stowly-print
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

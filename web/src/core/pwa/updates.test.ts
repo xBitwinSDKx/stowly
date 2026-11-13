@@ -143,6 +143,21 @@ describe("Aktualisierung der App", () => {
     expect(page.env.ready).toEqual([true]);
   });
 
+  it("bietet eine Version an, deren Installation schon lief, als die Registrierung ankam", () => {
+    const page = setup({ controlled: true });
+    // Der Browser hat beim Laden der Seite schon nachgesehen; `updatefound` ist vorbei.
+    const worker = new FakeWorker();
+    page.registration.installing = worker;
+    page.updates.watch(page.registration);
+    expect(page.env.ready).toEqual([]);
+    worker.become("installed");
+    page.registration.installing = null;
+    page.registration.waiting = worker;
+    expect(page.env.ready).toEqual([true]);
+    page.updates.apply(false);
+    expect(worker.messages).toEqual([SKIP_WAITING_MESSAGE]);
+  });
+
   it("bietet nach dem ersten Besuch auch in derselben Sitzung eine neue Version an", () => {
     const page = setup({ controlled: false });
     page.updates.watch(page.registration);

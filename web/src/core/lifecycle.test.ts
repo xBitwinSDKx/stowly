@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createCore, type StowlyCore } from ".";
 import { DB_VERSION } from "./db";
+import { FAKE_PASSWORD } from "./testing/fake-api";
 import { disposeAll, expectCoreError, firstZoneId, signedIn, value, type Harness } from "./testing/harness";
 
 /** Der Aufbau der lokalen Datenbank in Runde 1 (Version 1), wörtlich. */
@@ -234,6 +235,12 @@ describe("Die lokale Datenbank wechselt ihren Aufbau", () => {
     expect(value(core.session.state)).toMatchObject({ status: "signed_out" });
     const error = await expectCoreError(core.stock.store({ product: { kind: "new", name: "Mais" }, zone_id: "x", best_before: null, count: 1, labels: false }), "not_supported");
     expect(error.message).toMatch(/anderer Tab/);
+    // Auch die Anmeldung sagt, woran es liegt, und fragt den Server gar nicht erst.
+    const syncsBefore = harness.server.syncRequests.length;
+    const login = await expectCoreError(core.session.login(FAKE_PASSWORD, "Zweiter Versuch"), "not_supported");
+    expect(login.message).toMatch(/anderer Tab/);
+    expect(harness.server.deviceList.length).toBe(1);
+    expect(harness.server.syncRequests.length).toBe(syncsBefore);
 
     // Der alte Tab wird geschlossen: Jetzt beginnt der Kern wirklich.
     holder.close();

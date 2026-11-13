@@ -30,6 +30,7 @@ import {
 } from "@/ui/icons";
 
 import { primaryDestinations, SECONDARY_DESTINATIONS } from "./destinations";
+import { CONTENT_ID, refocusContent } from "./focus";
 import { InstallHint } from "./InstallHint";
 import { MobileMenu } from "./MobileMenu";
 import { PageLoading } from "./Page";
@@ -214,18 +215,20 @@ function ShellFrame() {
       await core.app.applyUpdate();
     } finally {
       setUpdating(false);
+      // Lädt die App nicht neu (keine wartende Version mehr), ist der Hinweis samt Schaltfläche fort.
+      refocusContent();
     }
   }
 
   return (
     <div className={styles.shell}>
       <a
-        href="#inhalt"
+        href={`#${CONTENT_ID}`}
         className={styles.skip}
         onClick={(event) => {
           // Fokus setzen statt die Adresse zu ändern: Die gehört dem Router.
           event.preventDefault();
-          document.getElementById("inhalt")?.focus();
+          document.getElementById(CONTENT_ID)?.focus();
         }}
       >
         Zum Inhalt springen
@@ -338,7 +341,7 @@ function ShellFrame() {
         <UnknownLabelsBanner />
         <InstallHint />
 
-        <main id="inhalt" tabIndex={-1} className={cx(styles.content, showFab && styles.withFab)}>
+        <main id={CONTENT_ID} tabIndex={-1} className={cx(styles.content, showFab && styles.withFab)}>
           <Suspense fallback={<PageLoading />}>
             <Outlet />
           </Suspense>

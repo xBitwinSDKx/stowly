@@ -295,7 +295,7 @@ describe("Zonen-Etikett", () => {
     await userEvent.click(screen.getByRole("button", { name: "QR-Code: Keller" }));
     const dialog = screen.getByRole("dialog", { name: "QR-Code: Keller" });
     expect(dialog).toHaveTextContent("Das Etikett druckt „Keller (Pi)“.");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Als Etikett drucken" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Etikett drucken" }));
     await waitFor(() => expect(request).toHaveBeenCalledWith(ZONE_IDS.cellar));
     // Der Pi ist im Obergeschoss nicht erreichbar: Das Etikett steht aus.
     expect(await within(dialog).findByRole("status")).toHaveTextContent("1 Etikett steht aus und wird gedruckt, sobald dieses Gerät den Drucker „Keller (Pi)“ erreicht.");
@@ -329,7 +329,7 @@ describe("Zonen-Etikett", () => {
     await ready();
     await userEvent.click(screen.getByRole("button", { name: "Alle QR-Codes" }));
     const dialog = screen.getByRole("dialog", { name: "QR-Codes aller Zonen" });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Alle als Etikett drucken" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Etiketten drucken" }));
     await waitFor(() => expect(value(core.data.printJobs).filter((entry) => entry.kind === "zone")).toHaveLength(4));
     await waitFor(() => expect(within(dialog).getByRole("status")).toHaveTextContent("4 Etiketten sind gedruckt."));
   });
@@ -339,7 +339,7 @@ describe("Zonen-Etikett", () => {
     await ready();
     await userEvent.click(screen.getByRole("button", { name: "QR-Code: Vorrat" }));
     const dialog = screen.getByRole("dialog", { name: "QR-Code: Vorrat" });
-    expect(within(dialog).queryByRole("button", { name: "Als Etikett drucken" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Etikett drucken" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Vorschau des Etiketts" })).not.toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "Drucken" }));
     expect(window.print).toHaveBeenCalled();

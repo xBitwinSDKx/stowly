@@ -9,7 +9,7 @@
 .claude
 Dockerfile
 docker-compose.yml
-docker-compose.override.yml
+docker-compose.*.yml
 .dockerignore
 data
 data-*

@@ -198,7 +198,7 @@ describe("Verdrängte Bearbeitung", () => {
     const note = screen.getByText("Verdrängte Bearbeitung").closest("td");
     expect(note).toHaveTextContent(`MHD ${formatDate(addDays(today, 9))} → ${formatDate(addDays(today, 40))}`);
     expect(note).toHaveTextContent("war aber schon entnommen");
-    expect(within(note as HTMLElement).getByRole("button", { name: `Wiederherstellen und Bearbeitung übernehmen: ${pkg.id}` })).toBeInTheDocument();
+    expect(within(note as HTMLElement).getByRole("button", { name: `Mit Bearbeitung wiederherstellen: ${pkg.id}` })).toBeInTheDocument();
     // Daneben bleibt das schlichte Wiederherstellen.
     expect(screen.getByRole("button", { name: `Wiederherstellen: ${pkg.id}` })).toBeInTheDocument();
   });
@@ -209,7 +209,7 @@ describe("Verdrängte Bearbeitung", () => {
     await ready();
     const pkg = displaced(core);
 
-    await userEvent.click(screen.getByRole("button", { name: `Wiederherstellen und Bearbeitung übernehmen: ${pkg.id}` }));
+    await userEvent.click(screen.getByRole("button", { name: `Mit Bearbeitung wiederherstellen: ${pkg.id}` }));
     await waitFor(() => expect(value(core.data.packages).some((candidate) => candidate.id === pkg.id)).toBe(true));
     expect(restore).toHaveBeenCalledWith([pkg.id], { apply_displaced: true });
     expect(value(core.data.packages).find((candidate) => candidate.id === pkg.id)).toMatchObject({
@@ -268,7 +268,7 @@ describe("Lösch-Historie am Handy", () => {
     expect(within(card).getAllByRole("term").map((term) => term.textContent)).toEqual(["MHD", "Zone", "Entnommen", "Grund"]);
     expect(card).toHaveTextContent("Verdrängte Bearbeitung");
 
-    await userEvent.click(within(card).getByRole("button", { name: `Wiederherstellen und Bearbeitung übernehmen: ${pkg?.id ?? ""}` }));
+    await userEvent.click(within(card).getByRole("button", { name: `Mit Bearbeitung wiederherstellen: ${pkg?.id ?? ""}` }));
     await waitFor(() => expect(value(core.data.packages).some((candidate) => candidate.id === pkg?.id)).toBe(true));
   });
 });

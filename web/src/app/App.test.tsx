@@ -427,11 +427,14 @@ describe("Etiketten im Rahmen", () => {
   it("fragt unter der Kopfzeile, ob ein Etikett gedruckt wurde: Ja vermerkt es", async () => {
     const core = renderApp();
     const banner = (await screen.findByText("Wurde das Etikett gedruckt?")).closest('[role="status"]') as HTMLElement;
-    expect(banner).toHaveTextContent("Basmati Reis");
-    expect(banner).toHaveTextContent("Der Ausgang ist unklar.");
+    // Kurz, auch am Handy: welches Etikett, an welchem Drucker.
+    const pkg = core.data.printJobs.get()?.find((job) => job.id === sampleUuid(4, 3))?.package_id ?? "";
+    expect(banner).toHaveTextContent(`Basmati Reis · Packung ${pkg} · Keller (Pi)`);
     await userEvent.click(within(banner).getByRole("button", { name: "Ja" }));
     await waitFor(() => expect(core.data.printJobs.get()?.find((job) => job.id === sampleUuid(4, 3))?.state).toBe("printed"));
     expect(screen.queryByText("Wurde das Etikett gedruckt?")).not.toBeInTheDocument();
+    // Mit dem Hinweis ist die Schaltfläche fort: Der Fokus geht an den Inhalt, nicht verloren.
+    await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
   });
 
   it("bietet nach einem Nein an, erneut zu drucken", async () => {
@@ -631,5 +634,20 @@ describe("Nachgeladene Ansichten", () => {
     );
     expect(screen.getByText("Lädt …")).toBeInTheDocument();
     expect(await screen.findByText("Später Inhalt")).toBeInTheDocument();
+  });
+
+  it("versucht es beim Aufruf noch einmal, wenn das Vorabholen gescheitert ist", async () => {
+    let attempts = 0;
+    const Flaky = lazyPage(() => {
+      attempts += 1;
+      return attempts === 1
+        ? Promise.reject(new TypeError("Failed to fetch dynamically imported module: https://stowly.home/assets/zones-abc.js"))
+        : Promise.resolve(() => <p>Inhalt nach dem zweiten Versuch</p>);
+    });
+    await expect(Flaky.preload()).rejects.toThrow(TypeError);
+    render(<Flaky />);
+    expect(screen.getByText("Lädt …")).toBeInTheDocument();
+    expect(await screen.findByText("Inhalt nach dem zweiten Versuch")).toBeInTheDocument();
+    expect(attempts).toBe(2);
   });
 });

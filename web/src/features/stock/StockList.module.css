@@ -119,6 +119,13 @@
   grid-column: 1 / -1;
   min-width: 0;
   border-top: var(--border-width) solid var(--color-border);
+  /*
+   * Mit „Details" stehen Hunderte Chargen-Ansichten offen. Was außerhalb des Bildschirms liegt,
+   * legt der Browser erst an, wenn es in die Nähe kommt; bis dahin gilt die zuletzt gemessene
+   * Höhe. Die Spalten der Liste hängen nicht davon ab: Die Ansicht überspannt sie alle.
+   */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 9rem;
 }
 
 .panelCell {
@@ -298,6 +305,9 @@
 
 .card {
   overflow: hidden;
+  /* Wie die Chargen-Ansichten der Tabelle: Karten außerhalb des Bildschirms legt der Browser erst an, wenn sie in die Nähe kommen. */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 10rem;
 }
 
 .cardMain {

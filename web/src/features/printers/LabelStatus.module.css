@@ -1,0 +1,32 @@
+/* Stand eben angeforderter Etiketten mit Symbol: Ergebnis eines Dialogs (Nachdruck). */
+.status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.icon {
+  flex: none;
+}
+
+.success .icon {
+  color: var(--color-success);
+}
+
+.busy .icon,
+.pending .icon {
+  color: var(--color-accent);
+}
+
+.warn .icon {
+  color: var(--color-warn);
+}
+
+.danger .icon {
+  color: var(--color-danger);
+}
+
+.text {
+  min-width: 0;
+  padding-top: 0.125rem;
+}

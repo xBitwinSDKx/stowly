@@ -247,6 +247,12 @@ a { color: var(--accent); }
   }
 
   function init() {
+    // Öffnet die App dieselbe Seite erneut im selben Tab, ändert sich nur das Fragment: Der Browser
+    // lädt dann nicht neu. Neu laden, damit die neue Übergabe gelesen wird und das Token wieder
+    // aus der Adresszeile verschwindet.
+    window.addEventListener("hashchange", function () {
+      if (location.hash.length > 1) { location.reload(); }
+    });
     var fragment = location.hash.replace(/^#/, "");
     if (!fragment) { fail("Diese Seite wird von Stowly aus geöffnet: In der App beim Etikett „Über die Seite des Druckers drucken“ wählen."); return; }
     try { payload = decode(fragment); } catch (error) { fail("Die übergebenen Aufträge sind nicht lesbar."); return; }

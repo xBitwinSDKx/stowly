@@ -15,7 +15,7 @@ import {
 } from "@/contract";
 import { LabelStatus } from "@/features/printers/LabelStatus";
 import { useHasPrinter } from "@/features/printers/usePrinting";
-import { BestBeforeField, errorText, FieldGroup, Notice, PackageIds, packagesText, readBestBefore, Select, Stepper } from "@/ui";
+import { BestBeforeField, errorText, FieldGroup, focusFirstInvalid, Notice, PackageIds, packagesText, readBestBefore, Select, Stepper } from "@/ui";
 import { Button, cx, Dialog, dialogFocus, SegmentedControl, Switch, TextField, useToast } from "@/ui/base";
 import { CheckIcon, CircleCheckIcon, PlusIcon, SearchIcon, UndoIcon } from "@/ui/icons";
 
@@ -109,6 +109,7 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
     event.preventDefault();
     setTried(true);
     if (nameError || barcodeError || productError || input.kind === "invalid" || zone === "" || (mode === "new" && barcodeOwner)) {
+      focusFirstInvalid(formId);
       return;
     }
     const product: ProductRef =

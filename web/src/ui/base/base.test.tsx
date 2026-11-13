@@ -245,6 +245,42 @@ describe("Dialog", () => {
     screen.getByRole("dialog").dispatchEvent(new Event("cancel", { cancelable: true }));
     expect(screen.getByText("Inhalt des Dialogs")).toBeInTheDocument();
   });
+
+  it("öffnet sich wieder, wenn der Browser ihn auf Escape selbst schließt, der Aufrufer ihn aber offen hält", async () => {
+    // Chrome lässt ein Escape ohne vorherige Bedienung nicht abfangen: cancel ist dann nicht abbrechbar
+    // und der Browser schließt selbst. Das ist hier nachgestellt.
+    render(<Example dismissable={false} />);
+    await userEvent.click(screen.getByRole("button", { name: "Öffnen" }));
+    const dialog = screen.getByRole("dialog") as HTMLDialogElement;
+    act(() => {
+      dialog.dispatchEvent(new Event("cancel", { cancelable: false }));
+      dialog.close();
+    });
+    expect(dialog).not.toHaveAttribute("open");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(dialog).toHaveAttribute("open");
+    expect(within(dialog).getByText("Inhalt des Dialogs")).toBeInTheDocument();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it("bleibt zu, wenn der Browser ihn schließt und der Aufrufer das annimmt", async () => {
+    render(<Example />);
+    const opener = screen.getByRole("button", { name: "Öffnen" });
+    await userEvent.click(opener);
+    const dialog = screen.getByRole("dialog") as HTMLDialogElement;
+    act(() => {
+      dialog.dispatchEvent(new Event("cancel", { cancelable: false }));
+      dialog.close();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(dialog).not.toHaveAttribute("open");
+    expect(screen.queryByText("Inhalt des Dialogs")).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
 });
 
 describe("Toast", () => {
@@ -327,6 +363,39 @@ describe("Eingaben", () => {
     expect(onChange).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("radio", { name: "Hell" }));
     expect(onChange).toHaveBeenCalledWith("light");
+  });
+
+  it("SegmentedControl wählt mit den Pfeiltasten wie Optionsfelder", async () => {
+    function Choice() {
+      const [value, setValue] = useState("dark");
+      return (
+        <SegmentedControl
+          label="Thema"
+          value={value}
+          onChange={setValue}
+          options={[
+            { value: "dark", label: "Dunkel" },
+            { value: "light", label: "Hell" },
+            { value: "off", label: "Aus", disabled: true },
+            { value: "system", label: "Wie das Gerät" },
+          ]}
+        />
+      );
+    }
+    render(<Choice />);
+    await userEvent.click(screen.getByRole("radio", { name: "Dunkel" }));
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("radio", { name: "Hell" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Hell" })).toHaveFocus();
+    // Gesperrte Möglichkeiten werden übersprungen; am Ende geht es vorn weiter.
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("radio", { name: "Wie das Gerät" })).toBeChecked();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("radio", { name: "Dunkel" })).toBeChecked();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("radio", { name: "Wie das Gerät" })).toHaveFocus();
+    await userEvent.keyboard("{Home}");
+    expect(screen.getByRole("radio", { name: "Dunkel" })).toBeChecked();
   });
 
   it("TextField verbindet Beschriftung, Hinweis und Fehler mit dem Feld", async () => {

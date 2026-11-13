@@ -47,11 +47,24 @@
   background: var(--color-surface);
 }
 
+/* Symbol, Name mit Art und Adressen, rechts das Urteil; am Handy steht das Urteil unter dem Namen. */
 .printerHead {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2) var(--space-3);
   min-width: 0;
+}
+
+@media (max-width: 47.99rem) {
+  .printerHead {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .printerHead .level {
+    grid-column: 2;
+    justify-self: start;
+  }
 }
 
 .printerIcon {
@@ -112,17 +125,22 @@
   gap: var(--space-1) var(--space-3);
 }
 
-/* Angaben zum Zustand: Beschriftung klein darüber, der Wert darunter, in seiner Farbe */
+/*
+ * Angaben zum Zustand: Beschriftung klein darüber, der Wert darunter, in seiner Farbe.
+ * Wie die Kennzahl-Karten des Entwurfs; am Handy zwei nebeneinander.
+ */
 .facts {
   display: grid;
   gap: var(--space-2);
-  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr));
   margin: 0;
 }
 
 .fact {
   display: grid;
   gap: 1px;
+  /* Wird die Kachel durch eine Nachbarin mit zwei Zeilen höher, bleibt der Wert oben. */
+  align-content: start;
   min-width: 0;
   padding: var(--space-2) var(--space-3);
   border: var(--border-width) solid var(--color-border);
@@ -261,6 +279,21 @@
   gap: var(--space-2) var(--space-4);
   min-width: 0;
   padding: var(--space-3) var(--space-4);
+}
+
+/* Die Liste schneidet an ihren runden Ecken ab: Der Fokus der Zeile liegt deshalb innen. */
+.job:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.report {
+  border-radius: var(--radius-md);
+}
+
+.report:focus-visible {
+  box-shadow: none;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .jobText {

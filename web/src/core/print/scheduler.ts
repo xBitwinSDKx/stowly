@@ -7,25 +7,30 @@
  *   nach 5, 15 und 60 Sekunden, danach alle 60 Sekunden.
  *
  * Es läuft nie mehr als ein Versuch dieses Tabs zugleich (über Tabs hinweg sorgt die Sperre
- * in engine.ts dafür). Ein Anlass während eines laufenden Versuchs führt zu genau einem
- * weiteren danach. Im Hintergrund wird nicht von selbst zugestellt.
+ * in engine.ts dafür). Ein Anlass, während ein Versuch noch einreicht, führt zu genau einem
+ * weiteren danach; einer, während er nur noch nachfragt, beginnt sofort (das Nachfragen gibt
+ * nach). Im Hintergrund wird nicht von selbst zugestellt.
+ *
+ * Wer wartet (`flush`), bekommt den Bericht des Versuchs, sobald eingereicht ist. Den nächsten
+ * Termin legt erst das Ende des Nachfragens fest.
  *
  * Wie der Zeitplan des Abgleichs kennt diese Klasse weder `window` noch den Store.
  */
 import type { SchedulerTimers } from "../sync/scheduler";
-import type { DeliveryOptions, DeliveryOutcome } from "./engine";
+import type { DeliveryOptions, DeliveryOutcome, DeliveryRun } from "./engine";
 
 export const DELIVERY_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000];
 
 /**
  * Warum jetzt zugestellt werden soll. Nur der Abgleich lässt die Wartezeiten, wie sie sind:
  * Er läuft ohnehin jede Minute und soll den Takt nicht wieder auf fünf Sekunden stellen.
+ * "permission": Die Erlaubnis des Browsers für das lokale Netzwerk hat sich geändert.
  */
-export type DeliveryReason = "request" | "sync" | "start" | "visible";
+export type DeliveryReason = "request" | "sync" | "start" | "visible" | "permission";
 
 export interface DeliverySchedulerDeps {
   /** Ein Zustellversuch. Wirft nicht. */
-  run(options: DeliveryOptions): Promise<DeliveryOutcome>;
+  run(options: DeliveryOptions): DeliveryRun;
   /** Ist die App sichtbar? */
   isVisible(): boolean;
   timers?: SchedulerTimers;
@@ -50,6 +55,8 @@ export class DeliveryScheduler {
   private retryTimer: unknown = null;
   private retryLevel = 0;
   private stopped = false;
+  /** Zählt die Versuche: Nur der jüngste legt nach seinem Nachfragen den nächsten Termin fest. */
+  private generation = 0;
 
   constructor(private readonly deps: DeliverySchedulerDeps) {
     this.timers = deps.timers ?? DEFAULT_TIMERS;
@@ -107,8 +114,10 @@ export class DeliveryScheduler {
 
   private launch(options: DeliveryOptions): Promise<DeliveryOutcome> {
     this.clearRetry();
-    const run = this.deps
-      .run(options)
+    this.generation += 1;
+    const generation = this.generation;
+    const run = this.deps.run(options);
+    const report = run.report
       .catch(() => NOTHING)
       .then((outcome) => {
         this.running = null;
@@ -127,12 +136,19 @@ export class DeliveryScheduler {
             resolve(outcome);
           }
           this.queued = null;
-          this.afterRun(outcome);
         }
         return outcome;
       });
-    this.running = run;
-    return run;
+    this.running = report;
+    void run.done
+      .catch(() => NOTHING)
+      .then((outcome) => {
+        // Hat inzwischen ein neuer Versuch begonnen, legt der den nächsten Termin fest.
+        if (generation === this.generation && this.running === null) {
+          this.afterRun(outcome);
+        }
+      });
+    return report;
   }
 
   /** Steht nach dem Versuch noch etwas aus, folgt der nächste von selbst. */

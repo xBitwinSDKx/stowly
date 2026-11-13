@@ -1,7 +1,7 @@
 /**
  * Die Bausteine oberhalb der Grundbausteine: Texte, MHD-Feld, Mengenwähler, Menü, Rückfrage, Hooks.
  */
-import { act, render, renderHook, screen, within } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { createMemoryRouter } from "react-router";
@@ -20,6 +20,8 @@ import {
   ExpiryLabel,
   expiryText,
   FilterCard,
+  LIST_FIRST,
+  LIST_STEP,
   Menu,
   PackageIds,
   packagesText,
@@ -32,6 +34,7 @@ import {
   TextLink,
   timeAgo,
   useMediaQuery,
+  useProgressiveCount,
   useUiFlag,
   ZoneLabel,
 } from ".";
@@ -470,5 +473,30 @@ describe("Hooks", () => {
 
     const again = renderHook(() => useUiFlag("test.flag", false));
     expect(again.result.current[0]).toBe(true);
+  });
+
+  it("useProgressiveCount zeichnet lange Listen in Abschnitten und beginnt bei neuem Schlüssel wieder vorn", async () => {
+    const total = LIST_FIRST + 2 * LIST_STEP + 10;
+    const seen: number[] = [];
+    const { result, rerender } = renderHook(
+      ({ total, key }) => {
+        const count = useProgressiveCount(total, key);
+        seen.push(count);
+        return count;
+      },
+      { initialProps: { total, key: "a" } },
+    );
+    expect(result.current).toBe(LIST_FIRST);
+    await waitFor(() => expect(result.current).toBe(total));
+    // Abschnitt für Abschnitt, nie mehr als LIST_STEP auf einmal.
+    const steps = seen.filter((count, index) => index === 0 || count !== seen[index - 1]);
+    expect(steps).toEqual([LIST_FIRST, LIST_FIRST + LIST_STEP, LIST_FIRST + 2 * LIST_STEP, total]);
+    // Neue Auswahl (Suche, Filter, Reihenfolge): sofort wieder nur der Anfang, der Rest folgt.
+    rerender({ total, key: "b" });
+    expect(result.current).toBe(LIST_FIRST);
+    await waitFor(() => expect(result.current).toBe(total));
+    // Kurze Listen stehen sofort ganz da.
+    rerender({ total: 5, key: "c" });
+    expect(result.current).toBe(5);
   });
 });

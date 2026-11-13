@@ -16,7 +16,8 @@ from stowly.config import DEV_PASSWORD, Settings
 
 
 def configure_logging(level: str) -> None:
-    """Meldungen des Servers selbst (``stowly.*``) im Stil von uvicorn auf die Standardfehlerausgabe.
+    """Meldungen des Servers (``stowly.*``) und des Druckdienstes (``stowly_print.*``) im Stil von
+    uvicorn auf die Standardfehlerausgabe.
 
     uvicorn richtet nur seine eigenen Logger ein. Ohne das hier gingen Hinweise des
     Hintergrund-Ablaufs unter. Tokens und das Passwort werden nie protokolliert.
@@ -24,10 +25,11 @@ def configure_logging(level: str) -> None:
     numeric = logging.DEBUG if level == "trace" else getattr(logging, level.upper(), logging.INFO)
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
-    logger = logging.getLogger("stowly")
-    logger.handlers[:] = [handler]
-    logger.setLevel(numeric)
-    logger.propagate = False
+    for name in ("stowly", "stowly_print"):
+        logger = logging.getLogger(name)
+        logger.handlers[:] = [handler]
+        logger.setLevel(numeric)
+        logger.propagate = False
 
 
 def renew_dataset(settings: Settings) -> int:
@@ -95,7 +97,15 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     app = create_app(settings)
-    uvicorn.run(app, host=settings.host, port=settings.port, log_level=settings.log_level)
+    # Beim Beenden höchstens 5 Sekunden auf laufende Anfragen warten: Eine Abfrage mit ?wait=30 am
+    # Druckdienst hielte das Herunterfahren sonst auf, und Docker beendet nach 10 Sekunden hart.
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level,
+        timeout_graceful_shutdown=5,
+    )
     return 0
 
 

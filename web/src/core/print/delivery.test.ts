@@ -12,9 +12,11 @@ import { MAX_HANDOFF_JOBS } from "@/contract";
 
 import type { CoreOptions, StowlyCore } from "..";
 import type { SchedulerTimers } from "../sync/scheduler";
-import { FakePrintService, type FakeCall, type FakeLink } from "../testing/fake-api";
+import { FakePrintService, type FakeCall, type FakeLink, type FakePrintOptions } from "../testing/fake-api";
 import { commandsOf, disposeAll, expectCoreError, firstZoneId, signedIn, value, type Harness } from "../testing/harness";
 import type { PermissionReading } from "./address";
+import { HEALTH_TIMEOUT_MS } from "./client";
+import { healthTimeout, PERMISSION_PROMPT_BUDGET_MS, PERMISSION_PROMPT_TIMEOUT_MS } from "./connect";
 
 const HTTPS = "https://10.71.83.1:8443";
 const HTTP = "http://10.71.83.1:8080";
@@ -47,9 +49,9 @@ interface PiHarness extends Harness {
 }
 
 /** Ein Haushalt mit einem direkten Drucker (Pi) als Standarddrucker, erreichbar über HTTPS und HTTP. */
-async function withPi(core: CoreOptions = {}, direct: { printer?: string | null; token?: string } = {}): Promise<PiHarness> {
+async function withPi(core: CoreOptions = {}, direct: { printer?: string | null; token?: string } = {}, service: FakePrintOptions = {}): Promise<PiHarness> {
   const harness = await signedIn({ core });
-  const pi = new FakePrintService({ now: harness.clock.now });
+  const pi = new FakePrintService({ now: harness.clock.now, ...service });
   const https = harness.network.attach(HTTPS, pi);
   const http = harness.network.attach(HTTP, pi);
   const printer = await harness.core.printers.create({
@@ -139,8 +141,9 @@ describe("Etikett an den Drucker am Server", () => {
     expect(server.print.prints[0]?.data).toMatchObject({ qr: `STOWLY/P/${stored.packages[0]?.id}`, id: stored.packages[0]?.id, title: "Basmati Reis", subtitle: "Kornhaus · 1 kg", best_before: "25.03.2027", zone: "" });
 
     // Am Server: Geräte-Token im Kopf, gewöhnliches JSON, der Drucker unter seiner Kennung.
+    // Auf Wunsch des Anwenders (`flush`) wird eingereicht, ohne auf den Druck zu warten.
     const submit = network.calls.find(isSubmit);
-    expect(submit).toMatchObject({ path: `/print/v1/jobs/${jobId}`, query: "wait=5", base: null });
+    expect(submit).toMatchObject({ path: `/print/v1/jobs/${jobId}`, query: "wait=0", base: null });
     expect(submit?.token).toBe(network.calls.find((call) => call.path === "/api/sync")?.token);
     expect(submit?.headers["content-type"]).toBe("application/json");
     expect(submit?.body).toMatchObject({ printer: printerId, copies: 1, cut: true, expect_boot_id: server.print.bootId, template: { schema: 1, name: "package-62x29" } });
@@ -205,10 +208,12 @@ describe("Etikett an den Drucker am Server", () => {
 
     expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0 });
     expect(jobOf(core, jobId)).toMatchObject({ state: "queued", printer_id: printerId, boot_id: server.print.bootId });
-    // Nachgefragt wird mit wait=10, höchstens eine Minute lang.
-    const followUps = network.calls.filter((call) => call.method === "GET" && call.path === `/print/v1/jobs/${jobId}`);
-    expect(followUps.length).toBe(6);
-    expect(followUps.every((call) => call.query === "wait=10")).toBe(true);
+    // Nachgefragt wird danach im Hintergrund, mit wait=10, höchstens sechsmal (eine Minute).
+    const followUps = () => network.calls.filter((call) => call.method === "GET" && call.path === `/print/v1/jobs/${jobId}`);
+    await vi.waitFor(() => expect(followUps().length).toBe(6));
+    await settle();
+    expect(followUps().length).toBe(6);
+    expect(followUps().every((call) => call.query === "wait=10")).toBe(true);
 
     server.print.resume();
     await core.print.flush();
@@ -310,6 +315,22 @@ describe("Direkt zum Pi", () => {
     expect(harness.network.attempts.filter((call) => call.base === HTTP).map((call) => call.mode)).toEqual([undefined, "no-cors"]);
   });
 
+  it("fragt nach einer Zeitüberschreitung nicht noch ohne CORS nach, nur nach einem sofortigen Fehlschlag", async () => {
+    const harness = await withPi();
+    const { core, printerId } = harness;
+    // HTTPS: Die Anfrage versickert (oder der Browser wartet auf den Anwender). HTTP: sofort abgewiesen.
+    harness.https.silent = true;
+    harness.http.reachable = false;
+    await storeLabelled(core);
+    harness.network.attempts.length = 0;
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "unreachable" }] });
+    expect(harness.network.attempts.map((call) => [call.base, call.mode ?? "cors"])).toEqual([
+      [HTTPS, "cors"],
+      [HTTP, "cors"],
+      [HTTP, "no-cors"],
+    ]);
+  });
+
   it("lässt ausstehen, was den Dienst auf keiner Adresse erreicht, und stellt zu, sobald er wieder da ist", async () => {
     const harness = await withPi();
     const { core, pi, printerId } = harness;
@@ -379,6 +400,87 @@ describe("Direkt zum Pi", () => {
       await vi.waitFor(() => expect(pi.printed).toHaveLength(3));
     });
 
+    it("gibt dem Anwender auf seinen Wunsch hin Zeit, die Nachfrage zu beantworten", { timeout: 15_000 }, async () => {
+      let permission: PermissionReading = "prompt";
+      const harness = await withPi({ permissions: async () => permission });
+      const { core, pi } = harness;
+      await storeLabelled(core);
+      // Der Browser hält die Anfragen an, solange seine Nachfrage offen ist (sie gilt für den Ursprung, also für beide Adressen).
+      let answer!: () => void;
+      const asking = new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      harness.https.hold = asking;
+      harness.http.hold = asking;
+      const flushing = core.print.flush();
+      // Der Anwender liest und tippt erst nach 2,5 s auf „Zulassen“: länger als die üblichen 1,5 s.
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      permission = "granted";
+      answer();
+      expect(await flushing).toMatchObject({ delivered: 1, pending: 0, problems: [] });
+      expect(pi.printed).toHaveLength(1);
+      // Es ging nur die eine Anfrage an HTTPS, sie wurde nicht vorher aufgegeben.
+      expect(harness.network.attempts.filter((call) => call.path === "/v1/health").map((call) => call.base)).toEqual([HTTPS]);
+    });
+
+    it("lässt es bei 1,5 s, wenn die Erlaubnis erteilt ist", { timeout: 15_000 }, async () => {
+      const harness = await withPi({ permissions: async () => "granted" });
+      const { core, printerId } = harness;
+      await storeLabelled(core);
+      harness.https.hold = new Promise<void>(() => undefined);
+      harness.http.reachable = false;
+      const started = Date.now();
+      expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "unreachable" }] });
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(HEALTH_TIMEOUT_MS - 100);
+      expect(elapsed).toBeLessThan(HEALTH_TIMEOUT_MS + 2_000);
+    });
+
+    it("verteilt die längere Zeitgrenze auf die Adressen eines Druckers: höchstens 20 s zusammen", () => {
+      const start = 1_000_000;
+      // Ohne mögliche Nachfrage (erteilt, unbekannt, „fragt nie“, selbsttätig) immer 1,5 s.
+      expect(healthTimeout(false, start, start)).toBe(HEALTH_TIMEOUT_MS);
+      // Die erste Anfrage, die die Nachfrage auslösen kann, bekommt 15 s.
+      expect(PERMISSION_PROMPT_TIMEOUT_MS).toBe(15_000);
+      expect(healthTimeout(true, start, start)).toBe(15_000);
+      // Gab die erste nach 15 s auf, bleibt der zweiten der Rest bis 20 s.
+      expect(PERMISSION_PROMPT_BUDGET_MS).toBe(20_000);
+      expect(healthTimeout(true, start, start + 15_000)).toBe(5_000);
+      // Scheiterte die erste sofort (Zertifikat, abgewiesen), hat die zweite fast die vollen 15 s.
+      expect(healthTimeout(true, start, start + 200)).toBe(15_000);
+      // Ist die Zeit fast aufgebraucht, gelten wenigstens die üblichen 1,5 s.
+      expect(healthTimeout(true, start, start + 19_500)).toBe(HEALTH_TIMEOUT_MS);
+      expect(healthTimeout(true, start, start + 40_000)).toBe(HEALTH_TIMEOUT_MS);
+    });
+
+    it("stellt von selbst zu, sobald der Anwender die Nachfrage beantwortet hat, auch nach der Zeitgrenze der Anfrage", async () => {
+      let permission: PermissionReading = "prompt";
+      const watcher: { onChange: (() => void) | null } = { onChange: null };
+      const manual = manualTimers();
+      const harness = await withPi({
+        autoSync: true,
+        timers: manual.timers,
+        permissions: async () => permission,
+        watchPermissions: (onChange) => {
+          watcher.onChange = onChange;
+          return () => {
+            watcher.onChange = null;
+          };
+        },
+      });
+      const { core, pi } = harness;
+      harness.network.attempts.length = 0;
+      await storeLabelled(core);
+      await settle();
+      expect(harness.network.attempts).toEqual([]);
+
+      // Die Nachfrage kam bei einem Versuch auf Wunsch des Anwenders; er erlaubt erst danach.
+      permission = "granted";
+      expect(watcher.onChange).not.toBeNull();
+      watcher.onChange?.();
+      await vi.waitFor(() => expect(pi.printed).toHaveLength(1));
+    });
+
     it("stellt mit erteilter Erlaubnis von selbst zu, gleich nach dem Anfordern", async () => {
       const manual = manualTimers();
       const harness = await withPi({ autoSync: true, timers: manual.timers, permissions: async () => "granted" });
@@ -386,6 +488,9 @@ describe("Direkt zum Pi", () => {
       const stored = await storeLabelled(core, 2);
       await vi.waitFor(() => expect(pi.printed).toHaveLength(2));
       await vi.waitFor(() => expect(stored.print_jobs.map((job) => jobOf(core, job.id).state)).toEqual(["printed", "printed"]));
+      // Von selbst wartet niemand auf den Bericht: Der Dienst darf beim Einreichen auf den Druck
+      // warten, dann genügt eine Meldung je Etikett.
+      expect(harness.piCalls().filter(isSubmit).map((call) => call.query)).toEqual(["wait=5", "wait=5"]);
     });
   });
 
@@ -567,6 +672,76 @@ describe("Nie doppelt", () => {
     expect(harness.piCalls().filter(isSubmit)).toHaveLength(3);
     await core.sync.now();
     expect(sent(harness, "print.report")).toHaveLength(3);
+  });
+});
+
+describe("Bericht nach dem Einreichen, Nachfragen im Hintergrund", () => {
+  /** Ein Pi, der wirklich wartet (`wait`), und dessen Drucker zunächst nichts druckt. */
+  const waitingPi = () => withPi({}, {}, { realWait: true, printMs: 20 });
+  const followUpsOf = (harness: PiHarness, jobId: string) => harness.piCalls().filter((call) => call.method === "GET" && call.path === `/v1/jobs/${jobId}` && call.query === "wait=10");
+
+  it("erfüllt flush, sobald eingereicht ist; der Endzustand kommt danach ohne weiteren Aufruf an", async () => {
+    const harness = await waitingPi();
+    const { core, pi } = harness;
+    pi.pause();
+    const jobId = (await storeLabelled(core)).print_jobs[0]?.id ?? "";
+
+    const started = Date.now();
+    const report = await core.print.flush();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    // Der Bericht gilt für diesen Moment: angekommen, beim Dienst wartend.
+    expect(report).toEqual({ delivered: 1, pending: 0, problems: [] });
+    expect(jobOf(core, jobId).state).toBe("queued");
+    expect(harness.piCalls().filter(isSubmit).map((call) => call.query)).toEqual(["wait=0"]);
+
+    // Im Hintergrund wird nachgefragt (die Abfrage wartet beim Dienst); der Drucker legt los.
+    await vi.waitFor(() => expect(followUpsOf(harness, jobId)).toHaveLength(1));
+    pi.resume();
+    await vi.waitFor(() => expect(jobOf(core, jobId).state).toBe("printed"), { timeout: 3_000 });
+    expect(pi.printed).toEqual([jobId]);
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(1);
+  });
+
+  it("lässt ein zweites flush nicht auf das Nachfragen warten: Das Nachfragen bricht ab, die Abfrage auch", async () => {
+    const harness = await waitingPi();
+    const { core, pi } = harness;
+    pi.pause();
+    const first = (await storeLabelled(core)).print_jobs[0]?.id ?? "";
+    await core.print.flush();
+    // Die Abfrage mit wait=10 ist unterwegs und wartet beim Dienst.
+    await vi.waitFor(() => expect(followUpsOf(harness, first)).toHaveLength(1));
+
+    const second = (await storeLabelled(core, 1, "Mais")).print_jobs[0]?.id ?? "";
+    const started = Date.now();
+    const report = await core.print.flush();
+    // Ohne Abbruch wartete der zweite Versuch auf die Abfrage (bis zu 10 s) und das Nachfragen (bis zu 60 s).
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(report).toEqual({ delivered: 1, pending: 0, problems: [] });
+    expect(jobOf(core, second).state).toBe("queued");
+
+    // Der neue Versuch fragt selbst weiter nach: Beide Endzustände kommen an, jeder Auftrag druckt einmal.
+    pi.resume();
+    await vi.waitFor(() => expect([first, second].map((id) => jobOf(core, id).state)).toEqual(["printed", "printed"]), { timeout: 3_000 });
+    expect(pi.printed).toEqual([first, second]);
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(2);
+  });
+
+  it("lässt auch einen Versuch aus einem anderen Tab nicht auf das Nachfragen warten", async () => {
+    const harness = await waitingPi();
+    const { core, pi } = harness;
+    pi.pause();
+    const first = (await storeLabelled(core)).print_jobs[0]?.id ?? "";
+    await core.print.flush();
+    await vi.waitFor(() => expect(followUpsOf(harness, first)).toHaveLength(1));
+
+    const tab = await harness.another();
+    const started = Date.now();
+    const report = await tab.print.flush();
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(report).toEqual({ delivered: 0, pending: 0, problems: [] });
+    pi.resume();
+    await vi.waitFor(() => expect(jobOf(tab, first).state).toBe("printed"), { timeout: 3_000 });
+    expect(pi.printed).toEqual([first]);
   });
 });
 
@@ -772,6 +947,49 @@ describe("Fremde Etiketten und das Verwerfen", () => {
     expect(jobOf(core, jobId).state).toBe("queued");
   });
 
+  it("verwirft ein eigenes Etikett, das vielleicht schon unterwegs ist, zuerst beim Dienst, ohne Dienst nur hier", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const dropNextSubmit = () => {
+      let dropped = false;
+      harness.network.dropWhen = (call) => {
+        if (!dropped && isSubmit(call)) {
+          dropped = true;
+          return true;
+        }
+        return false;
+      };
+    };
+    // Der Dienst nimmt an, druckt aber noch nicht; die Antwort auf das Einreichen geht verloren.
+    pi.pause();
+    const first = (await storeLabelled(core)).print_jobs[0]?.id ?? "";
+    dropNextSubmit();
+    await core.print.flush();
+    expect(pi.job(first)).toEqual({ state: "queued", error: null });
+    expect(jobOf(core, first).state).toBe("pending");
+
+    // Erreichbar: zuerst beim Dienst verworfen, dort druckt es nie.
+    await core.print.cancel(first);
+    expect(pi.job(first)).toEqual({ state: "failed", error: "cancelled" });
+    expect(jobOf(core, first).state).toBe("cancelled");
+
+    // Nicht erreichbar: verworfen wird trotzdem, wie jedes ausstehende Etikett auch ohne Netz.
+    const second = (await storeLabelled(core, 1, "Mais")).print_jobs[0]?.id ?? "";
+    dropNextSubmit();
+    await core.print.flush();
+    expect(pi.job(second)?.state).toBe("queued");
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    await core.print.cancel(second);
+    expect(jobOf(core, second)).toMatchObject({ state: "cancelled", error: null });
+    // Druckt der Dienst es später doch, dann einmal; der Kern schickt es nicht noch einmal.
+    harness.https.reachable = true;
+    pi.resume();
+    await core.print.flush();
+    expect(pi.printed).toEqual([second]);
+    expect(harness.piCalls().filter(isSubmit).filter((call) => call.path.endsWith(second))).toHaveLength(1);
+  });
+
   it("verwirft ein ausstehendes Etikett sofort und ein fremdes wartendes nur als Meldung", async () => {
     const harness = await withPi();
     const { core, pi, server, printerId } = harness;
@@ -950,6 +1168,46 @@ describe("Vorschau, Bild und Notweg", () => {
     expect(pi.printed).toHaveLength(2);
 
     await expectCoreError(core.print.handoff("30000000-0000-4000-8000-000000000099"), "not_found");
+  });
+
+  it("übergibt nur Etiketten, die noch nie abgeschickt wurden", async () => {
+    const harness = await withPi();
+    const { core, pi, printerId } = harness;
+    // Abgeschickt, Antwort verloren: Das Etikett ist vielleicht schon beim Drucker (hier: gedruckt).
+    const sentId = (await storeLabelled(core)).print_jobs[0]?.id ?? "";
+    let dropped = false;
+    harness.network.dropWhen = (call) => {
+      if (!dropped && isSubmit(call)) {
+        dropped = true;
+        return true;
+      }
+      return false;
+    };
+    await core.print.flush();
+    harness.network.dropWhen = null;
+    expect(jobOf(core, sentId).state).toBe("pending");
+    expect(pi.printed).toEqual([sentId]);
+
+    // Danach erreicht die App den Pi nicht mehr: Über die Seite des Dienstes geht dieses Etikett nicht.
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    const refused = await expectCoreError(core.print.handoff(printerId), "not_found");
+    expect(refused.message).toMatch(/vielleicht schon beim Drucker/);
+    expect(jobOf(core, sentId).state).toBe("pending");
+
+    // Ein neues Etikett geht über die Seite, das vielleicht schon abgeschickte bleibt stehen.
+    harness.clock.advance(1_000);
+    const freshId = (await storeLabelled(core, 1, "Mais")).print_jobs[0]?.id ?? "";
+    const handoff = await core.print.handoff(printerId);
+    expect(handoff.jobs.map((job) => job.id)).toEqual([freshId]);
+    expect(jobOf(core, freshId)).toMatchObject({ state: "unknown", error: "handoff" });
+    expect(jobOf(core, sentId).state).toBe("pending");
+
+    // Der normale Weg klärt es, sobald der Pi wieder da ist: kein zweiter Druck.
+    harness.https.reachable = true;
+    await core.print.flush();
+    expect(jobOf(core, sentId).state).toBe("printed");
+    expect(pi.printed).toEqual([sentId]);
   });
 
   it("gibt es den Notweg nur bei einem direkten Drucker", async () => {

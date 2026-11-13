@@ -8,15 +8,17 @@ import { PRINT_JOB_ERROR_CODES, PRINTER_ERROR_CODES, type HostHealth, type Print
 import { createSampleData, DEVICE_IDS, PRINTER_IDS, sampleUuid, ZONE_IDS } from "@/mock";
 import { troubledPrinterStatus } from "@/mock/sample";
 
-import { labelStatusText } from "./LabelStatus";
+import { labelStatusText, labelStatusTone } from "./LabelStatus";
 import {
   describeHealth,
+  describeRemoval,
   flushSummary,
   handoffHelps,
   hostFacts,
   isOpenJob,
   JOB_STATES,
   jobErrorText,
+  joinNames,
   printerDuties,
   printerErrorText,
   printerForPackage,
@@ -162,7 +164,7 @@ describe("Sätze", () => {
     // Jeder Code sagt etwas Eigenes.
     expect(seen.size).toBe(PRINT_JOB_ERROR_CODES.length);
     expect(jobErrorText("no_media")).toBe("Es sind keine Etiketten eingelegt.");
-    expect(jobErrorText("not_printed")).toBe("Laut Antwort nicht gedruckt.");
+    expect(jobErrorText("not_printed")).toBe("Auf Nachfrage als nicht gedruckt vermerkt.");
     expect(jobErrorText("something_new")).toBe("something_new");
   });
 
@@ -269,6 +271,8 @@ describe("Etiketten für die Anzeige", () => {
     const view = viewJob(job(7), lookup, DEVICE_IDS.current);
     expect(view.title).toBe("Basmati Reis");
     expect(view.detail).toBe(`Packung ${job(7).package_id ?? ""} · Kornhaus · 1 kg`);
+    // Kurz und eindeutig für Beschriftungen: Mehrere Etiketten können zu demselben Produkt gehören.
+    expect(view.label).toBe(`Basmati Reis, Packung ${job(7).package_id ?? ""}`);
     expect(view.printer?.name).toBe("Küche (Bild)");
     expect(view.hasImage).toBe(true);
     // Am Pi gedruckt: kein Bild.
@@ -299,10 +303,83 @@ describe("Etiketten für die Anzeige", () => {
     expect(labelStatusText([view("queued"), view("printing")])).toBe("2 Etiketten werden am Drucker „Keller (Pi)“ gerade gedruckt.");
     expect(labelStatusText([view("printed"), view("printed")])).toBe("2 Etiketten sind am Drucker „Keller (Pi)“ gedruckt.");
     expect(labelStatusText([view("printed"), view("pending")])).toBe("1 ist gedruckt; 1 Etikett steht aus und wird gedruckt, sobald dieses Gerät den Drucker „Keller (Pi)“ erreicht.");
-    expect(labelStatusText([view("failed", { error: "no_media" })])).toBe("1 Etikett wurde nicht gedruckt (Es sind keine Etiketten eingelegt).");
-    expect(labelStatusText([view("unknown", { error: "interrupted" })])).toBe("Bei 1 Etikett ist der Ausgang unklar.");
+    expect(labelStatusText([view("failed", { error: "no_media" })])).toBe("1 Etikett wurde nicht gedruckt (es sind keine Etiketten eingelegt).");
+    expect(labelStatusText([view("failed", { error: "paper_jam_42" })])).toBe("1 Etikett wurde nicht gedruckt (paper_jam_42).");
+    expect(labelStatusText([view("unknown", { error: "interrupted" })])).toBe("Bei 1 Etikett ist der Ausgang unklar: Stowly fragt nach, ob es gedruckt wurde.");
+    expect(labelStatusText([view("unknown"), view("unknown")])).toBe("Bei 2 Etiketten ist der Ausgang unklar: Stowly fragt nach, ob sie gedruckt wurden.");
     expect(labelStatusText([view("cancelled")])).toBe("1 Etikett wurde verworfen.");
     const unassigned = viewJob({ ...job(1), printer_id: null }, printData({ zones: new Map(), settings: { default_printer_id: null } }), DEVICE_IDS.current);
     expect(labelStatusText([unassigned])).toBe("1 Etikett steht aus: Es ist kein Drucker zugeordnet.");
+  });
+
+  it("gibt dem Stand eben angeforderter Etiketten eine Farbe: Das Schlechteste zählt", () => {
+    const view = (state: PrintJob["state"]) => viewJob({ ...job(1), state }, lookup, DEVICE_IDS.current);
+    expect(labelStatusTone([view("printed"), view("sent")])).toBe("success");
+    expect(labelStatusTone([view("printed"), view("queued")])).toBe("busy");
+    expect(labelStatusTone([view("queued"), view("pending")])).toBe("pending");
+    expect(labelStatusTone([view("pending"), view("unknown")])).toBe("warn");
+    expect(labelStatusTone([view("unknown"), view("failed")])).toBe("danger");
+  });
+});
+
+describe("Drucker löschen", () => {
+  const waiting = (lookup: PrintData) => data.printJobs.map((entry) => viewJob(entry, lookup, DEVICE_IDS.current)).filter((view) => view.group === "waiting");
+  const job = (n: number): PrintJob => {
+    const found = data.printJobs.find((candidate) => candidate.id === sampleUuid(4, n));
+    if (!found) {
+      throw new Error(`Etikett ${String(n)} fehlt in den Beispieldaten`);
+    }
+    return found;
+  };
+
+  it("sagt, wofür er zuständig ist, wer danach druckt und wohin die ausstehenden Etiketten gehen", () => {
+    const lookup = printData();
+    const cellar = lookup.printers.get(PRINTER_IDS.cellar);
+    const kitchen = lookup.printers.get(PRINTER_IDS.kitchen);
+    if (!cellar || !kitchen) {
+      throw new Error("Drucker fehlen in den Beispieldaten");
+    }
+    expect(describeRemoval(cellar, data.zones, lookup, waiting(lookup), true)).toEqual({
+      duties: ["Er druckt für „Keller“ und „Gefrierschrank“.", "Diese Zonen nutzen danach wieder den Standarddrucker „Küche (Bild)“."],
+      labels: ["3 ausstehende Etiketten gehen danach an „Küche (Bild)“.", "Etiketten werden dabei nicht gelöscht."],
+    });
+    // Der Standarddrucker ohne eigene Zonen: Seine Etiketten gibt es gerade nicht, danach gibt es keinen Standarddrucker.
+    expect(describeRemoval(kitchen, data.zones, lookup, waiting(lookup), true)).toEqual({
+      duties: ["Er ist der Standarddrucker.", "Einen Standarddrucker gibt es danach nicht mehr, bis ein anderer gewählt ist."],
+      labels: ["Etiketten werden dabei nicht gelöscht."],
+    });
+    // Ohne Standarddrucker haben die Zonen danach keinen Drucker, und die Etiketten bleiben stehen.
+    const noDefault = printData({ settings: { default_printer_id: null } });
+    expect(describeRemoval(cellar, data.zones, noDefault, waiting(noDefault), true)).toEqual({
+      duties: [
+        "Er druckt für „Keller“ und „Gefrierschrank“.",
+        "Diese Zonen haben danach keinen Drucker, bis ihnen einer zugeordnet oder ein Standarddrucker gewählt ist.",
+      ],
+      labels: ["3 ausstehende Etiketten bleiben stehen, bis ein Drucker zuständig ist.", "Etiketten werden dabei nicht gelöscht."],
+    });
+  });
+
+  it("nennt Zonen nur, wenn es mehrere gibt, und kennt gemischte Wege der Etiketten", () => {
+    const lookup = printData();
+    const cellar = lookup.printers.get(PRINTER_IDS.cellar);
+    if (!cellar) {
+      throw new Error("Drucker fehlt in den Beispieldaten");
+    }
+    expect(describeRemoval(cellar, data.zones, lookup, [], false).duties).toEqual(["Er ist nicht der Standarddrucker."]);
+    // Ohne Standarddrucker; der Kühlschrank hat die Küche. Ein Etikett nennt den Pi ausdrücklich, liegt
+    // aber im Kühlschrank (geht danach an die Küche), das andere liegt im Keller (danach ohne Drucker).
+    const zones = new Map(data.zones.map((zone) => [zone.id, zone.id === ZONE_IDS.fridge ? { ...zone, printer_id: PRINTER_IDS.kitchen } : zone]));
+    const mixed = printData({ zones, settings: { default_printer_id: null } });
+    const fridgePkg = data.packages.find((pkg) => pkg.zone_id === ZONE_IDS.fridge && pkg.removed_at === null);
+    const views = [
+      viewJob({ ...job(1), printer_id: PRINTER_IDS.cellar, package_id: fridgePkg?.id ?? null }, mixed, DEVICE_IDS.current),
+      viewJob({ ...job(2), printer_id: null }, mixed, DEVICE_IDS.current),
+    ];
+    expect(views.map((view) => view.printer?.name)).toEqual(["Keller (Pi)", "Keller (Pi)"]);
+    expect(describeRemoval(cellar, [...zones.values()], mixed, views, true).labels[0]).toBe(
+      "Von 2 ausstehenden Etiketten geht eines danach an andere Drucker, eines bleibt stehen, bis ein Drucker zuständig ist.",
+    );
+    expect(joinNames(["Keller"])).toBe("„Keller“");
+    expect(joinNames(["A", "B", "C"])).toBe("„A“, „B“ und „C“");
   });
 });

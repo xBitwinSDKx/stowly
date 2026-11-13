@@ -1,7 +1,7 @@
 import { formatDate } from "@/contract";
 import { useHasPrinter } from "@/features/printers/usePrinting";
 import { ExpiryLabel, PackageIds, ZoneLabel } from "@/ui";
-import { Button, cx } from "@/ui/base";
+import { Button, cx, IconButton } from "@/ui/base";
 import { ChevronUpIcon, PackagePlusIcon, PrinterIcon } from "@/ui/icons";
 import table from "@/ui/Table.module.css";
 
@@ -38,14 +38,22 @@ export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: 
   // Ohne Drucker fordert Stowly keine Etiketten an: Dann gibt es auch keinen Nachdruck.
   const hasPrinter = useHasPrinter();
 
-  function actions(batch: Batch) {
+  /** @param narrow am Handy: „Etikett" nur als Symbol, damit „Bearbeiten" und „Entnehmen" ihren Platz behalten */
+  function actions(batch: Batch, narrow = false) {
     const label = batchLabel(batch, multiZone);
+    const reprint = () => dialogs.open({ kind: "labels", package_ids: batch.ids });
     return (
       <>
         {hasPrinter ? (
-          <Button size="sm" variant="ghost" icon={<PrinterIcon />} aria-label={`Etikett drucken: ${label}`} onClick={() => dialogs.open({ kind: "labels", package_ids: batch.ids })}>
-            Etikett
-          </Button>
+          narrow ? (
+            <IconButton size="sm" variant="secondary" label={`Etikett drucken: ${label}`} className={styles.labelButton} onClick={reprint}>
+              <PrinterIcon />
+            </IconButton>
+          ) : (
+            <Button size="sm" variant="ghost" icon={<PrinterIcon />} aria-label={`Etikett drucken: ${label}`} onClick={reprint}>
+              Etikett
+            </Button>
+          )
         ) : null}
         <Button size="sm" aria-label={`Bearbeiten: ${label}`} onClick={() => dialogs.open({ kind: "packages", package_ids: batch.ids })}>
           Bearbeiten
@@ -138,7 +146,7 @@ export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: 
               </div>
               {multiZone ? <ZoneLabel zone={batch.zone} className={styles.zone} /> : null}
               <PackageIds ids={batch.ids} />
-              <div className={styles.itemActions}>{actions(batch)}</div>
+              <div className={styles.itemActions}>{actions(batch, true)}</div>
             </li>
           ))}
         </ul>

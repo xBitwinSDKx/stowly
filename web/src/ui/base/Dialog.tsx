@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type MouseEvent, type ReactNode, type RefObject, type SyntheticEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, type MouseEvent, type ReactNode, type RefObject, type SyntheticEvent } from "react";
 
 import { cx } from "./cx";
 import styles from "./Dialog.module.css";
@@ -62,6 +62,15 @@ function restoreFocus(dialog: HTMLElement, opener: RefObject<HTMLElement | null>
   }
 }
 
+/** Zeigt den Dialog modal an; Umgebungen ohne showModal (Tests) bekommen wenigstens das Attribut. */
+function showModal(element: HTMLDialogElement): void {
+  if (typeof element.showModal === "function") {
+    element.showModal();
+  } else {
+    element.setAttribute("open", "");
+  }
+}
+
 /**
  * Modaler Dialog auf Basis von `<dialog>`: Der Browser hält den Fokus im Dialog und
  * sperrt den Rest der Seite.
@@ -71,6 +80,10 @@ function restoreFocus(dialog: HTMLElement, opener: RefObject<HTMLElement | null>
  * schließt so nichts versehentlich. Beim Schließen geht der Fokus zurück an das Element, das
  * ihn vorher hatte, auch wenn der Dialog im offenen Zustand aus dem Baum fällt. Verschwindet im
  * offenen Dialog das Element mit dem Fokus, geht er an den Dialog selbst.
+ *
+ * Offen ist der Dialog genau so lange, wie `open` es sagt: Schließt der Browser ihn auf Escape
+ * von sich aus, obwohl der Aufrufer ihn offen hält (`dismissable={false}`, oder `onClose` tut
+ * gerade nichts), öffnet er sich sofort wieder.
  *
  * Der Inhalt wird nur gerendert, solange der Dialog offen ist. Eingaben darin
  * beginnen also bei jedem Öffnen frisch.
@@ -90,7 +103,15 @@ export function Dialog({
   const panelRef = useRef<HTMLDivElement>(null);
   /** Wer den Fokus hatte, bevor der Dialog sich öffnete. */
   const openerRef = useRef<HTMLElement | null>(null);
+  /** Der zuletzt gezeichnete Wert von `open`, für Ereignisse, die nach dem Zeichnen eintreffen. */
+  const openRef = useRef(open);
   const titleId = useId();
+
+  // Im Layout-Effekt: Er läuft noch beim Übernehmen der Änderung, also sicher vor dem
+  // close-Ereignis, das der Browser nach einem Escape als eigene Aufgabe nachreicht.
+  useLayoutEffect(() => {
+    openRef.current = open;
+  });
 
   useEffect(() => {
     const element = ref.current;
@@ -100,12 +121,7 @@ export function Dialog({
     if (open && !element.open) {
       const before = document.activeElement;
       openerRef.current = before instanceof HTMLElement && !element.contains(before) ? before : null;
-      if (typeof element.showModal === "function") {
-        element.showModal();
-      } else {
-        // Umgebungen ohne showModal (Tests): wenigstens sichtbar machen.
-        element.setAttribute("open", "");
-      }
+      showModal(element);
       // Anfangsfokus: das markierte Element, sonst der Dialog selbst (nicht das Schließen-Kreuz).
       const coarse = coarsePointer();
       const wanted = Array.from(element.querySelectorAll<HTMLElement>(`[${FOCUS_ATTRIBUTE}]`)).find(
@@ -119,13 +135,18 @@ export function Dialog({
       } else if (!chosen) {
         panelRef.current?.focus({ preventScroll: true });
       }
-    } else if (!open && element.open) {
-      if (typeof element.close === "function") {
-        element.close();
-      } else {
-        element.removeAttribute("open");
+    } else if (!open) {
+      if (element.open) {
+        if (typeof element.close === "function") {
+          element.close();
+        } else {
+          element.removeAttribute("open");
+        }
       }
-      restoreFocus(element, openerRef);
+      // Auch wenn der Browser den Dialog schon selbst geschlossen hat (Escape, siehe handleClose).
+      if (openerRef.current) {
+        restoreFocus(element, openerRef);
+      }
     }
   }, [open]);
 
@@ -149,7 +170,8 @@ export function Dialog({
       // Der Dialog fällt im offenen Zustand aus dem Baum: Der Browser gibt den Fokus dann nicht zurück.
       // Nur wenn er wirklich weg ist: Im StrictMode räumt React probeweise auf, der Dialog bleibt
       // dabei stehen, und wer ihn geöffnet hat, muss für das echte Schließen bekannt bleiben.
-      if (element?.hasAttribute("open") && !element.isConnected) {
+      // Hat der Browser ihn vorher schon selbst geschlossen (Escape), gilt dasselbe.
+      if (element && !element.isConnected && (element.hasAttribute("open") || openerRef.current !== null)) {
         restoreFocus(element, openerRef);
       }
     };
@@ -161,6 +183,20 @@ export function Dialog({
     if (dismissable) {
       onClose();
     }
+  }
+
+  function handleClose() {
+    // Nicht jedes Escape lässt sich abfangen: Chrome schließt einen Dialog trotz preventDefault,
+    // wenn seit dem Öffnen (oder seit dem letzten Escape) niemand auf der Seite getippt oder
+    // geklickt hat. Will der Aufrufer ihn danach noch offen haben (eine Sperre ohne Ausweg, ein
+    // Dialog, der gerade arbeitet), öffnet er sich gleich wieder; sonst bleibt er zu.
+    const element = ref.current;
+    setTimeout(() => {
+      if (element && openRef.current && element.isConnected && !element.open) {
+        showModal(element);
+        panelRef.current?.focus({ preventScroll: true });
+      }
+    }, 0);
   }
 
   function handleClick(event: MouseEvent<HTMLDialogElement>) {
@@ -176,6 +212,7 @@ export function Dialog({
       className={cx(styles.dialog, styles[variant], styles[size], className)}
       aria-labelledby={titleId}
       onCancel={handleCancel}
+      onClose={handleClose}
       onClick={handleClick}
     >
       {open ? (

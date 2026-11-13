@@ -297,14 +297,24 @@ export function createPrintApi(runtime: CoreRuntime, print: PrintRuntime): Print
         }
         const current = mutation.state.view;
         const deviceId = mutation.deviceId;
+        /** Eigene ausstehende Etiketten dieses Druckers, die vielleicht schon unterwegs sind. */
+        let maybeSent = 0;
         const waiting = [...current.print_jobs.values()]
           .filter((job) => {
             if (job.state !== "pending" || deviceId === null || job.device_id !== deviceId) {
               return false;
             }
-            // Ein Auftrag, der vielleicht schon unterwegs ist, bleibt bei seinem Drucker.
             const entry = mutation.delivery(job.id);
-            return (entry ? entry.printer_id : printerFor(current, job)) === printer.id;
+            if (entry && entry.phase !== "handoff") {
+              // Schon einmal abgeschickt: Die Seite des Dienstes reichte es mit der `boot_id` ein,
+              // die sie selbst eben gesehen hat; nach einem Neustart des Pi druckte es dann
+              // vielleicht ein zweites Mal. Es bleibt stehen und wird auf dem normalen Weg geklärt.
+              if (entry.printer_id === printer.id) {
+                maybeSent += 1;
+              }
+              return false;
+            }
+            return printerFor(current, job) === printer.id;
           })
           .sort(byRequestOrder);
         // Eine Übergabe trägt genau eine Vorlage: nur Etiketten der Art des ältesten.
@@ -318,13 +328,15 @@ export function createPrintApi(runtime: CoreRuntime, print: PrintRuntime): Print
           if (job.kind !== kind) {
             continue;
           }
-          // Was schon einmal hinausging, geht mit denselben Daten hinaus.
-          const data = mutation.delivery(job.id)?.content?.data ?? labelData(current, job);
+          const data = labelData(current, job);
           if (data) {
             jobs.push({ id: job.id, data });
           }
         }
         if (jobs.length === 0 || !template) {
+          if (waiting.length === 0 && maybeSent > 0) {
+            throw notFound(PRINT_TEXTS.handoff_maybe_sent);
+          }
           throw notFound(template || waiting.length === 0 ? PRINT_TEXTS.handoff_nothing : PRINT_TEXTS.no_template);
         }
         // Die Seite liefert der Dienst selbst aus; über HTTP braucht sie kein Zertifikat.

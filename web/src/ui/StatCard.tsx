@@ -14,7 +14,7 @@ export interface StatCardProps {
   note?: ReactNode;
   /** Farbe der Zahl und des Symbols. Vorgabe "default". */
   tone?: StatTone;
-  /** Symbol rechts oben (nur auf breiten Karten sichtbar). */
+  /** Kleines Symbol rechts oben, gedämpft oder in der Farbe des Tons. */
   icon?: ReactNode;
   /** Macht die ganze Karte zum Verweis auf eine Ansicht. */
   to?: string;

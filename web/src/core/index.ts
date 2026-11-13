@@ -34,7 +34,7 @@ import { DEFAULT_DB_NAME, type StoredSession } from "./db";
 import { ApiClient, type FetchLike } from "./http";
 import { clearImages, preloadImages } from "./images";
 import { derived, Signal } from "./live";
-import { readPermission, type PermissionReader } from "./print/address";
+import { readPermission, watchPermissions, type PermissionReader, type PermissionWatcher } from "./print/address";
 import { PrintServiceClient } from "./print/client";
 import { DeliveryEngine, PRINT_LOCK_NAME } from "./print/engine";
 import { DeliveryScheduler } from "./print/scheduler";
@@ -65,6 +65,11 @@ export interface CoreOptions {
    * Vorgabe: die Permissions API. Für Tests.
    */
   permissions?: PermissionReader;
+  /**
+   * Meldet Änderungen dieser Erlaubnis; danach stellt der Kern von selbst zu (nur mit
+   * `autoSync`). Vorgabe: die Permissions API. Für Tests.
+   */
+  watchPermissions?: PermissionWatcher;
   /** Gilt die Umgebung als sicherer Kontext? Vorgabe: `isSecureContext` des Browsers. Für Tests. */
   secureContext?: boolean;
   /** Lädt die Seite neu (`app.applyUpdate`). Vorgabe: `location.reload()`. Für Tests. */
@@ -150,6 +155,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       patchApp({ update_required: true });
       scheduler.stop();
       deliveries.stop();
+      delivery.stop();
     },
     onBlocked: () => {
       blocked = true;
@@ -313,7 +319,13 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
   });
   // Von selbst stellt nur eine Seite zu, nie der Service Worker und nie ein Kern ohne Fenster.
   const deliveries = new DeliveryScheduler({
-    run: (runOptions) => (disposed || !storageAvailable ? Promise.resolve({ delivered: 0, pending: 0, problems: [], outstanding: 0 }) : delivery.run(runOptions)),
+    run: (runOptions) => {
+      if (disposed || !storageAvailable) {
+        const nothing = Promise.resolve({ delivered: 0, pending: 0, problems: [], outstanding: 0 });
+        return { report: nothing, done: nothing };
+      }
+      return delivery.run(runOptions);
+    },
     isVisible: () => !hasWindow || document.visibilityState !== "hidden",
     timers: options.timers,
     auto: autoSync && hasWindow,
@@ -471,6 +483,10 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         registerBackgroundSync();
       }
     });
+    // Die Erlaubnis für das lokale Netzwerk hat sich geändert: Meist hat der Anwender eben die
+    // Nachfrage des Browsers beantwortet, oft erst nach der Zeitgrenze der Anfrage, die sie
+    // ausgelöst hat. Mit Erlaubnis geht jetzt von selbst hinaus, was aussteht.
+    cleanups.push((options.watchPermissions ?? watchPermissions)(() => deliveries.kick("permission")));
   }
 
   // ---------------------------------------------------------------- Lebenslauf der App
@@ -560,7 +576,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
   async function signIn(password: string, deviceName: string): Promise<void> {
     await ready;
     if (!storageAvailable) {
-      throw new CoreError("not_supported", "Der Browser lässt keine lokale Datenbank zu (privates Fenster?). Ohne sie kann Stowly nicht arbeiten.");
+      throw new CoreError("not_supported", blocked ? BLOCKED_MESSAGE : "Der Browser lässt keine lokale Datenbank zu (privates Fenster?). Ohne sie kann Stowly nicht arbeiten.");
     }
     const name = checkDeviceName(deviceName);
     if (typeof password !== "string" || password === "" || password.length > LIMITS.password) {
@@ -738,6 +754,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       disposed = true;
       scheduler.stop();
       deliveries.stop();
+      delivery.stop();
       for (const cleanup of cleanups) {
         cleanup();
       }

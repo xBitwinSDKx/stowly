@@ -2,9 +2,11 @@
 
 import dataclasses
 
+import pytest
 from fastapi.testclient import TestClient
 
 from stowly.app import create_app
+from stowly.config import DEFAULT_CSP, Settings
 
 
 def test_root_serves_the_app_and_is_revalidated(client):
@@ -53,7 +55,7 @@ def test_head_requests_work(client):
 
 
 def test_unknown_api_paths_answer_in_the_error_format(client):
-    for path in ("/api/gibt-es-nicht", "/api", "/print/v1/health"):
+    for path in ("/api/gibt-es-nicht", "/api", "/print", "/print/", "/print/v1/gibt-es-nicht"):
         response = client.get(path)
         assert response.status_code == 404, path
         assert response.json()["error"]["code"] == "not_found", path
@@ -99,7 +101,7 @@ def test_sounds_and_fonts_get_a_type_a_browser_accepts(settings):
 def test_unknown_api_paths_are_404_for_every_method(client):
     """„Unbekannte Pfade unter /api antworten mit 404 im Fehlerformat", nicht nur bei GET."""
     for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
-        for path in ("/api/gibt-es-nicht", "/api", "/api/sync/mehr", "/print/v1/jobs/abc"):
+        for path in ("/api/gibt-es-nicht", "/api", "/api/sync/mehr", "/print", "/print/v1/jobs/abc/mehr"):
             response = client.request(method, path)
             assert response.status_code == 404, (method, path)
             if method != "HEAD":
@@ -126,3 +128,99 @@ def test_the_web_app_itself_only_answers_get_and_head(client):
         assert response.status_code == 405, method
         assert response.json()["error"]["code"] == "invalid_request"
         assert response.headers["allow"] == "GET, HEAD"
+
+
+# --- Content-Security-Policy -------------------------------------------------------------
+
+
+def test_every_answer_of_the_web_app_carries_the_default_policy(client):
+    for path in (
+        "/",
+        "/zonen",
+        "/assets/app-abc123.js",
+        "/sw.js",
+        "/manifest.webmanifest",
+        "/assets/fehlt.js",
+    ):
+        assert client.get(path).headers["content-security-policy"] == DEFAULT_CSP, path
+    # Schnittstelle und Druckdienst sind keine Seiten: dort keine Policy.
+    assert "content-security-policy" not in client.get("/api/health").headers
+    assert "content-security-policy" not in client.get("/api/gibt-es-nicht").headers
+    assert "content-security-policy" not in client.get("/print/v1/health").headers
+
+
+def test_default_policy_allows_what_the_app_needs_and_nothing_inline():
+    directives = {
+        part.split()[0]: part.split()[1:]
+        for part in (piece.strip() for piece in DEFAULT_CSP.split(";"))
+        if part
+    }
+    # WebAssembly für die Barcode-Erkennung, aber kein eval und kein Inline-Skript.
+    assert directives["script-src"] == ["'self'", "'wasm-unsafe-eval'"]
+    assert "'unsafe-inline'" in directives["style-src"]  # Stil-Attribute der App
+    assert {"'self'", "blob:", "data:"} <= set(directives["img-src"])
+    # Direktdruck an frei eingetragene Adressen im Heimnetz, über HTTP wie HTTPS.
+    assert {"'self'", "http:", "https:"} <= set(directives["connect-src"])
+    assert directives["worker-src"] == ["'self'", "blob:"]
+    assert directives["object-src"] == ["'none'"]
+    assert directives["frame-ancestors"] == ["'none'"]
+    assert "upgrade-insecure-requests" not in directives  # würde den Druck über HTTP umleiten
+
+
+def test_policy_can_be_switched_off_or_replaced(settings):
+    off = Settings.from_env({**_env(settings), "STOWLY_CSP": "off"}, dev=False)
+    assert off.csp is None
+    with TestClient(create_app(off)) as client:
+        assert "content-security-policy" not in client.get("/").headers
+
+    own = Settings.from_env(
+        {**_env(settings), "STOWLY_CSP": "  default-src 'self';\n  img-src *  "}, dev=False
+    )
+    assert own.csp == "default-src 'self'; img-src *"
+    with TestClient(create_app(own)) as client:
+        assert client.get("/zonen").headers["content-security-policy"] == "default-src 'self'; img-src *"
+
+    for unset in ({}, {"STOWLY_CSP": ""}, {"STOWLY_CSP": "   "}):
+        assert Settings.from_env({**_env(settings), **unset}, dev=False).csp == DEFAULT_CSP
+    with pytest.raises(ValueError, match="STOWLY_CSP"):
+        Settings.from_env({**_env(settings), "STOWLY_CSP": "default-src 'self' ä"}, dev=False)
+
+
+def _env(settings: Settings) -> dict[str, str]:
+    return {
+        "STOWLY_DATA_DIR": str(settings.data_dir),
+        "STOWLY_WEB_DIR": str(settings.web_dir),
+        "STOWLY_PASSWORD": "x",
+        "STOWLY_OFF_ENABLED": "0",
+    }
+
+
+# --- /favicon.ico ------------------------------------------------------------------------
+
+
+def test_favicon_is_the_icon_of_the_app(client, settings):
+    # Ohne Symbol im Web-Verzeichnis: 204, nie die Startseite und nie 404.
+    response = client.get("/favicon.ico")
+    assert (response.status_code, response.content) == (204, b"")
+
+    icon = b"\x89PNG\r\n\x1a\n" + b"symbol" * 10
+    (settings.web_dir / "icons").mkdir()
+    (settings.web_dir / "icons" / "favicon-32.png").write_bytes(icon)
+    response = client.get("/favicon.ico")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == icon
+    assert client.head("/favicon.ico").status_code == 200
+
+    # Bringt die App eine eigene favicon.ico mit, gilt diese.
+    (settings.web_dir / "favicon.ico").write_bytes(b"\x00\x00\x01\x00ico")
+    response = client.get("/favicon.ico")
+    assert (response.status_code, response.headers["content-type"]) == (200, "image/x-icon")
+    assert client.post("/favicon.ico").status_code == 405
+
+
+def test_favicon_without_a_built_app(settings, tmp_path):
+    bare = dataclasses.replace(settings, web_dir=tmp_path / "nicht-da")
+    with TestClient(create_app(bare)) as client:
+        assert client.get("/favicon.ico").status_code == 204
+        assert client.get("/").status_code == 503

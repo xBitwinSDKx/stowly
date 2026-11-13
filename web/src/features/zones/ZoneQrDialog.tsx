@@ -65,7 +65,8 @@ export function ZoneQrDialog({ zones, onClose }: ZoneQrDialogProps) {
             </Button>
             {printing.hasPrinter ? (
               <Button variant="primary" icon={<TagIcon />} busy={busy} onClick={() => void printLabels()}>
-                {single ? "Als Etikett drucken" : "Alle als Etikett drucken"}
+                {/* Kurz genug für die Fußzeile am Handy; daneben steht der Druck über den Browser. */}
+                {single ? "Etikett drucken" : "Etiketten drucken"}
               </Button>
             ) : (
               <Button variant="primary" icon={<PrinterIcon />} onClick={() => window.print()}>
@@ -96,6 +97,14 @@ export function ZoneQrDialog({ zones, onClose }: ZoneQrDialogProps) {
 
           {printing.hasPrinter ? (
             <>
+              {/* Was aus dem Etikett wird, steht gleich unter dem Code: dort, wo der Blick nach dem Drucken ist. */}
+              {jobs.length > 0 ? (
+                <LabelStatus jobIds={jobs} className={styles.status} />
+              ) : single ? (
+                <p className={styles.hint}>
+                  {target ? `Das Etikett druckt „${target.name}“.` : "Dieser Zone ist kein Drucker zugeordnet: Das Etikett bliebe ausstehend, bis es einen Standarddrucker gibt."}
+                </p>
+              ) : null}
               <div className={styles.tools}>
                 {single ? (
                   <Button size="sm" variant="ghost" icon={<EyeIcon />} aria-expanded={preview} onClick={() => setPreview(!preview)}>
@@ -108,13 +117,6 @@ export function ZoneQrDialog({ zones, onClose }: ZoneQrDialogProps) {
               </div>
               {single && preview ? (
                 <LabelImage load={() => core.print.preview({ kind: "zone", zone_id: single.id })} source={single.id} alt={`Vorschau des Etiketts für die Zone ${single.name}`} />
-              ) : null}
-              {jobs.length > 0 ? (
-                <LabelStatus jobIds={jobs} className={styles.status} />
-              ) : single ? (
-                <p className={styles.hint}>
-                  {target ? `Das Etikett druckt „${target.name}“.` : "Dieser Zone ist kein Drucker zugeordnet: Das Etikett bliebe ausstehend, bis es einen Standarddrucker gibt."}
-                </p>
               ) : null}
             </>
           ) : null}

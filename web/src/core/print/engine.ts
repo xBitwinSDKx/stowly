@@ -26,6 +26,17 @@
  * Immer nur ein Zustellversuch zugleich je Gerät, auch über mehrere Tabs (Web Lock). Nie im
  * Service Worker: Einen direkten Drucker darf nur eine Seite ansprechen, und für den Server
  * gilt dieselbe Regel, damit es einen Weg gibt.
+ *
+ * Ein Versuch hat zwei Teile, beide unter der Sperre:
+ *
+ *   bedienen     alle Drucker der Reihe nach: Zustand abfragen, einreichen, was aussteht, und
+ *                einmal abfragen, was schon beim Dienst ist. Danach steht der Bericht fest
+ *                (`DeliveryRun.report`, darauf wartet `print.flush`).
+ *   nachfragen   im Hintergrund, solange Aufträge beim Dienst warten (`wait=10`, höchstens 60 s
+ *                je Drucker). Die Ergebnisse kommen wie jede Änderung über `data.printJobs` an.
+ *                Will jemand anderes die Sperre (ein neuer Versuch dieses oder eines anderen
+ *                Tabs), bricht das Nachfragen ab, die laufende Abfrage auch: Sie ändert am Dienst
+ *                nichts, und der neue Versuch fragt selbst wieder nach.
  */
 import type { DriverStatus, Printer, PrintJob, PrintJobState, ServiceJob } from "@/contract/api.gen";
 import type { PrinterProbe, PrinterProblem, PrintFlushReport } from "@/contract/core";
@@ -33,7 +44,7 @@ import { CoreError } from "@/contract/errors";
 
 import type { DeliveryEntry } from "../db";
 import type { Store, StoreState } from "../store";
-import { withLock } from "../sync/lock";
+import { onLockWanted, withLock } from "../sync/lock";
 import type { PermissionReader } from "./address";
 import type { PrintServiceClient, ServiceReply } from "./client";
 import { connect, type Connection, type ConnectResult } from "./connect";
@@ -44,8 +55,11 @@ import { PRINT_TEXTS, PROBLEM_TEXTS } from "./texts";
 export const PRINT_LOCK_NAME = "stowly-print";
 
 /**
- * So lange wartet der Dienst beim Einreichen auf den Endzustand. Ein Etikett ist in wenigen
- * Sekunden gedruckt; kommt der Endzustand gleich mit, genügt eine Meldung statt zwei.
+ * So lange wartet der Dienst beim Einreichen auf den Endzustand, wenn der Kern von selbst
+ * zustellt. Ein Etikett ist in wenigen Sekunden gedruckt; kommt der Endzustand gleich mit,
+ * genügt eine Meldung statt zwei. Auf Wunsch des Anwenders (`flush`) wartet dagegen jemand auf
+ * den Bericht: Dann wird ohne Warten eingereicht (`wait=0`), und den Endzustand bringt das
+ * Nachfragen im Hintergrund.
  */
 export const SUBMIT_WAIT_S = 5;
 /** Wartezeit des Dienstes beim Nachfragen. */
@@ -91,6 +105,24 @@ export interface DeliveryOptions {
 export interface DeliveryOutcome extends PrintFlushReport {
   /** Eigene Etiketten, um die sich der Kern weiter kümmert: ausstehend mit Drucker, oder beim Dienst wartend. */
   outstanding: number;
+}
+
+/** Ein Zustellversuch, von außen gesehen. Beide Versprechen erfüllen sich immer, nie mit einem Fehler. */
+export interface DeliveryRun {
+  /**
+   * Erfüllt sich, sobald jedes ausstehende Etikett eingereicht und jedes schon abgeschickte
+   * einmal abgefragt ist: der Bericht für diesen Moment (`print.flush`).
+   */
+  report: Promise<DeliveryOutcome>;
+  /** Erfüllt sich, wenn auch das Nachfragen vorbei oder abgebrochen ist und die Sperre frei wird; mit dem Stand dann. */
+  done: Promise<DeliveryOutcome>;
+}
+
+/** Ein Drucker, bei dem nach dem Bedienen noch Aufträge warten. */
+interface FollowUp {
+  connection: Connection;
+  /** Kennungen der wartenden Aufträge, der älteste zuerst. */
+  waiting: string[];
 }
 
 type Step = "submit" | "follow" | "check";
@@ -159,15 +191,44 @@ export class DeliveryEngine {
   private readonly refused = new Map<string, string>();
   /** Wann dieses Gerät den Zustand eines direkten Druckers zuletzt gemeldet hat (Geräteuhr). */
   private readonly reportedAt = new Map<string, number>();
+  /** Bricht das Nachfragen des Versuchs ab, der in diesem Tab gerade nachfragt; sonst null. */
+  private followingUp: AbortController | null = null;
+  private stopped = false;
 
   constructor(private readonly deps: DeliveryDeps) {}
 
-  /** Ein Zustellversuch. Reiht sich hinter einen laufenden ein (auch den eines anderen Tabs) und wirft nie. */
-  run(options: DeliveryOptions): Promise<DeliveryOutcome> {
-    return withLock(this.deps.lockName, () => this.attempt(options)).catch((error: unknown) => {
-      console.warn("Stowly: Der Zustellversuch ist gescheitert.", error instanceof Error ? error.message : error);
-      return emptyOutcome();
+  /**
+   * Ein Zustellversuch. Reiht sich hinter einen laufenden ein (auch den eines anderen Tabs), aber
+   * nie hinter dessen Nachfragen: Das gibt nach. Wirft nie.
+   */
+  run(options: DeliveryOptions): DeliveryRun {
+    this.yieldFollowUps();
+    let report!: (outcome: DeliveryOutcome) => void;
+    const reported = new Promise<DeliveryOutcome>((resolve) => {
+      report = resolve;
     });
+    const done = withLock(this.deps.lockName, () => this.attempt(options, report))
+      .catch((error: unknown) => {
+        console.warn("Stowly: Der Zustellversuch ist gescheitert.", error instanceof Error ? error.message : error);
+        return emptyOutcome();
+      })
+      .then((outcome) => {
+        // Scheiterte der Versuch vor seinem Bericht, gilt der Stand von hier (sonst ohne Wirkung).
+        report(outcome);
+        return outcome;
+      });
+    return { report: reported, done };
+  }
+
+  /** Das Nachfragen dieses Tabs gibt nach: Es bricht ab, seine laufende Abfrage auch. */
+  yieldFollowUps(): void {
+    this.followingUp?.abort();
+  }
+
+  /** Der Kern endet (oder ein Tab mit neuerer App hat übernommen): nicht mehr nachfragen. */
+  stop(): void {
+    this.stopped = true;
+    this.yieldFollowUps();
   }
 
   /** Eigene Etiketten, um die sich der Kern noch kümmern muss. Ohne Netz, aus dem Arbeitsspeicher. */
@@ -235,7 +296,11 @@ export class DeliveryEngine {
 
   // ---------------------------------------------------------------- Versuch
 
-  private async attempt(options: DeliveryOptions): Promise<DeliveryOutcome> {
+  /**
+   * Ein Versuch unter der Sperre: erst alle Drucker bedienen und berichten (`report`), dann im
+   * Hintergrund nachfragen. Liefert den Stand am Ende.
+   */
+  private async attempt(options: DeliveryOptions, report: (outcome: DeliveryOutcome) => void): Promise<DeliveryOutcome> {
     const { store } = this.deps;
     const outcome = emptyOutcome();
     if (store.superseded) {
@@ -251,6 +316,8 @@ export class DeliveryEngine {
     if (plan.unassigned > 0) {
       outcome.problems.push({ printer_id: null, problem: "no_printer", message: PROBLEM_TEXTS.no_printer });
     }
+    // Erst alle Drucker bedienen, dann nachfragen.
+    const followUps: FollowUp[] = [];
     for (const group of plan.groups) {
       if (attempt.aborted) {
         break;
@@ -258,12 +325,61 @@ export class DeliveryEngine {
       if (!options.checkUnknown && group.jobs.every((job) => job.step === "check")) {
         continue;
       }
-      await this.serve(group, attempt);
+      const followUp = await this.serve(group, attempt);
+      if (followUp) {
+        followUps.push(followUp);
+      }
     }
-    const after = this.plan(store.snapshot, attempt.deviceId);
-    outcome.pending = after.pending;
-    outcome.outstanding = after.outstanding;
+    this.summarize(attempt);
+    report({ ...outcome, problems: [...outcome.problems] });
+    if (followUps.length > 0 && !attempt.aborted && !this.stopped) {
+      await this.followUp(followUps, attempt);
+      this.summarize(attempt);
+    }
     return outcome;
+  }
+
+  /** Wie viel nach diesem Versuch noch aussteht. */
+  private summarize(attempt: Attempt): void {
+    const after = this.plan(this.deps.store.snapshot, attempt.deviceId);
+    attempt.outcome.pending = after.pending;
+    attempt.outcome.outstanding = after.outstanding;
+  }
+
+  /**
+   * Fragt nach, solange Aufträge beim Dienst warten: je Drucker der älteste zuerst (er wird
+   * zuerst fertig), höchstens `FOLLOW_UP_BUDGET_MS` je Drucker. Will jemand anderes die Sperre,
+   * bricht es ab, die laufende Abfrage auch.
+   */
+  private async followUp(followUps: readonly FollowUp[], attempt: Attempt): Promise<void> {
+    const controller = new AbortController();
+    this.followingUp = controller;
+    const stopWatching = onLockWanted(this.deps.lockName, () => controller.abort());
+    const signal = controller.signal;
+    try {
+      for (const { connection, waiting } of followUps) {
+        const started = Date.now();
+        let polls = 0;
+        while (!signal.aborted && !attempt.aborted && waiting.length > 0 && polls < MAX_FOLLOW_UPS && Date.now() - started < FOLLOW_UP_BUDGET_MS) {
+          polls += 1;
+          const next = await this.follow(connection, waiting[0] as string, attempt, FOLLOW_UP_WAIT_S, false, signal);
+          if (signal.aborted || next === "halt") {
+            break;
+          }
+          if (next !== "waiting") {
+            waiting.shift();
+          }
+        }
+        if (signal.aborted || attempt.aborted) {
+          break;
+        }
+      }
+    } finally {
+      stopWatching();
+      if (this.followingUp === controller) {
+        this.followingUp = null;
+      }
+    }
   }
 
   private problem(attempt: Attempt, printerId: string, problem: PrinterProblem): void {
@@ -290,31 +406,34 @@ export class DeliveryEngine {
     });
   }
 
-  /** Alle Etiketten eines Druckers: eine Abfrage, dann der Reihe nach. */
-  private async serve(group: Group, attempt: Attempt): Promise<void> {
+  /**
+   * Alle Etiketten eines Druckers: eine Abfrage, dann der Reihe nach einreichen oder einmal
+   * abfragen. Liefert, was danach noch beim Dienst wartet; null, wenn nichts nachzufragen ist.
+   */
+  private async serve(group: Group, attempt: Attempt): Promise<FollowUp | null> {
     const printer = this.deps.store.snapshot.view.printers.get(group.printerId);
     if (!printer) {
-      return;
+      return null;
     }
     // Der Dienst hat das Token dieses Druckers abgelehnt: erst wieder, wenn der Drucker
     // geändert wurde oder der Anwender es verlangt.
     if (!attempt.manual && this.refused.get(printer.id) === accessOf(printer)) {
-      return;
+      return null;
     }
     const result = await this.connect(printer.id, attempt.token, attempt.manual);
     if (!result) {
-      return;
+      return null;
     }
     if (!result.ok) {
       if (result.unauthorized) {
         await this.deps.onUnauthorized(attempt.token);
         attempt.aborted = true;
-        return;
+        return null;
       }
       if (!result.waiting_for_permission) {
         this.problem(attempt, printer.id, result.problem);
       }
-      return;
+      return null;
     }
     this.refused.delete(printer.id);
     const connection = result.connection;
@@ -326,6 +445,8 @@ export class DeliveryEngine {
     const waiting: string[] = [];
     let checks = 0;
     let halted = false;
+    // Auf Wunsch des Anwenders wartet jemand auf den Bericht: einreichen, ohne auf den Druck zu warten.
+    const submitWait = attempt.manual ? 0 : SUBMIT_WAIT_S;
     for (const planned of group.jobs) {
       if (attempt.aborted || halted) {
         break;
@@ -333,7 +454,7 @@ export class DeliveryEngine {
       let next: Next = "done";
       if (planned.step === "submit") {
         // Hinter einem Auftrag, der noch wartet, lohnt das Warten nicht: Der Drucker arbeitet der Reihe nach.
-        next = await this.submit(connection, planned.id, attempt, waiting.length === 0 ? SUBMIT_WAIT_S : 0);
+        next = await this.submit(connection, planned.id, attempt, waiting.length === 0 ? submitWait : 0);
       } else if (planned.step === "follow") {
         next = await this.follow(connection, planned.id, attempt, 0);
       } else if (checks < MAX_UNKNOWN_CHECKS) {
@@ -346,20 +467,8 @@ export class DeliveryEngine {
         halted = true;
       }
     }
-
-    // Nachfragen, solange Aufträge beim Dienst warten: der älteste zuerst, er wird zuerst fertig.
-    const started = Date.now();
-    let polls = 0;
-    while (!attempt.aborted && !halted && waiting.length > 0 && polls < MAX_FOLLOW_UPS && Date.now() - started < FOLLOW_UP_BUDGET_MS) {
-      polls += 1;
-      const next = await this.follow(connection, waiting[0] as string, attempt, FOLLOW_UP_WAIT_S);
-      if (next === "halt") {
-        break;
-      }
-      if (next !== "waiting") {
-        waiting.shift();
-      }
-    }
+    // Antwortet der Dienst nicht mehr, lohnt auch das Nachfragen jetzt nicht.
+    return !halted && waiting.length > 0 ? { connection, waiting } : null;
   }
 
   // ---------------------------------------------------------------- Einreichen
@@ -503,8 +612,9 @@ export class DeliveryEngine {
   /**
    * Fragt den Stand eines Auftrags ab, den der Dienst angenommen hat. `adoptOnly`: nach
    * `job_conflict`; der Dienst kennt die Kennung, was immer das Etikett hier gerade zeigt.
+   * `signal` bricht die Abfrage ab (das Nachfragen gibt nach); dann ändert sich nichts.
    */
-  private async follow(connection: Connection, jobId: string, attempt: Attempt, waitS: number, adoptOnly = false): Promise<Next> {
+  private async follow(connection: Connection, jobId: string, attempt: Attempt, waitS: number, adoptOnly = false, signal?: AbortSignal): Promise<Next> {
     const state = this.deps.store.snapshot;
     const job = state.view.print_jobs.get(jobId);
     if (!job || job.device_id !== attempt.deviceId || SETTLED.has(job.state)) {
@@ -520,7 +630,7 @@ export class DeliveryEngine {
     if (expected !== null && connection.health.boot_id !== expected) {
       return interrupted();
     }
-    const reply = await this.deps.client.job(connection.endpoint, jobId, waitS);
+    const reply = await this.deps.client.job(connection.endpoint, jobId, waitS, signal);
     if (reply.ok) {
       if (expected !== null && reply.value.boot_id !== expected) {
         return interrupted();
@@ -642,6 +752,11 @@ export class DeliveryEngine {
       if (job.state === state && job.printer_id === printerId && job.boot_id === bootId && job.error === error) {
         return false;
       }
+      if (job.state === "cancelled" && state === "failed" && error === "cancelled") {
+        // Hier schon verworfen, und der Dienst meldet dasselbe („gescheitert: verworfen"), etwa
+        // weil eine Abfrage die Antwort auf das Verwerfen kreuzt: nichts Neues.
+        return false;
+      }
       mutation.emit({ type: "print.report", job_id: jobId, state, printer_id: printerId, boot_id: bootId, error });
       return true;
     });
@@ -755,9 +870,17 @@ export class DeliveryEngine {
 
   /**
    * Verwirft ein eigenes Etikett beim Druckdienst und meldet es als "cancelled".
-   * @throws CoreError offline (Dienst nicht erreichbar) | invalid (er druckt schon, oder der Ausgang ist offen)
+   *
+   * Ein ausstehendes Etikett ("pending"), das vielleicht schon unterwegs ist (abgeschickt ohne
+   * Antwort), wird zuerst beim Dienst verworfen, damit es dort nicht doch noch druckt. Ist der
+   * Dienst nicht erreichbar, wird es trotzdem verworfen, wie jedes ausstehende Etikett auch
+   * ohne Netz: Druckt der Dienst es später doch, ist das kein doppelter Druck.
+   * @throws CoreError offline (Dienst nicht erreichbar, Etikett wartet dort) | invalid (er druckt schon, oder der Ausgang ist offen)
    */
   async cancelAtService(jobId: string): Promise<void> {
+    // Das Verwerfen nimmt keine Sperre und wartet auf nichts. Das Nachfragen dieses Tabs gibt
+    // trotzdem nach: Es fragt womöglich gerade nach genau diesem Etikett.
+    this.yieldFollowUps();
     const state = this.deps.store.snapshot;
     const job = state.view.print_jobs.get(jobId);
     const session = this.session();
@@ -766,14 +889,22 @@ export class DeliveryEngine {
     }
     const entry = state.deliveries.get(jobId);
     const printerId = entry?.printer_id ?? job.printer_id;
+    const unreachable = async (): Promise<void> => {
+      if (job.state === "pending") {
+        await this.cancelLocally(jobId);
+        return;
+      }
+      throw new CoreError("offline", PRINT_TEXTS.cancel_offline);
+    };
     const result = printerId === null ? null : await this.connect(printerId, session.token, true);
     if (!result || !result.ok) {
       if (result?.unauthorized) {
         await this.deps.onUnauthorized(session.token);
       }
-      throw new CoreError("offline", PRINT_TEXTS.cancel_offline);
+      return unreachable();
     }
     const connection = result.connection;
+    await this.reportPrinter(connection, false);
     const attempt: Attempt = { manual: true, deviceId: session.deviceId, token: session.token, aborted: false, outcome: emptyOutcome() };
     const reply = await this.deps.client.cancel(connection.endpoint, jobId);
     if (reply.ok) {
@@ -781,7 +912,7 @@ export class DeliveryEngine {
       return;
     }
     if (!reply.reached) {
-      throw new CoreError("offline", PRINT_TEXTS.cancel_offline);
+      return unreachable();
     }
     if (reply.code === "not_cancellable") {
       // Er druckt schon oder ist fertig: Das Etikett zeigt, was der Dienst sagt.
@@ -801,7 +932,21 @@ export class DeliveryEngine {
     if (reply.code === "unauthorized" && connection.endpoint.kind === "server") {
       await this.deps.onUnauthorized(session.token);
     }
-    throw new CoreError("offline", PRINT_TEXTS.cancel_offline);
+    return unreachable();
+  }
+
+  /** Verwirft ein ausstehendes Etikett nur hier (`print.report` mit "cancelled"), ohne den Dienst. */
+  private async cancelLocally(jobId: string): Promise<void> {
+    await this.deps.store.mutate((mutation) => {
+      const current = mutation.draft.get("print_jobs", jobId);
+      if (!current || current.state !== "pending") {
+        // Inzwischen beim Dienst angekommen (ein anderer Tab hat zugestellt) oder erledigt.
+        throw new CoreError("invalid", PRINT_TEXTS.not_pending);
+      }
+      mutation.dropDelivery(jobId);
+      mutation.emit({ type: "print.report", job_id: jobId, state: "cancelled", printer_id: current.printer_id, boot_id: current.boot_id, error: null });
+    });
+    this.deps.onChange();
   }
 
   /**
@@ -824,6 +969,7 @@ export class DeliveryEngine {
       }
       throw new CoreError("offline", PRINT_TEXTS.image_offline);
     }
+    await this.reportPrinter(result.connection, false);
     const reply = await this.deps.client.image(result.connection.endpoint, jobId);
     if (reply.ok) {
       return reply.value;

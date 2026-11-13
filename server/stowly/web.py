@@ -3,6 +3,10 @@
 * Vorhandene Dateien aus ``web_dir`` werden ausgeliefert.
 * Jeder andere Pfad liefert ``index.html``: Die App hat eigene Routen (``/zonen``, ``/scan`` …).
 * ``/api/…`` und ``/print/…`` gehören der Schnittstelle und landen nie bei der App.
+* ``/favicon.ico`` fragt der Browser von sich aus ab, obwohl die Seite ihr Symbol nennt: Es
+  kommt das Symbol der App (``icons/favicon-32.png``), sonst 204. Nie ``index.html``.
+* Jede Antwort der Web-App trägt die Content-Security-Policy (``STOWLY_CSP``), auch Worker und
+  Service Worker: Für sie gilt die Kopfzeile ihrer eigenen Datei.
 
 Zwischenspeichern: Dateien unter ``/assets/`` tragen einen Hash im Namen und dürfen
 ewig liegen. Alles andere (``index.html``, ``sw.js``, Manifest) wird bei jedem Abruf
@@ -55,6 +59,8 @@ CONTENT_TYPES = {
 
 IMMUTABLE = "public, max-age=31536000, immutable"
 REVALIDATE = "no-cache"
+# Was auf /favicon.ico antwortet, in dieser Reihenfolge; sonst 204.
+FAVICON_FILES = ("favicon.ico", "icons/favicon-32.png")
 
 _NOT_BUILT = """<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><title>Stowly</title></head>
@@ -97,12 +103,23 @@ def _method_not_allowed(allowed: list[str]) -> Response:
     )
 
 
-def install_web(app: FastAPI, web_dir: Path | None) -> None:
+def _favicon(web_dir: Path | None) -> Response:
+    """Das Symbol der App für Browser, die von sich aus ``/favicon.ico`` abfragen; sonst 204."""
+    if web_dir is not None:
+        for name in FAVICON_FILES:
+            found = _resolve(web_dir, name)
+            if found is not None:
+                return _file_response(found, REVALIDATE)
+    return Response(status_code=204, headers={"Cache-Control": REVALIDATE})
+
+
+def install_web(app: FastAPI, web_dir: Path | None, *, csp: str | None = None) -> None:
     """Hängt die Auslieferung der Web-App an. **Muss der letzte Schritt beim Aufbau der App sein:**
     Die Route fängt alle Pfade, die vor ihr niemand beantwortet hat.
 
     Sie fängt jede Methode: Unbekannte Pfade unter ``/api`` und ``/print`` antworten so immer
     mit 404 im Fehlerformat, nicht nur bei GET. Die Web-App selbst kennt nur GET und HEAD.
+    ``csp`` ist die Content-Security-Policy jeder Antwort der Web-App (``None`` = keine).
     """
 
     def methods_of_known_path(request: Request) -> list[str]:
@@ -127,8 +144,16 @@ def install_web(app: FastAPI, web_dir: Path | None) -> None:
             if allowed:
                 return _method_not_allowed(allowed)
             return error_response(404, ErrorCode.NOT_FOUND, "Nicht gefunden.")
+        response = serve_app(request, path)
+        if csp is not None:
+            response.headers["Content-Security-Policy"] = csp
+        return response
+
+    def serve_app(request: Request, path: str) -> Response:
         if request.method not in ("GET", "HEAD"):
             return _method_not_allowed(["GET", "HEAD"])
+        if path == "favicon.ico":
+            return _favicon(web_dir)
 
         index = None if web_dir is None else web_dir / "index.html"
         if web_dir is None or index is None or not index.is_file():

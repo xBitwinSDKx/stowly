@@ -2,7 +2,7 @@
 
 Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar machen, auf den Handys installieren, sichern, aktualisieren. Was Stowly ist und wie es aufgebaut ist, steht in [`../README.md`](../README.md) und [`plan-stufe-1.md`](plan-stufe-1.md).
 
-> **Stand.** `Dockerfile` und `docker-compose.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst (automatische Tests und ein Durchlauf von Hand unter Windows). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden.
+> **Stand.** `Dockerfile`, `docker-compose.yml` und `docker-compose.usb.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate, Drucker und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst samt Druckdienst mit dem Bild-Treiber (automatische Tests und Durchläufe von Hand unter Windows, die Web-App mit eingeschalteter Content-Security-Policy im Browser). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden. Für den Raspberry Pi gibt es eine eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
 
 ## 1. Überblick
 
@@ -24,7 +24,7 @@ Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar mach
 
 ## 3. Start mit Docker Compose
 
-Im Ordner des Repositorys auf dem Server:
+Wie das Repository auf den Server kommt (ohne Remote): Abschnitt 12. Im Ordner des Repositorys auf dem Server:
 
 ```
 cp .env.example .env
@@ -48,7 +48,9 @@ Die Einstellungen stehen in `.env` und sind dort beschrieben ([`.env.example`](.
 | `STOWLY_OFF_ENABLED` | `1`: unbekannte Barcodes bei Open Food Facts nachschlagen (höchstens 10 Abfragen je Minute). `0`: nie. |
 | `STOWLY_OFF_CONTACT` | freiwilliger Kontakt im `User-Agent` gegenüber Open Food Facts |
 | `STOWLY_LOG_LEVEL` | `info` (Vorgabe), `debug`, `warning` … |
+| `STOWLY_CSP` | Content-Security-Policy der Web-App: leer = vorsichtige Vorgabe, `off` = keine, sonst der angegebene Wert (Abschnitt 13) |
 | `STOWLY_PUBLISH` | unter welcher Adresse des Rechners der Container erreichbar ist; Vorgabe `127.0.0.1:8010` |
+| `STOWLY_USB_GID` | nur mit `docker-compose.usb.yml`: Gruppe, der der USB-Drucker gehört; Vorgabe `46` (plugdev) (Abschnitt 14.3) |
 | `TZ` | Zeitzone, wirkt nur auf das Datum im Dateinamen der Sicherung |
 
 Hinweise:
@@ -222,7 +224,7 @@ Der Befehl gibt dem Datenbestand eine neue Kennung und endet. Danach verhält si
 
 ```
 # vorher eine Sicherung herunterladen (Abschnitt 8)
-git pull
+git pull                       # neuen Stand holen; ohne Remote siehe Abschnitt 12
 docker compose up -d --build
 docker compose logs --tail 50 stowly
 ```
@@ -238,6 +240,7 @@ Alte Images räumt `docker image prune` weg.
 | Was | Wo |
 |---|---|
 | Datenbank mit allem: Bestand, Produktbilder, Geräte, Ereignisprotokoll | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
+| Druckdienst des Servers: Auftragsspeicher samt `boot_id`, Bilder des Bild-Treibers | im selben Volume unter `/data/print/` (`jobs.sqlite3`, `images/`). Nicht in der Sicherung aus der App; geht er verloren, fragt die App bei offenen Etiketten nach, statt doppelt zu drucken |
 | Einstellungen des Servers samt Passwort | `.env` im Ordner des Repositorys |
 | eigene Anpassung an den Proxy | `docker-compose.override.yml`, falls angelegt |
 | lokale Kopie je Gerät, ungesendete Änderungen, Token | im Browser-Speicher des Handys (IndexedDB) |
@@ -261,6 +264,133 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 | Gescannte Produkte bleiben ohne Namen | Der Container kommt nicht ins Internet, oder Open Food Facts kennt den Barcode nicht; Probe A14. Der Name lässt sich immer von Hand eintragen. |
 | Nach dem Zurückspielen: Fehler „readonly database" im Log | Die Datei gehört nicht dem Benutzer des Containers. Nach Abschnitt 8 einspielen oder `chown 10001:10001` auf die Datei im Volume. |
 | Die Anmeldung wird trotz richtigem Passwort abgelehnt (zu viele Fehlversuche) | Sperre nach 5 falschen Passwörtern; 60 Sekunden warten. |
+| Etiketten für einen Drucker am Server bleiben „ausstehend" | Im Log „Der Druckdienst des Servers ließ sich nicht starten": `/data/print` ist nicht beschreibbar (`docker compose exec stowly ls -ld /data/print`). Sonst ist das Etikett noch nicht abgeglichen; die App versucht es nach dem nächsten Abgleich wieder. |
+| Im Log „Schrift DejaVuSans… fehlt" | Die Etiketten entstehen mit einer Ersatzschrift ohne Umlaute. Im Image ist `fonts-dejavu-core` installiert; ohne Docker: `sudo apt install fonts-dejavu-core`, Server neu starten. |
+| Ein Brother am Server meldet `config` | Modell, Adresse oder Rolle passen nicht, oder die Brother-Bibliothek fehlt; Grund im Log (Abschnitt 14). |
+| Die App bleibt nach einer Änderung an `STOWLY_CSP` leer, oder die Konsole des Browsers meldet „Content Security Policy" | Die eigene Policy verbietet etwas, das die App braucht: zurück zur Vorgabe (`STOWLY_CSP` leer) und Abschnitt 13. |
+
+## 12. Das Repository auf den Server bringen
+
+Das Repository hat kein Remote. Drei Wege auf den Debian-Server, alle über SSH (`<benutzer>@<server>` ist der eigene Zugang). Auf dem Server liegt danach ein Ordner `~/stowly`, in dem `docker compose` läuft; `.env` und `docker-compose.override.yml` legt man dort einmal an, keiner der Wege überschreibt sie.
+
+**Git-Bundle.** Das ganze Repository samt Verlauf als eine Datei. Vorteil: Auf dem Server liegt ein echtes Git-Repository, ein Stand lässt sich mit `git log` nachsehen und mit `git checkout` zurückholen, und es braucht nur `scp`. Nachteil: Jede Aktualisierung braucht ein neues Bundle und einen Kopierschritt, und die Datei enthält immer den ganzen Verlauf.
+
+```
+# Entwicklungsrechner, im Repository
+git bundle create stowly.bundle --all
+git bundle verify stowly.bundle
+scp stowly.bundle <benutzer>@<server>:~/stowly.bundle
+
+# Server, beim ersten Mal
+git clone ~/stowly.bundle ~/stowly
+cd ~/stowly && git checkout main
+
+# später: neues Bundle wie oben erzeugen und an dieselbe Stelle kopieren, dann auf dem Server
+cd ~/stowly && git pull          # liest ~/stowly.bundle (beim Klonen als origin eingetragen)
+docker compose up -d --build
+```
+
+**rsync über SSH.** Kopiert den Arbeitsstand ohne Git. Vorteil: Am einfachsten, und es überträgt nur, was sich geändert hat. Nachteil: Auf dem Server gibt es keinen Verlauf und kein Zurück, und die Ausnahmen müssen stimmen, sonst landen `.venv`, Daten oder ein lokales `.env` auf dem Server.
+
+```
+# Entwicklungsrechner, im Repository (der Schrägstrich hinter ./ zählt)
+rsync -av --delete \
+  --exclude .git --exclude .venv --exclude data --exclude .env \
+  --exclude docker-compose.override.yml --exclude web/node_modules --exclude web/dist \
+  --exclude '__pycache__' --exclude '.pytest_cache' --exclude '.ruff_cache' \
+  ./ <benutzer>@<server>:~/stowly/
+# Server
+cd ~/stowly && docker compose up -d --build
+```
+
+Ausgeschlossene Dateien löscht `--delete` auf dem Server nicht; `.env` und `docker-compose.override.yml` bleiben dort also stehen.
+
+**Eigenes Remote auf dem Server.** Ein leeres Repository auf dem Server, in das man wie gewohnt schiebt. Vorteil: `git push` und `git pull` wie bei jedem Remote, Verlauf auf beiden Seiten, kein Kopieren von Dateien. Nachteil: Es muss einmal eingerichtet werden, und ein Remote bei einem fremden Dienst (statt auf dem eigenen Server) brächte den Code dorthin, was der Plan ohne ausdrücklichen Wunsch nicht vorsieht.
+
+```
+# Server, einmal
+git init --bare ~/stowly.git
+git clone ~/stowly.git ~/stowly     # zunächst leer
+
+# Entwicklungsrechner, einmal
+git remote add server <benutzer>@<server>:stowly.git
+git push server main
+
+# Server: holen und starten (beim ersten Mal und nach jedem git push)
+cd ~/stowly && git pull origin main
+docker compose up -d --build
+```
+
+## 13. Content-Security-Policy
+
+Jede Antwort der Web-App trägt eine Content-Security-Policy (Kopfzeile `Content-Security-Policy`). Sie verbietet Inline-Skripte und fremde Quellen und schränkt so ein, was eingeschleuster Code im Browser tun könnte. Die Schnittstelle (`/api`) und der Druckdienst (`/print`) liefern keine Seiten und tragen keine.
+
+| `STOWLY_CSP` | Wirkung |
+|---|---|
+| nicht gesetzt oder leer | die Vorgabe unten |
+| `off` | keine Policy |
+| etwas anderes | genau dieser Wert ersetzt die Vorgabe; in `.env` in doppelte Anführungszeichen setzen |
+
+Die Vorgabe ist vorsichtig gewählt, damit nichts bricht:
+
+```
+default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';
+img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' http: https:;
+media-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; object-src 'none';
+base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+```
+
+- `script-src`: nur Dateien der App (es gibt kein Inline-Skript), dazu `'wasm-unsafe-eval'` für die Barcode-Erkennung per WebAssembly. Safari vor Version 16 (iOS 15 und älter) kennt diese Angabe nicht und verweigert dann das WebAssembly; dort fällt die Erkennung aus. Abhilfe für solche Geräte: `'unsafe-eval'` zusätzlich in `script-src` oder `STOWLY_CSP=off`.
+- `style-src 'unsafe-inline'`: Die App setzt Stil-Attribute.
+- `img-src blob: data:`: die Vorschau der Etiketten und eingebettete Bilder; Produktbilder kommen von `/api/images`.
+- `connect-src http: https:`: Der Direktdruck spricht frei eingetragene Adressen im Heimnetz an (`https://10.71.83.1:8443`, `http://10.71.83.1:8080`). Enger geht es nur mit den eigenen Adressen, etwa `connect-src 'self' https://10.71.83.1:8443 http://10.71.83.1:8080`.
+- `worker-src`: der Worker der Barcode-Erkennung und der Service Worker, beide aus eigener Datei.
+- `frame-ancestors 'none'`: Keine fremde Seite darf Stowly einbetten.
+
+Der Reverse Proxy sollte keine eigene Policy dazusetzen: Zwei Policies gelten beide, und was eine verbietet, bleibt verboten. Ob die Policy ankommt: `curl -sI https://stowly.home/ | grep -i content-security-policy`. Verstöße meldet der Browser in seiner Konsole („Content Security Policy …"); Prüfschritte in Prüfliste H.
+
+## 14. Drucker
+
+Stowly druckt an zwei Stellen mit derselben Schnittstelle (`docs/etiketten.md`): im Server unter `/print` für Drucker im Heimnetz und auf dem Raspberry Pi im Keller, den die Handys direkt ansprechen. Drucker werden in der App unter Einstellungen → Drucker angelegt. Ein Drucker „am Server" wirkt sofort, ohne Neustart.
+
+Der Druckdienst des Servers legt seine Daten im Volume ab (`/data/print/`): einen Auftragsspeicher (`jobs.sqlite3`) mit der `boot_id`, damit ein Neustart nichts doppelt druckt, und die Bilder des Bild-Treibers. Nach einem Neustart laufen wartende Etiketten weiter; eines, das gerade druckte, gilt als „unklar", und die App fragt, ob es herauskam. Nichts wird von selbst ein zweites Mal gedruckt.
+
+### 14.1 Bild-Treiber zum Ausprobieren
+
+Ohne Drucker: In der App einen Drucker „am Server" mit dem Treiber „Bild (PNG)" anlegen und als Standarddrucker wählen. Jedes Etikett wird dann als PNG geschrieben (`/data/print/images/<Kennung>.png`) und lässt sich in der App unter „Etikett ansehen" anzeigen. Aufgehoben werden die Bilder höchstens 30 Tage und höchstens die letzten 1000.
+
+Für Tests lässt sich der Treiber stören: `docker compose exec stowly sh -c 'echo hang > /data/print/images/simulate.txt'` (auch `fail`, `fail:cover_open`, `abort`); entfernen mit `docker compose exec stowly rm /data/print/images/simulate.txt`.
+
+### 14.2 Netzwerkdrucker (empfohlen)
+
+Ein Brother QL-820NWBc (oder QL-810W) im Heimnetz, mit fester Adresse (Reservierung im Router). In der App: Treiber „Brother QL", Modell `QL-820NWB`, Adresse `tcp://192.168.1.60:9100`, Rolle `62`.
+
+- Der Container erreicht Rechner im Heimnetz von selbst; Port 9100 des Druckers muss offen sein.
+- Über das Netz kann der Treiber nur senden: Ein Etikett endet als „gesendet" statt „gedruckt", und „Etiketten leer" zeigt der Drucker selbst, nicht Stowly.
+
+### 14.3 Drucker am USB des Servers
+
+Möglich, aber nicht empfohlen: Ein Container bekommt keine Hotplug-Ereignisse; nach dem Aus- und Einschalten des Druckers kann ein Neustart des Containers nötig sein. Dafür gibt es die zuschaltbare Datei `docker-compose.usb.yml`:
+
+```
+# einmal auf dem Rechner: udev-Regel, dann den Drucker neu einstecken
+echo 'SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04f9", MODE="0660", GROUP="plugdev"' \
+  | sudo tee /etc/udev/rules.d/99-stowly-brother.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+
+docker compose -f docker-compose.yml -f docker-compose.usb.yml up -d
+```
+
+Die Datei reicht `/dev/bus/usb` in den Container (`device_cgroup_rules: c 189:* rmw`) und gibt dem Prozess die Gruppe `plugdev` (`STOWLY_USB_GID`, Vorgabe 46). In der App: Treiber „Brother QL", Modell `QL-800`, Adresse `usb://04f9:209b` (Produktnummer aus `lsusb`). Am USB bestätigt der Drucker den Druck („gedruckt") und meldet „Etiketten leer" vorab. Beim QL-800 muss der Editor-Lite-Modus aus sein.
+
+### 14.4 Raspberry Pi im Keller
+
+Eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
+
+### 14.5 Schriften und Brother-Bibliothek
+
+- Die Etiketten werden mit DejaVu gesetzt (Paket `fonts-dejavu-core`, im Image enthalten). Fehlt die Schrift, druckt Stowly mit einer Ersatzschrift ohne Umlaute und meldet das einmal im Log.
+- Die Brother-Bibliothek `brother_ql_next` steht unter der GPL-3.0. Sie gehört nicht zum Quelltext von Stowly: Das Image lädt sie beim Bau auf Version und Prüfsumme festgelegt von PyPI nach (`print/requirements-brother.txt`), und nur der Brother-Treiber lädt sie, erst beim Benutzen. Wer ein Image mit ihr an andere weitergibt, muss deren GPL-Bedingungen einhalten.
 
 ## Prüfliste für die Zielumgebung
 
@@ -284,7 +414,7 @@ Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe
 | A12 | `docker compose down`, `docker compose up -d`, danach A5 | wie A11: Das Volume bleibt |
 | A13 | Vom Netz aus, ohne Proxy: `curl http://<IP des Rechners>:8010/api/health` von einem anderen Rechner | **keine** Verbindung, solange `STOWLY_PUBLISH` nicht gesetzt ist |
 | A14 | In der App ein Produkt mit echtem Barcode einlagern, dann `docker compose logs stowly \| grep "Open Food Facts"` | Zeile mit „gefunden" oder „unbekannt"; das Produkt bekommt Name und Bild. „fehlgeschlagen (ConnectError)" hieße: Der Container kommt nicht ins Internet. |
-| A15 | `docker compose stop` | endet binnen weniger Sekunden, ohne dass Docker nach 10 Sekunden hart beendet |
+| A15 | `docker compose stop` | endet binnen weniger Sekunden, ohne dass Docker nach 15 Sekunden (`stop_grace_period`) hart beendet |
 
 ### B. Reverse Proxy
 
@@ -340,3 +470,38 @@ Je einmal auf dem Android-Gerät und dem iPhone, über die HTTPS-Adresse:
 |---|---|---|
 | E1 | `git pull`, `docker compose up -d --build` | neuer Container, `healthy`; Bestand unverändert |
 | E2 | App auf einem Handy öffnen | arbeitet weiter; zeigt gegebenenfalls, dass eine neue Version bereitsteht |
+| E3 | Aktualisieren über ein Git-Bundle (Abschnitt 12) | `git pull` auf dem Server meldet die neuen Commits |
+
+### F. Druck am Server
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| F1 | `docker compose build` | Im zweiten Teil laufen `apt-get install fonts-dejavu-core libusb-1.0-0` und `pip install --require-hashes -r …/requirements-brother.txt` durch (packbits wird dabei gebaut) |
+| F2 | `docker compose exec stowly ls /usr/share/fonts/truetype/dejavu/` | `DejaVuSans.ttf`, `DejaVuSans-Bold.ttf`, `DejaVuSansMono-Bold.ttf` |
+| F3 | `docker compose exec stowly python -c "import brother_ql, usb; print('ok')"` | `ok` |
+| F4 | `docker compose logs stowly` nach dem Start | „Druckdienst unter /print bereit (boot_id …)"; keine Meldung „Schrift … fehlt" |
+| F5 | `docker compose exec stowly ls -l /data/print` | `jobs.sqlite3` und `images/`, beide im Besitz von `stowly` |
+| F6 | In der App einen Drucker „am Server" mit dem Bild-Treiber anlegen, als Standarddrucker wählen, eine Packung einlagern | Etikett „gedruckt"; „Etikett ansehen" zeigt es mit echten Umlauten; auf dem zweiten Handy erscheint „gedruckt" nach dem nächsten Abgleich |
+| F7 | `curl -s https://stowly.home/print/v1/health` (ohne Token) | `401` mit `"code":"unauthorized"` |
+| F8 | `docker compose exec stowly sh -c 'echo hang > /data/print/images/simulate.txt'`, Packung einlagern, `docker compose restart`, Datei wieder entfernen | Das Etikett ist danach „unklar" (Druck unterbrochen), es entsteht kein Bild, nichts druckt nach |
+| F9 | `docker compose stop` | endet binnen etwa 15 Sekunden, auch wenn gerade eine App auf ein Etikett wartet |
+| F10 | Netzwerkdrucker (Abschnitt 14.2) anlegen, Packung einlagern | Etikett kommt aus dem Drucker; in der App „gesendet" |
+| F11 | Netzwerkdrucker ausschalten, „Verbindung prüfen" | nicht erreichbar (`offline`) |
+| F12 | Nur USB: `docker compose -f docker-compose.yml -f docker-compose.usb.yml up -d`, dann `docker compose exec stowly python -c "import usb.core; print([hex(d.idProduct) for d in usb.core.find(find_all=True, idVendor=0x04f9)])"` | die Produktnummer des Druckers, z. B. `['0x209b']` |
+| F13 | Nur USB: Drucker mit `usb://04f9:209b` anlegen, Packung einlagern | „gedruckt" (am USB bestätigt der Drucker) |
+| F14 | Nur USB: Drucker aus- und einschalten, wieder drucken | druckt; falls erst nach `docker compose restart`, bitte melden |
+| F15 | Etiketten aus dem Gefrierschrank (DK-22212, vier Wochen bei −18 °C) mit beiden Handys scannen | haftet, QR-Code lesbar |
+
+### G. Raspberry Pi
+
+Die eigene Prüfliste in [`../pi/README.md`](../pi/README.md#prüfliste-am-gerät) (P bis V): Installation, Drucker, Access Point, Zertifikat auf Android und iPhone, Direktdruck über HTTPS und HTTP, Seite des Druckdienstes, Schreibschutz.
+
+### H. Content-Security-Policy
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| H1 | `curl -sI https://stowly.home/ \| grep -i content-security-policy` | die Vorgabe aus Abschnitt 13 (Proxy hat nichts verändert oder hinzugefügt) |
+| H2 | Desktop-Chrome: App öffnen, Entwicklertools → Konsole, anmelden, Bestand, Einstellungen, Drucker, „Etikett ansehen", Scannen | keine Meldung „Content Security Policy" |
+| H3 | Android (Chrome, per USB-Debugging an `chrome://inspect`) und iPhone (Safari, Web-Inspektor am Mac): Scannen mit Kamera, ein Etikett direkt zum Pi drucken | Kamera und Erkennung laufen, Druck geht; keine Meldung „Content Security Policy" |
+| H4 | Ein iPhone mit iOS 15 oder älter, falls vorhanden: Scannen | Erkennung läuft; sonst Abschnitt 13 (`'unsafe-eval'` oder `STOWLY_CSP=off`) |
+| H5 | `STOWLY_CSP=off` in `.env`, `docker compose up -d`, dann H1 | keine Kopfzeile mehr; danach zurück auf leer |

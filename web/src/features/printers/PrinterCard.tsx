@@ -98,11 +98,12 @@ export function PrinterCard({ printer, health, now, isDefault, zones, multiZone,
   const direct = printer.connection === "direct";
   const image = printer.server?.driver === "image";
   const kind = direct ? "direkt (Raspberry Pi)" : image ? "am Server · Bild (PNG)" : `am Server · ${printer.server?.model ?? "Brother QL"}`;
-  const where = direct ? (printer.direct?.urls ?? []).join(" · ") : (printer.server?.address ?? "");
+  // Je Adresse eine Zeile: So bricht am Handy keine Adresse mitten im Port um.
+  const where = direct ? (printer.direct?.urls ?? []) : printer.server?.address ? [printer.server.address] : [];
   const done = probe?.status === "done" ? probe.probe : undefined;
 
   return (
-    <li className={styles.printer} aria-label={printer.name}>
+    <li className={styles.printer} aria-label={printer.name} data-printer={printer.id}>
       <div className={styles.printerHead}>
         <span className={styles.printerIcon} aria-hidden="true">
           {direct ? <CpuIcon size={22} /> : image ? <ImageIcon size={22} /> : <ServerIcon size={22} />}
@@ -110,7 +111,11 @@ export function PrinterCard({ printer, health, now, isDefault, zones, multiZone,
         <div className={styles.printerTitle}>
           <h3 className={styles.printerName}>{printer.name}</h3>
           <div className={styles.muted}>{kind}</div>
-          {where !== "" ? <div className={cx(styles.muted, styles.address)}>{where}</div> : null}
+          {where.map((address) => (
+            <div key={address} className={cx(styles.muted, styles.address)}>
+              {address}
+            </div>
+          ))}
         </div>
         <Badge tone={LEVEL_TONES[health.level]} className={styles.level}>
           {health.summary}
@@ -177,7 +182,15 @@ export function PrinterCard({ printer, health, now, isDefault, zones, multiZone,
       ) : null}
 
       <div className={styles.printerActions}>
-        <Button size="sm" variant={fresh && !probe ? "primary" : "secondary"} icon={<PlugIcon />} busy={probe?.status === "busy"} aria-label={`Verbindung prüfen: ${printer.name}`} onClick={onProbe}>
+        <Button
+          size="sm"
+          variant={fresh && !probe ? "primary" : "secondary"}
+          icon={<PlugIcon />}
+          busy={probe?.status === "busy"}
+          aria-label={`Verbindung prüfen: ${printer.name}`}
+          data-probe=""
+          onClick={onProbe}
+        >
           Verbindung prüfen
         </Button>
         <Button size="sm" aria-label={`Bearbeiten: ${printer.name}`} onClick={onEdit}>

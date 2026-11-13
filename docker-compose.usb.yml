@@ -1,0 +1,29 @@
+# Zuschaltbar: ein Brother-Drucker am USB des Servers.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.usb.yml up -d
+#
+# Empfohlen ist das nicht: Besser ist ein Netzwerkdrucker (Adresse tcp://<ip>:9100, etwa der
+# QL-820NWBc) oder der Raspberry Pi im Keller. Ein Container bekommt keine Hotplug-Ereignisse,
+# und die USB-Bibliothek hält ihren Stand je Prozess: Nach dem Aus- und Einschalten des Druckers
+# kann ein Neustart des Containers nötig sein (docs/recherche.md, Abschnitt 8).
+#
+# Auf dem Rechner (nicht im Container) einmal eine udev-Regel anlegen, damit die Gruppe plugdev
+# (GID 46 unter Debian) den Drucker öffnen darf, dann den Drucker neu einstecken:
+#
+#   echo 'SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04f9", MODE="0660", GROUP="plugdev"' \
+#     | sudo tee /etc/udev/rules.d/99-stowly-brother.rules
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+#
+# In Stowly heißt die Adresse dann usb://04f9:<Produkt> (lsusb zeigt sie), etwa usb://04f9:209b.
+# In der Zielumgebung ungetestet: docs/betrieb.md, Prüfliste F.
+services:
+  stowly:
+    volumes:
+      # Den ganzen USB-Baum, keinen festen Gerätepfad: Die Nummer ändert sich bei jedem Einstecken.
+      - /dev/bus/usb:/dev/bus/usb
+    device_cgroup_rules:
+      # Zeichengeräte mit Hauptnummer 189 (USB-Geräte): lesen, schreiben, anlegen
+      - "c 189:* rmw"
+    group_add:
+      # Gruppe, der die udev-Regel den Drucker gibt (plugdev); abweichend in .env STOWLY_USB_GID
+      - "${STOWLY_USB_GID:-46}"

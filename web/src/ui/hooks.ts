@@ -113,6 +113,18 @@ export function useUiFlag(key: string, fallback: boolean): [boolean, (value: boo
   return [value, update];
 }
 
+/**
+ * Nach einem Absenden mit Fehlern: Fokus in das erste Feld, das einen Fehler meldet
+ * (`aria-invalid`), damit Tastatur und Screenreader gleich dort weitermachen. Wartet, bis die
+ * Fehler gezeichnet sind.
+ */
+export function focusFirstInvalid(formId: string): void {
+  setTimeout(() => {
+    const form = document.getElementById(formId);
+    form?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, 0);
+}
+
 /** So viele Einträge einer langen Liste stehen sofort da; der Rest folgt in Schritten dieser Größe. */
 export const LIST_FIRST = 40;
 export const LIST_STEP = 80;

@@ -1,10 +1,11 @@
-"""Die FastAPI-Anwendung: ein Prozess liefert API und Web-App.
+"""Die FastAPI-Anwendung: ein Prozess liefert API, Druckdienst und Web-App.
 
 Reihenfolge beim Aufbau:
 
 1. Fehlerformat
 2. Schnittstelle unter ``/api``
-3. (Runde 2) Druckdienst unter ``/print``
+3. Druckdienst unter ``/print`` (eingebunden, nicht als Endpunkte: Er gehört nicht zu
+   ``docs/openapi.json``; der Dienst selbst entsteht erst im ``lifespan``)
 4. Web-App als Letztes: Ihre Route fängt jeden übrigen Pfad
 """
 
@@ -16,6 +17,7 @@ from typing import Any
 
 import httpx2
 from fastapi import FastAPI
+from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from stowly import __version__, db, label_templates, off
@@ -25,6 +27,7 @@ from stowly.config import MAX_REQUEST_BYTES, Settings
 from stowly.contract.api import ErrorCode
 from stowly.contract.schema import build_openapi
 from stowly.errors import error_response, install_error_handlers
+from stowly.printing import PrintGateway, ServerPrinting
 from stowly.web import install_web
 
 log = logging.getLogger("stowly")
@@ -62,25 +65,47 @@ def build_app(settings: Settings, *, off_transport: httpx2.AsyncBaseTransport | 
     ``off_transport`` ersetzt in Tests die Verbindung zu Open Food Facts.
     """
 
+    gateway = PrintGateway()
+
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Läuft erst, wenn die App wirklich bedient wird; der Vertrags-Export kommt nie hierher.
-        worker: off.OffWorker | None = None
-        task: asyncio.Task[None] | None = None
-        if settings.off_enabled:
-            worker = off.OffWorker(settings, transport=off_transport)
-            task = asyncio.create_task(worker.run(), name="stowly-off")
-            app.state.off_worker = worker
+        printing: ServerPrinting | None = None
         try:
-            yield
+            printing = await run_in_threadpool(ServerPrinting.open, settings)
+        except Exception:
+            # Bestand und Abgleich gehen auch ohne Druck. /print antwortet dann mit 503.
+            log.exception("Der Druckdienst des Servers ließ sich nicht starten.")
+            gateway.reason = (
+                "Der Druckdienst des Servers ist nicht verfügbar (Einzelheiten im Log des Servers)."
+            )
+        else:
+            gateway.app = printing.app
+            app.state.printing = printing
+
+        try:
+            worker: off.OffWorker | None = None
+            task: asyncio.Task[None] | None = None
+            if settings.off_enabled:
+                worker = off.OffWorker(settings, transport=off_transport)
+                task = asyncio.create_task(worker.run(), name="stowly-off")
+                app.state.off_worker = worker
+            try:
+                yield
+            finally:
+                app.state.off_worker = None
+                if task is not None:
+                    task.cancel()
+                    # Wie auch immer der Ablauf endet: Das Herunterfahren geht weiter.
+                    await asyncio.gather(task, return_exceptions=True)
+                if worker is not None:
+                    await worker.aclose()
         finally:
-            app.state.off_worker = None
-            if task is not None:
-                task.cancel()
-                # Wie auch immer der Ablauf endet: Das Herunterfahren geht weiter.
-                await asyncio.gather(task, return_exceptions=True)
-            if worker is not None:
-                await worker.aclose()
+            # Ein laufender Druck wird weder abgebrochen noch abgewartet (nach dem Neustart: unknown).
+            gateway.app = None
+            app.state.printing = None
+            if printing is not None:
+                await run_in_threadpool(printing.close)
 
     app = FastAPI(
         title="Stowly",
@@ -98,10 +123,14 @@ def build_app(settings: Settings, *, off_transport: httpx2.AsyncBaseTransport | 
     app.state.login_guard = LoginGuard()
     # Hintergrund-Ablauf für Open Food Facts; läuft nur, solange die App bedient wird.
     app.state.off_worker = None
+    # Druckdienst (stowly/printing.py); läuft ebenfalls nur, solange die App bedient wird.
+    app.state.printing = None
 
     install_error_handlers(app)
     app.add_middleware(BodyLimit)
     app.include_router(api_router, prefix="/api")
+    # Eingebunden, nicht als FastAPI-Endpunkte: docs/openapi.json bleibt, wie es ist.
+    app.mount("/print", gateway)
 
     def openapi() -> dict[str, Any]:
         if app.openapi_schema is None:
@@ -111,7 +140,7 @@ def build_app(settings: Settings, *, off_transport: httpx2.AsyncBaseTransport | 
     app.openapi = openapi  # type: ignore[method-assign]
 
     # Muss der letzte Schritt bleiben (siehe stowly/web.py).
-    install_web(app, settings.web_dir)
+    install_web(app, settings.web_dir, csp=settings.csp)
     return app
 
 

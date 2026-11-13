@@ -81,7 +81,7 @@ const JOB_ERROR_TEXTS: Record<PrintJobErrorCode, string> = {
   cancelled: "Der Auftrag wurde am Drucker verworfen.",
   interrupted: "Der Druck wurde mittendrin unterbrochen.",
   handoff: "An die Seite des Druckers übergeben; die App kennt den Ausgang nicht.",
-  not_printed: "Laut Antwort nicht gedruckt.",
+  not_printed: "Auf Nachfrage als nicht gedruckt vermerkt.",
 };
 
 /** Der Satz zu `PrintJob.error`; ein unbekannter Code bleibt, wie er ist. */
@@ -419,6 +419,92 @@ export function printerDuties(printer: Pick<Printer, "id">, zones: readonly Zone
   };
 }
 
+/** Namen in Anführungszeichen als Aufzählung: „A“, „A“ und „B“, „A“, „B“ und „C“. */
+export function joinNames(names: readonly string[]): string {
+  const quoted = names.map((name) => `„${name}“`);
+  if (quoted.length <= 1) {
+    return quoted.join("");
+  }
+  return `${quoted.slice(0, -1).join(", ")} und ${quoted.at(-1) ?? ""}`;
+}
+
+/** Wer ein Etikett druckte, wenn es diesen Drucker nicht mehr gäbe: dieselbe Regel, nur ohne ihn. */
+export function printerWithout(job: Pick<PrintJob, "printer_id" | "package_id" | "zone_id">, removedId: string, data: PrintData): Printer | undefined {
+  const id = printerIdForJob(job, {
+    package: (packageId) => data.packages.get(packageId),
+    zone: (zoneId) => data.zones.get(zoneId),
+    printer: (printerId) => (printerId === removedId ? undefined : data.printers.get(printerId)),
+    settings: data.settings,
+  });
+  return id === null ? undefined : data.printers.get(id);
+}
+
+/**
+ * Was das Löschen eines Druckers bewirkt, in Sätzen für die Rückfrage: wofür er zuständig ist,
+ * wer danach für seine Zonen druckt und wohin die ausstehenden Etiketten gehen, die er jetzt drucken würde.
+ * @param waiting die ausstehenden Etiketten (`Printing.waiting`)
+ * @param multiZone Zonen überhaupt nennen (mehr als eine Zone)
+ */
+export function describeRemoval(
+  printer: Pick<Printer, "id">,
+  zones: readonly Zone[],
+  data: PrintData,
+  waiting: readonly JobView[],
+  multiZone: boolean,
+): { duties: string[]; labels: string[] } {
+  const settings = data.settings;
+  const isDefault = settings?.default_printer_id === printer.id;
+  const own = multiZone ? zones.filter((zone) => zone.printer_id === printer.id) : [];
+  const names = joinNames(own.map((zone) => zone.name));
+  const fallbackId = isDefault ? null : (settings?.default_printer_id ?? null);
+  const fallback = fallbackId === null ? undefined : data.printers.get(fallbackId);
+  const sentences: string[] = [];
+  const labels: string[] = [];
+
+  if (isDefault && own.length > 0) {
+    sentences.push(`Er ist der Standarddrucker und druckt für ${names}.`);
+  } else if (isDefault) {
+    sentences.push("Er ist der Standarddrucker.");
+  } else if (own.length > 0) {
+    sentences.push(`Er druckt für ${names}.`);
+  } else {
+    sentences.push(multiZone ? "Er ist weder Standarddrucker noch einer Zone zugeordnet." : "Er ist nicht der Standarddrucker.");
+  }
+  if (own.length > 0) {
+    sentences.push(
+      fallback
+        ? `${own.length === 1 ? "Diese Zone nutzt" : "Diese Zonen nutzen"} danach wieder den Standarddrucker „${fallback.name}“.`
+        : `${own.length === 1 ? "Diese Zone hat" : "Diese Zonen haben"} danach keinen Drucker, bis ${own.length === 1 ? "ihr" : "ihnen"} einer zugeordnet oder ein Standarddrucker gewählt ist.`,
+    );
+  }
+  if (isDefault) {
+    sentences.push("Einen Standarddrucker gibt es danach nicht mehr, bis ein anderer gewählt ist.");
+  }
+
+  // Ausstehend und jetzt bei diesem Drucker: Wohin gehen sie danach?
+  const affected = waiting.filter((view) => view.job.state === "pending" && view.printer?.id === printer.id);
+  if (affected.length > 0) {
+    const successors = affected.map((view) => printerWithout(view.job, printer.id, data));
+    const first = successors[0];
+    const count = plural(affected.length, "ausstehendes Etikett", "ausstehende Etiketten");
+    const one = affected.length === 1;
+    if (first && successors.every((successor) => successor?.id === first.id)) {
+      labels.push(`${count} ${one ? "geht" : "gehen"} danach an „${first.name}“.`);
+    } else if (successors.every((successor) => successor === undefined)) {
+      labels.push(`${count} ${one ? "bleibt" : "bleiben"} stehen, bis ein Drucker zuständig ist.`);
+    } else {
+      // Gemischt heißt: mindestens zwei Etiketten, von denen einige einen anderen Drucker finden.
+      const moved = successors.filter((successor) => successor !== undefined).length;
+      const stay = affected.length - moved;
+      labels.push(
+        `Von ${String(affected.length)} ausstehenden Etiketten ${moved === 1 ? "geht eines" : `gehen ${String(moved)}`} danach an andere Drucker, ${stay === 1 ? "eines bleibt" : `${String(stay)} bleiben`} stehen, bis ein Drucker zuständig ist.`,
+      );
+    }
+  }
+  labels.push("Etiketten werden dabei nicht gelöscht.");
+  return { duties: sentences, labels };
+}
+
 // --------------------------------------------------------------------------------------
 // Etiketten für die Anzeige
 // --------------------------------------------------------------------------------------
@@ -438,6 +524,8 @@ export interface JobView {
   title: string;
   /** Darunter: Packungs-ID mit Marke und Größe, oder leer. */
   detail: string;
+  /** Kurz und eindeutig, für Beschriftungen: „Basmati Reis, Packung A2B3C" oder „Zone Keller". */
+  label: string;
   /** Der Drucker, der druckt oder gedruckt hat; undefined = keiner zugeordnet oder nicht mehr bekannt. */
   printer: Printer | undefined;
   /** Dieses Gerät hat das Etikett angefordert und stellt es zu. */
@@ -475,6 +563,7 @@ export function viewJob(job: PrintJob, data: PrintData, ownDeviceId: string | nu
     group: jobGroup(job.state),
     title,
     detail,
+    label: job.kind === "package" && job.package_id ? `${title}, Packung ${job.package_id}` : title,
     printer,
     own: ownDeviceId !== null && job.device_id === ownDeviceId,
     hasImage: (job.state === "printed" || job.state === "sent") && printer?.server?.driver === "image",

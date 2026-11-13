@@ -90,15 +90,18 @@ export class AppUpdates {
       // Eine Version, die schon beim Start wartet.
       this.offer();
     }
-    registration.addEventListener("updatefound", () => {
-      const installing = registration.installing;
+    const track = (installing: WorkerLike | null) => {
       installing?.addEventListener("statechange", () => {
         // Ohne Vorgänger (allererster Besuch) gibt es nichts anzubieten.
         if (installing.state === "installed" && this.env.container.controller) {
           this.offer();
         }
       });
-    });
+    };
+    // Eine Version, deren Installation schon lief, bevor die Registrierung hier ankam: Ihr
+    // `updatefound` ist vorbei, ihr Ende kommt noch.
+    track(registration.installing);
+    registration.addEventListener("updatefound", () => track(registration.installing));
   }
 
   private offer(): void {

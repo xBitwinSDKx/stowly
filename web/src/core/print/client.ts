@@ -34,14 +34,16 @@ export type ServiceEndpoint =
  * - `ok`: Erfolg mit Inhalt.
  * - `reached`: Der Dienst hat mit einem Fehler in seinem Format geantwortet (`code`).
  * - sonst: keine verwertbare Antwort (Netzfehler, Zeitüberschreitung, Abbruch, oder es
- *   antwortet etwas, das kein Druckdienst ist).
+ *   antwortet etwas, das kein Druckdienst ist). `timedOut`: Bis zur Zeitgrenze kam gar
+ *   nichts; sonst scheiterte die Anfrage sofort (abgewiesen, Zertifikat, CORS).
  */
 export type ServiceReply<T> =
   | { ok: true; status: number; value: T }
   | { ok: false; reached: true; status: number; code: string; message: string; details: Record<string, unknown> | null }
-  | { ok: false; reached: false };
+  | { ok: false; reached: false; timedOut: boolean };
 
-const UNREACHED: ServiceReply<never> = { ok: false, reached: false };
+const UNREACHED: ServiceReply<never> = { ok: false, reached: false, timedOut: false };
+const TIMED_OUT: ServiceReply<never> = { ok: false, reached: false, timedOut: true };
 
 /** `RequestInit` samt der Angabe des Adressraums, die die Typen des Browsers noch nicht kennen. */
 type DirectRequestInit = RequestInit & { targetAddressSpace?: AddressSpace };
@@ -65,6 +67,8 @@ interface CallOptions {
   /** JSON-Rumpf ohne Token; das Token setzt `call` passend zum Dienst ein. */
   body?: Record<string, unknown>;
   timeoutMs: number;
+  /** Bricht den Aufruf von außen ab (das Nachfragen gibt einem neuen Versuch nach). */
+  signal?: AbortSignal;
 }
 
 export class PrintServiceClient {
@@ -77,6 +81,13 @@ export class PrintServiceClient {
   private async call<T>(endpoint: ServiceEndpoint, options: CallOptions, read: (response: Response) => Promise<T | null>): Promise<ServiceReply<T>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    const outside = options.signal;
+    const abortFromOutside = () => controller.abort();
+    if (outside?.aborted) {
+      controller.abort();
+    } else {
+      outside?.addEventListener("abort", abortFromOutside, { once: true });
+    }
     try {
       let url: string;
       let init: DirectRequestInit;
@@ -107,7 +118,7 @@ export class PrintServiceClient {
       try {
         response = await this.fetchFn(url, init);
       } catch {
-        return UNREACHED;
+        return controller.signal.aborted ? TIMED_OUT : UNREACHED;
       }
       if (response.ok) {
         try {
@@ -138,13 +149,18 @@ export class PrintServiceClient {
       };
     } finally {
       clearTimeout(timer);
+      outside?.removeEventListener("abort", abortFromOutside);
     }
   }
 
-  /** Zustand des Dienstes. Mit `nonce` weist er sich aus (`proof`); am Server entfällt das. */
-  health(endpoint: ServiceEndpoint, nonce: string | null): Promise<ServiceReply<ServiceHealth>> {
+  /**
+   * Zustand des Dienstes. Mit `nonce` weist er sich aus (`proof`); am Server entfällt das.
+   * `timeoutMs`: länger als üblich nur, wenn die Anfrage die Nachfrage des Browsers nach dem
+   * lokalen Netzwerk auslösen kann (src/core/print/connect.ts).
+   */
+  health(endpoint: ServiceEndpoint, nonce: string | null, timeoutMs: number = HEALTH_TIMEOUT_MS): Promise<ServiceReply<ServiceHealth>> {
     const path = nonce === null ? "/v1/health" : `/v1/health?nonce=${encodeURIComponent(nonce)}`;
-    return this.call(endpoint, { method: "GET", path, timeoutMs: HEALTH_TIMEOUT_MS }, async (response) => {
+    return this.call(endpoint, { method: "GET", path, timeoutMs }, async (response) => {
       const value: unknown = await response.json();
       return isHealth(value) ? value : null;
     });
@@ -169,10 +185,13 @@ export class PrintServiceClient {
     });
   }
 
-  /** Zustand eines Auftrags; `waitS` lässt den Dienst so lange auf einen Endzustand warten. */
-  job(endpoint: ServiceEndpoint, jobId: string, waitS: number): Promise<ServiceReply<ServiceJob>> {
+  /**
+   * Zustand eines Auftrags; `waitS` lässt den Dienst so lange auf einen Endzustand warten.
+   * `signal` bricht die Abfrage ab; am Dienst ändert sie nichts.
+   */
+  job(endpoint: ServiceEndpoint, jobId: string, waitS: number, signal?: AbortSignal): Promise<ServiceReply<ServiceJob>> {
     const path = `/v1/jobs/${encodeURIComponent(jobId)}${waitS > 0 ? `?wait=${waitS}` : ""}`;
-    return this.call(endpoint, { method: "GET", path, timeoutMs: waitS * 1_000 + FOLLOW_UP_MARGIN_MS }, async (response) => {
+    return this.call(endpoint, { method: "GET", path, timeoutMs: waitS * 1_000 + FOLLOW_UP_MARGIN_MS, signal }, async (response) => {
       const value: unknown = await response.json();
       return isJob(value) ? value : null;
     });

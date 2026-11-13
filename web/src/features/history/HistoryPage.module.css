@@ -78,6 +78,8 @@
 
 .card {
   display: grid;
+  /* Eine Spalte, die nie breiter wird als die Karte: Lange Inhalte brechen um, statt hinauszuragen. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4) var(--space-4);
 }
