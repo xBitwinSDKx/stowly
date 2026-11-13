@@ -13,7 +13,7 @@
   font-size: var(--text-md);
   font-weight: var(--weight-medium);
   line-height: 1;
-  /* Dieselben Klassen trägt auch ein Verweis (src/ui/LinkButton.tsx). */
+  /* Dieselben Klassen trägt auch der Verweis `ButtonLink`. */
   text-decoration: none;
   white-space: nowrap;
   user-select: none;

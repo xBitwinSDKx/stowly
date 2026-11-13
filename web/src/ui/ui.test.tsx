@@ -96,8 +96,13 @@ describe("Texte", () => {
     expect(errorText(new CoreError("offline"))).toBe("Der Server ist gerade nicht erreichbar.");
     expect(errorText(new CoreError("last_zone"))).toBe("Die letzte Zone lässt sich nicht löschen.");
     expect(errorText(new CoreError("offline"), { offline: "Die Sicherung braucht den Server." })).toBe("Die Sicherung braucht den Server.");
-    // Der Text des Kerns ist nur der Rückfall; die Oberfläche zeigt ihren eigenen.
-    expect(errorText(new CoreError("invalid", "name: field required"))).toBe("Die Eingabe ist ungültig.");
+    // Der Text des Kerns ist nur der Rückfall; die Oberfläche zeigt ihren eigenen Satz.
+    expect(errorText(new CoreError("not_found", "package 4711 missing"))).toBe("Der Eintrag existiert nicht mehr.");
+    // Ausnahme "invalid": Dort ist der Satz des Kerns der genaue Grund und wird gezeigt, auch gegen einen eigenen Satz.
+    expect(errorText(new CoreError("invalid", "Der Name ist zu lang (höchstens 60 Zeichen)."))).toBe("Der Name ist zu lang (höchstens 60 Zeichen).");
+    expect(errorText(new CoreError("invalid", "Die Menge muss zwischen 1 und 50 liegen."), { invalid: "Eigener Satz" })).toBe("Die Menge muss zwischen 1 und 50 liegen.");
+    expect(errorText(new CoreError("invalid"))).toBe("Die Eingabe ist ungültig.");
+    expect(errorText(new CoreError("invalid"), { invalid: "Eigener Satz" })).toBe("Eigener Satz");
     expect(errorText(new TypeError("x is undefined"))).toBe("Unerwarteter Fehler. Bitte noch einmal versuchen.");
   });
 });

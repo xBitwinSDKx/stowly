@@ -5,7 +5,7 @@ import { Page, PageLoading } from "@/app/Page";
 import { useLogout } from "@/features/auth/logout";
 import { errorText, List, ListLink, ListRow, Notice, plural, Section } from "@/ui";
 import { Button, cx, SegmentedControl, Switch, TextField, useToast } from "@/ui/base";
-import { DownloadIcon, LogOutIcon, PrinterIcon, ZonesIcon } from "@/ui/icons";
+import { DownloadIcon, InstallIcon, LogOutIcon, PrinterIcon, ShareIcon, ZonesIcon } from "@/ui/icons";
 import { ACCENTS, setAccent, setTheme, useTheme, type AccentKey, type ThemeChoice } from "@/ui/theme";
 
 import { DevicesSection } from "./DevicesSection";
@@ -100,6 +100,55 @@ function AccentPicker({ value }: { value: AccentKey }) {
   );
 }
 
+/** Was eine Zeile der Einstellungen rechts zeigt und darunter erklärt. */
+export interface RowText {
+  value: string;
+  hint: string;
+}
+
+/**
+ * Die Zeile „Verbindung": Sie sagt, was wirklich gilt. Die Adresse bestimmt das Wort
+ * (HTTPS, lokal, http); ob Scannen und Offline-Betrieb gehen, entscheidet allein der Kern
+ * (`app.state.secure_context`).
+ */
+export function describeConnection(location: Pick<Location, "protocol" | "hostname">, secureContext: boolean | undefined): RowText {
+  const host = location.hostname;
+  const restricted = "Scannen, Offline-Betrieb und Installation verweigert der Browser hier; gedruckt wird nur über den Server.";
+  if (location.protocol === "https:") {
+    return {
+      value: "HTTPS",
+      hint: secureContext === false ? `Die Adresse ist verschlüsselt, der Browser meldet trotzdem keinen sicheren Kontext. ${restricted}` : "Über die HTTPS-Adresse sind Scannen und Offline-Betrieb möglich.",
+    };
+  }
+  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host.endsWith(".localhost")) {
+    return {
+      value: "lokal (Entwicklung)",
+      hint:
+        secureContext === false
+          ? `Aufruf vom selben Rechner, aber ohne sicheren Kontext. ${restricted}`
+          : "Aufruf vom selben Rechner: Der Browser behandelt das wie eine sichere Adresse. Für Handys im Haushalt braucht es die HTTPS-Adresse.",
+    };
+  }
+  return {
+    value: "http (eingeschränkt)",
+    hint: secureContext === true ? "Unverschlüsselte Adresse. Für Handys im Haushalt braucht es die HTTPS-Adresse von Stowly." : `Unverschlüsselte Adresse. ${restricted} Die HTTPS-Adresse von Stowly hebt das auf.`,
+  };
+}
+
+/** Die Zeile „Produktdaten": richtet sich danach, ob der Server Barcodes nachschlägt (`sync.status.lookup_enabled`). */
+export function describeLookup(enabled: boolean | null | undefined): RowText {
+  if (enabled === false) {
+    return {
+      value: "abgeschaltet",
+      hint: "Der Server schlägt keine Produktdaten nach (abgeschaltet). Unbekannte Barcodes bleiben ohne Namen, bis ihn jemand einträgt.",
+    };
+  }
+  if (enabled === true) {
+    return { value: "Open Food Facts (ODbL)", hint: "Namen und Bilder zu unbekannten Barcodes schlägt der Server dort nach." };
+  }
+  return { value: "noch unbekannt", hint: "Ob der Server Produktdaten nachschlägt, steht nach dem nächsten Abgleich fest." };
+}
+
 /** Speichert eine Datei, die der Kern als Blob liefert. */
 function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -115,7 +164,7 @@ function saveBlob(blob: Blob, filename: string): void {
 
 /**
  * Einstellungen nach dem Entwurf: eine Liste aus Zeilen mit dem Bedienelement rechts,
- * gegliedert in Darstellung, dieses Gerät, Haushalt, Geräte, Sicherung und Über.
+ * gegliedert in Darstellung, dieses Gerät, Haushalt, Geräte, Sicherung, diese App und Über.
  */
 export function SettingsPage() {
   const core = useCore();
@@ -132,6 +181,7 @@ export function SettingsPage() {
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupError, setBackupError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [persisting, setPersisting] = useState(false);
 
   if (!prefs || !settings || !zones) {
     return (
@@ -179,6 +229,24 @@ export function SettingsPage() {
     }
   }
 
+  async function requestPersistence() {
+    setPersisting(true);
+    try {
+      const granted = await core.app.requestPersistence();
+      toast.show(
+        granted
+          ? { message: "Der Browser behält die Daten auf diesem Gerät jetzt dauerhaft.", tone: "success" }
+          : { message: "Der Browser hat nicht zugesagt. Als installierte App stehen die Chancen besser.", tone: "warn" },
+      );
+    } catch (caught) {
+      report(caught);
+    } finally {
+      setPersisting(false);
+    }
+  }
+
+  const connection = describeConnection(window.location, app?.secure_context);
+  const lookup = describeLookup(sync?.lookup_enabled);
   const multiZone = zones.length > 1;
   const primaryZone = zones.find((zone) => zone.id === settings.primary_zone_id) ?? zones[0];
   const deviceName = session?.status === "signed_in" ? session.device.name : "";
@@ -289,6 +357,68 @@ export function SettingsPage() {
         ) : null}
       </Section>
 
+      <Section title="Diese App" id="app" description="Installation und Speicher auf diesem Gerät.">
+        <List>
+          {app?.installed ? (
+            <ListRow label="Installation" hint="Stowly läuft als installierte App." inline>
+              <span className={styles.value}>installiert</span>
+            </ListRow>
+          ) : app?.can_install ? (
+            <ListRow label="Installation" hint="Installiert startet Stowly vom Home-Bildschirm wie eine App, und der Browser behält die Daten für den Betrieb ohne Netz.">
+              <Button icon={<InstallIcon />} busy={installing} onClick={() => void install()}>
+                Stowly installieren
+              </Button>
+            </ListRow>
+          ) : app?.manual_install === "ios" ? (
+            <ListRow
+              label="Installation auf dem iPhone"
+              hint="Ohne Installation löscht Safari die lokalen Daten nach sieben Tagen ohne Nutzung. Installiert bleiben sie erhalten."
+              stacked
+            >
+              <ol className={styles.steps}>
+                <li>
+                  In Safari unten auf <ShareIcon size={16} aria-hidden="true" /> <strong>Teilen</strong> tippen.
+                </li>
+                <li>
+                  <strong>Zum Home-Bildschirm</strong> wählen und mit „Hinzufügen“ bestätigen.
+                </li>
+                <li>Stowly künftig über das neue Symbol starten und dort einmal anmelden.</li>
+              </ol>
+            </ListRow>
+          ) : (
+            <ListRow
+              label="Installation"
+              hint={
+                app?.secure_context === false
+                  ? "Über eine http-Adresse lässt der Browser keine Installation zu. Über die HTTPS-Adresse von Stowly geht es."
+                  : "Dieser Browser bietet gerade keine Installation an. In Chrome und Edge steht sie im Menü unter „App installieren“."
+              }
+              inline
+            >
+              <span className={styles.value}>nicht installiert</span>
+            </ListRow>
+          )}
+          <ListRow
+            label="Lokaler Speicher"
+            hint={
+              app?.storage_persistent === true
+                ? "Der Browser hat zugesagt, die Kopie auf diesem Gerät nicht von sich aus zu löschen."
+                : app?.storage_persistent === false
+                  ? "Der Browser darf die Kopie auf diesem Gerät löschen, etwa bei Platzmangel; ungesendete Änderungen gingen dabei verloren. Als installierte App und bei häufiger Nutzung sagt er eher zu."
+                  : "Ob der Browser die Kopie auf diesem Gerät dauerhaft behält, ist noch nicht bekannt."
+            }
+          >
+            {app?.storage_persistent === false ? (
+              <Button busy={persisting} onClick={() => void requestPersistence()}>
+                Erneut anfragen
+              </Button>
+            ) : (
+              <span className={styles.value}>{app?.storage_persistent === true ? "dauerhaft" : "unbekannt"}</span>
+            )}
+          </ListRow>
+        </List>
+      </Section>
+
       <Section title="Über" id="ueber">
         <List>
           <ListRow label="Version" inline>
@@ -297,50 +427,11 @@ export function SettingsPage() {
               {sync?.server_version ? ` · Server ${sync.server_version}` : ""}
             </span>
           </ListRow>
-          <ListRow
-            label="Lokaler Speicher"
-            hint={
-              app?.storage_persistent === true
-                ? "Der Browser hat zugesagt, die Kopie auf diesem Gerät nicht von sich aus zu löschen."
-                : app?.storage_persistent === false
-                  ? "Der Browser darf die Kopie auf diesem Gerät löschen, etwa bei Platzmangel. Als App installiert, bleibt sie erhalten; der Bestand selbst liegt ohnehin auf dem Server."
-                  : "Ob der Browser die Kopie auf diesem Gerät dauerhaft behält, ist nicht bekannt."
-            }
-          >
-            <span className={styles.value}>{app?.storage_persistent === true ? "dauerhaft" : app?.storage_persistent === false ? "nicht zugesagt" : "unbekannt"}</span>
+          <ListRow label="Verbindung" hint={connection.hint}>
+            <span className={styles.value}>{connection.value}</span>
           </ListRow>
-          <ListRow
-            label="Als App"
-            hint={
-              app?.installed
-                ? "Stowly läuft als installierte App."
-                : app?.can_install
-                  ? "Installiert startet Stowly vom Home-Bildschirm und behält seine Daten."
-                  : "Über das Menü des Browsers lässt sich Stowly zum Home-Bildschirm hinzufügen."
-            }
-          >
-            {app?.installed ? (
-              <span className={styles.value}>installiert</span>
-            ) : app?.can_install ? (
-              <Button busy={installing} onClick={() => void install()}>
-                Installieren
-              </Button>
-            ) : (
-              <span className={styles.value}>nicht installiert</span>
-            )}
-          </ListRow>
-          <ListRow
-            label="Verbindung"
-            hint={
-              app?.secure_context === false
-                ? "Über eine http-Adresse verweigert der Browser Kamera, Offline-Betrieb und Installation."
-                : "Über die HTTPS-Adresse sind Scannen und Offline-Betrieb möglich."
-            }
-          >
-            <span className={styles.value}>{app?.secure_context === false ? "http (eingeschränkt)" : "HTTPS"}</span>
-          </ListRow>
-          <ListRow label="Produktdaten" hint="Namen und Bilder zu unbekannten Barcodes schlägt der Server dort nach.">
-            <span className={styles.value}>Open Food Facts (ODbL)</span>
+          <ListRow label="Produktdaten" hint={lookup.hint}>
+            <span className={styles.value}>{lookup.value}</span>
           </ListRow>
         </List>
       </Section>

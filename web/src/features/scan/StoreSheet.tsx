@@ -1,11 +1,11 @@
 import { useState, type FormEvent } from "react";
 
-import { formatDate, isPlaceholder, parseBestBefore, productSubtitle, productTitle, todayLocal, type Product } from "@/contract";
-import { Button, Dialog, TextField } from "@/ui/base";
+import { formatDate, isPlaceholder, parseBestBefore, productSubtitle, productTitle, todayLocal, willLookUp, type Product } from "@/contract";
+import { Button, Dialog, dialogFocusAlways, TextField } from "@/ui/base";
 
-import { focusInDialog } from "./focus";
 import { QuantityStepper } from "./QuantityStepper";
 import styles from "./ScanPage.module.css";
+import { STORE_HINTS } from "./texts";
 
 export interface StoreRequest {
   barcode: string;
@@ -27,6 +27,8 @@ export interface StoreSheetProps {
   onQuantity: (value: number) => void;
   /** Name der Zone, in die eingelagert wird; null, wenn es nur eine Zone gibt. */
   zoneName: string | null;
+  /** Schlägt der Server Barcodes nach (`sync.status.lookup_enabled`)? null = noch unbekannt. */
+  lookupEnabled: boolean | null;
   busy: boolean;
   onConfirm: (decision: StoreDecision) => void;
   onCancel: () => void;
@@ -58,15 +60,17 @@ function understood(input: string, today: string): { text: string; valid: boolea
  * Das Einlagern nach einem Produkt-Barcode: MHD schnell eingeben (oder „kein MHD"), Menge
  * prüfen, bei unbekannten Produkten auf Wunsch gleich den Namen eintragen.
  */
-export function StoreSheet({ request, quantity, onQuantity, zoneName, busy, onConfirm, onCancel }: StoreSheetProps) {
+export function StoreSheet({ request, quantity, onQuantity, zoneName, lookupEnabled, busy, onConfirm, onCancel }: StoreSheetProps) {
   return (
     <Dialog open={request !== null} onClose={onCancel} title="Einlagern" variant="sheet" size="sm">
-      {request ? <StoreForm key={request.barcode} request={request} quantity={quantity} onQuantity={onQuantity} zoneName={zoneName} busy={busy} onConfirm={onConfirm} /> : null}
+      {request ? (
+        <StoreForm key={request.barcode} request={request} quantity={quantity} onQuantity={onQuantity} zoneName={zoneName} lookupEnabled={lookupEnabled} busy={busy} onConfirm={onConfirm} />
+      ) : null}
     </Dialog>
   );
 }
 
-function StoreForm({ request, quantity, onQuantity, zoneName, busy, onConfirm }: Omit<StoreSheetProps, "request" | "onCancel"> & { request: StoreRequest }) {
+function StoreForm({ request, quantity, onQuantity, zoneName, lookupEnabled, busy, onConfirm }: Omit<StoreSheetProps, "request" | "onCancel"> & { request: StoreRequest }) {
   const [date, setDate] = useState("");
   const [name, setName] = useState("");
   const today = todayLocal();
@@ -91,7 +95,8 @@ function StoreForm({ request, quantity, onQuantity, zoneName, busy, onConfirm }:
           Barcode {request.barcode}
           {zoneName !== null ? ` · nach ${zoneName}` : ""}
         </p>
-        {known ? null : <p className={styles.storeMeta}>Name und Bild ergänzt Stowly, sobald der Server den Barcode nachgeschlagen hat.</p>}
+        {/* Dass Name und Bild nachkommen, steht hier nur, wenn es stimmt (docs/sync-protokoll.md, Abschnitt 10). */}
+        {known ? null : <p className={styles.storeMeta}>{willLookUp(request.barcode, lookupEnabled) ? STORE_HINTS.lookup : STORE_HINTS.manual}</p>}
       </div>
 
       {known ? null : (
@@ -108,7 +113,7 @@ function StoreForm({ request, quantity, onQuantity, zoneName, busy, onConfirm }:
         placeholder="TTMMJJ"
         hint={feedback.valid || date.trim() === "" ? feedback.text : undefined}
         error={!feedback.valid && date.trim() !== "" ? feedback.text : null}
-        ref={focusInDialog}
+        ref={dialogFocusAlways}
       />
 
       <div className={styles.storeQuantity}>

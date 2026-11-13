@@ -18,16 +18,30 @@
  *
  * Ohne DOM: Diese Datei läuft auch im Service Worker.
  */
-import type { Command, CommandResult, RejectCode, SyncResponse } from "@/contract/api.gen";
-import { DEFAULT_DEVICE_PREFS, type DevicePrefs } from "@/contract/core";
+import type { Command, CommandResult, PrintJob, RejectCode, SyncResponse } from "@/contract/api.gen";
+import { DEFAULT_DEVICE_PREFS, MAX_SYNC_PROBLEMS, type DevicePrefs } from "@/contract/core";
 import { CoreError, type CoreErrorCode } from "@/contract/errors";
 import { newUuid, randomPackageId } from "@/contract/ids";
 
 import { applyCommand, replay } from "./commands/apply";
-import { DEFAULT_DB_NAME, INITIAL_SYNC_META, StowlyDb, type OutboxEntry, type StoredProblem, type StoredSession, type SyncMeta } from "./db";
+import {
+  DEFAULT_DB_NAME,
+  INITIAL_SYNC_META,
+  StowlyDb,
+  type DeliveryEntry,
+  type OutboxEntry,
+  type StoredProblem,
+  type StoredSession,
+  type SyncMeta,
+} from "./db";
 import { Signal } from "./live";
 import { purge } from "./sync/retention";
-import { Draft, EMPTY_TABLES, keyOf, reconcile, TABLE_NAMES, tableFrom, type MutableTables, type TableName, type TableRows, type Tables } from "./tables";
+import { deepEqual, Draft, EMPTY_TABLES, keyOf, reconcile, TABLE_NAMES, tableFrom, type MutableTables, type TableName, type TableRows, type Tables } from "./tables";
+
+const NO_DELIVERIES: ReadonlyMap<string, DeliveryEntry> = new Map();
+
+/** Zustände, nach denen an einem Etikett nichts mehr zuzustellen und nichts mehr nachzufragen ist. */
+const SETTLED_JOB_STATES: ReadonlySet<PrintJob["state"]> = new Set(["printed", "sent", "failed", "cancelled"]);
 
 export interface StoreState {
   /** false, bis die Datenbank gelesen ist. */
@@ -48,6 +62,10 @@ export interface StoreState {
   meta: SyncMeta;
   /** Tokens, die beim Server noch gesperrt werden müssen. */
   revocations: readonly string[];
+  /** Buchführung des Zustellens je Etikett (src/core/db.ts, `DeliveryEntry`). */
+  deliveries: ReadonlyMap<string, DeliveryEntry>;
+  /** Adressräume, in denen der Browser für Anfragen an einen Druckdienst nicht nachfragt (`KvValues.open_networks`). */
+  openNetworks: readonly string[];
 }
 
 const INITIAL_STATE: StoreState = {
@@ -62,6 +80,8 @@ const INITIAL_STATE: StoreState = {
   prefs: DEFAULT_DEVICE_PREFS,
   meta: INITIAL_SYNC_META,
   revocations: [],
+  deliveries: NO_DELIVERIES,
+  openNetworks: [],
 };
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -92,6 +112,8 @@ export class Mutation {
   prefsChanged = false;
   /** Der nächste Abgleich soll den Bestand vollständig neu holen. */
   fullResync = false;
+  /** Einträge der Zustell-Buchführung, die dieser Vorgang schreibt (null = löschen). */
+  readonly deliveryChanges = new Map<string, DeliveryEntry | null>();
 
   private poolIndex = 0;
   private readonly usedIds = new Set<string>();
@@ -154,6 +176,25 @@ export class Mutation {
     this.prefs = { ...this.prefs, ...changes };
     this.prefsChanged = true;
   }
+
+  /** Der Eintrag der Zustell-Buchführung zu einem Etikett, Änderungen dieses Vorgangs eingeschlossen. */
+  delivery(jobId: string): DeliveryEntry | undefined {
+    if (this.deliveryChanges.has(jobId)) {
+      return this.deliveryChanges.get(jobId) ?? undefined;
+    }
+    return this.state.deliveries.get(jobId);
+  }
+
+  /** Schreibt einen Eintrag der Zustell-Buchführung, zusammen mit den Befehlen dieses Vorgangs. */
+  putDelivery(entry: DeliveryEntry): void {
+    this.deliveryChanges.set(entry.job_id, entry);
+  }
+
+  dropDelivery(jobId: string): void {
+    if (this.delivery(jobId)) {
+      this.deliveryChanges.set(jobId, null);
+    }
+  }
 }
 
 export interface SyncApplyInput {
@@ -185,24 +226,58 @@ export interface SyncApplyReport {
 export interface StoreOptions {
   dbName?: string;
   now?: () => Date;
+  /**
+   * Ein anderer Tab öffnet die Datenbank in einer neueren Version. Die Verbindung ist dann
+   * schon geschlossen; dieser Store kann nichts mehr lesen oder schreiben.
+   */
+  onSuperseded?: () => void;
+  /** Das Öffnen wartet, weil ein anderer Tab seine Verbindung (ältere Version) nicht schließt. */
+  onBlocked?: () => void;
 }
+
+const SUPERSEDED_MESSAGE = "Ein anderer Tab läuft schon mit einer neueren Version von Stowly. Diese Seite muss neu geladen werden.";
 
 export class Store {
   readonly db: StowlyDb;
   readonly state = new Signal<StoreState>(INITIAL_STATE);
 
   private readonly now: () => Date;
+  private readonly options: StoreOptions;
   private channel: BroadcastChannel | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private supersededFlag = false;
 
   constructor(options: StoreOptions = {}) {
+    this.options = options;
     this.db = new StowlyDb(options.dbName ?? DEFAULT_DB_NAME);
     this.now = options.now ?? (() => new Date());
+    // Ein Tab mit neuerer App will die Datenbank umstellen: sofort loslassen, sonst wartet er
+    // auf uns (`blocked`). Danach darf dieser Tab die Datenbank nicht wieder öffnen; ihr
+    // Aufbau ist ihm voraus. Wird sie nur gelöscht (Tests), gibt es nichts zu melden.
+    this.db.on("versionchange", (event: IDBVersionChangeEvent) => {
+      const upgrade = typeof event.newVersion === "number" && event.newVersion > 0;
+      this.db.close();
+      if (upgrade && !this.closed) {
+        this.supersededFlag = true;
+        this.closed = true;
+        this.channel?.close();
+        this.channel = null;
+        this.options.onSuperseded?.();
+      }
+    });
+    this.db.on("blocked", () => {
+      this.options.onBlocked?.();
+    });
   }
 
   get snapshot(): StoreState {
     return this.state.get();
+  }
+
+  /** true, sobald ein Tab mit neuerer App die Datenbank übernommen hat. */
+  get superseded(): boolean {
+    return this.supersededFlag;
   }
 
   /** Öffnet die Datenbank und liest den Stand. */
@@ -260,7 +335,7 @@ export class Store {
 
   private async readAll(): Promise<StoreState> {
     const db = this.db;
-    const [products, packages, zones, printers, printerStatus, printJobs, labelTemplates, outbox, pool, problems, kv] = await Promise.all([
+    const [products, packages, zones, printers, printerStatus, printJobs, labelTemplates, outbox, pool, problems, deliveries, kv] = await Promise.all([
       db.products.toArray(),
       db.packages.toArray(),
       db.zones.toArray(),
@@ -271,6 +346,7 @@ export class Store {
       db.outbox.toArray(),
       db.id_pool.toArray(),
       db.problems.toArray(),
+      db.deliveries.toArray(),
       db.kv.toArray(),
     ]);
     const values = new Map<string, unknown>(kv.map((entry) => [entry.key, entry.value]));
@@ -301,6 +377,8 @@ export class Store {
       prefs: { ...DEFAULT_DEVICE_PREFS, ...(values.get("prefs") as Partial<DevicePrefs> | undefined) },
       meta,
       revocations: (values.get("revocations") as string[] | undefined) ?? [],
+      deliveries: sameDeliveries(previous.deliveries, new Map(deliveries.map((entry) => [entry.job_id, entry]))),
+      openNetworks: (values.get("open_networks") as string[] | undefined) ?? [],
     };
   }
 
@@ -337,6 +415,9 @@ export class Store {
    */
   private write<R>(work: (current: StoreState) => Promise<{ next: StoreState | null; value: R }>): Promise<R> {
     return this.enqueue(async () => {
+      if (this.supersededFlag) {
+        throw new CoreError("not_supported", SUPERSEDED_MESSAGE);
+      }
       if (this.closed) {
         throw new CoreError("internal", "Die lokale Datenbank ist geschlossen.");
       }
@@ -419,18 +500,30 @@ export class Store {
       if (meta !== current.meta) {
         await this.db.writeKv("sync", meta);
       }
-      const changed = entries.length > 0 || mutation.takenIds.length > 0 || mutation.prefsChanged || meta !== current.meta;
+      const deliveries = await this.writeDeliveries(current.deliveries, mutation.deliveryChanges);
+      const view = entries.length > 0 ? mutation.draft.commit() : current.view;
+      // Ein „verdrängt" erledigt sich, sobald seine Packung die Bearbeitung nicht mehr trägt.
+      const problems = entries.length > 0 ? await this.settleProblems(current.problems, view) : current.problems;
+      const changed =
+        entries.length > 0 ||
+        mutation.takenIds.length > 0 ||
+        mutation.prefsChanged ||
+        meta !== current.meta ||
+        deliveries !== current.deliveries ||
+        problems !== current.problems;
       if (!changed) {
         return { next: null, value: { ok: true, value } };
       }
       const taken = new Set(mutation.takenIds);
       const next: StoreState = {
         ...current,
-        view: entries.length > 0 ? mutation.draft.commit() : current.view,
+        view,
         outbox: entries.length > 0 ? [...current.outbox, ...entries] : current.outbox,
         pool: taken.size > 0 ? current.pool.filter((id) => !taken.has(id)) : current.pool,
         prefs: mutation.prefs,
         meta,
+        deliveries,
+        problems,
       };
       return { next, value: { ok: true, value } };
     });
@@ -498,6 +591,36 @@ export class Store {
       }
       if (newProblems.length > 0) {
         await this.db.problems.bulkPut(newProblems);
+      }
+
+      // 1b. Eine eigene Packung wurde mit `id_conflict` abgelehnt (7.5): Die ID trägt jetzt die
+      // Packung eines anderen Geräts, die eigenen Etiketten dazu gehören zu einer Packung, die
+      // es nie gab. Anforderungen, die noch warten, fallen samt ihren Meldungen aus der Outbox.
+      const conflicts = new Set<string>();
+      for (const entry of confirmed) {
+        const result = results.get(entry.id) as CommandResult;
+        if (entry.command.type === "package.create" && result.status === "rejected" && result.code === "id_conflict") {
+          conflicts.add(entry.command.package_id);
+        }
+      }
+      /** Etiketten, von denen nichts mehr zugestellt wird. */
+      const discardedJobs = new Set<string>();
+      let waiting = remaining;
+      if (conflicts.size > 0) {
+        for (const entry of remaining) {
+          const command = entry.command;
+          if (command.type === "print.request" && typeof command.package_id === "string" && conflicts.has(command.package_id)) {
+            discardedJobs.add(command.job_id);
+          }
+        }
+        const dropped = remaining.filter(
+          (entry) => (entry.command.type === "print.request" || entry.command.type === "print.report") && discardedJobs.has(entry.command.job_id),
+        );
+        if (dropped.length > 0) {
+          await this.db.outbox.bulkDelete(dropped.map((entry) => entry.seq));
+          const gone = new Set(dropped);
+          waiting = remaining.filter((entry) => !gone.has(entry));
+        }
       }
 
       // 2. Datensätze: nur, wenn die Anfrage noch auf dem gespeicherten Stand beruhte.
@@ -571,11 +694,46 @@ export class Store {
       }
 
       // 3. Die verbliebenen Befehle erneut anwenden.
-      const view = this.project(current.view, base, remaining, session, meta);
+      let view = this.project(current.view, base, waiting, session, meta);
       if (input.login && (view.settings === null || ![...view.zones.values()].some((zone) => zone.deleted_at === null))) {
         // Angemeldet heißt: Es gibt mindestens eine Zone und die Einstellungen. Sonst bleibt das
         // Gerät abgemeldet; der Fehler bricht die Transaktion ab, nichts davon wird gespeichert.
         throw new CoreError("internal", "Der Server hat keinen vollständigen Bestand geliefert (Zonen oder Einstellungen fehlen).");
+      }
+
+      // 3b. `id_conflict`, zweiter Teil: Ein schon gesendetes eigenes Etikett zu der abgelehnten
+      // Packung, das noch nicht erledigt ist, wird verworfen (`print.report` mit "cancelled").
+      // Ein schon gedrucktes bleibt als Datensatz, wie es ist.
+      if (conflicts.size > 0) {
+        const deviceId = session?.device?.id ?? null;
+        const at = input.receivedAt.toISOString();
+        const cancels: Command[] = [];
+        const cancel = (jobId: string, printerId: string | null, bootId: string | null) => {
+          discardedJobs.add(jobId);
+          cancels.push({ id: newUuid(), at, type: "print.report", job_id: jobId, state: "cancelled", printer_id: printerId, boot_id: bootId, error: null });
+        };
+        for (const job of view.print_jobs.values()) {
+          if (job.package_id !== null && conflicts.has(job.package_id) && deviceId !== null && job.device_id === deviceId && !SETTLED_JOB_STATES.has(job.state)) {
+            cancel(job.id, job.printer_id, job.boot_id);
+          }
+        }
+        // Wurde die Anforderung eben erst bestätigt und fehlt ihr Datensatz noch (die Antwort
+        // beruhte auf einem überholten Stand), gilt dasselbe.
+        for (const entry of confirmed) {
+          const command = entry.command;
+          const applied = results.get(entry.id)?.status === "applied";
+          if (command.type === "print.request" && applied && typeof command.package_id === "string" && conflicts.has(command.package_id) && !view.print_jobs.has(command.job_id)) {
+            cancel(command.job_id, command.printer_id ?? null, null);
+          }
+        }
+        if (cancels.length > 0) {
+          const keys = await this.db.outbox.bulkAdd(
+            cancels.map((command) => ({ id: command.id, command })),
+            { allKeys: true },
+          );
+          waiting = [...waiting, ...cancels.map((command, index) => ({ seq: keys[index] as number, id: command.id, command }))];
+          view = this.project(current.view, base, waiting, session, meta);
+        }
       }
 
       // 4. Längere Aufbewahrung: beim nächsten Abgleich einmal vollständig neu holen.
@@ -587,13 +745,93 @@ export class Store {
         await this.db.writeKv("sync", meta);
       }
 
-      const problems = newProblems.length > 0 ? mergeProblems(current.problems, newProblems) : current.problems;
-      const changed = confirmed.length > 0 || !stale || Boolean(input.login);
+      // 5. Buchführung des Zustellens aufräumen: Was erledigt oder verworfen ist, braucht keinen
+      // Eintrag mehr. Fehlt das Etikett ganz, dann nur, wenn der Bestand eben übernommen wurde:
+      // Solange er hinterherhinkt, kann ein unterwegs befindlicher Auftrag noch auftauchen.
+      const deliveryChanges = new Map<string, DeliveryEntry | null>();
+      for (const jobId of current.deliveries.keys()) {
+        const job = view.print_jobs.get(jobId);
+        if (discardedJobs.has(jobId) || (job ? SETTLED_JOB_STATES.has(job.state) : !stale)) {
+          deliveryChanges.set(jobId, null);
+        }
+      }
+      const deliveries = await this.writeDeliveries(current.deliveries, deliveryChanges);
+
+      // 6. Sync-Probleme: begrenzt, und „verdrängt" erledigt sich von selbst (9.2).
+      let problems = newProblems.length > 0 ? mergeProblems(current.problems, newProblems) : current.problems;
+      problems = await this.settleProblems(problems, view, stale ? new Set(newProblems.map((problem) => problem.id)) : undefined);
+
+      const changed = confirmed.length > 0 || !stale || Boolean(input.login) || waiting !== remaining || deliveries !== current.deliveries || problems !== current.problems;
       if (!changed) {
         return { next: null, value: report };
       }
-      return { next: { ...current, base, view, outbox: remaining, pool, problems, meta, session }, value: report };
+      return { next: { ...current, base, view, outbox: waiting, pool, problems, meta, session, deliveries }, value: report };
     });
+  }
+
+  /** Schreibt Änderungen an der Zustell-Buchführung (null = löschen) und liefert den neuen Stand. */
+  private async writeDeliveries(current: ReadonlyMap<string, DeliveryEntry>, changes: ReadonlyMap<string, DeliveryEntry | null>): Promise<ReadonlyMap<string, DeliveryEntry>> {
+    if (changes.size === 0) {
+      return current;
+    }
+    const next = new Map(current);
+    const puts: DeliveryEntry[] = [];
+    const drops: string[] = [];
+    for (const [jobId, entry] of changes) {
+      if (entry === null) {
+        if (next.delete(jobId)) {
+          drops.push(jobId);
+        }
+      } else {
+        next.set(jobId, entry);
+        puts.push(entry);
+      }
+    }
+    if (puts.length === 0 && drops.length === 0) {
+      return current;
+    }
+    if (drops.length > 0) {
+      await this.db.deliveries.bulkDelete(drops);
+    }
+    if (puts.length > 0) {
+      await this.db.deliveries.bulkPut(puts);
+    }
+    return next;
+  }
+
+  /**
+   * Hält `sync.problems` in Ordnung (docs/sync-protokoll.md, 9.2): höchstens
+   * `MAX_SYNC_PROBLEMS`, die ältesten fallen weg; und ein Eintrag "displaced" verschwindet,
+   * sobald seine Packung keine verdrängte Bearbeitung mehr trägt (wiederhergestellt, mit oder
+   * ohne Übernahme, oder nicht mehr in der Lösch-Historie).
+   *
+   * @param fresh Einträge, deren Packung der lokale Stand noch nicht zeigt (die Antwort beruhte
+   *              auf einem überholten Stand): Sie bleiben, bis der Bestand nachgezogen ist.
+   */
+  private async settleProblems(problems: readonly StoredProblem[], view: Tables, fresh?: ReadonlySet<string>): Promise<readonly StoredProblem[]> {
+    const gone = new Set<string>();
+    for (const problem of problems) {
+      if (problem.status !== "displaced" || problem.command.type !== "package.update" || fresh?.has(problem.id)) {
+        continue;
+      }
+      const pkg = view.packages.get(problem.command.package_id);
+      if (!pkg || pkg.removed_at === null || !pkg.displaced) {
+        gone.add(problem.id);
+      }
+    }
+    const kept = gone.size > 0 ? problems.filter((problem) => !gone.has(problem.id)) : problems;
+    if (kept.length > MAX_SYNC_PROBLEMS) {
+      // Die neuesten bleiben, in der Reihenfolge, in der `sync.problems` sie zeigt.
+      const newestFirst = [...kept].sort((a, b) => b.at.localeCompare(a.at) || b.recorded - a.recorded);
+      for (const problem of newestFirst.slice(MAX_SYNC_PROBLEMS)) {
+        gone.add(problem.id);
+      }
+    }
+    if (gone.size === 0) {
+      return problems;
+    }
+    await this.db.problems.bulkDelete([...gone]);
+    return problems.filter((problem) => !gone.has(problem.id));
   }
 
   /** Verwirft beim Start, was inzwischen jenseits der Aufbewahrung liegt. */
@@ -610,7 +848,15 @@ export class Store {
         await this.db.print_jobs.bulkDelete(purged.print_jobs);
       }
       const view = this.project(current.view, purged.tables, current.outbox, current.session, current.meta);
-      return { next: { ...current, base: purged.tables, view }, value: undefined };
+      const deliveryChanges = new Map<string, DeliveryEntry | null>();
+      for (const jobId of current.deliveries.keys()) {
+        if (!view.print_jobs.has(jobId)) {
+          deliveryChanges.set(jobId, null);
+        }
+      }
+      const deliveries = await this.writeDeliveries(current.deliveries, deliveryChanges);
+      const problems = await this.settleProblems(current.problems, view);
+      return { next: { ...current, base: purged.tables, view, deliveries, problems }, value: undefined };
     });
   }
 
@@ -643,7 +889,8 @@ export class Store {
         return { next: null, value: current.outbox.length };
       }
       await Promise.all(TABLE_NAMES.map((table) => this.db.table(table).clear()));
-      await Promise.all([this.db.outbox.clear(), this.db.id_pool.clear(), this.db.problems.clear()]);
+      // Auch die Buchführung des Zustellens: Sie gehört zu Etiketten, die es hier nicht mehr gibt.
+      await Promise.all([this.db.outbox.clear(), this.db.id_pool.clear(), this.db.problems.clear(), this.db.deliveries.clear()]);
       await this.db.kv.delete("settings");
       // Der Name bleibt als Vorschlag für die nächste Anmeldung; alles andere ist gelöscht.
       const lastName = current.session?.device?.name ?? current.session?.last_device_name ?? null;
@@ -666,6 +913,7 @@ export class Store {
         prefs,
         meta: INITIAL_SYNC_META,
         revocations,
+        deliveries: NO_DELIVERIES,
       };
       return { next, value: null };
     });
@@ -697,6 +945,18 @@ export class Store {
     });
   }
 
+  /** Merkt, dass der Browser für Anfragen in diesen Adressraum nicht nachfragt. Überlebt das Abmelden. */
+  markNetworkOpen(space: string): Promise<void> {
+    return this.write<void>(async (current) => {
+      if (current.openNetworks.includes(space)) {
+        return { next: null, value: undefined };
+      }
+      const openNetworks = [...current.openNetworks, space];
+      await this.db.writeKv("open_networks", openNetworks);
+      return { next: { ...current, openNetworks }, value: undefined };
+    });
+  }
+
   dismissProblem(id: string): Promise<void> {
     return this.write<void>(async (current) => {
       if (!current.problems.some((problem) => problem.id === id)) {
@@ -715,6 +975,19 @@ function grewRetention(before: Tables, after: Tables): boolean {
 function mergeProblems(existing: readonly StoredProblem[], added: readonly StoredProblem[]): StoredProblem[] {
   const ids = new Set(added.map((problem) => problem.id));
   return [...existing.filter((problem) => !ids.has(problem.id)), ...added];
+}
+
+/** Liefert `previous`, wenn sich an der Buchführung nichts geändert hat: Wer zuhört, rechnet dann nicht neu. */
+function sameDeliveries(previous: ReadonlyMap<string, DeliveryEntry>, next: ReadonlyMap<string, DeliveryEntry>): ReadonlyMap<string, DeliveryEntry> {
+  if (previous.size !== next.size) {
+    return next;
+  }
+  for (const [jobId, entry] of next) {
+    if (!deepEqual(previous.get(jobId), entry)) {
+      return next;
+    }
+  }
+  return previous;
 }
 
 interface MergedPages {

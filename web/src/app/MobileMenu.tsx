@@ -1,4 +1,5 @@
 import { ROUTES } from "@/contract";
+import type { OpenLabels } from "@/features/printers/usePrinting";
 import type { SyncSummary } from "@/features/sync/status";
 import { List, ListLink } from "@/ui";
 import { Badge, Button, Dialog } from "@/ui/base";
@@ -15,6 +16,8 @@ export interface MobileMenuProps {
   deviceName: string;
   /** Zahl der Packungen mit MHD-Warnung. */
   warnings: number;
+  /** Offene Etiketten. */
+  labels: OpenLabels;
   sync: SyncSummary;
   onLogout: () => void;
 }
@@ -23,12 +26,19 @@ export interface MobileMenuProps {
  * Das Menü am Handy: schiebt sich von unten ein, damit jeder Eintrag mit dem Daumen
  * erreichbar ist. Enthält alles, was am Desktop Seitenleiste und Geräte-Menü zeigen.
  */
-export function MobileMenu({ open, onClose, primary, deviceName, warnings, sync, onLogout }: MobileMenuProps) {
+export function MobileMenu({ open, onClose, primary, deviceName, warnings, labels, sync, onLogout }: MobileMenuProps) {
   function value(item: Destination) {
     if (item.to === ROUTES.warnings) {
       return warnings > 0 ? (
         <Badge tone="warn" solid>
           {warnings}
+        </Badge>
+      ) : undefined;
+    }
+    if (item.to === ROUTES.printers) {
+      return labels.open > 0 ? (
+        <Badge tone={labels.asking > 0 ? "warn" : "accent"} solid={labels.asking > 0}>
+          {labels.open} offen
         </Badge>
       ) : undefined;
     }

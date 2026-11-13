@@ -69,7 +69,8 @@ function restoreFocus(dialog: HTMLElement, opener: RefObject<HTMLElement | null>
  * Fokus: Beim Öffnen bekommt ihn das mit `dialogFocus` (oder `dialogFocusAlways`) markierte
  * Element, sonst der Dialog selbst, nie die Schaltfläche zum Schließen: Ein Druck auf Enter
  * schließt so nichts versehentlich. Beim Schließen geht der Fokus zurück an das Element, das
- * ihn vorher hatte, auch wenn der Dialog im offenen Zustand aus dem Baum fällt.
+ * ihn vorher hatte, auch wenn der Dialog im offenen Zustand aus dem Baum fällt. Verschwindet im
+ * offenen Dialog das Element mit dem Fokus, geht er an den Dialog selbst.
  *
  * Der Inhalt wird nur gerendert, solange der Dialog offen ist. Eingaben darin
  * beginnen also bei jedem Öffnen frisch.
@@ -128,11 +129,27 @@ export function Dialog({
     }
   }, [open]);
 
+  // Fällt der Fokus im offenen Dialog ins Leere, weil das Element verschwunden ist, das ihn hatte
+  // (der Inhalt wechselt vom Formular zum Ergebnis), nimmt ihn der Dialog selbst wieder auf:
+  // Die Tabulatortaste führt dann weiter durch den Dialog statt an den Anfang der Seite.
+  useEffect(() => {
+    const element = ref.current;
+    if (!open || !element?.hasAttribute("open")) {
+      return;
+    }
+    const active = document.activeElement;
+    if (active === null || active === document.body) {
+      panelRef.current?.focus({ preventScroll: true });
+    }
+  });
+
   useEffect(() => {
     const element = ref.current;
     return () => {
       // Der Dialog fällt im offenen Zustand aus dem Baum: Der Browser gibt den Fokus dann nicht zurück.
-      if (element?.hasAttribute("open")) {
+      // Nur wenn er wirklich weg ist: Im StrictMode räumt React probeweise auf, der Dialog bleibt
+      // dabei stehen, und wer ihn geöffnet hat, muss für das echte Schließen bekannt bleiben.
+      if (element?.hasAttribute("open") && !element.isConnected) {
         restoreFocus(element, openerRef);
       }
     };

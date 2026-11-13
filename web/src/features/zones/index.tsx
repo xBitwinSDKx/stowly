@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 
 import { useCore, useLive, type Zone, type ZoneMode } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
+import { printerForZone } from "@/features/printers/model";
+import { usePrinting } from "@/features/printers/usePrinting";
 import { errorText, List, ListRow, Notice, packagesText, Section, Select } from "@/ui";
 import { Badge, Button, IconButton, SegmentedControl, useToast, zoneColor, ZoneIcon } from "@/ui/base";
 import { ArrowDownIcon, ArrowUpIcon, InfoIcon, PlusIcon, PrinterIcon, QrCodeIcon } from "@/ui/icons";
@@ -29,6 +31,7 @@ export function ZonesPage() {
   const zones = useLive(core.data.zones);
   const packages = useLive(core.data.packages);
   const settings = useLive(core.data.settings);
+  const printing = usePrinting();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [serial, setSerial] = useState(0);
 
@@ -116,7 +119,10 @@ export function ZonesPage() {
                   <span className={styles.nameText}>{zone.name}</span>
                   {multiZone && settings.zone_mode === "primary" && primaryZone?.id === zone.id ? <Badge tone="accent">Primärzone</Badge> : null}
                 </div>
-                <div className={styles.sub}>{count === 0 ? "leer" : packagesText(count)}</div>
+                <div className={styles.sub}>
+                  {count === 0 ? "leer" : packagesText(count)}
+                  {multiZone && printing.hasPrinter ? ` · Etiketten: ${printerForZone(zone.id, printing.data)?.name ?? "kein Drucker"}` : ""}
+                </div>
               </div>
               {multiZone ? (
                 <div className={styles.order}>

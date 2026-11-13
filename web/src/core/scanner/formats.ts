@@ -17,6 +17,12 @@ export interface DetectedCode {
   format: string;
   /** Mittelpunkt des Codes im ausgewerteten Bildausschnitt, falls bekannt. */
   center: { x: number; y: number } | null;
+  /**
+   * Kantenlänge des Codes in Bildpunkten des ausgewerteten Ausschnitts: das Mittel der vier
+   * Kanten zwischen den Eckpunkten der Erkennung, ohne Ruhezone. null, wenn die Erkennung keine
+   * vier Eckpunkte liefert.
+   */
+  side: number | null;
 }
 
 const QR_VARIANTS = new Set(["qr_code", "qr_code_model_1", "qr_code_model_2"]);
@@ -57,8 +63,53 @@ export function toDetectedCodes(detections: readonly RawDetection[]): DetectedCo
       points.length > 0
         ? { x: points.reduce((sum, point) => sum + point.x, 0) / points.length, y: points.reduce((sum, point) => sum + point.y, 0) / points.length }
         : null;
-    return { rawValue: detection.rawValue, format: normalizeFormat(detection.format, detection.rawValue), center };
+    return { rawValue: detection.rawValue, format: normalizeFormat(detection.format, detection.rawValue), center, side: sideOf(points) };
   });
+}
+
+/** Mittel der vier Kanten eines Vierecks; null ohne vier Eckpunkte. */
+function sideOf(points: readonly { x: number; y: number }[]): number | null {
+  if (points.length !== 4) {
+    return null;
+  }
+  let total = 0;
+  for (let index = 0; index < 4; index += 1) {
+    const from = points[index] as { x: number; y: number };
+    const to = points[(index + 1) % 4] as { x: number; y: number };
+    total += Math.hypot(to.x - from.x, to.y - from.y);
+  }
+  return total / 4;
+}
+
+/**
+ * Mindestgröße eines Etiketts im Bild (docs/etiketten.md, Abschnitt 2): Das Etikett einer
+ * Packung oder Zone zählt erst, wenn die Kante seines QR-Codes mindestens 7 % der Kante des
+ * Auswertungsquadrats misst.
+ *
+ * Herleitung aus dem Vertrag: Der Code des Packungs-Etiketts ist 16 mm breit, der des
+ * Zonen-Etiketts knapp 20 mm. Das Auswertungsquadrat (80 % der kürzeren Bildseite) erfasst bei
+ * einer üblichen Hauptkamera (etwa 43° über die kürzere Seite) eine Fläche mit rund
+ * 0,63 × Abstand Kantenlänge. Ein Packungs-Etikett füllt damit bei 20 cm Abstand etwa 13 %, bei
+ * 30 cm 8,5 %, bei 36 cm 7 %, bei 60 cm 4 % und bei 1 m 2,5 % der Kante. Wer ein Etikett bewusst
+ * scannt, hält es näher als 30 cm; das Etikett im Regal dahinter ist weiter weg als 50 cm. Die
+ * Schwelle liegt dazwischen. Sie hängt vom Bildwinkel der Kamera ab und ist an echten Geräten
+ * zu bestätigen.
+ */
+export const MIN_LABEL_SIDE_RATIO = 0.07;
+
+/**
+ * Ist dieses Etikett im Bild zu klein, um zu zählen? Gemessen wird am Code selbst, bei der
+ * eingebauten Erkennung und bei der mitgelieferten gleich. Für Produkt-Barcodes und fremde
+ * Codes gilt die Grenze nicht; ohne Eckpunkte lässt sich nichts messen, dann zählt das Etikett.
+ *
+ * @param frameSide Kantenlänge des ausgewerteten Quadrats in denselben Bildpunkten wie `code.side`
+ */
+export function isLabelTooSmall(code: Pick<DetectedCode, "rawValue" | "format" | "side">, frameSide: number): boolean {
+  if (code.side === null || frameSide <= 0) {
+    return false;
+  }
+  const kind = classifyDetected(code).kind;
+  return (kind === "package" || kind === "zone") && code.side / frameSide < MIN_LABEL_SIDE_RATIO;
 }
 
 /** Wählt aus mehreren Codes im Bild den, der der Mitte am nächsten liegt. */

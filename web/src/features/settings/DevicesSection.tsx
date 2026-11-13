@@ -2,8 +2,8 @@ import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 
 import { formatTimestamp, isCoreError, useCore, useLive, type Device } from "@/contract";
 import { useLogout } from "@/features/auth/logout";
-import { ConfirmDialog, errorText, focusOnOpen, List, ListRow, Notice, Section, timeAgo, useNow, useReturnFocus } from "@/ui";
-import { Badge, Button, Dialog, Spinner, TextField, useToast } from "@/ui/base";
+import { ConfirmDialog, errorText, List, ListRow, Notice, Section, timeAgo, useNow } from "@/ui";
+import { Badge, Button, Dialog, dialogFocus, Spinner, TextField, useToast } from "@/ui/base";
 import { CloudOffIcon, RefreshIcon } from "@/ui/icons";
 
 import styles from "./SettingsPage.module.css";
@@ -17,7 +17,6 @@ export function sortDevices(devices: readonly Device[]): Device[] {
 }
 
 function RenameDialog({ device, onClose, onRenamed }: { device: Device; onClose: () => void; onRenamed: (device: Device) => void }) {
-  useReturnFocus();
   const core = useCore();
   const formId = useId();
   const [name, setName] = useState(device.name);
@@ -65,7 +64,7 @@ function RenameDialog({ device, onClose, onRenamed }: { device: Device; onClose:
       }
     >
       <form id={formId} onSubmit={(event) => void submit(event)} noValidate>
-        <TextField ref={focusOnOpen} label="Name des Geräts" value={name} onChange={(event) => setName(event.target.value)} maxLength={60} autoComplete="off" error={error} />
+        <TextField ref={dialogFocus} label="Name des Geräts" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" error={error} />
       </form>
     </Dialog>
   );

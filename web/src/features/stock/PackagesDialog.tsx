@@ -1,8 +1,11 @@
 import { useId, useMemo, useState, type FormEvent } from "react";
 
 import { formatDate, productSubtitle, productTitle, useCore, type PackageChanges } from "@/contract";
-import { BestBeforeField, Checkbox, errorText, FieldGroup, focusOnOpen, Notice, PackageId, packagesText, readBestBefore, Select, useReturnFocus, ZoneLabel } from "@/ui";
-import { Button, Dialog, useToast } from "@/ui/base";
+import { LabelStatus } from "@/features/printers/LabelStatus";
+import { useHasPrinter } from "@/features/printers/usePrinting";
+import { BestBeforeField, Checkbox, errorText, FieldGroup, Notice, PackageId, packagesText, readBestBefore, Select, ZoneLabel } from "@/ui";
+import { Button, Dialog, dialogFocus, useToast } from "@/ui/base";
+import { PrinterIcon } from "@/ui/icons";
 
 import styles from "./dialogs.module.css";
 import type { StockData } from "./useStock";
@@ -20,12 +23,13 @@ const MIXED = "";
 /**
  * MHD und Zone für eine Charge oder einzelne Packungen ändern (`core.stock.update`).
  * Ein geleertes MHD-Feld entfernt das MHD. Geändert wird nur, was im Dialog angefasst wurde.
+ * Gibt es einen Drucker, lässt sich für die gewählten Packungen auch ein Etikett nachdrucken.
  */
 export function PackagesDialog({ stock, packageIds, onClose }: PackagesDialogProps) {
-  useReturnFocus();
   const core = useCore();
   const toast = useToast();
   const formId = useId();
+  const hasPrinter = useHasPrinter();
 
   const entries = useMemo(
     () => stock.entries.filter((entry) => packageIds.includes(entry.pkg.id)).sort((a, b) => (a.pkg.id < b.pkg.id ? -1 : 1)),
@@ -51,6 +55,9 @@ export function PackagesDialog({ stock, packageIds, onClose }: PackagesDialogPro
   const [busy, setBusy] = useState(false);
   const [tried, setTried] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [labelBusy, setLabelBusy] = useState(false);
+  /** Die in diesem Dialog angeforderten Etiketten: Darunter steht, was aus ihnen wird. */
+  const [labelJobs, setLabelJobs] = useState<readonly string[]>([]);
 
   const chosen = entries.filter((entry) => selected.has(entry.pkg.id)).map((entry) => entry.pkg.id);
   const first = entries[0];
@@ -85,13 +92,21 @@ export function PackagesDialog({ stock, packageIds, onClose }: PackagesDialogPro
       toast.show({ message: `${packagesText(chosen.length)} geändert`, tone: "success" });
       onClose();
     } catch (caught) {
-      setError(
-        errorText(caught, {
-          not_found: "Mindestens eine der Packungen oder die Zone gibt es nicht mehr.",
-          invalid: "Das MHD ist kein gültiges Datum.",
-        }),
-      );
+      setError(errorText(caught, { not_found: "Mindestens eine der Packungen oder die Zone gibt es nicht mehr." }));
       setBusy(false);
+    }
+  }
+
+  async function printLabels() {
+    setLabelBusy(true);
+    setError(null);
+    try {
+      const jobs = await core.print.requestPackageLabels(chosen);
+      setLabelJobs(jobs.map((job) => job.id));
+    } catch (caught) {
+      setError(errorText(caught, { not_found: "Mindestens eine der Packungen gibt es nicht mehr, oder es ist kein Drucker mehr eingerichtet." }));
+    } finally {
+      setLabelBusy(false);
     }
   }
 
@@ -173,7 +188,7 @@ export function PackagesDialog({ stock, packageIds, onClose }: PackagesDialogPro
           )}
 
           <BestBeforeField
-            ref={focusOnOpen}
+            ref={dialogFocus}
             value={text}
             onChange={setText}
             today={stock.today}
@@ -200,6 +215,20 @@ export function PackagesDialog({ stock, packageIds, onClose }: PackagesDialogPro
                 ...stock.zones.map((zone) => ({ value: zone.id, label: zone.name })),
               ]}
             />
+          ) : null}
+
+          {hasPrinter ? (
+            <FieldGroup
+              label="Etikett"
+              hint={labelJobs.length === 0 ? "Nachdruck, etwa wenn ein Etikett unleserlich geworden ist. Gedruckt wird der gespeicherte Stand." : undefined}
+            >
+              <div>
+                <Button icon={<PrinterIcon />} busy={labelBusy} disabled={chosen.length === 0 || busy} onClick={() => void printLabels()}>
+                  {chosen.length <= 1 ? "Etikett drucken" : `${String(chosen.length)} Etiketten drucken`}
+                </Button>
+              </div>
+              <LabelStatus jobIds={labelJobs} className={styles.muted} />
+            </FieldGroup>
           ) : null}
 
           {error ? (

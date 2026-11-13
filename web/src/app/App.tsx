@@ -8,6 +8,7 @@ import { ToastProvider } from "@/ui/base";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { createAppRouter } from "./routes";
 import { SessionGate } from "./SessionGate";
+import { UpdateRequired } from "./UpdateRequired";
 
 /**
  * Diese Props sind die Nahtstelle zu src/main.tsx und bleiben, wie sie sind:
@@ -34,6 +35,8 @@ export function App({ core, scanPage }: AppProps) {
               <RouterProvider router={router} />
             </LogoutProvider>
           </SessionGate>
+          {/* Über allem, auch über Anmeldung, Scan-Ansicht und offenen Dialogen */}
+          <UpdateRequired />
         </ToastProvider>
       </CoreProvider>
     </ErrorBoundary>

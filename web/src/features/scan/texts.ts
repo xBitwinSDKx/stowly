@@ -56,3 +56,22 @@ export const MANUAL_ERRORS = {
   barcode: "Die Prüfziffer dieses Barcodes stimmt nicht. Bitte noch einmal vergleichen.",
   unknown: "Das ist weder eine Packungs-ID (5 Zeichen) noch ein Barcode (8, 12 oder 13 Ziffern).",
 } as const;
+
+/** Ein Etikett ist erkannt, im Bild aber zu klein, um zu zählen (das Etikett im Regal dahinter). */
+export const CLOSER_HINT = "Näher ran";
+
+/** Was beim Einlagern eines unbekannten Barcodes über Name und Bild gesagt wird. */
+export const STORE_HINTS = {
+  /** Der Server schlägt diesen Barcode nach. */
+  lookup: "Name und Bild ergänzt Stowly, sobald der Server den Barcode nachgeschlagen hat.",
+  /** Ladeninterner Code oder abgeschaltetes Nachschlagen: Es kommt nichts von selbst. */
+  manual: "Diesen Barcode schlägt Stowly nicht nach. Trag den Namen am besten gleich ein; später geht es auch am Produkt.",
+} as const;
+
+/** Halbsätze zum Stand der Etiketten nach dem Einlagern; Einzahl und Mehrzahl. */
+export const LABEL_STATUS_TEXTS = {
+  pending: ["Etikett steht aus", "Etiketten stehen aus"],
+  printing: ["Etikett wird gedruckt", "Etiketten werden gedruckt"],
+  printed: ["Etikett gedruckt", "Etiketten gedruckt"],
+  problem: ["Etikett nicht gedruckt", "Nicht alle Etiketten gedruckt"],
+} as const;

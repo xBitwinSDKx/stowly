@@ -12,7 +12,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { packageQr, SCAN_FORMATS, zoneQr, type ScanResult } from "@/contract";
 
 import { nodeModuleFile, readerWasm, sampleImage, type SampleFormat, type SampleOptions } from "../testing/barcode-images";
-import { classifyDetected, nearestToCenter, normalizeFormat, toDetectedCodes } from "./formats";
+import { classifyDetected, isLabelTooSmall, MIN_LABEL_SIDE_RATIO, nearestToCenter, normalizeFormat, toDetectedCodes } from "./formats";
 import { createZxingDetector, ZXING_WASM_URL, type ZxingDetector } from "./zxing";
 
 const ZONE_ID = "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4a5b";
@@ -90,6 +90,63 @@ describe("Beispielbilder durch Erkennung und Einordnung", () => {
   it("findet in einem leeren Bild nichts", async () => {
     const blank = new ImageData(new Uint8ClampedArray(320 * 320 * 4).fill(200), 320, 320);
     expect(await detector.detect(blank)).toEqual([]);
+  });
+});
+
+describe("Mindestgröße eines Etiketts im Bild", () => {
+  /** Liest das Beispielbild und liefert den einen Code darin samt der Kante des Bilds. */
+  async function measured(text: string, format: SampleFormat, options: SampleOptions & { frame: number }) {
+    const codes = await detector.detect(await sampleImage(text, format, options));
+    expect(codes).toHaveLength(1);
+    const code = codes[0];
+    if (!code) {
+      throw new Error("kein Code gelesen");
+    }
+    return { code, frame: options.frame, ratio: (code.side ?? 0) / options.frame };
+  }
+
+  it("misst die Kante am Code selbst, ohne Ruhezone", async () => {
+    // Das Packungs-Etikett hat 21 Module; bei 4 Bildpunkten je Modul sind das 84 Bildpunkte.
+    const { code } = await measured(packageQr("A2B3C"), "QRCode", { scale: 4, frame: 640 });
+    expect(code.side).toBeGreaterThan(84 - 5);
+    expect(code.side).toBeLessThan(84 + 5);
+    // Gedreht dasselbe.
+    const rotated = await measured(packageQr("A2B3C"), "QRCode", { scale: 4, frame: 640, rotate: true });
+    expect(rotated.code.side).toBeGreaterThan(84 - 5);
+    expect(rotated.code.side).toBeLessThan(84 + 5);
+  });
+
+  it("zählt das Etikett einer Packung knapp über der Schwelle und knapp darunter nicht", async () => {
+    expect(MIN_LABEL_SIDE_RATIO).toBe(0.07);
+    // 21 Module zu 2 Bildpunkten = 42 Bildpunkte: 6,6 % von 640, 7,5 % von 560.
+    const below = await measured(packageQr("A2B3C"), "QRCode", { scale: 2, frame: 640 });
+    expect(below.ratio).toBeLessThan(0.07);
+    expect(below.ratio).toBeGreaterThan(0.06);
+    expect(classifyDetected(below.code)).toEqual({ kind: "package", package_id: "A2B3C" });
+    expect(isLabelTooSmall(below.code, below.frame)).toBe(true);
+
+    const above = await measured(packageQr("A2B3C"), "QRCode", { scale: 2, frame: 560 });
+    expect(above.ratio).toBeGreaterThan(0.07);
+    expect(above.ratio).toBeLessThan(0.08);
+    expect(isLabelTooSmall(above.code, above.frame)).toBe(false);
+  });
+
+  it("gilt genauso für das Etikett einer Zone", async () => {
+    // 29 Module zu 2 Bildpunkten = 58 Bildpunkte: 6,6 % von 880, 7,6 % von 760.
+    const below = await measured(zoneQr(ZONE_ID), "QRCode", { scale: 2, frame: 880 });
+    expect(classifyDetected(below.code).kind).toBe("zone");
+    expect(isLabelTooSmall(below.code, below.frame)).toBe(true);
+    const above = await measured(zoneQr(ZONE_ID), "QRCode", { scale: 2, frame: 760 });
+    expect(isLabelTooSmall(above.code, above.frame)).toBe(false);
+  });
+
+  it("gilt nicht für Produkt-Barcodes und fremde Codes, so klein sie im Bild auch sind", async () => {
+    const barcode = await measured("4006381333931", "EAN13", { scale: 2, frame: 4_000 });
+    expect(classifyDetected(barcode.code)).toEqual({ kind: "product", barcode: "4006381333931" });
+    expect(isLabelTooSmall(barcode.code, barcode.frame)).toBe(false);
+    const foreign = await measured("https://example.org/aktion", "QRCode", { scale: 2, frame: 2_000, ecLevel: "M" });
+    expect(foreign.ratio).toBeLessThan(0.07);
+    expect(isLabelTooSmall(foreign.code, foreign.frame)).toBe(false);
   });
 });
 

@@ -162,6 +162,40 @@
   box-sizing: content-box;
 }
 
+/* Zahl am Symbol: offene Etiketten am Drucker. */
+.count {
+  position: absolute;
+  top: 0.1rem;
+  right: -0.1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.25rem;
+  border: 2px solid var(--color-chrome);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-size: 0.6875rem;
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  box-sizing: content-box;
+}
+
+.countWarn {
+  background: var(--color-warn);
+  color: var(--color-warn-contrast);
+}
+
+/* Schaltflächen in den Hinweisen unter der Kopfzeile */
+.bannerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 /* ---------------------------------------------------------------- Hauptbereich */
 .main {
   display: flex;

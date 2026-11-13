@@ -1,33 +1,52 @@
 /**
- * Meldet den Service Worker an. GRUNDGERÜST: Den Installations- und Update-Ablauf
- * (neue Version anbieten statt sofort übernehmen) baut Worker 3 in Runde 2.
- *
- * Bis dahin gilt die einfachste Regel, die beim Entwickeln keine veraltete App festhält:
- * Ein neuer Service Worker übernimmt sofort (siehe src/sw.ts), und die Seite lädt einmal neu.
+ * Meldet den Service Worker an und beobachtet, ob eine neue Version wartet
+ * (der Ablauf steht in src/core/pwa/updates.ts).
  */
+import { AppUpdates } from "./updates";
 
 const SERVICE_WORKER_URL = "/sw.js";
 
-export function registerServiceWorker(): void {
+/**
+ * @param onUpdateReady wird gerufen, sobald eine neue Version auf diesen Tab wartet
+ * @param reload lädt die Seite neu
+ * @returns die Steuerung des Update-Ablaufs; null, wo es keinen Service Worker gibt
+ *          (Entwicklungsserver, kein sicherer Kontext)
+ */
+export function registerServiceWorker(onUpdateReady: (ready: boolean) => void, reload: () => void): AppUpdates | null {
   // Nur in der gebauten App: Der Entwicklungsserver liefert kein sw.js.
   if (!import.meta.env.PROD || !("serviceWorker" in navigator)) {
-    return;
+    return null;
   }
 
-  let reloading = false;
-  const hadController = navigator.serviceWorker.controller !== null;
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    // Beim allerersten Besuch gibt es noch keinen Vorgänger: nichts neu zu laden.
-    if (!hadController || reloading) {
-      return;
-    }
-    reloading = true;
-    window.location.reload();
-  });
+  const updates = new AppUpdates(
+    {
+      container: navigator.serviceWorker,
+      reload,
+      isHidden: () => document.visibilityState === "hidden",
+    },
+    onUpdateReady,
+  );
 
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register(SERVICE_WORKER_URL, { scope: "/" }).catch((error: unknown) => {
-      console.warn("Service Worker ließ sich nicht anmelden:", error);
-    });
+  const register = () => {
+    navigator.serviceWorker
+      .register(SERVICE_WORKER_URL, { scope: "/" })
+      .then((registration) => updates.watch(registration))
+      .catch((error: unknown) => {
+        console.warn("Service Worker ließ sich nicht anmelden:", error);
+      });
+  };
+  if (document.readyState === "complete") {
+    register();
+  } else {
+    window.addEventListener("load", register, { once: true });
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      updates.hidden();
+    } else {
+      updates.visible();
+    }
   });
+  return updates;
 }

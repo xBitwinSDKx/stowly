@@ -236,6 +236,32 @@ export function groupByProduct(entries: readonly StockEntry[], zones: readonly Z
   return groups.sort((a, b) => collator.compare(a.title, b.title) || (a.product_id < b.product_id ? -1 : 1));
 }
 
+function sameGroup(a: ProductGroup, b: ProductGroup): boolean {
+  return (
+    a.product === b.product &&
+    a.entries.length === b.entries.length &&
+    a.entries.every((entry, index) => entry === b.entries[index]) &&
+    a.zone_ids.length === b.zone_ids.length &&
+    a.zone_ids.every((id, index) => id === b.zone_ids[index])
+  );
+}
+
+/**
+ * Gibt für unveränderte Produkte das Objekt der vorigen Liste zurück statt des neu gebauten.
+ *
+ * Filtern und Suchen bauen die Gruppen jedes Mal neu, obwohl sich an den meisten nichts
+ * ändert. Bleibt das Objekt dasselbe, zeichnet die Ansicht die Zeile nicht neu: Bei einem
+ * großen Bestand entscheidet das darüber, ob das Tippen im Suchfeld flüssig bleibt.
+ * Gleich heißt: dasselbe Produkt, dieselben Packungen (als Einträge des Bestands) in
+ * derselben Folge, dieselben Zonen in derselben Folge.
+ */
+export function reuseGroups(previous: ReadonlyMap<string, ProductGroup>, next: readonly ProductGroup[]): ProductGroup[] {
+  return next.map((group) => {
+    const old = previous.get(group.product_id);
+    return old !== undefined && sameGroup(old, group) ? old : group;
+  });
+}
+
 export type SortKey = "title" | "critical" | "count";
 
 export interface SortOrder {

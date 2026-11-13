@@ -6,3 +6,14 @@
   gap: var(--space-6);
   color: var(--color-text-muted);
 }
+
+/* Sperre „Stowly wurde aktualisiert" */
+.lock {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}

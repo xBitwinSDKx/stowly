@@ -1,8 +1,7 @@
 import { useState, type ReactNode } from "react";
 
-import { Button, Dialog } from "./base";
+import { Button, Dialog, dialogFocus } from "./base";
 import styles from "./ConfirmDialog.module.css";
-import { focusOnOpen } from "./hooks";
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -71,10 +70,10 @@ export function ConfirmDialog({
       footer={
         <>
           {/* Der Fokus beginnt auf der sicheren Wahl: bei Folgenschwerem auf „Abbrechen". */}
-          <Button ref={tone === "danger" ? focusOnOpen : undefined} onClick={close} disabled={busy}>
+          <Button ref={tone === "danger" ? dialogFocus : undefined} onClick={close} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button ref={tone === "danger" ? undefined : focusOnOpen} variant={tone} busy={busy} onClick={() => void confirm()}>
+          <Button ref={tone === "danger" ? undefined : dialogFocus} variant={tone} busy={busy} onClick={() => void confirm()}>
             {confirmLabel}
           </Button>
         </>

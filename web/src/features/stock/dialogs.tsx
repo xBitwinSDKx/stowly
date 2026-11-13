@@ -2,6 +2,7 @@ import { useCallback, useState, type ReactNode } from "react";
 
 import type { RemovalReason } from "@/contract";
 
+import { LabelsDialog } from "./LabelsDialog";
 import { PackagesDialog } from "./PackagesDialog";
 import { ProductDialog } from "./ProductDialog";
 import { RemoveDialog } from "./RemoveDialog";
@@ -17,7 +18,9 @@ export type StockDialogRequest =
   /** Entnehmen oder löschen. */
   | { kind: "remove"; package_ids: readonly string[]; selection?: "all" | "none"; reason?: RemovalReason }
   /** Von Hand einlagern. */
-  | { kind: "store"; product_id?: string; zone_id?: string | null };
+  | { kind: "store"; product_id?: string; zone_id?: string | null }
+  /** Nachdruck: für eine oder mehrere Packungen ein neues Etikett anfordern. */
+  | { kind: "labels"; package_ids: readonly string[] };
 
 export interface StockDialogs {
   open: (request: StockDialogRequest) => void;
@@ -26,7 +29,7 @@ export interface StockDialogs {
 }
 
 /**
- * Die Dialoge des Bestands für eine Ansicht (Bestand, Warnungen):
+ * Die Dialoge des Bestands für eine Ansicht (Bestand, Warnungen), samt Nachdruck der Etiketten:
  *
  *   const dialogs = useStockDialogs(stock);
  *   <Button onClick={() => dialogs.open({ kind: "store" })}>…</Button>
@@ -61,6 +64,8 @@ export function useStockDialogs(stock: StockData): StockDialogs {
     );
   } else if (request?.kind === "store") {
     element = <StoreDialog key={serial} stock={stock} productId={request.product_id} zoneId={request.zone_id} onClose={close} />;
+  } else if (request?.kind === "labels") {
+    element = <LabelsDialog key={serial} stock={stock} packageIds={request.package_ids} onClose={close} />;
   }
 
   return { open, element };

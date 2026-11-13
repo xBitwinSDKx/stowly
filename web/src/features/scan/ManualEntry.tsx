@@ -1,9 +1,8 @@
 import { useState, type FormEvent } from "react";
 
 import type { ScanResult } from "@/contract";
-import { Button, TextField } from "@/ui/base";
+import { Button, dialogFocusAlways, TextField } from "@/ui/base";
 
-import { focusInDialog } from "./focus";
 import { parseManualInput } from "./scan-flow";
 import styles from "./ScanPage.module.css";
 import { MANUAL_ERRORS } from "./texts";
@@ -52,7 +51,7 @@ export function ManualEntry({ onSubmit, inDialog = false }: ManualEntryProps) {
         autoCorrect="off"
         spellCheck={false}
         enterKeyHint="go"
-        ref={inDialog ? focusInDialog : undefined}
+        ref={inDialog ? dialogFocusAlways : undefined}
       />
       <Button type="submit" variant="primary" size="lg" block>
         Übernehmen

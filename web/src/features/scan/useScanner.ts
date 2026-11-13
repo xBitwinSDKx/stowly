@@ -12,6 +12,7 @@ const IDLE: ScannerState = {
   torch: { available: false, on: false },
   zoom: null,
   wake_lock: false,
+  too_small: false,
 };
 
 /** Ein `Live`, das nie etwas meldet: der Zustand, solange es noch keinen Scanner gibt. */

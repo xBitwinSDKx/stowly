@@ -8,6 +8,6 @@ export { CameraError, isMultiLensCamera, scoreCamera, shouldLookForBetterCamera,
 export { SAME_VALUE_WINDOW_MS, ScanDeduper } from "./dedupe";
 export type { DetectorKind } from "./detector";
 export { canVibrate, installAudioUnlock, isAudioUnlocked, playFeedback, setFeedbackActive, unlockAudio, type FeedbackPrefs, type FeedbackTone } from "./feedback";
-export { classifyDetected, normalizeFormat, type DetectedCode } from "./formats";
+export { classifyDetected, isLabelTooSmall, MIN_LABEL_SIDE_RATIO, normalizeFormat, type DetectedCode } from "./formats";
 export { CROP_FRACTION, FRAME_INTERVAL_MS, Scanner, type ScannerErrorKind, type ScannerOptions, type ScannerState, type ScannerStatus } from "./scanner";
 export { ScreenWakeLock } from "./wake-lock";

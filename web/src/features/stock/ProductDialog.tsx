@@ -10,8 +10,8 @@ import {
   type Product,
   type ProductChanges,
 } from "@/contract";
-import { ConfirmDialog, errorText, FieldGroup, focusOnOpen, Notice, packagesText, useReturnFocus } from "@/ui";
-import { Button, Dialog, IconButton, Spinner, TextField, useToast } from "@/ui/base";
+import { ConfirmDialog, errorText, FieldGroup, Notice, packagesText } from "@/ui";
+import { Button, Dialog, dialogFocus, IconButton, Spinner, TextField, useToast } from "@/ui/base";
 import { BarcodeIcon, CloseIcon, InfoIcon, MergeIcon, PlusIcon } from "@/ui/icons";
 
 import styles from "./dialogs.module.css";
@@ -53,7 +53,6 @@ interface MergeOffer {
  * Rückfrage sofort, weil es sich nicht umkehren lässt.
  */
 export function ProductDialog({ stock, productId, onClose }: ProductDialogProps) {
-  useReturnFocus();
   const core = useCore();
   const toast = useToast();
   const formId = useId();
@@ -180,7 +179,7 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
       toast.show({ message: `„${trimmedName || productTitle(current)}“ gespeichert`, tone: "success" });
       onClose();
     } catch (caught) {
-      setError(errorText(caught, { not_found: "Dieses Produkt gibt es nicht mehr.", invalid: "Der Server hält die Angaben für ungültig." }));
+      setError(errorText(caught, { not_found: "Dieses Produkt gibt es nicht mehr." }));
       setBusy(false);
     }
   }
@@ -213,22 +212,20 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
           ) : null}
 
           <TextField
-            ref={focusOnOpen}
+            ref={dialogFocus}
             label="Name"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            maxLength={120}
             autoComplete="off"
             placeholder={placeholder ? "Wie auf der Packung" : undefined}
             error={tried ? nameError : null}
           />
           <div className={styles.columns}>
-            <TextField label="Marke" value={brand} onChange={(event) => setBrand(event.target.value)} maxLength={80} autoComplete="off" />
+            <TextField label="Marke" value={brand} onChange={(event) => setBrand(event.target.value)} autoComplete="off" />
             <TextField
               label="Packungsgröße"
               value={quantity}
               onChange={(event) => setQuantity(event.target.value)}
-              maxLength={40}
               autoComplete="off"
               placeholder="z. B. 500 g"
             />

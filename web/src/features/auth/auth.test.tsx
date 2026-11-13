@@ -48,6 +48,7 @@ describe("loginErrorText", () => {
     expect(loginErrorText(new CoreError("not_configured"))).toContain("noch kein Haushalts-Passwort gesetzt");
     expect(loginErrorText(new CoreError("offline"))).toContain("Der Server ist nicht erreichbar.");
     expect(loginErrorText(new CoreError("protocol_mismatch"))).toContain("passt nicht zum Server");
+    expect(loginErrorText(new CoreError("invalid", "Der Name des Geräts ist zu lang (höchstens 60 Zeichen)."))).toBe("Der Name des Geräts ist zu lang (höchstens 60 Zeichen).");
     expect(loginErrorText(new CoreError("invalid"))).toContain("Bitte das Passwort und einen Namen");
     expect(loginErrorText(new Error("kaputt"))).toBe("Die Anmeldung ist fehlgeschlagen. Bitte noch einmal versuchen.");
   });
@@ -139,5 +140,39 @@ describe("Anmeldung", () => {
     });
     expect(await screen.findByText("Abgemeldet")).toBeInTheDocument();
     expect(screen.getByText("Die lokale Kopie der Daten wurde von diesem Gerät gelöscht.")).toBeInTheDocument();
+  });
+});
+
+describe("Anmeldung nach einer Sperre oder dem Abmelden", () => {
+  it("schlägt den Namen vor, unter dem das Gerät zuletzt angemeldet war", async () => {
+    const core = renderApp({ scenarios: ["revoked"] });
+    expect(screen.getByText("Dieses Gerät wurde abgemeldet")).toBeInTheDocument();
+    // Nicht „Rechner": So steht das Gerät nach der Sperre nicht unter zweitem Namen in der Geräteliste.
+    expect(screen.getByLabelText("Name dieses Geräts")).toHaveValue("Dieses Gerät");
+    await submit();
+    await screen.findByRole("heading", { name: "Bestand" });
+    expect(core.session.state.get()).toMatchObject({ status: "signed_in", device: { name: "Dieses Gerät" } });
+  });
+
+  it("bleibt beim neutralen Vorschlag, wenn das Gerät noch nie angemeldet war", () => {
+    renderApp({ scenarios: ["signed-out"] });
+    expect(screen.getByLabelText("Name dieses Geräts")).toHaveValue("Rechner");
+  });
+
+  it("zeigt bei einem zu langen Gerätenamen den genauen Satz des Kerns", async () => {
+    renderApp({ scenarios: ["signed-out"] });
+    await userEvent.clear(screen.getByLabelText("Name dieses Geräts"));
+    await userEvent.type(screen.getByLabelText("Name dieses Geräts"), "g".repeat(61));
+    await submit();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Der Name des Geräts ist zu lang (höchstens 60 Zeichen).");
+  });
+
+  it("bietet auch vor der Anmeldung an, auf eine neue Version zu wechseln", async () => {
+    const core = renderApp({ scenarios: ["signed-out", "update"] });
+    const applyUpdate = vi.spyOn(core.app, "applyUpdate");
+    expect(screen.getByText("Neue Version")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Jetzt aktualisieren" }));
+    expect(applyUpdate).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByText("Neue Version")).not.toBeInTheDocument());
   });
 });

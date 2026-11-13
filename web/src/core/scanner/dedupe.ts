@@ -65,6 +65,16 @@ export class ScanDeduper {
     }
   }
 
+  /** Würde dieser Wert jetzt nicht gemeldet (vor Kurzem gemeldet oder zurückgestellt)? Ändert nichts. */
+  suppressed(value: string, nowMs: number): boolean {
+    const heldUntil = this.held.get(value);
+    if (heldUntil !== undefined && nowMs < heldUntil) {
+      return true;
+    }
+    const last = this.seen.get(value);
+    return last !== undefined && nowMs - last < this.windowMs;
+  }
+
   /** Stellt einen Wert für die Dauer des Fensters zurück, gerechnet ab jetzt. */
   hold(value: string, nowMs: number): void {
     this.held.set(value, nowMs + this.windowMs);
@@ -76,11 +86,14 @@ export class ScanDeduper {
   /**
    * Die Auswertung war angehalten (ein Dialog war offen): Was davor im Bild war, gilt als
    * gerade eben gesehen. Sonst öffnete das Produkt, das noch vor der Kamera liegt, sofort
-   * den nächsten Dialog.
+   * den nächsten Dialog. Was schon beim Anhalten (`pausedAtMs`) länger nicht mehr zu sehen
+   * war, bleibt dagegen vergessen: Es soll nach dem Dialog sofort wieder zählen.
    */
-  refresh(nowMs: number): void {
-    for (const value of this.seen.keys()) {
-      this.seen.set(value, nowMs);
+  refresh(nowMs: number, pausedAtMs: number = nowMs): void {
+    for (const [value, at] of this.seen) {
+      if (pausedAtMs - at < this.windowMs) {
+        this.seen.set(value, nowMs);
+      }
     }
   }
 

@@ -274,7 +274,9 @@ describe("Middleware für den Entwicklungsserver", () => {
     expect(health.headers["cache-control"]).toBe("no-store");
     expect(health.body).toMatchObject({ app: "stowly", status: "ok", protocol: PROTOCOL_VERSION, configured: true });
     expect((await call("GET", "/zonen")).status).toBe(-1);
-    expect((await call("POST", "/print/v1/jobs/1", {})).status).toBe(501);
+    // Unter /print antwortet der nachgebaute Druckdienst des Servers: ohne Geräte-Token 401.
+    expect((await call("POST", "/print/v1/jobs/1", {})).status).toBe(401);
+    expect((await call("GET", "/print/v1/health")).body).toMatchObject({ error: { code: "unauthorized" } });
   });
 
   it("meldet an und gleicht ab, mit einem Beispiel-Haushalt als Bestand", async () => {

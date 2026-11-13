@@ -77,7 +77,8 @@ describe("describeProblem", () => {
       describeProblem(problem({ type: "package.create", package_id: "A2B3C", product_id: rice?.id, zone_id: ZONE_IDS.cellar, best_before: null }, "id_conflict"), lookup),
     ).toEqual({
       text: "Die Packung A2B3C (Basmati Reis) wurde nicht eingelagert, weil ihre ID schon vergeben ist.",
-      advice: "Bitte die Packung neu einlagern und das Etikett ersetzen.",
+      advice:
+        "Die Packung ist nicht im Bestand. Wurde für sie schon ein Etikett gedruckt, muss es weg: Die ID gehört einer anderen Packung. Danach die Packung neu einlagern; sie bekommt eine neue ID und ein neues Etikett.",
       inHistory: false,
     });
     expect(describeProblem(problem({ type: "zone.delete", zone_id: ZONE_IDS.cellar, move_to: ZONE_IDS.shelf }, "last_zone"), lookup).text).toBe(
@@ -203,7 +204,8 @@ describe("Sync-Ansicht", () => {
 
     expect(problems[0]).toHaveTextContent("abgelehnt");
     expect(problems[0]).toHaveTextContent(/Die Packung \w{5} \(.+\) wurde nicht eingelagert, weil ihre ID schon vergeben ist\./);
-    expect(problems[0]).toHaveTextContent("Bitte die Packung neu einlagern und das Etikett ersetzen.");
+    expect(problems[0]).toHaveTextContent("Die Packung ist nicht im Bestand.");
+    expect(problems[0]).toHaveTextContent("muss es weg");
 
     expect(problems[1]).toHaveTextContent("verdrängt");
     expect(problems[1]).toHaveTextContent(/Die Bearbeitung der Packung \w{5} \(.+\) kam zu spät/);
@@ -215,5 +217,69 @@ describe("Sync-Ansicht", () => {
 
     await userEvent.click(screen.getByRole("link", { name: "Zur Lösch-Historie" }));
     expect(await screen.findByRole("heading", { name: "Lösch-Historie" })).toBeInTheDocument();
+  });
+});
+
+describe("Sync-Probleme rund um Etiketten und doppelte Packungs-IDs", () => {
+  const data = createSampleData();
+  const rice = data.products[0];
+  const lookup: ProblemLookup = { products: data.products, zones: data.zones, printers: data.printers, packages: data.packages, printJobs: data.printJobs };
+  const problem = (command: Record<string, unknown>, code: RejectCode | null): SyncProblem => ({
+    id: sampleUuid(9, 1),
+    at: AT,
+    status: "rejected",
+    code,
+    message: null,
+    command: { id: sampleUuid(9, 2), at: AT, ...command } as Command,
+  });
+
+  it("sagt bei einer schon vergebenen Packungs-ID, dass die Packung nicht eingelagert ist und ein gedrucktes Etikett weg muss", () => {
+    const text = describeProblem(problem({ type: "package.create", package_id: "A2B3C", product_id: rice?.id, zone_id: ZONE_IDS.cellar, best_before: null }, "id_conflict"), lookup);
+    expect(text.text).toBe("Die Packung A2B3C (Basmati Reis) wurde nicht eingelagert, weil ihre ID schon vergeben ist.");
+    expect(text.advice).toContain("Die Packung ist nicht im Bestand.");
+    expect(text.advice).toContain("Wurde für sie schon ein Etikett gedruckt, muss es weg");
+    expect(text.advice).toContain("neu einlagern");
+  });
+
+  it("hat je einen Satz für ein abgelehntes Anfordern und ein abgelehntes Melden eines Etiketts", () => {
+    const pkg = data.packages.find((candidate) => candidate.removed_at === null && candidate.product_id === rice?.id);
+    expect(describeProblem(problem({ type: "print.request", job_id: sampleUuid(4, 60), kind: "package", package_id: pkg?.id }, "not_found"), lookup)).toEqual({
+      text: `Das Etikett für die Packung ${pkg?.id ?? ""} (Basmati Reis) wurde nicht angefordert, weil es die Packung auf dem Server nicht gibt.`,
+      advice: "Das Etikett ist verworfen. Gibt es die Packung oder die Zone noch, lässt es sich dort neu anfordern.",
+      inHistory: false,
+    });
+    expect(describeProblem(problem({ type: "print.request", job_id: sampleUuid(4, 61), kind: "zone", zone_id: ZONE_IDS.cellar }, "not_found"), lookup).text).toBe(
+      "Das Etikett für die Zone „Keller“ wurde nicht angefordert, weil es die Zone auf dem Server nicht mehr gibt.",
+    );
+    // Der Stand eines bekannten Etiketts: Der Satz nennt, wozu es gehört.
+    const known = data.printJobs[0];
+    const owner = data.packages.find((candidate) => candidate.id === known?.package_id);
+    const product = data.products.find((candidate) => candidate.id === owner?.product_id);
+    expect(describeProblem(problem({ type: "print.report", job_id: known?.id, state: "printed" }, "not_found"), lookup)).toEqual({
+      text: `Der Stand des Etiketts für die Packung ${known?.package_id ?? ""} (${product?.name || product?.barcodes[0] || ""}) wurde nicht übernommen, weil es dieses Etikett auf dem Server nicht gibt.`,
+      advice: "Für ein schon gedrucktes Etikett ändert das nichts; es bleibt gültig.",
+      inHistory: false,
+    });
+    expect(describeProblem(problem({ type: "print.report", job_id: sampleUuid(4, 99), state: "failed" }, "not_found"), lookup).text).toBe(
+      "Der Stand eines Etiketts wurde nicht übernommen, weil es dieses Etikett auf dem Server nicht gibt.",
+    );
+  });
+});
+
+describe("Verdrängte Bearbeitung in der Sync-Ansicht", () => {
+  it("verschwindet von selbst, sobald es nichts mehr zu übernehmen gibt: Text und Verweis zeigen dann nicht ins Leere", async () => {
+    const core = renderApp({ scenarios: ["problems"] }, ROUTES.sync);
+    await screen.findByRole("heading", { name: "Sync-Status" });
+    const region = () => screen.getByRole("region", { name: "Sync-Probleme" });
+    expect(within(region()).getAllByRole("listitem")).toHaveLength(2);
+    const displaced = value(core.sync.problems).find((entry) => entry.status === "displaced");
+    const packageId = displaced && "package_id" in displaced.command ? (displaced.command.package_id ?? "") : "";
+    expect(packageId).not.toBe("");
+
+    // Die Packung wird wiederhergestellt (hier ohne Übernahme): Der Eintrag ist damit erledigt.
+    await core.stock.restore([packageId]);
+    await waitFor(() => expect(within(region()).getAllByRole("listitem")).toHaveLength(1));
+    expect(within(region()).queryByText(/kam zu spät/)).not.toBeInTheDocument();
+    expect(within(region()).queryByRole("link", { name: "Zur Lösch-Historie" })).not.toBeInTheDocument();
   });
 });

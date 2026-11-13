@@ -1,0 +1,1022 @@
+/**
+ * Etiketten zustellen (docs/etiketten.md, 4.1 und Abschnitt 5): der echte Kern gegen die
+ * nachgebauten Druckdienste, am „Server" (`/print`) und direkt am „Pi" (eigene Adresse).
+ *
+ * Der Kern stellt hier nur zu, wenn der Test es sagt (`print.flush()`), außer ein Test will
+ * gerade das selbsttätige Zustellen sehen.
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { PrintJob, StoreResult } from "@/contract";
+import { MAX_HANDOFF_JOBS } from "@/contract";
+
+import type { CoreOptions, StowlyCore } from "..";
+import type { SchedulerTimers } from "../sync/scheduler";
+import { FakePrintService, type FakeCall, type FakeLink } from "../testing/fake-api";
+import { commandsOf, disposeAll, expectCoreError, firstZoneId, signedIn, value, type Harness } from "../testing/harness";
+import type { PermissionReading } from "./address";
+
+const HTTPS = "https://10.71.83.1:8443";
+const HTTP = "http://10.71.83.1:8080";
+
+afterEach(async () => {
+  await disposeAll();
+  vi.restoreAllMocks();
+});
+
+// ------------------------------------------------------------------------------------------
+// Hilfen
+// ------------------------------------------------------------------------------------------
+
+/** Ein Haushalt mit einem Drucker am Server (Bild-Treiber) als Standarddrucker. */
+async function withServerPrinter(core: CoreOptions = {}): Promise<Harness & { printerId: string }> {
+  const harness = await signedIn({ core });
+  const printer = await harness.core.printers.create({ name: "Küche", connection: "server", server: { driver: "image", model: null, address: null, media: "62" } });
+  await harness.core.settings.update({ default_printer_id: printer.id });
+  await harness.core.sync.now();
+  return { ...harness, printerId: printer.id };
+}
+
+interface PiHarness extends Harness {
+  printerId: string;
+  pi: FakePrintService;
+  https: FakeLink;
+  http: FakeLink;
+  /** Die Anfragen, die den Pi erreicht haben. */
+  piCalls(): FakeCall[];
+}
+
+/** Ein Haushalt mit einem direkten Drucker (Pi) als Standarddrucker, erreichbar über HTTPS und HTTP. */
+async function withPi(core: CoreOptions = {}, direct: { printer?: string | null; token?: string } = {}): Promise<PiHarness> {
+  const harness = await signedIn({ core });
+  const pi = new FakePrintService({ now: harness.clock.now });
+  const https = harness.network.attach(HTTPS, pi);
+  const http = harness.network.attach(HTTP, pi);
+  const printer = await harness.core.printers.create({
+    name: "Keller-Pi",
+    connection: "direct",
+    direct: { urls: [HTTPS, HTTP], token: direct.token ?? pi.token, printer: direct.printer ?? null },
+  });
+  await harness.core.settings.update({ default_printer_id: printer.id });
+  await harness.core.sync.now();
+  return { ...harness, printerId: printer.id, pi, https, http, piCalls: () => harness.network.calls.filter((call) => call.base !== null) };
+}
+
+/** Lagert Packungen eines neuen Produkts ein und fordert je Packung ein Etikett an. */
+function storeLabelled(core: StowlyCore, count = 1, name = "Basmati Reis"): Promise<StoreResult> {
+  return core.stock.store({ product: { kind: "new", name, brand: "Kornhaus", quantity: "1 kg" }, zone_id: firstZoneId(core), best_before: "2027-03-25", count, labels: true });
+}
+
+function jobOf(core: StowlyCore, id: string | undefined): PrintJob {
+  const job = value(core.data.printJobs).find((candidate) => candidate.id === id);
+  if (!job) {
+    throw new Error(`Das Etikett ${id} gibt es nicht.`);
+  }
+  return job;
+}
+
+const isSubmit = (call: FakeCall) => call.method === "POST" && /^(\/print)?\/v1\/jobs\/[^/]+$/.test(call.path);
+
+/** Die Befehle einer Art, die der Server bisher bekommen hat. */
+function sent(harness: Harness, type: string): Record<string, unknown>[] {
+  return harness.server.syncRequests.flatMap((request) => commandsOf(request)).filter((command) => command.type === type);
+}
+
+/** Zeitgeber von Hand: sammelt, was der Kern vormerkt, und führt es auf Wunsch aus. */
+function manualTimers() {
+  const pending = new Map<number, { delay: number; callback: () => void }>();
+  let next = 1;
+  const timers: SchedulerTimers = {
+    set(callback, delayMs) {
+      const handle = next;
+      next += 1;
+      pending.set(handle, { delay: delayMs, callback });
+      return handle;
+    },
+    clear(handle) {
+      pending.delete(handle as number);
+    },
+  };
+  return {
+    timers,
+    delays: () => [...pending.values()].map((entry) => entry.delay),
+    fire(delay: number) {
+      for (const [handle, entry] of pending) {
+        if (entry.delay === delay) {
+          pending.delete(handle);
+          entry.callback();
+          return;
+        }
+      }
+      throw new Error(`Kein Zeitgeber mit ${delay} ms; vorgemerkt: ${[...pending.values()].map((entry) => entry.delay).join(", ")}`);
+    },
+  };
+}
+
+/** Lässt alles laufen, was gerade ansteht (für „es passiert nichts"). */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+// ------------------------------------------------------------------------------------------
+
+describe("Etikett an den Drucker am Server", () => {
+  it("wird nach dem Abgleich zugestellt und gedruckt; die Meldung kommt beim Server an", async () => {
+    const harness = await withServerPrinter();
+    const { core, server, network, printerId } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+
+    // Vor dem Abgleich gibt es das Etikett im Server nicht: Es geht nichts hin.
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [] });
+    expect(network.calls.filter(isSubmit)).toEqual([]);
+
+    await core.sync.now();
+    const report = await core.print.flush();
+    expect(report).toEqual({ delivered: 1, pending: 0, problems: [] });
+    expect(jobOf(core, jobId)).toMatchObject({ state: "printed", printer_id: printerId, boot_id: server.print.bootId, error: null });
+
+    // Genau ein Druck, mit den Daten des Etiketts und der Vorlage des Haushalts.
+    expect(server.print.printed).toEqual([jobId]);
+    expect(server.print.prints[0]?.data).toMatchObject({ qr: `STOWLY/P/${stored.packages[0]?.id}`, id: stored.packages[0]?.id, title: "Basmati Reis", subtitle: "Kornhaus · 1 kg", best_before: "25.03.2027", zone: "" });
+
+    // Am Server: Geräte-Token im Kopf, gewöhnliches JSON, der Drucker unter seiner Kennung.
+    const submit = network.calls.find(isSubmit);
+    expect(submit).toMatchObject({ path: `/print/v1/jobs/${jobId}`, query: "wait=5", base: null });
+    expect(submit?.token).toBe(network.calls.find((call) => call.path === "/api/sync")?.token);
+    expect(submit?.headers["content-type"]).toBe("application/json");
+    expect(submit?.body).toMatchObject({ printer: printerId, copies: 1, cut: true, expect_boot_id: server.print.bootId, template: { schema: 1, name: "package-62x29" } });
+    expect(submit?.body).not.toHaveProperty("token");
+
+    // Der Endzustand kam schon mit der Antwort: eine Meldung genügt, mit Drucker und boot_id.
+    await core.sync.now();
+    expect(sent(harness, "print.report")).toMatchObject([{ job_id: jobId, state: "printed", printer_id: printerId, boot_id: server.print.bootId }]);
+    // Für Drucker am Server meldet kein Gerät den Zustand: Der Server schreibt selbst.
+    expect(sent(harness, "printer.report")).toEqual([]);
+    expect(value(core.data.printerStatus)).toMatchObject([{ printer_id: printerId, host: null, status: { reachable: true } }]);
+  });
+
+  it("lässt das Etikett ausstehen, wenn der Server nicht erreichbar ist, und stellt später zu", async () => {
+    const { core, network, server, printerId } = await withServerPrinter();
+    const stored = await storeLabelled(core);
+    await core.sync.now();
+    network.offline = true;
+    const report = await core.print.flush();
+    expect(report).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "offline" }] });
+    expect(report.problems[0]?.message).not.toBe("");
+    expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("pending");
+
+    network.offline = false;
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0 });
+    expect(server.print.printed).toHaveLength(1);
+  });
+
+  it("lässt ausstehen, was der Server schon als verworfen führt, und druckt es nicht", async () => {
+    const { core, server } = await withServerPrinter();
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    await core.sync.now();
+    // Ein anderes Gerät hat das Etikett inzwischen verworfen; hier ist das noch nicht angekommen.
+    server.act({ type: "print.report", job_id: jobId, state: "cancelled" });
+
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1 });
+    expect(server.print.printed).toEqual([]);
+    // Der Abgleich bringt den wahren Zustand.
+    await core.sync.now();
+    expect(jobOf(core, jobId).state).toBe("cancelled");
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 0 });
+  });
+
+  it("meldet das Gerät ab, wenn der Druckdienst des Servers das Token ablehnt, und behält alles", async () => {
+    const { core, server } = await withServerPrinter();
+    const stored = await storeLabelled(core);
+    await core.sync.now();
+    server.revoke();
+    expect(await core.print.flush()).toMatchObject({ delivered: 0 });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
+    expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("pending");
+  });
+
+  it("übernimmt, was der Dienst über einen wartenden Auftrag sagt, und fragt beim nächsten Versuch nach", async () => {
+    const harness = await withServerPrinter();
+    const { core, server, network, printerId } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    await core.sync.now();
+    server.print.hangNext();
+
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0 });
+    expect(jobOf(core, jobId)).toMatchObject({ state: "queued", printer_id: printerId, boot_id: server.print.bootId });
+    // Nachgefragt wird mit wait=10, höchstens eine Minute lang.
+    const followUps = network.calls.filter((call) => call.method === "GET" && call.path === `/print/v1/jobs/${jobId}`);
+    expect(followUps.length).toBe(6);
+    expect(followUps.every((call) => call.query === "wait=10")).toBe(true);
+
+    server.print.resume();
+    await core.print.flush();
+    expect(jobOf(core, jobId).state).toBe("printed");
+    expect(network.calls.filter(isSubmit)).toHaveLength(1);
+    await core.sync.now();
+    // "queued", sobald der Dienst angenommen hat, dann der Endzustand.
+    expect(sent(harness, "print.report").map((command) => command.state)).toEqual(["queued", "printed"]);
+  });
+});
+
+describe("Direkt zum Pi", () => {
+  it("geht sofort hinaus, auch ohne Server, über HTTPS und ohne Vorabanfrage", async () => {
+    const harness = await withPi();
+    const { core, network, pi, printerId } = harness;
+    network.offline = true;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    network.calls.length = 0;
+
+    expect(await core.print.flush()).toEqual({ delivered: 1, pending: 0, problems: [] });
+    expect(pi.printed).toEqual([jobId]);
+    expect(jobOf(core, jobId)).toMatchObject({ state: "printed", printer_id: printerId, boot_id: pi.bootId });
+
+    const calls = harness.piCalls();
+    expect(calls.map((call) => `${call.method} ${call.base}${call.path}`)).toEqual([`GET ${HTTPS}/v1/health`, `POST ${HTTPS}/v1/jobs/${jobId}`]);
+    const [health, submit] = calls;
+    // Lesend: GET ohne eigene Kopfzeilen.
+    expect(health?.headers).toEqual({});
+    expect(health?.query).toMatch(/^nonce=[A-Za-z0-9_-]{32}$/);
+    // Schreibend: POST als text/plain, das Token im Rumpf, kein Authorization-Kopf.
+    expect(submit?.headers).toEqual({ "content-type": "text/plain" });
+    expect(submit?.body).toMatchObject({ token: pi.token, printer: null, copies: 1, cut: true, expect_boot_id: pi.bootId });
+    for (const call of calls) {
+      expect(call.preflight).toBe(false);
+      expect(call.token).toBeNull();
+      expect(call).toMatchObject({ cache: "no-store", credentials: "omit", targetAddressSpace: "local" });
+    }
+  });
+
+  it("nimmt HTTP, wenn HTTPS nicht antwortet", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    harness.https.reachable = false;
+    await storeLabelled(core);
+    harness.network.calls.length = 0;
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, problems: [] });
+    expect(pi.printed).toHaveLength(1);
+    expect(harness.piCalls().every((call) => call.base === HTTP)).toBe(true);
+    const probe = await core.printers.probe(harness.printerId);
+    expect(probe).toMatchObject({ reachable: true, url: HTTP, problem: null, error: null });
+    expect(probe.health?.boot_id).toBe(pi.bootId);
+  });
+
+  it("setzt den Adressraum passend zur Adresse", async () => {
+    const harness = await signedIn();
+    const pi = new FakePrintService();
+    harness.network.attach("http://127.0.0.1:8041", pi);
+    harness.network.attach("http://localhost:8042", pi);
+    const printer = await harness.core.printers.create({ name: "Entwicklung", connection: "direct", direct: { urls: ["http://127.0.0.1:8041"], token: pi.token, printer: null } });
+    await harness.core.printers.probe(printer.id);
+    await harness.core.printers.update(printer.id, { direct: { urls: ["http://localhost:8042/"], token: pi.token, printer: null } });
+    await harness.core.printers.probe(printer.id);
+    expect(harness.network.calls.filter((call) => call.base !== null).map((call) => [call.base, call.targetAddressSpace])).toEqual([
+      ["http://127.0.0.1:8041", "loopback"],
+      ["http://localhost:8042", "loopback"],
+    ]);
+  });
+
+  it("weist ab, was sich nicht als Stowly-Druckdienst mit diesem Token ausweist", async () => {
+    const harness = await withPi({}, { token: "ein-anderes-token" });
+    const { core, pi, printerId } = harness;
+    await storeLabelled(core);
+    harness.network.calls.length = 0;
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "not_verified" }] });
+    expect(pi.printed).toEqual([]);
+    expect(harness.piCalls().filter(isSubmit)).toEqual([]);
+    expect(await core.printers.probe(printerId)).toMatchObject({ reachable: false, url: null, health: null, problem: "not_verified" });
+  });
+
+  it("druckt ohne sicheren Kontext nicht direkt und schickt gar nichts hinaus", async () => {
+    const harness = await withPi({ secureContext: false });
+    const { core, printerId } = harness;
+    await storeLabelled(core);
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "insecure_context" }] });
+    expect(await core.printers.probe(printerId)).toMatchObject({ reachable: false, problem: "insecure_context" });
+    expect(harness.network.attempts).toEqual([]);
+  });
+
+  it("erkennt einen Dienst, der diese App nicht mitlesen lässt", async () => {
+    const harness = await withPi();
+    const { core, printerId } = harness;
+    harness.https.reachable = false;
+    harness.http.cors = false;
+    await storeLabelled(core);
+    harness.network.attempts.length = 0;
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "blocked" }] });
+    // Die zweite Anfrage ohne CORS kam an: Der Dienst ist da.
+    expect(harness.network.attempts.filter((call) => call.base === HTTP).map((call) => call.mode)).toEqual([undefined, "no-cors"]);
+  });
+
+  it("lässt ausstehen, was den Dienst auf keiner Adresse erreicht, und stellt zu, sobald er wieder da ist", async () => {
+    const harness = await withPi();
+    const { core, pi, printerId } = harness;
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    const stored = await storeLabelled(core);
+    const report = await core.print.flush();
+    expect(report).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "unreachable" }] });
+    expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("pending");
+    expect(await core.printers.probe(printerId)).toMatchObject({ reachable: false, problem: "unreachable" });
+
+    harness.https.reachable = true;
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0, problems: [] });
+    expect(pi.printed).toHaveLength(1);
+  });
+
+  describe("Erlaubnis für das lokale Netzwerk", () => {
+    it("schickt nichts hinaus, wenn der Browser sie verweigert hat", async () => {
+      const harness = await withPi({ permissions: async () => "denied" });
+      const { core, printerId } = harness;
+      await storeLabelled(core);
+      harness.network.attempts.length = 0;
+      expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "permission" }] });
+      expect(await core.printers.probe(printerId)).toMatchObject({ reachable: false, problem: "permission" });
+      expect(harness.network.attempts).toEqual([]);
+    });
+
+    it("wartet bei offener Nachfrage auf eine Handlung des Anwenders: selbsttätig nichts, mit flush ja", async () => {
+      let permission: PermissionReading = "prompt";
+      const manual = manualTimers();
+      const harness = await withPi({ autoSync: true, timers: manual.timers, permissions: async () => permission });
+      const { core, pi } = harness;
+      harness.network.attempts.length = 0;
+      const stored = await storeLabelled(core);
+      await settle();
+      // Die Anfrage würde die Nachfrage des Browsers auslösen: Von selbst geht nichts hinaus.
+      expect(harness.network.attempts).toEqual([]);
+      expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("pending");
+
+      // Auf Wunsch des Anwenders darf sie kommen. (Hier erlaubt er.)
+      const flushing = core.print.flush();
+      permission = "granted";
+      expect(await flushing).toMatchObject({ delivered: 1, pending: 0 });
+      expect(pi.printed).toHaveLength(1);
+    });
+
+    it("merkt sich, wo der Browser trotz offener Erlaubnis gar nicht fragt, und stellt dort künftig von selbst zu", async () => {
+      // Die App kommt selbst aus dem lokalen Netzwerk (Server zu Hause): Der Browser fragt nie,
+      // meldet die Erlaubnis aber dauerhaft als „noch offen".
+      const manual = manualTimers();
+      const harness = await withPi({ autoSync: true, timers: manual.timers, permissions: async () => "prompt" });
+      const { core, pi } = harness;
+      harness.network.attempts.length = 0;
+      await storeLabelled(core);
+      await settle();
+      expect(harness.network.attempts).toEqual([]);
+
+      // Einmal auf Wunsch des Anwenders: Die Anfrage wird beantwortet, die Erlaubnis bleibt „offen".
+      expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0 });
+      expect(pi.printed).toHaveLength(1);
+
+      // Von da an geht es von selbst, auch nach dem Neuladen der App.
+      await storeLabelled(core, 1, "Mais");
+      await vi.waitFor(() => expect(pi.printed).toHaveLength(2));
+      const reloaded = await harness.another();
+      await storeLabelled(reloaded, 1, "Hirse");
+      await vi.waitFor(() => expect(pi.printed).toHaveLength(3));
+    });
+
+    it("stellt mit erteilter Erlaubnis von selbst zu, gleich nach dem Anfordern", async () => {
+      const manual = manualTimers();
+      const harness = await withPi({ autoSync: true, timers: manual.timers, permissions: async () => "granted" });
+      const { core, pi } = harness;
+      const stored = await storeLabelled(core, 2);
+      await vi.waitFor(() => expect(pi.printed).toHaveLength(2));
+      await vi.waitFor(() => expect(stored.print_jobs.map((job) => jobOf(core, job.id).state)).toEqual(["printed", "printed"]));
+    });
+  });
+
+  it("versucht es von selbst erneut: nach 5 und 15 Sekunden, solange Etiketten ausstehen", async () => {
+    const manual = manualTimers();
+    const harness = await withPi({ autoSync: true, timers: manual.timers });
+    const { core, pi } = harness;
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    await storeLabelled(core);
+    await vi.waitFor(() => expect(manual.delays()).toContain(5_000));
+    manual.fire(5_000);
+    await vi.waitFor(() => expect(manual.delays()).toContain(15_000));
+    expect(pi.printed).toEqual([]);
+
+    harness.http.reachable = true;
+    manual.fire(15_000);
+    await vi.waitFor(() => expect(pi.printed).toHaveLength(1));
+    // Nichts steht mehr aus: kein weiterer Versuch vorgemerkt.
+    await settle();
+    expect(manual.delays().filter((delay) => delay === 5_000 || delay === 15_000)).toEqual([]);
+  });
+
+  it("stellt ohne selbsttätigen Betrieb nie von selbst zu, nur über flush()", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    harness.network.attempts.length = 0;
+    const stored = await storeLabelled(core);
+    await core.sync.now();
+    await settle();
+    expect(harness.network.attempts).toEqual([]);
+    expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("pending");
+    await core.print.flush();
+    expect(pi.printed).toHaveLength(1);
+  });
+});
+
+describe("Nie doppelt", () => {
+  const dropFirstSubmit = (harness: Harness) => {
+    let dropped = false;
+    harness.network.dropWhen = (call) => {
+      if (!dropped && isSubmit(call)) {
+        dropped = true;
+        return true;
+      }
+      return false;
+    };
+  };
+
+  it("schickt nach einer verlorenen Antwort denselben Auftrag wieder; der Dienst druckt einmal", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    dropFirstSubmit(harness);
+
+    // Die Antwort auf das Einreichen geht verloren: Der Dienst hat gedruckt, die App weiß es nicht.
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1 });
+    expect(pi.printed).toEqual([jobId]);
+    expect(jobOf(core, jobId).state).toBe("pending");
+
+    // Inzwischen bekommt das Produkt einen anderen Namen: Hinaus geht trotzdem derselbe Inhalt.
+    await core.products.update(stored.product.id, { name: "Reis, lang" });
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0 });
+    expect(pi.printed).toEqual([jobId]);
+    expect(jobOf(core, jobId).state).toBe("printed");
+
+    const submits = harness.piCalls().filter(isSubmit);
+    expect(submits).toHaveLength(2);
+    expect(submits[1]?.body).toEqual(submits[0]?.body);
+    expect(submits[0]?.body).toMatchObject({ expect_boot_id: pi.bootId, data: { title: "Basmati Reis" } });
+  });
+
+  it("fragt den Anwender, wenn der Dienst nach dem Absenden neu gestartet ist", async () => {
+    const harness = await withPi();
+    const { core, pi, printerId } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    const firstBoot = pi.bootId;
+    dropFirstSubmit(harness);
+    await core.print.flush();
+    expect(pi.printed).toHaveLength(1);
+
+    pi.restart();
+    await core.print.flush();
+    // Niemand weiß, ob gedruckt wurde: nicht wiederholen, sondern fragen.
+    expect(jobOf(core, jobId)).toMatchObject({ state: "unknown", error: "interrupted", printer_id: printerId, boot_id: firstBoot });
+    expect(pi.printed).toHaveLength(1);
+    // Die Wiederholung trug die boot_id vom ersten Absenden, nie die neue.
+    expect(harness.piCalls().filter(isSubmit).map((call) => (call.body as { expect_boot_id: string }).expect_boot_id)).toEqual([firstBoot, firstBoot]);
+
+    // Und es bleibt dabei, bis der Anwender antwortet.
+    await core.print.flush();
+    expect(jobOf(core, jobId).state).toBe("unknown");
+    expect(pi.printed).toHaveLength(1);
+    await core.print.resolveUnknown(jobId, true);
+    expect(jobOf(core, jobId)).toMatchObject({ state: "printed", printer_id: printerId });
+  });
+
+  it("reicht mit der neuen boot_id ein, wenn der Dienst vor dem ersten Absenden neu gestartet ist", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    const firstBoot = pi.bootId;
+    let restarted = false;
+    harness.network.beforeRequest = (call) => {
+      // Zwischen der Abfrage des Zustands und dem Einreichen startet der Dienst neu.
+      if (!restarted && isSubmit(call)) {
+        restarted = true;
+        pi.restart();
+      }
+    };
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0 });
+    expect(pi.printed).toEqual([jobId]);
+    expect(jobOf(core, jobId)).toMatchObject({ state: "printed", boot_id: pi.bootId });
+    expect(harness.piCalls().filter(isSubmit).map((call) => (call.body as { expect_boot_id: string }).expect_boot_id)).toEqual([firstBoot, pi.bootId]);
+  });
+
+  it("druckt nach dem Neuladen der App nicht noch einmal", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core, 2);
+    const [first, second] = stored.print_jobs.map((job) => job.id).sort() as [string, string];
+    // Das erste Etikett: abgeschickt, Antwort verloren. Das zweite kommt gar nicht mehr dran.
+    dropFirstSubmit(harness);
+    await core.print.flush();
+    expect(pi.printed).toEqual([first]);
+
+    // Die App wird neu geladen: ein neuer Kern auf derselben Datenbank.
+    const reloaded = await harness.another();
+    expect(await reloaded.print.flush()).toMatchObject({ delivered: 2, pending: 0 });
+    expect(pi.printed).toEqual([first, second]);
+    expect(jobOf(reloaded, first).state).toBe("printed");
+    expect(jobOf(reloaded, second).state).toBe("printed");
+  });
+
+  it("fragt nach dem Neuladen bei einem wartenden Auftrag nach, statt ihn noch einmal einzureichen", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    pi.pause();
+    await core.print.flush();
+    expect(jobOf(core, jobId).state).toBe("queued");
+
+    const reloaded = await harness.another();
+    await reloaded.print.flush();
+    expect(jobOf(reloaded, jobId).state).toBe("queued");
+    pi.resume();
+    await reloaded.print.flush();
+    expect(jobOf(reloaded, jobId).state).toBe("printed");
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(1);
+    expect(pi.printed).toEqual([jobId]);
+  });
+
+  it("meldet einen wartenden Auftrag als offen, wenn der Dienst inzwischen neu gestartet ist", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    pi.pause();
+    await core.print.flush();
+    expect(jobOf(core, jobId).state).toBe("queued");
+    pi.restart();
+    await core.print.flush();
+    expect(jobOf(core, jobId)).toMatchObject({ state: "unknown", error: "interrupted" });
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(1);
+  });
+
+  it("druckt einmal, wenn zwei Tabs gleichzeitig zustellen", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core, 3);
+    const tab = await harness.another();
+    const [a, b] = await Promise.all([core.print.flush(), tab.print.flush()]);
+    expect(pi.printed.sort()).toEqual(stored.print_jobs.map((job) => job.id).sort());
+    expect(a.delivered + b.delivered).toBe(3);
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(3);
+    await core.sync.now();
+    expect(sent(harness, "print.report")).toHaveLength(3);
+  });
+});
+
+describe("Reihenfolge und Fehler", () => {
+  it("reicht mehrere Etiketten nacheinander ein, in der Reihenfolge ihrer Anforderung", async () => {
+    const harness = await withPi();
+    const { core, pi, clock } = harness;
+    const first = await storeLabelled(core, 3, "Erbsen");
+    clock.advance(1_000);
+    const second = await storeLabelled(core, 2, "Linsen");
+    expect(await core.print.flush()).toMatchObject({ delivered: 5, pending: 0 });
+    const expected = [...first.print_jobs.map((job) => job.id).sort(), ...second.print_jobs.map((job) => job.id).sort()];
+    expect(pi.printed).toEqual(expected);
+    // Eine Abfrage des Zustands für den ganzen Versuch, nicht je Etikett.
+    expect(harness.piCalls().filter((call) => call.path === "/v1/health")).toHaveLength(1);
+  });
+
+  it("lässt bei voller Warteschlange den Rest ausstehen", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core, 3);
+    pi.pause();
+    pi.queueLimit = 1;
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 2 });
+    const states = () => stored.print_jobs.map((job) => jobOf(core, job.id).state).sort();
+    expect(states()).toEqual(["pending", "pending", "queued"]);
+
+    pi.queueLimit = 100;
+    pi.resume();
+    expect(await core.print.flush()).toMatchObject({ delivered: 2, pending: 0 });
+    expect(states()).toEqual(["printed", "printed", "printed"]);
+    expect(pi.printed).toHaveLength(3);
+  });
+
+  it("lässt ausstehen, wenn der Pi das Token ablehnt, und versucht es von selbst erst wieder nach einer Änderung", async () => {
+    const manual = manualTimers();
+    const harness = await withPi({ autoSync: true, timers: manual.timers });
+    const { core, pi, printerId } = harness;
+    pi.refuseWrites = true;
+    const stored = await storeLabelled(core);
+    await vi.waitFor(() => expect(harness.piCalls().filter(isSubmit)).toHaveLength(1));
+    await settle();
+    expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("pending");
+
+    // Der nächste selbsttätige Versuch lässt diesen Drucker in Ruhe.
+    manual.fire(5_000);
+    await settle();
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(1);
+
+    // Auf Wunsch des Anwenders wird es wieder versucht; die Auskunft nennt den Grund.
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "not_verified" }] });
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(2);
+
+    // Ein neuer Name ändert nichts am Zugang: weiter Ruhe.
+    await core.printers.update(printerId, { name: "Keller-Pi (neu)" });
+    manual.fire(5_000);
+    await settle();
+    expect(harness.piCalls().filter(isSubmit)).toHaveLength(2);
+
+    // Die Angaben zum Druckdienst werden geändert (und das Token stimmt wieder): Jetzt geht es von selbst.
+    pi.refuseWrites = false;
+    await core.printers.update(printerId, { direct: { urls: [HTTPS, HTTP], token: pi.token, printer: "brother" } });
+    manual.fire(15_000);
+    await vi.waitFor(() => expect(pi.printed).toHaveLength(1));
+  });
+
+  it("meldet einen Drucker, den der Dienst nicht hat, und lässt die Etiketten ausstehen", async () => {
+    const harness = await withPi({}, { printer: "gibt-es-nicht" });
+    const { core, pi, printerId } = harness;
+    const stored = await storeLabelled(core);
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [{ printer_id: printerId, problem: "unknown_printer" }] });
+    expect(await core.printers.probe(printerId)).toMatchObject({ reachable: true, url: HTTPS, problem: "unknown_printer" });
+    expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("pending");
+    expect(pi.printed).toEqual([]);
+
+    // Der Name wird berichtigt: Das Etikett geht hinaus, an genau diesen Drucker.
+    pi.setPrinters([{ name: "brother", confirms: true }, { name: "zweiter", confirms: false }]);
+    await core.printers.update(printerId, { direct: { urls: [HTTPS, HTTP], token: pi.token, printer: "zweiter" } });
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0 });
+    expect(pi.prints.map((print) => print.printer)).toEqual(["zweiter"]);
+    // Dieser Drucker kann den Druck nicht bestätigen: "sent".
+    expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("sent");
+  });
+
+  it("meldet als gescheitert, was der Dienst beim Einreichen endgültig ablehnt", async () => {
+    const harness = await withPi();
+    const { core, pi, server, printerId } = harness;
+    // Der Dienst verliert seinen Drucker zwischen Abfrage und Einreichen.
+    const stored = await storeLabelled(core);
+    let removed = false;
+    harness.network.beforeRequest = (call) => {
+      if (!removed && isSubmit(call)) {
+        removed = true;
+        pi.setPrinters([]);
+      }
+    };
+    await core.print.flush();
+    expect(jobOf(core, stored.print_jobs[0]?.id)).toMatchObject({ state: "failed", error: "unknown_printer", printer_id: printerId });
+    harness.network.beforeRequest = null;
+    pi.setPrinters([{ name: "brother", confirms: true }]);
+
+    // Eine Vorlage, die sich nicht rendern lässt.
+    const template = server.data.label_templates.get("package");
+    server.put("label_templates", { key: "package", hash: "00000000000000ff", body: { schema: 99 }, updated_at: template?.updated_at ?? "" });
+    await core.sync.now();
+    const broken = await storeLabelled(core, 1, "Mais");
+    await core.print.flush();
+    expect(jobOf(core, broken.print_jobs[0]?.id)).toMatchObject({ state: "failed", error: "render_failed" });
+    expect(pi.printed).toEqual([]);
+
+    // Ein neuer Versuch ist ein neues Etikett.
+    const retried = await core.print.retry(broken.print_jobs[0]?.id ?? "");
+    expect(retried.id).not.toBe(broken.print_jobs[0]?.id);
+    expect(retried.state).toBe("pending");
+  });
+
+  it("übernimmt den Fehlercode des Druckers und einen offenen Ausgang", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core, 2);
+    const [first, second] = stored.print_jobs.map((job) => job.id).sort() as [string, string];
+    pi.failNext("no_media");
+    pi.interruptNext();
+    // Reihenfolge im Dienst: erst der unterbrochene Druck, dann der gescheiterte.
+    await core.print.flush();
+    expect(jobOf(core, first)).toMatchObject({ state: "unknown", error: "interrupted" });
+    expect(jobOf(core, second)).toMatchObject({ state: "failed", error: "no_media", boot_id: pi.bootId });
+    expect(pi.printed).toEqual([]);
+  });
+});
+
+describe("Fremde Etiketten und das Verwerfen", () => {
+  it("stellt nur zu, was dieses Gerät angefordert hat; „hier drucken“ übernimmt ein fremdes", async () => {
+    const harness = await withPi();
+    const { core, pi, server } = harness;
+    const stored = await storeLabelled(core);
+    await core.sync.now();
+    await core.print.flush();
+    pi.prints.length = 0;
+    // Ein anderes Gerät fordert für dieselbe Packung ein Etikett an.
+    const foreignId = "70000000-0000-4000-8000-000000000001";
+    server.act({ type: "print.request", job_id: foreignId, kind: "package", package_id: stored.packages[0]?.id });
+    await core.sync.now();
+    expect(jobOf(core, foreignId)).toMatchObject({ state: "pending", device_id: null });
+
+    expect(await core.print.flush()).toEqual({ delivered: 0, pending: 0, problems: [] });
+    expect(pi.printed).toEqual([]);
+
+    // „Hier drucken": das alte verwerfen, ein eigenes anfordern, in einem Schritt.
+    const before = value(core.sync.status).pending;
+    const own = await core.print.retry(foreignId);
+    expect(value(core.sync.status).pending).toBe(before + 2);
+    expect(jobOf(core, foreignId).state).toBe("cancelled");
+    expect(own).toMatchObject({ state: "pending", package_id: stored.packages[0]?.id });
+    await core.print.flush();
+    expect(pi.printed).toEqual([own.id]);
+  });
+
+  it("verwirft ein eigenes wartendes Etikett zuerst beim Dienst", async () => {
+    const harness = await withPi();
+    const { core, pi, printerId } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    pi.pause();
+    await core.print.flush();
+    expect(jobOf(core, jobId).state).toBe("queued");
+
+    await core.print.cancel(jobId);
+    expect(pi.job(jobId)).toEqual({ state: "failed", error: "cancelled" });
+    expect(jobOf(core, jobId)).toMatchObject({ state: "cancelled", printer_id: printerId, error: null });
+    pi.resume();
+    await core.print.flush();
+    expect(pi.printed).toEqual([]);
+  });
+
+  it("verwirft nicht, was schon druckt, und zeigt dann den Zustand des Dienstes", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core, 2);
+    const [first, second] = stored.print_jobs.map((job) => job.id).sort() as [string, string];
+    pi.hangNext();
+    await core.print.flush();
+    expect(jobOf(core, first).state).toBe("queued");
+    // Der erste druckt gerade (hängt), der zweite wartet dahinter.
+    await expectCoreError(core.print.cancel(first), "invalid");
+    expect(jobOf(core, first).state).toBe("queued");
+    pi.resume();
+    await expectCoreError(core.print.cancel(first), "invalid");
+    expect(jobOf(core, first).state).toBe("printed");
+    expect(jobOf(core, second).state).toBe("queued");
+  });
+
+  it("verwirft nicht, solange der Dienst nicht erreichbar ist", async () => {
+    const harness = await withPi();
+    const { core, pi } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    pi.pause();
+    await core.print.flush();
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    await expectCoreError(core.print.cancel(jobId), "offline");
+    expect(jobOf(core, jobId).state).toBe("queued");
+  });
+
+  it("verwirft ein ausstehendes Etikett sofort und ein fremdes wartendes nur als Meldung", async () => {
+    const harness = await withPi();
+    const { core, pi, server, printerId } = harness;
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    await core.print.cancel(jobId);
+    expect(jobOf(core, jobId).state).toBe("cancelled");
+
+    const foreignId = "70000000-0000-4000-8000-000000000002";
+    await core.sync.now();
+    server.act(
+      { type: "print.request", job_id: foreignId, kind: "package", package_id: stored.packages[0]?.id },
+      { type: "print.report", job_id: foreignId, state: "queued", printer_id: printerId, boot_id: pi.bootId },
+    );
+    await core.sync.now();
+    harness.network.attempts.length = 0;
+    await core.print.cancel(foreignId);
+    expect(jobOf(core, foreignId)).toMatchObject({ state: "cancelled", printer_id: printerId });
+    expect(harness.network.attempts).toEqual([]);
+  });
+});
+
+describe("Zustand des Druckers weiterreichen", () => {
+  it("meldet einen direkten Drucker nach der Abfrage, gedrosselt, bei Änderung sofort", async () => {
+    const harness = await withPi();
+    const { core, pi, clock, printerId } = harness;
+    const reports = () => value(core.sync.status).pending;
+    await storeLabelled(core);
+    await core.sync.now();
+    expect(reports()).toBe(0);
+
+    await core.print.flush();
+    await core.sync.now();
+    expect(sent(harness, "printer.report")).toMatchObject([
+      { printer_id: printerId, boot_id: pi.bootId, status: { reachable: true, ready: true, media_detected: true, errors: [] }, host: { temperature_c: 48.5 } },
+    ]);
+    expect(value(core.data.printerStatus)).toMatchObject([{ printer_id: printerId, boot_id: pi.bootId }]);
+
+    // Innerhalb einer Minute und ohne Änderung: keine weitere Meldung.
+    await storeLabelled(core, 1, "Mais");
+    await core.print.flush();
+    await core.sync.now();
+    expect(sent(harness, "printer.report")).toHaveLength(1);
+
+    // Der Zustand ändert sich: sofort.
+    pi.setStatus("brother", { ready: false, media_detected: false, errors: ["no_media"] });
+    await storeLabelled(core, 1, "Bohnen");
+    await core.print.flush();
+    await core.sync.now();
+    expect(sent(harness, "printer.report")).toHaveLength(2);
+    expect(sent(harness, "printer.report")[1]).toMatchObject({ status: { ready: false, errors: ["no_media"] } });
+
+    // Nach einer Minute wieder, auch ohne Änderung.
+    clock.advance(61_000);
+    await storeLabelled(core, 1, "Hirse");
+    await core.print.flush();
+    await core.sync.now();
+    expect(sent(harness, "printer.report")).toHaveLength(3);
+
+    // Fragt der Anwender ausdrücklich ab, immer.
+    await core.printers.probe(printerId);
+    await core.sync.now();
+    expect(sent(harness, "printer.report")).toHaveLength(4);
+  });
+
+  it("meldet für einen Drucker am Server nie; dessen Zustand bringt der Abgleich", async () => {
+    const harness = await withServerPrinter();
+    const { core, printerId } = harness;
+    const probe = await core.printers.probe(printerId);
+    expect(probe).toMatchObject({ reachable: true, url: null, problem: null });
+    expect(probe.health?.printers.map((printer) => printer.name)).toEqual([printerId]);
+    await core.sync.now();
+    expect(sent(harness, "printer.report")).toEqual([]);
+    expect(value(core.data.printerStatus)).toMatchObject([{ printer_id: printerId, host: null }]);
+  });
+});
+
+describe("Vorschau, Bild und Notweg", () => {
+  it("rendert die Vorschau am Server mit Vorlage und Daten wie beim Druck", async () => {
+    const harness = await withServerPrinter();
+    const { core, network, printerId } = harness;
+    const stored = await storeLabelled(core);
+    const zoneId = firstZoneId(core);
+
+    const image = await core.print.preview({ kind: "package", package_id: stored.packages[0]?.id ?? "" }, { printer_id: printerId });
+    expect(image.size).toBeGreaterThan(20);
+    const render = network.calls.find((call) => call.path === "/print/v1/render");
+    expect(render?.body).toMatchObject({ printer: printerId, template: { name: "package-62x29" }, data: { id: stored.packages[0]?.id, title: "Basmati Reis" } });
+
+    network.calls.length = 0;
+    await core.print.preview({ kind: "zone", zone_id: zoneId });
+    const body = network.calls.find((call) => call.path === "/print/v1/render")?.body;
+    expect(body).toMatchObject({ template: { name: "zone-62x29" }, data: { qr: `STOWLY/Z/${zoneId.replace(/-/g, "").toUpperCase()}`, subtitle: "Lagerzone" } });
+    expect(body).not.toHaveProperty("printer");
+
+    await expectCoreError(core.print.preview({ kind: "package", package_id: "ZZZZZ" }), "not_found");
+    network.offline = true;
+    await expectCoreError(core.print.preview({ kind: "zone", zone_id: zoneId }), "offline");
+  });
+
+  it("meldet eine Vorlage, die sich nicht rendern lässt, als ungültig", async () => {
+    const { core, server } = await withServerPrinter();
+    server.put("label_templates", { key: "zone", hash: "00000000000000fe", body: { schema: 99 }, updated_at: "2026-11-13T10:00:00.000Z" });
+    await core.sync.now();
+    await expectCoreError(core.print.preview({ kind: "zone", zone_id: firstZoneId(core) }), "invalid");
+  });
+
+  it("holt das Bild, das der Bild-Treiber geschrieben hat", async () => {
+    const { core } = await withServerPrinter();
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    await core.sync.now();
+    // Vor dem Druck gibt es kein Bild.
+    await expectCoreError(core.print.image(jobId), "not_found");
+    await core.print.flush();
+    const image = await core.print.image(jobId);
+    expect(image.type).toBe("image/png");
+    await expectCoreError(core.print.image("70000000-0000-4000-8000-000000000009"), "not_found");
+  });
+
+  it("baut die Adresse des Notwegs und fragt danach, ob gedruckt wurde", async () => {
+    const harness = await withPi();
+    const { core, pi, printerId } = harness;
+    // Die App erreicht den Dienst nicht (dafür ist der Notweg da).
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    await expectCoreError(core.print.handoff(printerId), "not_found");
+    const stored = await storeLabelled(core, MAX_HANDOFF_JOBS + 2);
+    harness.clock.advance(1_000);
+    const zoneJob = await core.print.requestZoneLabel(firstZoneId(core));
+    harness.network.attempts.length = 0;
+
+    const handoff = await core.print.handoff(printerId);
+    // Ohne Netz, ohne Abfrage.
+    expect(harness.network.attempts).toEqual([]);
+    // Über HTTP, weil die Seite dort kein Zertifikat braucht; die Nutzlast steht im Fragment.
+    expect(handoff.url.startsWith(`${HTTP}/p#`)).toBe(true);
+    const fragment = handoff.url.slice(handoff.url.indexOf("#") + 1);
+    expect(fragment).toMatch(/^[A-Za-z0-9_-]+$/);
+    const binary = atob(fragment.replace(/-/g, "+").replace(/_/g, "/"));
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)))) as {
+      v: number;
+      token: string;
+      printer: string | null;
+      template: Record<string, unknown>;
+      jobs: { id: string; data: Record<string, string> }[];
+      back: string | null;
+    };
+    expect(payload).toMatchObject({ v: 1, token: pi.token, printer: null, template: { name: "package-62x29" } });
+    expect(payload.back).toBe(`${window.location.origin}/drucker`);
+    // Höchstens 20, nur Etiketten einer Art, in der Reihenfolge ihrer Anforderung.
+    const expected = stored.print_jobs.map((job) => job.id).sort().slice(0, MAX_HANDOFF_JOBS);
+    expect(payload.jobs.map((job) => job.id)).toEqual(expected);
+    expect(payload.jobs[0]?.data).toMatchObject({ title: "Basmati Reis", best_before: "25.03.2027" });
+    expect(handoff.jobs.map((job) => job.id)).toEqual(expected);
+
+    // Die übergebenen Etiketten: Ausgang offen, die App fragt nach. Der Rest steht weiter aus.
+    for (const id of expected) {
+      expect(jobOf(core, id)).toMatchObject({ state: "unknown", error: "handoff", printer_id: printerId });
+    }
+    expect(jobOf(core, zoneJob.id).state).toBe("pending");
+    const rest = await core.print.handoff(printerId);
+    expect(rest.jobs).toHaveLength(2);
+
+    // Die Seite des Dienstes reicht ein (hier von Hand nachgespielt) und druckt.
+    const submitted = payload.jobs[0];
+    await pi.handle({ method: "POST", path: `/v1/jobs/${submitted?.id}`, headers: {}, body: JSON.stringify({ token: payload.token, printer: payload.printer, template: payload.template, data: submitted?.data }) });
+    expect(pi.printed).toEqual([submitted?.id]);
+    // Erreicht die App den Dienst später doch und kennt er den Auftrag, gilt dessen Zustand.
+    harness.https.reachable = true;
+    await core.print.flush();
+    expect(jobOf(core, submitted?.id).state).toBe("printed");
+    expect(jobOf(core, expected[1]).state).toBe("unknown");
+    expect(pi.printed).toHaveLength(2);
+
+    await expectCoreError(core.print.handoff("30000000-0000-4000-8000-000000000099"), "not_found");
+  });
+
+  it("gibt es den Notweg nur bei einem direkten Drucker", async () => {
+    const { core, printerId } = await withServerPrinter();
+    await storeLabelled(core);
+    await expectCoreError(core.print.handoff(printerId), "invalid");
+  });
+});
+
+describe("Etiketten nach id_conflict", () => {
+  it("verwirft die eigenen Etiketten zu einer Packung, deren ID schon vergeben war", async () => {
+    const harness = await withPi();
+    const { core, pi, server, network } = harness;
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    const stored = await storeLabelled(core);
+    const packageId = stored.packages[0]?.id ?? "";
+    const sentJob = stored.print_jobs[0]?.id ?? "";
+
+    // Ein anderes Gerät war mit derselben ID schneller.
+    const otherProduct = "50000000-0000-4000-8000-000000000001";
+    server.act({ type: "product.create", product_id: otherProduct, name: "Fremdes Produkt" }, { type: "package.create", package_id: packageId, product_id: otherProduct, zone_id: firstZoneId(core) });
+
+    // Während der Abgleich läuft, fordert der Anwender ein zweites Etikett an: Es wartet in der Outbox.
+    let waitingJob = "";
+    let once = false;
+    network.beforeResponse = async (call) => {
+      if (!once && call.path === "/api/sync") {
+        once = true;
+        const [job] = await core.print.requestPackageLabels([packageId]);
+        waitingJob = job?.id ?? "";
+      }
+    };
+    await core.sync.now();
+    network.beforeResponse = null;
+
+    // Die Ablehnung steht in den Sync-Problemen.
+    expect(value(core.sync.problems)).toMatchObject([{ status: "rejected", code: "id_conflict", command: { type: "package.create", package_id: packageId } }]);
+    // Die wartende Anforderung ist samt ihren Meldungen aus der Outbox gefallen: Dieses Etikett gab es nie.
+    expect(value(core.data.printJobs).some((job) => job.id === waitingJob)).toBe(false);
+    expect(sent(harness, "print.request").map((command) => command.job_id)).toEqual([sentJob]);
+    // Das schon gesendete ist verworfen, hier und beim Server.
+    expect(jobOf(core, sentJob).state).toBe("cancelled");
+    expect(server.data.print_jobs.get(sentJob)?.state).toBe("cancelled");
+    expect(value(core.sync.status).pending).toBe(0);
+
+    // Zugestellt wird davon nichts mehr.
+    harness.https.reachable = true;
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 0 });
+    expect(pi.printed).toEqual([]);
+  });
+
+  it("lässt ein schon gedrucktes Etikett, wie es ist", async () => {
+    const harness = await withPi();
+    const { core, pi, server } = harness;
+    const stored = await storeLabelled(core);
+    const packageId = stored.packages[0]?.id ?? "";
+    const jobId = stored.print_jobs[0]?.id ?? "";
+    // Direkt gedruckt, noch bevor der Server von der Packung weiß.
+    await core.print.flush();
+    expect(pi.printed).toEqual([jobId]);
+
+    const otherProduct = "50000000-0000-4000-8000-000000000002";
+    server.act({ type: "product.create", product_id: otherProduct, name: "Fremdes Produkt" }, { type: "package.create", package_id: packageId, product_id: otherProduct, zone_id: firstZoneId(core) });
+    await core.sync.now();
+    expect(value(core.sync.problems)).toMatchObject([{ code: "id_conflict" }]);
+    expect(jobOf(core, jobId).state).toBe("printed");
+    expect(sent(harness, "print.report").map((command) => command.state)).toEqual(["printed"]);
+  });
+});

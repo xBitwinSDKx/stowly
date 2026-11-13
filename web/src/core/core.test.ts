@@ -804,7 +804,7 @@ describe("Geräte und Sicherung (brauchen den Server)", () => {
   });
 });
 
-describe("Drucker und Etiketten (Runde 1: nur die Datenhaltung)", () => {
+describe("Drucker und Etiketten als Datenhaltung", () => {
   it("verwaltet Drucker und räumt Verweise beim Löschen auf", async () => {
     const harness = await household();
     const { core, server } = harness;
@@ -839,10 +839,14 @@ describe("Drucker und Etiketten (Runde 1: nur die Datenhaltung)", () => {
     const [job] = await core.print.requestPackageLabels([pkg?.id ?? ""]);
     expect(job).toMatchObject({ state: "pending", kind: "package", package_id: pkg?.id, zone_id: null, printer_id: null });
 
-    // Runde 1: Zugestellt wird noch nichts, `flush` ist ohne Wirkung und wirft nicht.
-    await core.print.flush();
+    // Solange die Anforderung nicht abgeglichen ist, geht nichts an den Drucker am Server:
+    // Dort gäbe es das Etikett noch nicht. `flush` wirft nicht. (Das Zustellen selbst prüft
+    // src/core/print/delivery.test.ts.)
+    const flushed = await core.print.flush();
     const state = (id: string) => value(core.data.printJobs).find((candidate) => candidate.id === id)?.state;
     expect(state(job?.id ?? "")).toBe("pending");
+    expect(flushed.delivered).toBe(0);
+    expect(flushed.pending).toBeGreaterThan(0);
 
     const unknown = value(core.data.printJobs).find((candidate) => candidate.state === "unknown");
     await expectCoreError(core.print.retry(job?.id ?? ""), "invalid");
@@ -870,18 +874,24 @@ describe("Drucker und Etiketten (Runde 1: nur die Datenhaltung)", () => {
     expect(value(core.data.printJobs).find((candidate) => candidate.id === retried.id)?.printer_id).toBe(unknown?.printer_id);
   });
 
-  it("meldet Vorschau und Sofort-Abfrage als noch nicht verfügbar", async () => {
-    // Anders als die Attrappe: Das Zustellen an die Druckdienste ist Runde 2.
+  it("fragt einen unbekannten Drucker nicht ab", async () => {
     const { core } = await household();
-    await expectCoreError(core.print.preview({ kind: "zone", zone_id: ZONE_IDS.cellar }), "not_supported");
-    await expectCoreError(core.printers.probe(PRINTER_IDS.cellar), "not_supported");
+    await expectCoreError(core.printers.probe("30000000-0000-4000-8000-000000000099"), "not_found");
   });
 });
 
 describe("Die App selbst", () => {
-  it("meldet Version und Umgebung; Installation und Update folgen in Runde 2", async () => {
+  it("meldet Version und Umgebung; ohne Service Worker gibt es nichts zu aktualisieren und nichts zu installieren", async () => {
     const { core } = await household();
-    expect(value(core.app.state)).toMatchObject({ version: APP_VERSION, secure_context: true, installed: false, can_install: false, update_ready: false });
+    expect(value(core.app.state)).toMatchObject({
+      version: APP_VERSION,
+      secure_context: true,
+      installed: false,
+      can_install: false,
+      manual_install: null,
+      update_ready: false,
+      update_required: false,
+    });
     await expect(core.app.applyUpdate()).resolves.toBeUndefined();
     await expect(core.app.promptInstall()).resolves.toBe(false);
   });

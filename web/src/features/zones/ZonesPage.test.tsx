@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ROUTES, zoneQr, type Live } from "@/contract";
 import { renderApp } from "@/app/render.test-setup";
-import { ZONE_IDS } from "@/mock";
+import { PRINTER_IDS, ZONE_IDS } from "@/mock";
 import { setTestViewport } from "@/ui/testing";
 
 function value<T>(live: Live<T>): T {
@@ -190,7 +190,8 @@ describe("Zonen-QR-Code", () => {
     expect(sheet).toHaveTextContent("Stowly · Lagerzone");
     expect(sheet?.querySelectorAll("svg")).toHaveLength(1);
 
-    await userEvent.click(within(dialog).getByRole("button", { name: "Drucken" }));
+    // Mit einem Etikettendrucker ist das Etikett die Hauptaktion; der Druck über den Browser bleibt daneben.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Über den Browser drucken" }));
     expect(window.print).toHaveBeenCalledTimes(1);
 
     // Kreuz oben und Schaltfläche unten: beide schließen.
@@ -221,5 +222,126 @@ describe("Zonen am Handy", () => {
     expect(listedZones()).toHaveLength(4);
     await userEvent.click(screen.getByRole("button", { name: "Keller nach oben" }));
     await waitFor(() => expect(value(core.data.zones)[0]?.name).toBe("Keller"));
+  });
+});
+
+describe("Drucker der Zonen", () => {
+  it("zeigt zu jeder Zone, welcher Drucker ihre Etiketten druckt", async () => {
+    renderApp({}, ROUTES.zones);
+    await ready();
+    expect(screen.getByRole("button", { name: "Bearbeiten: Keller" }).closest("li")).toHaveTextContent("Etiketten: Keller (Pi)");
+    expect(screen.getByRole("button", { name: "Bearbeiten: Vorratsregal" }).closest("li")).toHaveTextContent("Etiketten: Küche (Bild)");
+  });
+
+  it("ordnet im Zonen-Dialog einen Drucker zu und nimmt ihn wieder", async () => {
+    const core = renderApp({}, ROUTES.zones);
+    const update = vi.spyOn(core.zones, "update");
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Bearbeiten: Kühlschrank" }));
+    const dialog = screen.getByRole("dialog", { name: "Zone bearbeiten" });
+    const printer = within(dialog).getByLabelText("Drucker");
+    expect(printer).toHaveValue("");
+    expect(within(printer).getAllByRole("option").map((option) => option.textContent)).toEqual(["Standarddrucker (Küche (Bild))", "Keller (Pi)", "Küche (Bild)"]);
+    await userEvent.selectOptions(printer, "Keller (Pi)");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(ZONE_IDS.fridge, { printer_id: PRINTER_IDS.cellar }));
+    expect(screen.getByRole("button", { name: "Bearbeiten: Kühlschrank" }).closest("li")).toHaveTextContent("Etiketten: Keller (Pi)");
+
+    await userEvent.click(screen.getByRole("button", { name: "Bearbeiten: Kühlschrank" }));
+    const again = screen.getByRole("dialog", { name: "Zone bearbeiten" });
+    await userEvent.selectOptions(within(again).getByLabelText("Drucker"), "Standarddrucker (Küche (Bild))");
+    await userEvent.click(within(again).getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(update).toHaveBeenLastCalledWith(ZONE_IDS.fridge, { printer_id: null }));
+  });
+
+  it("legt eine Zone gleich mit Drucker an", async () => {
+    const core = renderApp({}, ROUTES.zones);
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Zone anlegen" }));
+    const dialog = screen.getByRole("dialog", { name: "Zone anlegen" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Garage");
+    await userEvent.selectOptions(within(dialog).getByLabelText("Drucker"), "Keller (Pi)");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Anlegen" }));
+    await waitFor(() => expect(value(core.data.zones).find((zone) => zone.name === "Garage")?.printer_id).toBe(PRINTER_IDS.cellar));
+  });
+
+  it("kennt bei nur einer Zone und ohne Drucker keine Zuordnung", async () => {
+    renderApp({ scenarios: ["single-zone"] }, ROUTES.zones);
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Bearbeiten: Vorrat" }));
+    expect(within(screen.getByRole("dialog", { name: "Zone bearbeiten" })).queryByLabelText("Drucker")).not.toBeInTheDocument();
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Zone bearbeiten" })).getByRole("button", { name: "Abbrechen" }));
+    // Die zweite Zone bekommt die Auswahl: Mit ihr gibt es etwas zuzuordnen.
+    await userEvent.click(screen.getByRole("button", { name: "Zone anlegen" }));
+    expect(within(screen.getByRole("dialog", { name: "Zone anlegen" })).getByLabelText("Drucker")).toBeInTheDocument();
+  });
+
+  it("zeigt bei einem zu langen Namen den genauen Satz des Kerns", async () => {
+    renderApp({}, ROUTES.zones);
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Zone anlegen" }));
+    const dialog = screen.getByRole("dialog", { name: "Zone anlegen" });
+    await userEvent.type(within(dialog).getByLabelText("Name"), "z".repeat(61));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Anlegen" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Der Name ist zu lang (höchstens 60 Zeichen).");
+  });
+});
+
+describe("Zonen-Etikett", () => {
+  it("druckt den Code einer Zone als Etikett und sagt, was daraus wird", async () => {
+    const core = renderApp({}, ROUTES.zones);
+    const request = vi.spyOn(core.print, "requestZoneLabel");
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "QR-Code: Keller" }));
+    const dialog = screen.getByRole("dialog", { name: "QR-Code: Keller" });
+    expect(dialog).toHaveTextContent("Das Etikett druckt „Keller (Pi)“.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Als Etikett drucken" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(ZONE_IDS.cellar));
+    // Der Pi ist im Obergeschoss nicht erreichbar: Das Etikett steht aus.
+    expect(await within(dialog).findByRole("status")).toHaveTextContent("1 Etikett steht aus und wird gedruckt, sobald dieses Gerät den Drucker „Keller (Pi)“ erreicht.");
+    const job = value(core.data.printJobs).find((entry) => entry.kind === "zone");
+    expect(job).toMatchObject({ zone_id: ZONE_IDS.cellar, package_id: null, state: "pending" });
+
+    core.control.setPiReachable(true);
+    await waitFor(() => expect(within(dialog).getByRole("status")).toHaveTextContent("1 Etikett ist am Drucker „Keller (Pi)“ gedruckt."));
+  });
+
+  it("zeigt die Vorschau des Zonen-Etiketts und sagt offline, dass der Server fehlt", async () => {
+    const core = renderApp({}, ROUTES.zones);
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "QR-Code: Keller" }));
+    const dialog = screen.getByRole("dialog", { name: "QR-Code: Keller" });
+    expect(within(dialog).queryByRole("img", { name: /Vorschau/ })).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Vorschau des Etiketts" }));
+    expect(await within(dialog).findByRole("img", { name: "Vorschau des Etiketts für die Zone Keller" })).toHaveAttribute("src", expect.stringMatching(/^blob:/));
+
+    // Ausblenden, Server weg, wieder einblenden: ein ruhiger Hinweis statt eines Fehlers.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Vorschau des Etiketts" }));
+    core.control.setOnline(false);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Vorschau des Etiketts" }));
+    expect(await within(dialog).findByText("Die Vorschau zeichnet der Server, und der ist gerade nicht erreichbar.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Erneut versuchen" })).toBeInTheDocument();
+  });
+
+  it("druckt die Etiketten aller Zonen auf einmal", async () => {
+    const core = renderApp({ scenarios: ["at-pi"] }, ROUTES.zones);
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Alle QR-Codes" }));
+    const dialog = screen.getByRole("dialog", { name: "QR-Codes aller Zonen" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Alle als Etikett drucken" }));
+    await waitFor(() => expect(value(core.data.printJobs).filter((entry) => entry.kind === "zone")).toHaveLength(4));
+    await waitFor(() => expect(within(dialog).getByRole("status")).toHaveTextContent("4 Etiketten sind gedruckt."));
+  });
+
+  it("bietet ohne Drucker nur den Druck über den Browser an", async () => {
+    renderApp({ scenarios: ["empty"] }, ROUTES.zones);
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "QR-Code: Vorrat" }));
+    const dialog = screen.getByRole("dialog", { name: "QR-Code: Vorrat" });
+    expect(within(dialog).queryByRole("button", { name: "Als Etikett drucken" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Vorschau des Etiketts" })).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Drucken" }));
+    expect(window.print).toHaveBeenCalled();
   });
 });

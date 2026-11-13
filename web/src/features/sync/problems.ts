@@ -3,7 +3,7 @@
  * Abgeleitet aus der Art des Befehls (`command.type`) und dem Grund (`code`).
  * Reine Logik ohne React.
  */
-import { productTitle, type Command, type Package, type Printer, type Product, type RejectCode, type SyncProblem, type Zone } from "@/contract";
+import { productTitle, type Command, type Package, type Printer, type PrintJob, type Product, type RejectCode, type SyncProblem, type Zone } from "@/contract";
 
 /** Was die Sätze nachschlagen dürfen. Fehlt etwas, steht ein allgemeiner Ausdruck im Satz. */
 export interface ProblemLookup {
@@ -12,6 +12,8 @@ export interface ProblemLookup {
   printers: readonly Printer[];
   /** Bestand und Lösch-Historie. */
   packages: readonly Package[];
+  /** Die Etiketten, um bei „Stand nicht gemeldet" sagen zu können, um welches es ging. */
+  printJobs?: readonly PrintJob[];
 }
 
 export interface ProblemText {
@@ -107,8 +109,13 @@ function subject(command: Command, lookup: ProblemLookup): string {
         return `Das Etikett für ${pkg(command.package_id).nom} wurde nicht angefordert`;
       }
       return command.zone_id ? `Das Etikett für ${zone(command.zone_id).nom} wurde nicht angefordert` : "Ein Etikett wurde nicht angefordert";
-    case "print.report":
-      return "Der Stand eines Etiketts wurde nicht gemeldet";
+    case "print.report": {
+      const job = lookup.printJobs?.find((candidate) => candidate.id === command.job_id);
+      if (job?.package_id) {
+        return `Der Stand des Etiketts für ${pkg(job.package_id).nom} wurde nicht übernommen`;
+      }
+      return job?.zone_id ? `Der Stand des Etiketts für ${zone(job.zone_id).nom} wurde nicht übernommen` : "Der Stand eines Etiketts wurde nicht übernommen";
+    }
   }
 }
 
@@ -146,8 +153,13 @@ function reason(command: Command, code: RejectCode | null, message: string | nul
         case "printer.report":
           return "weil es den Drucker auf dem Server nicht mehr gibt";
         case "print.request":
+          return command.package_id
+            ? "weil es die Packung auf dem Server nicht gibt"
+            : command.zone_id
+              ? "weil es die Zone auf dem Server nicht mehr gibt"
+              : "weil es die Packung oder die Zone auf dem Server nicht gibt";
         case "print.report":
-          return "weil es die Packung, die Zone oder das Etikett auf dem Server nicht gibt";
+          return "weil es dieses Etikett auf dem Server nicht gibt";
         default:
           return "weil es den Eintrag auf dem Server nicht gibt";
       }
@@ -181,7 +193,13 @@ export function describeProblem(problem: SyncProblem, lookup: ProblemLookup): Pr
   const text = why.startsWith("weil") ? `${subject(command, lookup)}, ${why}.` : `${subject(command, lookup)}; ${why}.`;
   let advice: string | null = null;
   if (problem.code === "id_conflict" && command.type === "package.create") {
-    advice = "Bitte die Packung neu einlagern und das Etikett ersetzen.";
+    // Der Kern hat die noch nicht gedruckten Etiketten dazu schon verworfen; ein gedrucktes klebt vielleicht schon.
+    advice =
+      "Die Packung ist nicht im Bestand. Wurde für sie schon ein Etikett gedruckt, muss es weg: Die ID gehört einer anderen Packung. Danach die Packung neu einlagern; sie bekommt eine neue ID und ein neues Etikett.";
+  } else if (problem.code === "not_found" && command.type === "print.request") {
+    advice = "Das Etikett ist verworfen. Gibt es die Packung oder die Zone noch, lässt es sich dort neu anfordern.";
+  } else if (problem.code === "not_found" && command.type === "print.report") {
+    advice = "Für ein schon gedrucktes Etikett ändert das nichts; es bleibt gültig.";
   } else if (problem.code === "internal") {
     advice = "Bitte die Änderung noch einmal vornehmen.";
   }

@@ -28,15 +28,18 @@ service = [
 brother = [
     "brother-ql-next==0.12.0",
 ]
+# Tests: Der Test-Client von Starlette braucht httpx2.
 dev = [
     "pytest>=8",
+    "httpx2>=2.16",
+    "ruff>=0.17",
 ]
 
 [tool.setuptools.packages.find]
 include = ["stowly_print*"]
 
 [tool.setuptools.package-data]
-stowly_print = ["templates/*.json", "fonts/*"]
+stowly_print = ["templates/*.json", "fonts/*", "pages/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

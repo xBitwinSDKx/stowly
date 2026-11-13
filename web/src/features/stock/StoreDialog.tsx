@@ -13,8 +13,10 @@ import {
   type ProductRef,
   type StoreResult,
 } from "@/contract";
-import { BestBeforeField, errorText, FieldGroup, focusOnOpen, Notice, PackageIds, packagesText, readBestBefore, Select, Stepper, useReturnFocus } from "@/ui";
-import { Button, cx, Dialog, SegmentedControl, TextField, useToast } from "@/ui/base";
+import { LabelStatus } from "@/features/printers/LabelStatus";
+import { useHasPrinter } from "@/features/printers/usePrinting";
+import { BestBeforeField, errorText, FieldGroup, Notice, PackageIds, packagesText, readBestBefore, Select, Stepper } from "@/ui";
+import { Button, cx, Dialog, dialogFocus, SegmentedControl, Switch, TextField, useToast } from "@/ui/base";
 import { CheckIcon, CircleCheckIcon, PlusIcon, SearchIcon, UndoIcon } from "@/ui/icons";
 
 import styles from "./dialogs.module.css";
@@ -40,14 +42,16 @@ const collator = new Intl.Collator("de", { numeric: true, sensitivity: "base" })
 /**
  * Von Hand einlagern, ohne Scanner: Produkt wählen oder neu anlegen, Menge, MHD, Zone.
  * Danach zeigt der Dialog die vergebenen Packungs-IDs, damit sie sich notfalls von Hand
- * auf die Packung schreiben lassen.
+ * auf die Packung schreiben lassen, und sagt, was mit den Etiketten ist.
  */
 export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogProps) {
-  useReturnFocus();
   const core = useCore();
   const toast = useToast();
   const formId = useId();
   const prefs = useLive(core.prefs.value);
+  // Etiketten gibt es nur mit einem Drucker; der Schalter folgt der Einstellung dieses Geräts.
+  const hasPrinter = useHasPrinter();
+  const labels = prefs?.print_labels ?? true;
 
   const hasProducts = stock.products.length > 0;
   const [mode, setMode] = useState<Mode>(hasProducts ? "existing" : "new");
@@ -114,19 +118,13 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
     setBusy(true);
     setError(null);
     try {
-      // Ohne `labels`: Ob Etiketten angefordert werden, entscheidet die Einstellung dieses Geräts.
-      const stored = await core.stock.store({ product, zone_id: zone, best_before: input.kind === "date" ? input.date : null, count });
+      const stored = await core.stock.store({ product, zone_id: zone, best_before: input.kind === "date" ? input.date : null, count, labels: hasPrinter && labels });
       setResult(stored);
     } catch (caught) {
       if (isCoreError(caught, "barcode_taken")) {
         setError("Der Barcode gehört schon zu einem anderen Produkt. Bitte dieses Produkt unter „Vorhandenes Produkt“ wählen.");
       } else {
-        setError(
-          errorText(caught, {
-            not_found: "Das Produkt oder die Zone gibt es nicht mehr.",
-            invalid: `Die Angaben sind ungültig. Die Menge muss zwischen 1 und ${String(MAX_STORE_COUNT)} liegen.`,
-          }),
-        );
+        setError(errorText(caught, { not_found: "Das Produkt oder die Zone gibt es nicht mehr." }));
       }
     } finally {
       setBusy(false);
@@ -200,15 +198,20 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
           <FieldGroup
             label={result.packages.length === 1 ? "Packungs-ID" : "Packungs-IDs"}
             hint={
-              result.print_jobs.length === 1
-                ? "Ein Etikett ist angefordert. Bis es gedruckt ist: die ID von Hand auf die Packung schreiben."
-                : result.print_jobs.length > 1
-                  ? `${String(result.print_jobs.length)} Etiketten sind angefordert. Bis sie gedruckt sind: die ID von Hand auf jede Packung schreiben.`
-                  : "Es wurden keine Etiketten angefordert. Die ID von Hand auf jede Packung schreiben, damit sie sich später ausbuchen lässt."
+              result.print_jobs.length > 0
+                ? "Bis das Etikett klebt, hilft die ID von Hand auf der Packung."
+                : hasPrinter
+                  ? "Etiketten sind auf diesem Gerät ausgeschaltet. Die ID von Hand auf jede Packung schreiben, damit sie sich später ausbuchen lässt."
+                  : "Ohne Drucker gibt es keine Etiketten. Die ID von Hand auf jede Packung schreiben, damit sie sich später ausbuchen lässt."
             }
           >
             <PackageIds ids={result.packages.map((pkg) => pkg.id)} large />
           </FieldGroup>
+          {result.print_jobs.length > 0 ? (
+            <FieldGroup label={result.print_jobs.length === 1 ? "Etikett" : "Etiketten"}>
+              <LabelStatus jobIds={result.print_jobs.map((job) => job.id)} />
+            </FieldGroup>
+          ) : null}
           {error ? (
             <Notice tone="danger" role="alert">
               {error}
@@ -265,7 +268,7 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
             ) : (
               <>
                 <TextField
-                  ref={focusOnOpen}
+                  ref={dialogFocus}
                   label="Produkt suchen"
                   hideLabel
                   placeholder="Name, Marke oder Barcode"
@@ -313,18 +316,16 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
               label="Name"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              maxLength={120}
               autoComplete="off"
               placeholder="Wie auf der Packung"
               error={tried ? nameError : null}
             />
             <div className={styles.columns}>
-              <TextField label="Marke" value={brand} onChange={(event) => setBrand(event.target.value)} maxLength={80} autoComplete="off" />
+              <TextField label="Marke" value={brand} onChange={(event) => setBrand(event.target.value)} autoComplete="off" />
               <TextField
                 label="Packungsgröße"
                 value={quantity}
                 onChange={(event) => setQuantity(event.target.value)}
-                maxLength={40}
                 autoComplete="off"
                 placeholder="z. B. 500 g"
               />
@@ -363,6 +364,15 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
         </div>
 
         <BestBeforeField value={bestBefore} onChange={setBestBefore} today={stock.today} showError={tried} />
+
+        {hasPrinter ? (
+          <Switch
+            label="Etiketten"
+            hint={count === 1 ? "Für die Packung ein Etikett drucken" : "Für jede Packung ein Etikett drucken"}
+            checked={labels}
+            onChange={(print_labels) => void core.prefs.update({ print_labels }).catch((caught: unknown) => setError(errorText(caught)))}
+          />
+        ) : null}
 
         {error ? (
           <Notice tone="danger" role="alert">

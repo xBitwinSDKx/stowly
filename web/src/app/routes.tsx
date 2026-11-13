@@ -2,16 +2,10 @@ import type { ComponentType } from "react";
 import { createBrowserRouter, type RouteObject } from "react-router";
 
 import { ROUTES } from "@/contract";
-import { HistoryPage } from "@/features/history";
-import { PrintersPage } from "@/features/printers";
-import { SettingsPage } from "@/features/settings";
-import { StockPage } from "@/features/stock";
-import { SyncPage } from "@/features/sync";
-import { WarningsPage } from "@/features/warnings";
-import { ZonesPage } from "@/features/zones";
 
 import { NotFoundPage } from "./NotFoundPage";
 import { usePageTitle } from "./Page";
+import { HistoryPage, PrintersPage, SettingsPage, StockPage, SyncPage, WarningsPage, ZonesPage } from "./pages";
 import { RouteError } from "./RouteError";
 import { Shell } from "./Shell";
 
@@ -25,7 +19,10 @@ function ScanRoute({ page: ScanPage }: { page: ComponentType }) {
   return <ScanPage />;
 }
 
-/** Alle Routen der App. Die Adressen stehen in src/contract/routes.ts. */
+/**
+ * Alle Routen der App. Die Adressen stehen in src/contract/routes.ts. Die Ansichten des
+ * Rahmens werden nachgeladen (pages.tsx); die Scan-Ansicht kommt als Komponente herein.
+ */
 export function appRoutes(ScanPage: ComponentType): RouteObject[] {
   return [
     // Vollbild, ohne Rahmen

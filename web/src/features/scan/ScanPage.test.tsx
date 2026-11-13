@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { describe, expect, it } from "vitest";
 
-import { CoreProvider, ROUTES, zoneQr, type Live } from "@/contract";
+import { CoreProvider, gtinCheckDigit, ROUTES, zoneQr, type Live } from "@/contract";
 import { createMockCore, sampleBarcode, ZONE_IDS, type MockCore, type MockOptions } from "@/mock";
 import { ToastProvider } from "@/ui/base";
 
@@ -332,5 +332,75 @@ describe("Menge", () => {
     expect(screen.getByRole("status", { name: "Menge für das nächste Einlagern: 3" })).toBeInTheDocument();
     await user.click(less);
     expect(screen.getByRole("status", { name: "Menge für das nächste Einlagern: 2" })).toBeInTheDocument();
+  });
+});
+
+describe("Was die Ansicht verspricht und meldet", () => {
+  /** Ein ladeninterner Code (Präfix 2) mit stimmender Prüfziffer. */
+  const INTERNAL_BARCODE = `200000000001${gtinCheckDigit("200000000001")}`;
+
+  async function openStoreSheet(user: ReturnType<typeof userEvent.setup>, barcode: string): Promise<HTMLElement> {
+    await enter(user, barcode);
+    return screen.findByRole("dialog", { name: "Einlagern" });
+  }
+
+  async function closeSheet(user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement): Promise<void> {
+    await user.click(within(dialog).getByRole("button", { name: "Schließen" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Einlagern" })).not.toBeInTheDocument());
+  }
+
+  it("sagt nur dann, dass Name und Bild nachkommen, wenn der Server diesen Barcode nachschlägt", async () => {
+    const { user, core } = setup();
+    let dialog = await openStoreSheet(user, sampleBarcode(905));
+    expect(within(dialog).getByText(/Name und Bild ergänzt Stowly/)).toBeInTheDocument();
+    await closeSheet(user, dialog);
+
+    // Ein ladeninterner Code wird nie nachgeschlagen: nichts versprechen, zum Namen einladen.
+    dialog = await openStoreSheet(user, INTERNAL_BARCODE);
+    expect(within(dialog).queryByText(/Name und Bild ergänzt Stowly/)).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/schlägt Stowly nicht nach/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Name (freiwillig)")).toBeInTheDocument();
+    await closeSheet(user, dialog);
+
+    // Das Nachschlagen ist am Server abgeschaltet.
+    core.control.setLookupEnabled(false);
+    dialog = await openStoreSheet(user, sampleBarcode(907));
+    expect(within(dialog).queryByText(/Name und Bild ergänzt Stowly/)).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/schlägt Stowly nicht nach/)).toBeInTheDocument();
+  });
+
+  it("gibt dem MHD-Feld beim Öffnen den Fokus; Enter ohne Datum schließt nichts", async () => {
+    const { user, core } = setup();
+    const before = value(core.data.packages).length;
+    const dialog = await openStoreSheet(user, RICE_BARCODE);
+    const date = within(dialog).getByLabelText("Mindesthaltbarkeitsdatum");
+    await waitFor(() => expect(date).toHaveFocus());
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("dialog", { name: "Einlagern" })).toBeInTheDocument();
+    expect(value(core.data.packages)).toHaveLength(before);
+    // Tippen landet im Feld, Enter mit gültigem Datum lagert ein.
+    await user.keyboard("0327{Enter}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Einlagern" })).not.toBeInTheDocument());
+    expect(value(core.data.packages)).toHaveLength(before + 1);
+  });
+
+  it("sagt nach dem Einlagern in einem Halbsatz, was mit den Etiketten ist", async () => {
+    const { user, core } = setup();
+    const dialog = await openStoreSheet(user, RICE_BARCODE);
+    await user.click(within(dialog).getByRole("button", { name: "Kein MHD" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Einlagern" })).not.toBeInTheDocument());
+    // Der Haushalt hat einen Drucker: Das Etikett ist angefordert und wird zugestellt.
+    expect(value(core.data.printJobs).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/· Etikett (steht aus|wird gedruckt|gedruckt|nicht gedruckt)/)).toBeInTheDocument();
+  });
+
+  it("sagt nichts zu Etiketten, wenn keine angefordert wurden", async () => {
+    const { user, core } = setup();
+    await core.prefs.update({ print_labels: false });
+    const dialog = await openStoreSheet(user, RICE_BARCODE);
+    await user.click(within(dialog).getByRole("button", { name: "Kein MHD" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Einlagern" })).not.toBeInTheDocument());
+    expect(toasts()).toHaveTextContent("1 × Basmati Reis");
+    expect(screen.queryByText(/· Etikett/)).not.toBeInTheDocument();
   });
 });

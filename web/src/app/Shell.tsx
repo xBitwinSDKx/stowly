@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, ScrollRestoration, useLocation, useNavigate } from "react-router";
 
 import { ROUTES, useCore, useLive } from "@/contract";
 import { useLogout } from "@/features/auth/logout";
+import { UnknownLabelsBanner } from "@/features/printers/UnknownLabels";
+import { useOpenLabels } from "@/features/printers/usePrinting";
 import { useStock } from "@/features/stock/useStock";
 import { summarizeSync, type SyncSummary } from "@/features/sync/status";
-import { DESKTOP_QUERY, Logo, Menu, Notice, useMediaQuery } from "@/ui";
+import { DESKTOP_QUERY, Logo, Menu, Notice, plural, useMediaQuery } from "@/ui";
 import { Badge, Button, cx, IconButton, TextField } from "@/ui/base";
 import {
   AlertCircleIcon,
@@ -28,7 +30,10 @@ import {
 } from "@/ui/icons";
 
 import { primaryDestinations, SECONDARY_DESTINATIONS } from "./destinations";
+import { InstallHint } from "./InstallHint";
 import { MobileMenu } from "./MobileMenu";
+import { PageLoading } from "./Page";
+import { preloadPages } from "./pages";
 import { SearchProvider, useSearch } from "./search";
 import styles from "./Shell.module.css";
 
@@ -169,6 +174,7 @@ function ShellFrame() {
   const app = useLive(core.app.state);
   const sync = summarizeSync(useLive(core.sync.status));
   const { warnings, multiZone } = useStock();
+  const labels = useOpenLabels();
   const [menuOpen, setMenuOpen] = useState(false);
   const [updating, setUpdating] = useState(false);
 
@@ -195,6 +201,12 @@ function ShellFrame() {
       setMenuOpen(false);
     }
   }, [desktop]);
+
+  // Kurz nach dem Start alle Ansichten holen: Danach wartet kein Wechsel mehr auf das Netz.
+  useEffect(() => {
+    const timer = setTimeout(() => void preloadPages(), 1500);
+    return () => clearTimeout(timer);
+  }, []);
 
   async function applyUpdate() {
     setUpdating(true);
@@ -237,19 +249,23 @@ function ShellFrame() {
               Abmelden
             </Button>
             <nav aria-label="Weitere Bereiche" className={styles.quick}>
-              {SECONDARY_DESTINATIONS.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={({ isActive }) => cx(styles.quickLink, isActive && styles.active)}
-                  aria-label={item.label}
-                  data-tip={item.label}
-                >
-                  {item.to === ROUTES.sync ? <SyncGlyph tone={sync.tone} size={20} /> : <item.icon size={20} aria-hidden="true" />}
-                  {item.to === ROUTES.warnings && warnings.total > 0 ? <span className={styles.dot} /> : null}
-                  {item.to === ROUTES.sync && (sync.tone === "offline" || sync.tone === "error") ? <span className={styles.dot} /> : null}
-                </NavLink>
-              ))}
+              {SECONDARY_DESTINATIONS.map((item) => {
+                // Offene Etiketten stehen als Zahl am Drucker-Symbol; fragt die App nach, in Bernstein.
+                const open = item.to === ROUTES.printers ? labels.open : 0;
+                const label = open > 0 ? `${item.label}: ${plural(open, "Etikett offen", "Etiketten offen")}` : item.label;
+                return (
+                  <NavLink key={item.to} to={item.to} className={({ isActive }) => cx(styles.quickLink, isActive && styles.active)} aria-label={label} data-tip={label}>
+                    {item.to === ROUTES.sync ? <SyncGlyph tone={sync.tone} size={20} /> : <item.icon size={20} aria-hidden="true" />}
+                    {item.to === ROUTES.warnings && warnings.total > 0 ? <span className={styles.dot} /> : null}
+                    {item.to === ROUTES.sync && (sync.tone === "offline" || sync.tone === "error") ? <span className={styles.dot} /> : null}
+                    {open > 0 ? (
+                      <span className={cx(styles.count, labels.asking > 0 && styles.countWarn)} aria-hidden="true">
+                        {open > 99 ? "99+" : open}
+                      </span>
+                    ) : null}
+                  </NavLink>
+                );
+              })}
             </nav>
           </div>
         </aside>
@@ -298,7 +314,7 @@ function ShellFrame() {
           </div>
         </header>
 
-        {app?.update_ready ? (
+        {app?.update_ready && !app.update_required ? (
           <Notice
             banner
             tone="accent"
@@ -319,9 +335,13 @@ function ShellFrame() {
             Scannen und Offline-Betrieb brauchen die HTTPS-Adresse von Stowly. Über eine http-Adresse läuft die App nur online und ohne Kamera.
           </Notice>
         ) : null}
+        <UnknownLabelsBanner />
+        <InstallHint />
 
         <main id="inhalt" tabIndex={-1} className={cx(styles.content, showFab && styles.withFab)}>
-          <Outlet />
+          <Suspense fallback={<PageLoading />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
 
@@ -338,6 +358,7 @@ function ShellFrame() {
           primary={primary}
           deviceName={deviceName}
           warnings={warnings.total}
+          labels={labels}
           sync={sync}
           onLogout={() => {
             setMenuOpen(false);

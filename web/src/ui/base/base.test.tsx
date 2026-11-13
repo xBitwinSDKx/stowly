@@ -1,11 +1,14 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
+import { createMemoryRouter } from "react-router";
+import { RouterProvider } from "react-router/dom";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   Badge,
   Button,
+  ButtonLink,
   Card,
   Dialog,
   dialogFocus,
@@ -188,6 +191,53 @@ describe("Dialog", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("gibt den Fokus auch im StrictMode zurück, in dem React jedes Aufräumen einmal probeweise ruft", async () => {
+    // So öffnen die Ansichten ihre Dialoge: nur im Baum, solange sie offen sind.
+    function Conditional() {
+      const [shown, setShown] = useState(false);
+      return (
+        <>
+          <Button onClick={() => setShown(true)}>Öffnen</Button>
+          {shown ? (
+            <Dialog open onClose={() => setShown(false)} title="Name ändern">
+              <TextField ref={dialogFocus} label="Name" />
+            </Dialog>
+          ) : null}
+        </>
+      );
+    }
+    render(
+      <StrictMode>
+        <Conditional />
+      </StrictMode>,
+    );
+    const opener = screen.getByRole("button", { name: "Öffnen" });
+    await userEvent.click(opener);
+    expect(screen.getByLabelText("Name")).toHaveFocus();
+
+    await userEvent.click(screen.getByRole("button", { name: "Schließen" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
+  it("nimmt den Fokus wieder auf, wenn im offenen Dialog das Element verschwindet, das ihn hatte", async () => {
+    // Der Inhalt wechselt vom Formular zum Ergebnis: Die Schaltfläche, die eben gedrückt wurde, gibt es nicht mehr.
+    function Steps() {
+      const [done, setDone] = useState(false);
+      return (
+        <Dialog open onClose={() => undefined} title="Einlagern">
+          {done ? <p>Eingelagert</p> : <Button onClick={() => setDone(true)}>Weiter</Button>}
+        </Dialog>
+      );
+    }
+    render(<Steps />);
+    await userEvent.click(screen.getByRole("button", { name: "Weiter" }));
+    expect(screen.getByText("Eingelagert")).toBeInTheDocument();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(screen.getByRole("dialog", { name: "Einlagern" })).toContainElement(document.activeElement as HTMLElement);
+    expect(screen.getByRole("button", { name: "Schließen" })).not.toHaveFocus();
+  });
+
   it("bietet ohne dismissable kein Schließen von außen an", async () => {
     render(<Example dismissable={false} />);
     await userEvent.click(screen.getByRole("button", { name: "Öffnen" }));
@@ -310,5 +360,89 @@ describe("Zonen-Symbole und -Farben", () => {
     expect(zoneColor(null)).toBe("var(--color-accent)");
     expect(zoneColor("gibt-es-nicht")).toBe("var(--color-accent)");
     expect(zoneColor("toString")).toBe("var(--color-accent)");
+  });
+});
+
+describe("ButtonLink", () => {
+  it("sieht aus wie ein Button, ist aber ein Verweis und führt zur genannten Ansicht", async () => {
+    const router = createMemoryRouter([
+      {
+        path: "/",
+        element: (
+          <ButtonLink to="/scan" variant="primary" size="lg" block icon={<svg data-testid="icon" />} className="eigene">
+            Jetzt scannen
+          </ButtonLink>
+        ),
+      },
+      { path: "/scan", element: <h1>Scannen</h1> },
+    ]);
+    render(<RouterProvider router={router} />);
+    const link = screen.getByRole("link", { name: "Jetzt scannen" });
+    expect(link).toHaveAttribute("href", "/scan");
+    // Dieselben Klassen wie die Schaltfläche: Variante, Größe, volle Breite; dazu die eigene.
+    expect(link).toHaveClass("button", "primary", "lg", "block", "eigene");
+    expect(within(link).getByTestId("icon")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+
+    await userEvent.click(link);
+    expect(router.state.location.pathname).toBe("/scan");
+    expect(await screen.findByRole("heading", { name: "Scannen" })).toBeInTheDocument();
+  });
+
+  it("nimmt die Vorgaben der Schaltfläche (umrandet, mittlere Größe) und reicht die Props des Verweises durch", () => {
+    const router = createMemoryRouter([
+      {
+        path: "/",
+        element: (
+          <ButtonLink to={{ pathname: "/drucker", hash: "#etiketten" }} replace aria-label="Zu den Etiketten" iconRight={<svg />}>
+            Etiketten
+          </ButtonLink>
+        ),
+      },
+    ]);
+    render(<RouterProvider router={router} />);
+    const link = screen.getByRole("link", { name: "Zu den Etiketten" });
+    expect(link).toHaveAttribute("href", "/drucker#etiketten");
+    expect(link).toHaveClass("button", "secondary", "md");
+    expect(link).not.toHaveClass("block");
+  });
+});
+
+describe("Toast: alle schließen", () => {
+  function Example() {
+    const toast = useToast();
+    return (
+      <>
+        <Button onClick={() => toast.show({ message: "Eins", duration: 0, action: { label: "Rückgängig", onAction: () => undefined } })}>Eins</Button>
+        <Button onClick={() => toast.show({ message: "Zwei" })}>Zwei</Button>
+        <Button onClick={() => toast.dismissAll()}>Sitzung endet</Button>
+      </>
+    );
+  }
+
+  it("räumt jede offene Meldung ab, auch die ohne Ablaufzeit", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <ToastProvider>
+        <Example />
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Eins" }));
+    await user.click(screen.getByRole("button", { name: "Zwei" }));
+    expect(within(screen.getByRole("status")).getByText("Eins")).toBeInTheDocument();
+    expect(within(screen.getByRole("status")).getByText("Zwei")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sitzung endet" }));
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("button", { name: "Rückgängig" })).not.toBeInTheDocument();
+
+    // Die abgelaufene Uhr einer geschlossenen Meldung richtet nichts mehr an, und neue Meldungen erscheinen wieder.
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    await user.click(screen.getByRole("button", { name: "Zwei" }));
+    expect(within(screen.getByRole("status")).getByText("Zwei")).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

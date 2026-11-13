@@ -1,6 +1,9 @@
 /**
  * Fehler des Kerns als deutscher Satz. Die Oberfläche unterscheidet nach `code`;
  * `message` des Kerns ist nur der Rückfall (src/contract/errors.ts).
+ *
+ * Ausnahme "invalid": Dort ist `message` der genaue Satz der Eingabeprüfung aus dem Vertrag
+ * (src/contract/input.ts, etwa „Der Name ist zu lang (höchstens 60 Zeichen).“) und wird gezeigt.
  */
 import { isCoreError, type CoreErrorCode } from "@/contract";
 
@@ -26,6 +29,10 @@ const TEXTS: Record<CoreErrorCode, string> = {
  */
 export function errorText(error: unknown, overrides: Partial<Record<CoreErrorCode, string>> = {}): string {
   if (isCoreError(error)) {
+    // Der Kern sagt bei "invalid" genau, was nicht stimmt; ohne eigenen Satz trägt `message` nur den Code.
+    if (error.code === "invalid" && error.message.trim() !== "" && error.message !== error.code) {
+      return error.message;
+    }
     return overrides[error.code] ?? TEXTS[error.code] ?? error.message;
   }
   // Kein Fehler des Kerns: ein Programmfehler. Für den Anwender ist das ein unerwarteter Fehler.

@@ -1,11 +1,12 @@
 import { useId, useState, type FormEvent } from "react";
 
-import { useCore, type Zone, type ZoneChanges } from "@/contract";
-import { errorText, focusOnOpen, Notice, Swatch, TileChoice, useReturnFocus } from "@/ui";
+import { useCore, useLive, type Zone, type ZoneChanges } from "@/contract";
+import { errorText, Notice, Select, Swatch, TileChoice } from "@/ui";
 import {
   Button,
   DEFAULT_ZONE_ICON,
   Dialog,
+  dialogFocus,
   TextField,
   useToast,
   ZONE_COLOR_KEYS,
@@ -35,21 +36,32 @@ function colorKey(color: string | null | undefined): ZoneColorKey {
   return color && Object.hasOwn(ZONE_COLORS, color) ? (color as ZoneColorKey) : "accent";
 }
 
-/** Zone anlegen oder ändern: Name, Symbol, Farbe. */
+/** Wert der Auswahl für „kein eigener Drucker". */
+const NO_PRINTER = "";
+
+/** Zone anlegen oder ändern: Name, Symbol, Farbe und, wenn es Drucker gibt, der Drucker ihrer Etiketten. */
 export function ZoneDialog({ zone, onClose }: ZoneDialogProps) {
-  useReturnFocus();
   const core = useCore();
   const toast = useToast();
   const formId = useId();
   const [name, setName] = useState(zone?.name ?? "");
   const [icon, setIcon] = useState<ZoneIconKey>(iconKey(zone?.icon));
   const [color, setColor] = useState<ZoneColorKey>(colorKey(zone?.color));
+  const printers = useLive(core.data.printers, []);
+  const zoneCount = useLive(core.data.zones, []).length;
+  const settings = useLive(core.data.settings);
+  const [printerId, setPrinterId] = useState(zone?.printer_id ?? NO_PRINTER);
   const [busy, setBusy] = useState(false);
   const [tried, setTried] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmed = name.trim();
   const nameError = trimmed === "" ? "Bitte einen Namen eingeben." : null;
+  // Bei nur einer Zone gibt es keine Zuordnung je Zone: Dann druckt der Standarddrucker alles.
+  const assignable = printers.length > 0 && (zone === undefined || zoneCount > 1);
+  const defaultPrinter = printers.find((printer) => printer.id === settings?.default_printer_id);
+  // Zeigt die Zone auf einen gelöschten Drucker, gilt er als nicht gesetzt.
+  const chosenPrinter = printers.some((printer) => printer.id === printerId) ? printerId : NO_PRINTER;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -72,16 +84,22 @@ export function ZoneDialog({ zone, onClose }: ZoneDialogProps) {
         if (colorValue !== zone.color) {
           changes.color = colorValue;
         }
+        // Nur wenn die Auswahl angefasst wurde: Ein Verweis auf einen gelöschten Drucker bleibt sonst, wie er ist.
+        const touched = printerId !== (zone.printer_id ?? NO_PRINTER);
+        const nextPrinter = chosenPrinter === NO_PRINTER ? null : chosenPrinter;
+        if (assignable && touched && nextPrinter !== zone.printer_id) {
+          changes.printer_id = nextPrinter;
+        }
         if (Object.keys(changes).length > 0) {
           await core.zones.update(zone.id, changes);
         }
       } else {
-        await core.zones.create({ name: trimmed, icon, color: colorValue });
+        await core.zones.create({ name: trimmed, icon, color: colorValue, ...(assignable && chosenPrinter !== NO_PRINTER ? { printer_id: chosenPrinter } : {}) });
         toast.show({ message: `Zone „${trimmed}“ angelegt`, tone: "success" });
       }
       onClose();
     } catch (caught) {
-      setError(errorText(caught, { not_found: "Diese Zone gibt es nicht mehr.", invalid: "Der Name ist ungültig. Erlaubt sind 1 bis 60 Zeichen." }));
+      setError(errorText(caught, { not_found: "Diese Zone gibt es nicht mehr." }));
       setBusy(false);
     }
   }
@@ -114,9 +132,8 @@ export function ZoneDialog({ zone, onClose }: ZoneDialogProps) {
           label="Name"
           value={name}
           onChange={(event) => setName(event.target.value)}
-          maxLength={60}
           autoComplete="off"
-          ref={focusOnOpen}
+          ref={dialogFocus}
           placeholder="z. B. Keller, Gefrierschrank, Vorratsregal"
           error={tried ? nameError : null}
         />
@@ -132,6 +149,18 @@ export function ZoneDialog({ zone, onClose }: ZoneDialogProps) {
           onChange={setColor}
           options={ZONE_COLOR_KEYS.map((key) => ({ value: key, label: ZONE_COLORS[key].label, content: <Swatch color={ZONE_COLORS[key].css} /> }))}
         />
+        {assignable ? (
+          <Select
+            label="Drucker"
+            value={chosenPrinter}
+            onChange={setPrinterId}
+            hint="Druckt die Etiketten der Packungen in dieser Zone."
+            options={[
+              { value: NO_PRINTER, label: defaultPrinter ? `Standarddrucker (${defaultPrinter.name})` : "Kein eigener Drucker" },
+              ...printers.map((printer) => ({ value: printer.id, label: printer.name })),
+            ]}
+          />
+        ) : null}
         {error ? (
           <Notice tone="danger" role="alert">
             {error}

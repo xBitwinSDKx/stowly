@@ -33,6 +33,19 @@
   text-align: center;
 }
 
+/* Vorschau des Etiketts, Druck über den Browser */
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.status {
+  max-width: 30rem;
+  text-align: center;
+}
+
 /* ---------------------------------------------------------------- Druck (nur @media print sichtbar) */
 .sheet {
   display: flex;

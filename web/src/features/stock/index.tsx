@@ -1,14 +1,26 @@
-import { useCallback, useDeferredValue, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
 
 import { normalizePackageId, ROUTES, useCore, useLive, type Product } from "@/contract";
 import { PageBody, PageLoading, usePageTitle } from "@/app/Page";
 import { useSearch } from "@/app/search";
-import { EmptyState, FilterCard, LinkButton, Notice, packagesText, plural, ROOMY_QUERY, StatCard, useMediaQuery, useUiFlag, WIDE_QUERY } from "@/ui";
-import { Button, cx, IconButton, zoneColor, ZoneIcon } from "@/ui/base";
+import { EmptyState, FilterCard, Notice, packagesText, plural, ROOMY_QUERY, StatCard, useMediaQuery, useProgressiveCount, useUiFlag, WIDE_QUERY } from "@/ui";
+import { Button, ButtonLink, cx, IconButton, zoneColor, ZoneIcon } from "@/ui/base";
 import { CloseIcon, HistoryIcon, PackageIcon, PackageOpenIcon, PackagePlusIcon, ScanIcon, SearchIcon, WarningIcon, ZonesIcon } from "@/ui/icons";
 
 import { useStockDialogs } from "./dialogs";
-import { DEFAULT_SORT, filterEntries, groupByProduct, isFiltered, sortGroups, zoneFill, type SortKey, type SortOrder, type StockFilter } from "./model";
+import {
+  DEFAULT_SORT,
+  filterEntries,
+  groupByProduct,
+  isFiltered,
+  reuseGroups,
+  sortGroups,
+  zoneFill,
+  type ProductGroup,
+  type SortKey,
+  type SortOrder,
+  type StockFilter,
+} from "./model";
 import { StockCards, StockTable } from "./StockList";
 import styles from "./StockPage.module.css";
 import { useStock } from "./useStock";
@@ -46,7 +58,29 @@ export function StockPage() {
   const zoneId = multiZone && zones.some((zone) => zone.id === zoneFilter) ? zoneFilter : null;
   const filter: StockFilter = useMemo(() => ({ query: deferredQuery, zone_id: zoneId, expiring }), [deferredQuery, zoneId, expiring]);
 
-  const groups = useMemo(() => sortGroups(groupByProduct(filterEntries(entries, filter), zones), sort), [entries, filter, zones, sort]);
+  // Unveränderte Produkte behalten ihr Objekt: Ihre Zeilen werden dann nicht neu gezeichnet.
+  const known = useRef<ReadonlyMap<string, ProductGroup>>(new Map());
+  const groups = useMemo(() => {
+    const next = reuseGroups(known.current, sortGroups(groupByProduct(filterEntries(entries, filter), zones), sort));
+    known.current = new Map(next.map((group) => [group.product_id, group]));
+    return next;
+  }, [entries, filter, zones, sort]);
+  // Lange Listen in Abschnitten: Wechselt das Aussehen aller Zeilen, beginnt die Liste wieder vorn.
+  const shownCount = useProgressiveCount(groups.length, `${String(detailsAll)}|${sort.key}|${String(sort.descending)}`);
+  const shownGroups = useMemo(() => (shownCount >= groups.length ? groups : groups.slice(0, shownCount)), [groups, shownCount]);
+  // Die Liste braucht von den Dialogen nur das Öffnen; so bleibt die Eigenschaft über das Zeichnen hinweg dieselbe.
+  const openDialog = dialogs.open;
+  const dialogOpener = useMemo(() => ({ open: openDialog }), [openDialog]);
+  const onDetailsAll = useCallback(
+    (value: boolean) => {
+      setDetailsAll(value);
+      setChosen(NO_ROWS);
+    },
+    [setDetailsAll],
+  );
+  const changeSort = useCallback((key: SortKey) => {
+    setSort((current) => (current.key === key ? { key, descending: !current.descending } : { key, descending: false }));
+  }, []);
   const fill = useMemo(() => zoneFill(entries, zones), [entries, zones]);
   const productCount = useMemo(() => new Set(entries.map((entry) => entry.pkg.product_id)).size, [entries]);
   const shownPackages = useMemo(() => groups.reduce((sum, group) => sum + group.count, 0), [groups]);
@@ -66,10 +100,6 @@ export function StockPage() {
     },
     [openByDefault],
   );
-
-  function changeSort(key: SortKey) {
-    setSort((current) => (current.key === key ? { key, descending: !current.descending } : { key, descending: false }));
-  }
 
   function resetFilters() {
     setQuery("");
@@ -135,9 +165,9 @@ export function StockPage() {
             </IconButton>
           )}
           {canScan ? (
-            <LinkButton to={ROUTES.scan} variant="primary" size={wide ? "lg" : "md"} icon={<ScanIcon />}>
+            <ButtonLink to={ROUTES.scan} variant="primary" size={wide ? "lg" : "md"} icon={<ScanIcon />}>
               Jetzt scannen
-            </LinkButton>
+            </ButtonLink>
           ) : null}
         </div>
       </header>
@@ -175,9 +205,9 @@ export function StockPage() {
           actions={
             <>
               {canScan ? (
-                <LinkButton to={ROUTES.scan} variant="primary" icon={<ScanIcon />}>
+                <ButtonLink to={ROUTES.scan} variant="primary" icon={<ScanIcon />}>
                   Jetzt scannen
-                </LinkButton>
+                </ButtonLink>
               ) : null}
               <Button variant={canScan ? "secondary" : "primary"} icon={<PackagePlusIcon />} onClick={() => dialogs.open({ kind: "store" })}>
                 Von Hand einlagern
@@ -232,10 +262,7 @@ export function StockPage() {
                   type="button"
                   className={cx(styles.chip, styles.toggle, styles.end, detailsAll && styles.chipOn)}
                   aria-pressed={detailsAll}
-                  onClick={() => {
-                    setDetailsAll(!detailsAll);
-                    setChosen(NO_ROWS);
-                  }}
+                  onClick={() => onDetailsAll(!detailsAll)}
                 >
                   Details
                 </button>
@@ -259,30 +286,27 @@ export function StockPage() {
             </EmptyState>
           ) : wide ? (
             <StockTable
-              groups={groups}
+              groups={shownGroups}
               multiZone={multiZone}
               isOpen={isOpen}
               onToggle={toggle}
               markOpen={!detailsAll}
-              dialogs={dialogs}
+              dialogs={dialogOpener}
               imageUrl={hasImages ? imageUrl : null}
               sort={sort}
               onSort={changeSort}
               compact={!roomy}
               detailsAll={detailsAll}
-              onDetailsAll={(value) => {
-                setDetailsAll(value);
-                setChosen(NO_ROWS);
-              }}
+              onDetailsAll={onDetailsAll}
             />
           ) : (
             <StockCards
-              groups={groups}
+              groups={shownGroups}
               multiZone={multiZone}
               isOpen={isOpen}
               onToggle={toggle}
               markOpen={!detailsAll}
-              dialogs={dialogs}
+              dialogs={dialogOpener}
               imageUrl={hasImages ? imageUrl : null}
             />
           )}
@@ -296,9 +320,9 @@ export function StockPage() {
           icon={<HistoryIcon />}
           title={`Die Packung ${removedHit.id} wurde entnommen.`}
           action={
-            <LinkButton to={ROUTES.history} size="sm">
+            <ButtonLink to={ROUTES.history} size="sm">
               Zur Lösch-Historie
-            </LinkButton>
+            </ButtonLink>
           }
         >
           Dort lässt sie sich wiederherstellen.

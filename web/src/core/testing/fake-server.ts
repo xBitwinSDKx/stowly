@@ -32,9 +32,12 @@
  *   `pending`. Bilder gibt es nicht (404). Mit `lookupEnabled: false` meldet jede Antwort
  *   `lookup_enabled: false`, und neue Produkte beginnen mit `lookup: "none"`.
  * - `last_seen_at` rückt bei jedem Abgleich vor, im echten Server höchstens einmal je Minute.
- * - Es gibt kein Ereignisprotokoll, keinen Druckdienst, keine Grenze für die Größe einer
- *   Anfrage; die Sicherung ist keine SQLite-Datei; die Klartexte der Meldungen sind eigene,
- *   und `details.errors` ist bei 422 leer.
+ * - Es gibt kein Ereignisprotokoll und keine Grenze für die Größe einer Anfrage; die Sicherung
+ *   ist keine SQLite-Datei; die Klartexte der Meldungen sind eigene, und `details.errors` ist
+ *   bei 422 leer.
+ * - Der Druckdienst unter `/print` ist ebenfalls nachgebaut (fake-print.ts; dort steht, was er
+ *   nicht kann). Was er am Etikett und am Zustand des Druckers fortschreibt, überschreibt hier
+ *   einfach; der echte Server lässt die jüngste Meldung gewinnen.
  * - Längen von Texten zählen hier in UTF-16-Einheiten, im Server in Zeichen.
  *
  * Ohne DOM und ohne Node: Die Datei läuft in den Tests (jsdom) und im Entwicklungsserver.
@@ -66,6 +69,7 @@ import { isDate, isTimestamp } from "@/contract/time";
 
 import { applyCommand } from "../commands/apply";
 import { DAY_MS, isExpiredJob, isExpiredPackage, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
+import { FakePrintService } from "./fake-print";
 import { Draft, EMPTY_TABLES, keyOf, TABLE_NAMES, type MutableTables, type TableName, type TableRows, type Tables } from "../tables";
 
 export const FAKE_PASSWORD = "stowly";
@@ -75,6 +79,8 @@ export interface FakeRequestData {
   method: string;
   /** Pfad ohne Abfrage, z. B. "/api/sync". */
   path: string;
+  /** Die Abfrage ohne das Fragezeichen, z. B. "wait=10"; fehlt, wenn es keine gibt. */
+  query?: string;
   /** Kopfzeilen mit kleingeschriebenen Namen. */
   headers: Record<string, string | undefined>;
   /** Der Rumpf als Text; leer, wenn es keinen gibt. */
@@ -103,6 +109,11 @@ export interface FakeServerOptions {
   lookupDelayMs?: number | null;
   /** false: Das Nachschlagen ist abgeschaltet (wie STOWLY_OFF_ENABLED=0). Vorgabe true. */
   lookupEnabled?: boolean;
+  /**
+   * Der Druckdienst unter `/print`: Mit `realWait` dauert ein Druck `printMs` und `wait` wartet
+   * wirklich (für den Entwicklungsserver); sonst druckt er sofort.
+   */
+  print?: { realWait?: boolean; printMs?: number };
 }
 
 interface FakeDevice {
@@ -362,6 +373,8 @@ export class FakeServer {
   configured = true;
   /** Alle Sync-Anfragen in der Reihenfolge ihres Eintreffens. */
   readonly syncRequests: Record<string, unknown>[] = [];
+  /** Der Druckdienst des Servers unter `/print` (src/core/testing/fake-print.ts). */
+  readonly print: FakePrintService;
 
   private tables: Tables = EMPTY_TABLES;
   private readonly revs = new Map<string, number>();
@@ -385,6 +398,27 @@ export class FakeServer {
     this.maxChanges = options.maxChanges ?? MAX_CHANGES_PER_SYNC;
     this.lookupDelayMs = options.lookupDelayMs ?? null;
     this.lookupEnabled = options.lookupEnabled ?? true;
+    this.print = new FakePrintService({
+      now: this.now,
+      realWait: options.print?.realWait,
+      printMs: options.print?.printMs,
+      // Was im Server anders ist als am Pi (docs/etiketten.md, 5.8): Geräte-Token, die Drucker des
+      // Datenbestands, nur bekannte Etiketten, und der Dienst schreibt ihren Zustand selbst fort.
+      backend: {
+        authorized: (headers) => this.deviceFor({ method: "", path: "", headers, body: "" }) !== null,
+        printers: () => [...this.tables.printers.values()].filter((printer) => printer.deleted_at === null && printer.connection === "server"),
+        job: (id) => this.tables.print_jobs.get(id),
+        writeJob: (id, state, printerId, bootId, error) => {
+          const job = this.tables.print_jobs.get(id);
+          if (job) {
+            this.put("print_jobs", { ...job, state, printer_id: printerId, boot_id: bootId, error, updated_at: this.stamp() });
+          }
+        },
+        writeStatus: (printerId, bootId, status) => {
+          this.put("printer_status", { printer_id: printerId, observed_at: this.stamp(), boot_id: bootId, status, host: null });
+        },
+      },
+    });
     this.seedDefaults();
     if (options.sample) {
       this.seedSample();
@@ -831,7 +865,18 @@ export class FakeServer {
 
   // ---------------------------------------------------------------- Die Schnittstelle
 
-  /** Beantwortet einen Aufruf unter /api oder /print. */
+  /**
+   * Beantwortet jeden Aufruf: was unter `/print` liegt, der Druckdienst (er kann warten, deshalb
+   * ein Promise), alles andere `handle`.
+   */
+  respond(request: FakeRequestData): Promise<FakeResponseData> {
+    if (request.path.startsWith("/print/")) {
+      return this.print.handle({ ...request, path: request.path.slice("/print".length) });
+    }
+    return Promise.resolve(this.handle(request));
+  }
+
+  /** Beantwortet einen Aufruf unter /api. */
   handle(request: FakeRequestData): FakeResponseData {
     const { method, path } = request;
     let body: unknown;

@@ -1,0 +1,244 @@
+"""Der eigenständige Druckdienst (Raspberry Pi).
+
+    python -m stowly_print serve --config /etc/stowly-print/stowly-print.toml
+    python -m stowly_print sample --out /tmp/etiketten
+
+``serve`` bedient HTTP und HTTPS im selben Prozess. Der Auftragsspeicher liegt im RAM: Jeder
+Start ist ein neuer Lauf mit neuer ``boot_id`` (docs/etiketten.md, 5.4).
+
+``sample`` rendert die mitgelieferten Vorlagen mit Beispieldaten als PNG, mit den Schriften
+dieses Rechners. So lässt sich ansehen, wie die Etiketten hier aussehen, ohne zu drucken.
+"""
+
+import argparse
+import logging
+import signal
+import ssl
+import sys
+import threading
+from pathlib import Path
+
+from stowly_print import __version__
+from stowly_print.config import ConfigurationError, Listener, ServiceConfig, load_config
+
+log = logging.getLogger("stowly_print")
+
+SAMPLES = {
+    "package": {
+        "qr": "STOWLY/P/A2B3C",
+        "id": "A2B3C",
+        "title": "Basmati Reis",
+        "subtitle": "Kornhaus · 1 kg",
+        "best_before": "25.03.2027",
+        "stored": "13.11.2026",
+        "zone": "",
+    },
+    "package-lang": {
+        "qr": "STOWLY/P/QW7E8",
+        "id": "QW7E8",
+        "title": "Bio Vollkorn Haferflocken extra zart aus kontrolliert ökologischem Anbau",
+        "subtitle": "Mühlenhof Naturkost · 1000 g",
+        "best_before": "01.12.2027",
+        "stored": "13.11.2026",
+        "zone": "Keller",
+    },
+    "zone": {
+        "qr": "STOWLY/Z/3F2B8C1E5A474D099B6E0C1D2E3F4A5B",
+        "title": "Gefrierschrank",
+        "subtitle": "Lagerzone",
+    },
+}
+
+
+def configure_logging(level: str) -> None:
+    # Ohne Zeitstempel: Der Pi hat keine Uhr, und das Journal schreibt seine eigene Zeit dazu.
+    logging.basicConfig(
+        level=level.upper(), format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr, force=True
+    )
+
+
+def build_service(config: ServiceConfig):
+    """Der Auftragsdienst mit den Druckern der Konfiguration; der erste ist der Standarddrucker."""
+    from stowly_print.drivers import build_driver
+    from stowly_print.service import PrinterEntry, PrintService, StaticPrinters
+    from stowly_print.store import MemoryStore
+
+    entries = [
+        PrinterEntry(
+            name=printer.name, driver_name=printer.driver, model=printer.model, driver=build_driver(printer)
+        )
+        for printer in config.printers
+    ]
+    return PrintService(StaticPrinters(entries), MemoryStore())
+
+
+def build_app(config: ServiceConfig, service):
+    """Die HTTP-Schnittstelle des eigenständigen Dienstes: mit CORS, Seite ``/p`` und Zustand des Rechners."""
+    from stowly_print.health import read_host_health
+    from stowly_print.http import TokenAuthorizer, create_app
+
+    return create_app(
+        service,
+        authorize=TokenAuthorizer(config.token),
+        origins=config.origins,
+        standalone=True,
+        host_health=read_host_health,
+    )
+
+
+def _usable_tls(listener: Listener) -> bool:
+    """Prüft Zertifikat und Schlüssel vorab, damit ein Fehler dort den HTTP-Zugang nicht mitreißt."""
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(listener.certificate), str(listener.key))
+    except (OSError, ssl.SSLError) as exc:
+        log.error(
+            "HTTPS bleibt aus: Zertifikat %s oder Schlüssel %s ist nicht brauchbar (%s).",
+            listener.certificate,
+            listener.key,
+            exc,
+        )
+        return False
+    return True
+
+
+def serve(config: ServiceConfig) -> int:
+    import uvicorn
+
+    listeners = [config.http] if config.http is not None else []
+    if config.https is not None and _usable_tls(config.https):
+        listeners.append(config.https)
+    if not listeners:
+        log.error("Kein Zugang lässt sich öffnen: Der Dienst startet nicht.")
+        return 1
+
+    service = build_service(config)
+    service.start()
+    app = build_app(config, service)
+
+    servers: list[uvicorn.Server] = []
+    for listener in listeners:
+        options = {}
+        if listener.tls:
+            options = {"ssl_certfile": str(listener.certificate), "ssl_keyfile": str(listener.key)}
+        servers.append(
+            uvicorn.Server(
+                uvicorn.Config(
+                    app,
+                    host=listener.host,
+                    port=listener.port,
+                    log_level=config.log_level,
+                    log_config=None,
+                    access_log=False,
+                    server_header=False,
+                    lifespan="off",
+                    timeout_graceful_shutdown=5,
+                    **options,
+                )
+            )
+        )
+
+    stop = threading.Event()
+
+    def run(server: "uvicorn.Server") -> None:
+        try:
+            server.run()
+        except SystemExit:
+            # uvicorn beendet sich so, wenn es den Port nicht bekommt.
+            pass
+        except Exception:
+            log.exception("Ein Zugang des Druckdienstes ist ausgefallen.")
+        finally:
+            stop.set()
+
+    def on_signal(_number: int, _frame: object) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+    if hasattr(signal, "SIGBREAK"):  # Windows: Strg+Untbr
+        signal.signal(signal.SIGBREAK, on_signal)
+
+    # Kein Thread als Hintergrund-Thread: Beim Beenden sollen laufende Antworten noch hinausgehen.
+    threads = [
+        threading.Thread(target=run, args=(server,), name=f"stowly-print-http-{index}")
+        for index, server in enumerate(servers)
+    ]
+    for thread in threads:
+        thread.start()
+    for listener in listeners:
+        log.info(
+            "Druckdienst %s hört auf %s://%s:%d",
+            __version__,
+            "https" if listener.tls else "http",
+            listener.host,
+            listener.port,
+        )
+    printers = ", ".join(f"{printer.name} ({printer.driver})" for printer in config.printers)
+    log.info("Drucker: %s. Erlaubte Ursprünge: %s", printers, ", ".join(config.origins) or "keine")
+
+    try:
+        # In Abständen aufwachen: Unter Windows käme Strg+C sonst nicht durch.
+        while not stop.wait(0.5):
+            pass
+    except KeyboardInterrupt:
+        pass
+    failed = any(not server.started for server in servers)
+    # Erst die Wartenden wecken, dann die Zugänge schließen: Sonst hielte ein ?wait=30 das Beenden auf.
+    service.close(grace_s=2.0)
+    for server in servers:
+        server.should_exit = True
+    for thread in threads:
+        thread.join(timeout=15)
+    if failed:
+        log.error("Mindestens ein Zugang ließ sich nicht öffnen (Port belegt?).")
+        return 1
+    return 0
+
+
+def sample(out: Path) -> int:
+    from stowly_print import render
+    from stowly_print.templates import load_builtin
+
+    out.mkdir(parents=True, exist_ok=True)
+    fonts = render.default_fonts()
+    for name, source in fonts.describe().items():
+        print(f"Schrift {name}: {source}")
+    for name, data in SAMPLES.items():
+        template = load_builtin(name.split("-")[0])
+        image, report = render.render_with_report(template, data, fonts=fonts)
+        path = out / f"{name}.png"
+        image.save(path, format="PNG", optimize=True)
+        print(f"{path}: {image.size[0]} × {image.size[1]} Pixel")
+        for placed in report:
+            if placed.type == "text" and placed.drawn:
+                note = " (gekürzt)" if placed.truncated else ""
+                print(f"    {placed.size_mm:g} mm: {' / '.join(placed.lines)}{note}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m stowly_print", description="Stowly-Druckdienst")
+    parser.add_argument("--version", action="version", version=f"stowly-print {__version__}")
+    commands = parser.add_subparsers(dest="command", required=True)
+    serve_parser = commands.add_parser("serve", help="Druckdienst starten (HTTP und HTTPS)")
+    serve_parser.add_argument("--config", required=True, type=Path, help="Konfigurationsdatei (TOML)")
+    sample_parser = commands.add_parser("sample", help="Beispiel-Etiketten als PNG rendern, ohne zu drucken")
+    sample_parser.add_argument("--out", required=True, type=Path, help="Verzeichnis für die PNG-Dateien")
+    arguments = parser.parse_args(argv)
+
+    if arguments.command == "sample":
+        configure_logging("info")
+        return sample(arguments.out)
+
+    try:
+        config = load_config(arguments.config)
+    except ConfigurationError as exc:
+        print(f"Konfiguration: {exc}", file=sys.stderr)
+        return 2
+    configure_logging(config.log_level)
+    return serve(config)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

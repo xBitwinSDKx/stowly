@@ -223,6 +223,42 @@
 }
 
 /*
+ * Mit Produktbildern trägt die erste Spalte zusätzlich das Bild. Damit der Name seinen
+ * Platz behält, stehen mehrere Zonen untereinander statt nebeneinander (die Zeile ist durch
+ * das Bild ohnehin höher), und die Zellen rücken etwas zusammen.
+ */
+.withThumbs:not(.compact, .noZone) {
+  --cols: minmax(11rem, 1fr) fit-content(10.5rem) max-content max-content max-content;
+}
+
+.withThumbs:not(.compact) .th,
+.withThumbs:not(.compact) .td {
+  padding-right: var(--space-3);
+  padding-left: var(--space-3);
+}
+
+.withThumbs:not(.compact) .th:first-child,
+.withThumbs:not(.compact) .td:first-child {
+  padding-left: var(--space-5);
+}
+
+.withThumbs:not(.compact) .th:last-child,
+.withThumbs:not(.compact) .td:last-child {
+  padding-right: var(--space-5);
+}
+
+/* Reicht die Spalte nicht für Bild und Namen, geht der Name vor: Das Bild fällt weg. */
+.withThumbs .td:first-child {
+  container-type: inline-size;
+}
+
+@container (max-width: 11.5rem) {
+  .thumb {
+    display: none;
+  }
+}
+
+/*
  * Browser ohne Unterraster (ältere iPads): feste Spalten statt gemeinsam vermessener.
  * Die Breiten in rem wachsen mit der Schriftgröße mit.
  */

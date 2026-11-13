@@ -2,16 +2,21 @@
  * Die App als Ganzes auf der Attrappe: Anmeldung, Rahmen, Navigation, Hinweise.
  * Zeigt zugleich, wie sich Ansichten mit `renderApp` (createMockCore) testen lassen.
  */
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Suspense } from "react";
+import { createMemoryRouter } from "react-router";
+import { RouterProvider } from "react-router/dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { CoreError, ROUTES, type Core } from "@/contract";
-import { createMockCore, MOCK_PASSWORD, MockScanPage } from "@/mock";
+import { createMockCore, createSampleData, DEVICE_IDS, MOCK_PASSWORD, MockScanPage, sampleUuid } from "@/mock";
 import { setTestViewport } from "@/ui/testing";
 
 import { App } from "./App";
+import { isLoadError, lazyPage } from "./pages";
 import { renderApp } from "./render.test-setup";
+import { RouteError } from "./RouteError";
 
 function mainNavigation(): HTMLElement {
   return screen.getByRole("navigation", { name: "Hauptnavigation" });
@@ -37,7 +42,7 @@ describe("App", () => {
   it("führt über die kleinen Symbole und das Geräte-Menü in die weiteren Bereiche", async () => {
     renderApp();
     const more = screen.getByRole("navigation", { name: "Weitere Bereiche" });
-    expect(within(more).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(["Warnungen", "Lösch-Historie", "Drucker", "Sync-Status"]);
+    expect(within(more).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(["Warnungen", "Lösch-Historie", "Drucker: 4 Etiketten offen", "Sync-Status"]);
 
     await userEvent.click(within(more).getByRole("link", { name: "Lösch-Historie" }));
     expect(await screen.findByRole("heading", { name: "Lösch-Historie" })).toBeInTheDocument();
@@ -301,7 +306,7 @@ describe("Rahmen am Handy", () => {
       "Einstellungen",
       "Warnungen",
       "Lösch-Historie",
-      "Drucker",
+      "Drucker4 offen",
       "Sync-StatusAktuell",
     ]);
 
@@ -390,5 +395,241 @@ describe("Titel des Browser-Tabs", () => {
     renderApp({}, ROUTES.scan);
     await screen.findByRole("heading", { name: "Scannen", level: 1 });
     expect(document.title).toBe("Scannen · Stowly");
+  });
+});
+
+describe("Etiketten im Rahmen", () => {
+  it("zeigt die Zahl der offenen Etiketten am Drucker-Symbol und im Menü am Handy", async () => {
+    const core = renderApp();
+    await screen.findByRole("heading", { name: "Bestand" });
+    const more = screen.getByRole("navigation", { name: "Weitere Bereiche" });
+    const link = within(more).getByRole("link", { name: "Drucker: 4 Etiketten offen" });
+    expect(link).toHaveTextContent("4");
+
+    // Ein Etikett weniger offen: Die Zahl folgt.
+    await core.print.cancel(sampleUuid(4, 1));
+    expect(await within(more).findByRole("link", { name: "Drucker: 3 Etiketten offen" })).toBeInTheDocument();
+    cleanup();
+
+    // Ohne offene Etiketten steht dort nur das Symbol.
+    renderApp({ data: { printJobs: [] } });
+    await screen.findByRole("heading", { name: "Bestand" });
+    expect(within(screen.getByRole("navigation", { name: "Weitere Bereiche" })).getByRole("link", { name: "Drucker" })).toBeInTheDocument();
+    cleanup();
+
+    setTestViewport(375);
+    renderApp();
+    await screen.findByRole("heading", { name: "Bestand" });
+    await userEvent.click(screen.getByRole("button", { name: "Menü" }));
+    expect(within(screen.getByRole("dialog", { name: "Menü" })).getByRole("link", { name: /Drucker/ })).toHaveTextContent("4 offen");
+  });
+
+  it("fragt unter der Kopfzeile, ob ein Etikett gedruckt wurde: Ja vermerkt es", async () => {
+    const core = renderApp();
+    const banner = (await screen.findByText("Wurde das Etikett gedruckt?")).closest('[role="status"]') as HTMLElement;
+    expect(banner).toHaveTextContent("Basmati Reis");
+    expect(banner).toHaveTextContent("Der Ausgang ist unklar.");
+    await userEvent.click(within(banner).getByRole("button", { name: "Ja" }));
+    await waitFor(() => expect(core.data.printJobs.get()?.find((job) => job.id === sampleUuid(4, 3))?.state).toBe("printed"));
+    expect(screen.queryByText("Wurde das Etikett gedruckt?")).not.toBeInTheDocument();
+  });
+
+  it("bietet nach einem Nein an, erneut zu drucken", async () => {
+    const core = renderApp();
+    const banner = (await screen.findByText("Wurde das Etikett gedruckt?")).closest('[role="status"]') as HTMLElement;
+    await userEvent.click(within(banner).getByRole("button", { name: "Nein" }));
+    await waitFor(() => expect(core.data.printJobs.get()?.find((job) => job.id === sampleUuid(4, 3))).toMatchObject({ state: "failed", error: "not_printed" }));
+    const before = core.data.printJobs.get()?.length ?? 0;
+    await userEvent.click(await screen.findByRole("button", { name: "Erneut drucken" }));
+    await waitFor(() => expect(core.data.printJobs.get()).toHaveLength(before + 1));
+  });
+
+  it("fasst mehrere unklare Etiketten zusammen und führt zum Klären in die Drucker-Ansicht", async () => {
+    const data = createSampleData();
+    const printJobs = data.printJobs.map((job) => (job.id === sampleUuid(4, 1) ? { ...job, state: "unknown" as const, error: "handoff" } : job));
+    const core = renderApp({ data: { printJobs } });
+    const banner = (await screen.findByText("Wurden 2 Etiketten gedruckt?")).closest('[role="status"]') as HTMLElement;
+    await userEvent.click(within(banner).getByRole("link", { name: "Einzeln klären" }));
+    expect(await screen.findByRole("heading", { name: "Drucker", level: 1 })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#etiketten");
+    // In der Drucker-Ansicht steht die Frage bei den Etiketten; der Hinweis im Rahmen entfällt dort.
+    expect(screen.queryByText("Wurden 2 Etiketten gedruckt?")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Wurden diese Etiketten gedruckt?" })).toBeInTheDocument();
+
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Bestand" }));
+    const again = (await screen.findByText("Wurden 2 Etiketten gedruckt?")).closest('[role="status"]') as HTMLElement;
+    await userEvent.click(within(again).getByRole("button", { name: "Alle gedruckt" }));
+    await waitFor(() => expect(core.data.printJobs.get()?.some((job) => job.state === "unknown")).toBe(false));
+    expect(screen.queryByText("Wurden 2 Etiketten gedruckt?")).not.toBeInTheDocument();
+  });
+
+  it("unterbricht das Scannen nicht: Die Scan-Ansicht liegt außerhalb des Rahmens", async () => {
+    renderApp({}, ROUTES.scan);
+    await screen.findByRole("heading", { name: "Scannen", level: 1 });
+    expect(screen.queryByText("Wurde das Etikett gedruckt?")).not.toBeInTheDocument();
+  });
+});
+
+describe("App-Lebenslauf", () => {
+  it("sperrt die ganze App, wenn ein anderer Tab aktualisiert hat: eine einzige Schaltfläche", async () => {
+    const core = renderApp({ scenarios: ["update-required", "update"] });
+    const applyUpdate = vi.spyOn(core.app, "applyUpdate");
+    const lock = await screen.findByRole("dialog", { name: "Stowly wurde aktualisiert" });
+    expect(lock).toHaveTextContent("Stowly wurde in einem anderen Tab aktualisiert.");
+    expect(within(lock).getAllByRole("button")).toHaveLength(1);
+    expect(within(lock).queryByRole("button", { name: "Schließen" })).not.toBeInTheDocument();
+    // Der ruhige Hinweis „Neue Version" tritt hinter die Sperre zurück.
+    expect(screen.queryByText("Neue Version")).not.toBeInTheDocument();
+
+    // Escape schließt die Sperre nicht.
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: "Stowly wurde aktualisiert" })).toBeInTheDocument();
+
+    await userEvent.click(within(lock).getByRole("button", { name: "Neu laden" }));
+    expect(applyUpdate).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Stowly wurde aktualisiert" })).not.toBeInTheDocument());
+  });
+
+  it("legt die Sperre auch über die Anmeldung und die Scan-Ansicht", async () => {
+    renderApp({ scenarios: ["update-required", "signed-out"] });
+    expect(await screen.findByRole("dialog", { name: "Stowly wurde aktualisiert" })).toBeInTheDocument();
+    cleanup();
+    renderApp({ scenarios: ["update-required"] }, ROUTES.scan);
+    expect(await screen.findByRole("dialog", { name: "Stowly wurde aktualisiert" })).toBeInTheDocument();
+  });
+
+  it("bietet die Installation einmalig an und lässt sich ausblenden", async () => {
+    const core = renderApp({ scenarios: ["installable"] });
+    const promptInstall = vi.spyOn(core.app, "promptInstall");
+    const hint = (await screen.findByText("Stowly als App installieren")).closest("div[class]")?.parentElement as HTMLElement;
+    expect(hint).toHaveTextContent("Installiert startet Stowly vom Home-Bildschirm wie eine App");
+    await userEvent.click(screen.getByRole("button", { name: "Später" }));
+    expect(screen.queryByText("Stowly als App installieren")).not.toBeInTheDocument();
+    expect(localStorage.getItem("stowly.ui.install-hint.dismissed")).toBe("1");
+    expect(promptInstall).not.toHaveBeenCalled();
+    cleanup();
+
+    // Ausgeblendet bleibt ausgeblendet; die Einstellungen bieten die Installation weiter an.
+    localStorage.setItem("stowly.ui.install-hint.dismissed", "1");
+    renderApp({ scenarios: ["installable"] });
+    await screen.findByRole("heading", { name: "Bestand" });
+    expect(screen.queryByText("Stowly als App installieren")).not.toBeInTheDocument();
+  });
+
+  it("installiert auf Wunsch aus dem Hinweis heraus", async () => {
+    const core = renderApp({ scenarios: ["installable"] });
+    await screen.findByText("Stowly als App installieren");
+    await userEvent.click(screen.getByRole("button", { name: "Installieren" }));
+    await waitFor(() => expect(core.app.state.get()?.installed).toBe(true));
+    expect(screen.queryByText("Stowly als App installieren")).not.toBeInTheDocument();
+  });
+
+  it("zeigt auf dem iPhone die Anleitung in Kurzform und führt zur ausführlichen", async () => {
+    renderApp({ scenarios: ["ios"] });
+    expect(await screen.findByText("Stowly zum Home-Bildschirm hinzufügen")).toBeInTheDocument();
+    expect(screen.getByText(/In Safari auf „Teilen“ tippen, dann auf „Zum Home-Bildschirm“\./)).toBeInTheDocument();
+    expect(screen.getByText(/löscht Safari die lokalen Daten nach sieben Tagen ohne Nutzung/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("link", { name: "Anleitung" }));
+    expect(await screen.findByRole("heading", { name: "Einstellungen" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Diese App" })).toHaveTextContent("Installation auf dem iPhone");
+  });
+
+  it("zeigt nichts davon, wenn Stowly installiert ist oder der Browser nichts anbietet", async () => {
+    renderApp();
+    await screen.findByRole("heading", { name: "Bestand" });
+    expect(screen.queryByText("Stowly als App installieren")).not.toBeInTheDocument();
+    expect(screen.queryByText("Stowly zum Home-Bildschirm hinzufügen")).not.toBeInTheDocument();
+  });
+});
+
+describe("Ende der Sitzung", () => {
+  it("schließt offene Meldungen samt „Rückgängig“, wenn das Gerät gesperrt wird", async () => {
+    const core = renderApp();
+    await screen.findByRole("heading", { name: "Bestand" });
+    // Eine Packung entnehmen: Die Meldung bietet „Rückgängig" an.
+    await userEvent.click(screen.getByRole("button", { name: "Löschen: Butter" }));
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: /Alle 2 Packungen/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /2 entnehmen/ }));
+    expect(await screen.findByRole("button", { name: "Rückgängig" })).toBeInTheDocument();
+
+    act(() => core.control.revoke());
+    expect(await screen.findByText("Dieses Gerät wurde abgemeldet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rückgängig" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/verbraucht/)).not.toBeInTheDocument();
+    // Der Vorschlag für den Namen ist der bisherige.
+    expect(screen.getByLabelText("Name dieses Geräts")).toHaveValue("Dieses Gerät");
+    expect(core.session.state.get()).toMatchObject({ status: "signed_out", reason: "revoked", last_device_name: "Dieses Gerät" });
+    void DEVICE_IDS;
+  });
+
+  it("schließt sie auch beim Abmelden", async () => {
+    const core = renderApp();
+    await screen.findByRole("heading", { name: "Bestand" });
+    await core.print.cancel(sampleUuid(4, 1));
+    await userEvent.click(screen.getByRole("button", { name: "Löschen: Olivenöl" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Entnehmen" }));
+    expect(await screen.findByRole("button", { name: "Rückgängig" })).toBeInTheDocument();
+    await core.session.logout({ discard_pending: true });
+    expect(await screen.findByText("Abgemeldet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rückgängig" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Nachgeladene Ansichten", () => {
+  it("erkennt, wenn ein Teil der App nicht geladen werden konnte", () => {
+    expect(isLoadError(new TypeError("Failed to fetch dynamically imported module: https://stowly.home/assets/zones-abc.js"))).toBe(true);
+    expect(isLoadError(new TypeError("error loading dynamically imported module"))).toBe(true);
+    expect(isLoadError(new TypeError("Importing a module script failed."))).toBe(true);
+    expect(isLoadError(new Error("Unable to preload CSS for /assets/zones-abc.css"))).toBe(true);
+    expect(isLoadError(new Error("Kamera kaputt"))).toBe(false);
+    expect(isLoadError("irgendwas")).toBe(false);
+  });
+
+  it("zeigt eine Meldung mit „Neu laden“ statt eines leeren Schirms, wenn ein Teil nicht lädt", async () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const Broken = lazyPage(() => Promise.reject(new TypeError("Failed to fetch dynamically imported module: https://stowly.home/assets/zones-abc.js")));
+    const router = createMemoryRouter([
+      {
+        path: "/",
+        errorElement: <RouteError />,
+        element: (
+          <Suspense fallback={<p>Lädt …</p>}>
+            <Broken />
+          </Suspense>
+        ),
+      },
+      { path: ROUTES.stock, element: <p>Bestand</p> },
+    ]);
+    render(<RouterProvider router={router} />);
+    expect(await screen.findByRole("heading", { name: "Dieser Teil der App ließ sich nicht laden" })).toBeInTheDocument();
+    expect(screen.getByText(/„Neu laden“ holt den aktuellen Stand; die Daten sind davon nicht betroffen\./)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Neu laden" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Zum Bestand" })).toBeInTheDocument();
+    // Die rohe Fehlermeldung des Browsers bleibt dem Anwender erspart.
+    expect(screen.queryByText(/dynamically imported module/)).not.toBeInTheDocument();
+    quiet.mockRestore();
+  });
+
+  it("zeichnet eine vorab geholte Ansicht sofort, ohne Ladeanzeige", async () => {
+    const Ready = lazyPage(() => Promise.resolve(() => <p>Inhalt der Ansicht</p>));
+    await Ready.preload();
+    render(
+      <Suspense fallback={<p>Lädt …</p>}>
+        <Ready />
+      </Suspense>,
+    );
+    expect(screen.getByText("Inhalt der Ansicht")).toBeInTheDocument();
+    cleanup();
+
+    // Nicht vorab geholt: erst die Ladeanzeige, dann der Inhalt.
+    const Late = lazyPage(() => Promise.resolve(() => <p>Später Inhalt</p>));
+    render(
+      <Suspense fallback={<p>Lädt …</p>}>
+        <Late />
+      </Suspense>,
+    );
+    expect(screen.getByText("Lädt …")).toBeInTheDocument();
+    expect(await screen.findByText("Später Inhalt")).toBeInTheDocument();
   });
 });

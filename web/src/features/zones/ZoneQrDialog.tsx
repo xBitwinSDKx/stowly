@@ -1,7 +1,13 @@
-import type { Zone } from "@/contract";
-import { PrintSheet, useReturnFocus } from "@/ui";
+import { useState } from "react";
+
+import { useCore, type Zone } from "@/contract";
+import { LabelImage } from "@/features/printers/LabelImage";
+import { LabelStatus } from "@/features/printers/LabelStatus";
+import { printerForZone } from "@/features/printers/model";
+import { usePrinting } from "@/features/printers/usePrinting";
+import { errorText, Notice, PrintSheet } from "@/ui";
 import { Button, Dialog } from "@/ui/base";
-import { PrinterIcon } from "@/ui/icons";
+import { EyeIcon, PrinterIcon, TagIcon } from "@/ui/icons";
 
 import { ZoneQr } from "./ZoneQr";
 import styles from "./ZoneQrDialog.module.css";
@@ -13,27 +19,59 @@ export interface ZoneQrDialogProps {
 }
 
 /**
- * Zeigt den QR-Code einer Zone groß genug, um ihn vom Bildschirm zu scannen, und druckt
- * ihn über den Browser. Der Druck auf dem Etikettendrucker folgt in Runde 2.
+ * Zeigt den QR-Code einer Zone groß genug, um ihn vom Bildschirm zu scannen, und druckt ihn:
+ * als Etikett auf dem Etikettendrucker (wenn es einen gibt) oder über den Browser auf Papier.
  */
 export function ZoneQrDialog({ zones, onClose }: ZoneQrDialogProps) {
-  useReturnFocus();
+  const core = useCore();
+  const printing = usePrinting();
   const single = zones.length === 1 ? zones[0] : undefined;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState(false);
+  /** Die hier angeforderten Etiketten: Darunter steht, was aus ihnen wird. */
+  const [jobs, setJobs] = useState<readonly string[]>([]);
+
+  const target = single ? printerForZone(single.id, printing.data) : undefined;
+
+  async function printLabels() {
+    setBusy(true);
+    setError(null);
+    try {
+      const created: string[] = [];
+      for (const zone of zones) {
+        created.push((await core.print.requestZoneLabel(zone.id)).id);
+      }
+      setJobs(created);
+    } catch (caught) {
+      setError(errorText(caught, { not_found: "Die Zone gibt es nicht mehr, oder es ist kein Drucker mehr eingerichtet." }));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <>
       <Dialog
         open
-        onClose={onClose}
+        onClose={busy ? () => undefined : onClose}
         title={single ? `QR-Code: ${single.name}` : "QR-Codes aller Zonen"}
         size={single ? "sm" : "lg"}
         variant="sheet"
         footer={
           <>
-            <Button onClick={onClose}>Schließen</Button>
-            <Button variant="primary" icon={<PrinterIcon />} onClick={() => window.print()}>
-              Drucken
+            <Button onClick={onClose} disabled={busy}>
+              Schließen
             </Button>
+            {printing.hasPrinter ? (
+              <Button variant="primary" icon={<TagIcon />} busy={busy} onClick={() => void printLabels()}>
+                {single ? "Als Etikett drucken" : "Alle als Etikett drucken"}
+              </Button>
+            ) : (
+              <Button variant="primary" icon={<PrinterIcon />} onClick={() => window.print()}>
+                Drucken
+              </Button>
+            )}
           </>
         }
       >
@@ -55,6 +93,36 @@ export function ZoneQrDialog({ zones, onClose }: ZoneQrDialogProps) {
               ? `Beim Scannen erfasst, wechselt dieser Code in die Zone „${single.name}“. Ausgedruckt und am Lagerort aufgehängt, geht das mit einer Hand.`
               : "Beim Scannen erfasst, wechselt ein Code in seine Zone. Ausgedruckt und am Lagerort aufgehängt, geht das mit einer Hand."}
           </p>
+
+          {printing.hasPrinter ? (
+            <>
+              <div className={styles.tools}>
+                {single ? (
+                  <Button size="sm" variant="ghost" icon={<EyeIcon />} aria-expanded={preview} onClick={() => setPreview(!preview)}>
+                    Vorschau des Etiketts
+                  </Button>
+                ) : null}
+                <Button size="sm" variant="ghost" icon={<PrinterIcon />} onClick={() => window.print()}>
+                  Über den Browser drucken
+                </Button>
+              </div>
+              {single && preview ? (
+                <LabelImage load={() => core.print.preview({ kind: "zone", zone_id: single.id })} source={single.id} alt={`Vorschau des Etiketts für die Zone ${single.name}`} />
+              ) : null}
+              {jobs.length > 0 ? (
+                <LabelStatus jobIds={jobs} className={styles.status} />
+              ) : single ? (
+                <p className={styles.hint}>
+                  {target ? `Das Etikett druckt „${target.name}“.` : "Dieser Zone ist kein Drucker zugeordnet: Das Etikett bliebe ausstehend, bis es einen Standarddrucker gibt."}
+                </p>
+              ) : null}
+            </>
+          ) : null}
+          {error ? (
+            <Notice tone="danger" role="alert">
+              {error}
+            </Notice>
+          ) : null}
         </div>
       </Dialog>
 

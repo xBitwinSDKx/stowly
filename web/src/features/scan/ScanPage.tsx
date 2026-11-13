@@ -13,6 +13,7 @@ import {
   useLive,
   type HouseholdSettings,
   type Package,
+  type PrintJob,
   type Product,
   type ScanResult,
   type Zone,
@@ -22,15 +23,17 @@ import { Button, cx, Dialog, IconButton, Spinner, useToast } from "@/ui/base";
 
 import { ManualEntry } from "./ManualEntry";
 import { QuantityStepper } from "./QuantityStepper";
+import { labelStatus, labelStatusText } from "./label-status";
 import { evaluateScan } from "./scan-flow";
 import styles from "./ScanPage.module.css";
 import { StoreSheet, type StoreDecision, type StoreRequest } from "./StoreSheet";
-import { CAMERA_PROBLEMS, MANUAL_HINT } from "./texts";
+import { CAMERA_PROBLEMS, CLOSER_HINT, MANUAL_HINT } from "./texts";
 import { useScanner } from "./useScanner";
 import { ZoneBar } from "./ZoneBar";
 import { afterStore, chooseZone, currentZoneId, isTemporary, neighbourZoneId, primaryZoneId, showsZones, type ZoneContext, type ZoneOverride } from "./zone-logic";
 
 const NO_ZONES: Zone[] = [];
+const NO_JOBS: PrintJob[] = [];
 /** Bis die Einstellungen geladen sind: die Vorgaben des Protokolls. */
 const DEFAULT_ZONE_SETTINGS: Pick<HouseholdSettings, "zone_mode" | "primary_zone_id"> = { zone_mode: "primary", primary_zone_id: null };
 
@@ -40,7 +43,7 @@ const TOAST_NOTE = "scan-note";
 
 /** Was zuletzt geschah; steht über den Bedienelementen, bis die nächste Aktion es ersetzt. */
 type LastAction =
-  | { kind: "stored"; text: string; ids: string[] }
+  | { kind: "stored"; text: string; ids: string[]; jobIds: string[] }
   | { kind: "removed"; text: string; id: string; reason: "consumed" | "discarded" };
 
 function describePackage(pkg: Package, product: Product | undefined): string {
@@ -63,6 +66,8 @@ export function ScanPage() {
   const zones = useLive(core.data.zones, NO_ZONES);
   const settings = useLive(core.data.settings);
   const prefs = useLive(core.prefs.value, DEFAULT_DEVICE_PREFS);
+  const syncStatus = useLive(core.sync.status);
+  const printJobs = useLive(core.data.printJobs, NO_JOBS);
 
   const [quantity, setQuantity] = useState(1);
   const [override, setOverride] = useState<ZoneOverride>(null);
@@ -72,6 +77,9 @@ export function ScanPage() {
   const [last, setLast] = useState<LastAction | null>(null);
   /** Schützt davor, dass zwei Scans gleichzeitig ausgewertet werden. */
   const working = useRef(false);
+  /** Ein Scan, der während der Auswertung des vorigen eintraf: Er kommt danach dran. */
+  const waitingScan = useRef<ScanResult | null>(null);
+  const handleScanRef = useRef<(result: ScanResult) => void>(() => undefined);
 
   const zoneContext = useMemo<ZoneContext>(
     () => ({ zones, settings: settings ?? DEFAULT_ZONE_SETTINGS, remembered: prefs.scan_zone_id }),
@@ -165,14 +173,18 @@ export function ScanPage() {
   const handleScan = useCallback(
     async (result: ScanResult) => {
       if (working.current) {
+        // Der Scanner meldet jeden Code nur einmal: nicht verwerfen, sondern gleich danach auswerten.
+        waitingScan.current = result;
         return;
       }
       working.current = true;
+      let opened = false;
       try {
         const action = await evaluateScan(result, { ...core.data, zones });
         switch (action.type) {
           case "store":
             signal("notice");
+            opened = true;
             setStoreRequest({ barcode: action.barcode, product: action.product });
             break;
           case "remove":
@@ -212,9 +224,20 @@ export function ScanPage() {
       } finally {
         working.current = false;
       }
+      const next = waitingScan.current;
+      waitingScan.current = null;
+      // Hat sich eben der Dialog zum Einlagern geöffnet, gehört die Aufmerksamkeit ihm.
+      if (next && !opened) {
+        handleScanRef.current(next);
+      }
     },
     [core, fail, removePackage, selectZone, signal, toast, undoRemoval, zones],
   );
+
+  // Immer die jüngste Fassung, damit ein wartender Scan mit dem aktuellen Stand ausgewertet wird.
+  useEffect(() => {
+    handleScanRef.current = (result) => void handleScan(result);
+  }, [handleScan]);
 
   // ---------------------------------------------------------------- Einlagern
 
@@ -246,7 +269,7 @@ export function ScanPage() {
         const where = zonesVisible && zone ? ` nach ${zone.name}` : "";
         const text = `${ids.length} × ${title}${where} eingelagert`;
         signal("success");
-        setLast({ kind: "stored", text, ids });
+        setLast({ kind: "stored", text, ids, jobIds: stored.print_jobs.map((job) => job.id) });
         toast.show({
           id: TOAST_ACTION,
           message: `${text}: ${ids.join(", ")}`,
@@ -365,6 +388,8 @@ export function ScanPage() {
   }
 
   const problem = state.status === "error" && state.error ? CAMERA_PROBLEMS[state.error] : null;
+  // Was aus den Etiketten des letzten Einlagerns geworden ist: Der Halbsatz folgt dem Zustellen.
+  const labels = last?.kind === "stored" ? labelStatus(printJobs, last.jobIds) : null;
   const zoom = state.zoom;
   const zoomTarget = zoom ? (zoom.value > 1.5 ? Math.max(1, zoom.min) : Math.min(2, zoom.max)) : 1;
 
@@ -416,7 +441,12 @@ export function ScanPage() {
         {state.status === "running" ? (
           <>
             <div className={styles.frame} style={frameSize ? { ["--frame-size" as string]: `${frameSize}px` } : undefined} aria-hidden="true" />
-            <p className={styles.hint}>Barcode zum Einlagern, Etikett zum Entnehmen{zonesVisible ? ", Zonen-Etikett zum Wechseln" : ""}</p>
+            {state.too_small ? (
+              // Ein Etikett ist erkannt, aber zu weit weg: nichts buchen, nur sagen, was hilft.
+              <p className={cx(styles.hint, styles.closer)}>{CLOSER_HINT}</p>
+            ) : (
+              <p className={styles.hint}>Barcode zum Einlagern, Etikett zum Entnehmen{zonesVisible ? ", Zonen-Etikett zum Wechseln" : ""}</p>
+            )}
           </>
         ) : null}
         {state.status === "starting" || state.status === "idle" ? (
@@ -451,6 +481,7 @@ export function ScanPage() {
               {last.kind === "stored" ? (
                 <>
                   : <span className={styles.lastIds}>{last.ids.join(", ")}</span>
+                  {labels ? <span className={styles.lastLabels}> · {labelStatusText(labels, last.jobIds.length)}</span> : null}
                 </>
               ) : null}
             </p>
@@ -479,6 +510,7 @@ export function ScanPage() {
         quantity={quantity}
         onQuantity={setQuantity}
         zoneName={zonesVisible && zone ? zone.name : null}
+        lookupEnabled={syncStatus?.lookup_enabled ?? null}
         busy={busy}
         onConfirm={(decision) => void confirmStore(decision)}
         onCancel={() => setStoreRequest(null)}

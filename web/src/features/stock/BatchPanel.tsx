@@ -1,11 +1,15 @@
 import { formatDate } from "@/contract";
+import { useHasPrinter } from "@/features/printers/usePrinting";
 import { ExpiryLabel, PackageIds, ZoneLabel } from "@/ui";
 import { Button, cx } from "@/ui/base";
-import { ChevronUpIcon, PackagePlusIcon } from "@/ui/icons";
+import { ChevronUpIcon, PackagePlusIcon, PrinterIcon } from "@/ui/icons";
 import table from "@/ui/Table.module.css";
 
 import styles from "./BatchPanel.module.css";
 import type { StockDialogs } from "./dialogs";
+
+/** Die Chargen-Ansicht öffnet Dialoge, mehr braucht sie von ihnen nicht. */
+type DialogOpener = Pick<StockDialogs, "open">;
 import type { Batch, ProductGroup } from "./model";
 
 export interface BatchPanelProps {
@@ -16,7 +20,7 @@ export interface BatchPanelProps {
   multiZone: boolean;
   /** Genug Platz für eine Tabelle; sonst eine Liste aus Karten. */
   wide: boolean;
-  dialogs: StockDialogs;
+  dialogs: DialogOpener;
   onCollapse: () => void;
 }
 
@@ -31,10 +35,18 @@ function batchLabel(batch: Batch, multiZone: boolean): string {
  * eine Zeile je Kombination aus MHD und Zone, mit Menge und Packungs-IDs.
  */
 export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: BatchPanelProps) {
+  // Ohne Drucker fordert Stowly keine Etiketten an: Dann gibt es auch keinen Nachdruck.
+  const hasPrinter = useHasPrinter();
+
   function actions(batch: Batch) {
     const label = batchLabel(batch, multiZone);
     return (
       <>
+        {hasPrinter ? (
+          <Button size="sm" variant="ghost" icon={<PrinterIcon />} aria-label={`Etikett drucken: ${label}`} onClick={() => dialogs.open({ kind: "labels", package_ids: batch.ids })}>
+            Etikett
+          </Button>
+        ) : null}
         <Button size="sm" aria-label={`Bearbeiten: ${label}`} onClick={() => dialogs.open({ kind: "packages", package_ids: batch.ids })}>
           Bearbeiten
         </Button>

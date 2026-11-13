@@ -9,7 +9,7 @@
  * liegt ein <ToastProvider>.
  */
 export { Badge, type BadgeProps, type BadgeTone } from "./Badge";
-export { Button, IconButton, type ButtonProps, type ButtonSize, type ButtonVariant, type IconButtonProps } from "./Button";
+export { Button, ButtonLink, IconButton, type ButtonLinkProps, type ButtonProps, type ButtonSize, type ButtonVariant, type IconButtonProps } from "./Button";
 export { Card, type CardPadding, type CardProps, type CardTone } from "./Card";
 export { cx } from "./cx";
 export { Dialog, dialogFocus, dialogFocusAlways, type DialogProps } from "./Dialog";

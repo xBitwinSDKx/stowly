@@ -21,6 +21,8 @@ export interface ToastApi {
   /** Zeigt eine kurze Meldung am unteren Rand und liefert ihre Kennung. */
   show(options: ToastOptions): string;
   dismiss(id: string): void;
+  /** Schließt alle Meldungen, z. B. wenn die Sitzung endet: „Rückgängig“ hätte dann kein Ziel mehr. */
+  dismissAll(): void;
 }
 
 interface ToastItem extends ToastOptions {
@@ -45,6 +47,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       timers.current.delete(id);
     }
     setItems((current) => current.filter((item) => item.id !== id));
+  }, []);
+
+  const dismissAll = useCallback(() => {
+    for (const timer of timers.current.values()) {
+      clearTimeout(timer);
+    }
+    timers.current.clear();
+    setItems((current) => (current.length === 0 ? current : []));
   }, []);
 
   const show = useCallback(
@@ -79,7 +89,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const api = useMemo<ToastApi>(() => ({ show, dismiss }), [show, dismiss]);
+  const api = useMemo<ToastApi>(() => ({ show, dismiss, dismissAll }), [show, dismiss, dismissAll]);
 
   return (
     <ToastContext.Provider value={api}>

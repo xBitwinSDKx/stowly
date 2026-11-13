@@ -1,10 +1,353 @@
-.value {
+/* Drucker-Ansicht: Karten der Drucker, Zuordnung, Etiketten. Auch die Dialoge dazu. */
+
+.form {
   display: grid;
-  color: var(--color-text-muted);
-  text-align: right;
+  gap: var(--space-4);
+  min-width: 0;
 }
 
-.time {
-  color: var(--color-text-faint);
+.muted {
+  color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+
+.small {
+  max-width: 44rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.strong {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.warn {
+  color: var(--color-warn);
+}
+
+/* ---------------------------------------------------------------- Drucker */
+.printers {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.printer {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.printerHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.printerIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.printerTitle {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+
+.printerName {
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+
+.address {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.level {
+  flex: none;
+}
+
+.duties {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.dutiesLabel {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.dutyZone {
+  font-size: var(--text-sm);
+}
+
+.seen {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+/* Angaben zum Zustand: Beschriftung klein darüber, der Wert darunter, in seiner Farbe */
+.facts {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  margin: 0;
+}
+
+.fact {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-sunken);
+}
+
+.fact dt {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.fact dd {
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.fact-ok dd {
+  color: var(--color-text);
+}
+
+.fact-neutral dd {
+  color: var(--color-text-muted);
+  font-weight: var(--weight-normal);
+}
+
+.fact-warn {
+  border-color: color-mix(in oklch, var(--color-warn) 45%, transparent);
+  background: var(--color-warn-soft);
+}
+
+.fact-warn dd {
+  color: var(--color-warn);
+}
+
+.fact-danger {
+  border-color: color-mix(in oklch, var(--color-danger) 45%, transparent);
+  background: var(--color-danger-soft);
+}
+
+.fact-danger dd {
+  color: var(--color-danger);
+}
+
+.errors {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.errors li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.errors svg {
+  flex: none;
+  margin-top: 0.15em;
+}
+
+.host {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.hostTitle {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.printerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* ---------------------------------------------------------------- Zuordnung */
+.assign {
+  width: 19rem;
+  max-width: 100%;
+}
+
+/* ---------------------------------------------------------------- Etiketten */
+.report {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.group {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.groupHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+
+.groupTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+}
+
+.jobs {
+  min-width: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.jobs > li + li {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+/* Was zu klären ist, hebt sich ab: Bernstein wie alles, was Aufmerksamkeit braucht. */
+.asking {
+  border-color: color-mix(in oklch, var(--color-warn) 45%, transparent);
+  background: color-mix(in oklch, var(--color-warn) 6%, var(--color-surface));
+}
+
+.job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.jobText {
+  display: grid;
+  flex: 1 1 16rem;
+  gap: 2px;
+  min-width: 0;
+}
+
+.jobHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.jobTitle {
+  min-width: 0;
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.reason {
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.asking .reason {
+  color: var(--color-warn);
+}
+
+.hint {
+  max-width: 40rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.jobActions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  max-width: 100%;
+}
+
+.more {
+  justify-self: start;
+}
+
+.external {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+  font-weight: var(--weight-medium);
+}
+
+/* Schaltflächen der Nachfrage im Rahmen der App */
+.bannerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* ---------------------------------------------------------------- Dialog: Adressen */
+.urls {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.urlRow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.addUrl {
+  justify-self: start;
+}
+
+@media (min-width: 48rem) {
+  .printer {
+    padding: var(--space-5);
+  }
+
+  .job {
+    padding: var(--space-3) var(--space-5);
+  }
 }

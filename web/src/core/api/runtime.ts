@@ -4,11 +4,25 @@
  */
 import { CoreError } from "@/contract/errors";
 
+import type { PrintServiceClient } from "../print/client";
+import type { DeliveryEngine, DeliveryOutcome } from "../print/engine";
 import type { Mutation, Store } from "../store";
+
+/** Was `printers` und `print` vom Zustellen brauchen (src/core/print). */
+export interface PrintRuntime {
+  readonly engine: DeliveryEngine;
+  readonly client: PrintServiceClient;
+  /** Jetzt zustellen und nachfragen, auf Wunsch des Anwenders. Wirft nicht. */
+  flush(): Promise<DeliveryOutcome>;
+  /** Der Anwender hat einen Drucker erreicht: zustellen, sofern der Kern von selbst zustellt. */
+  afterProbe(): void;
+}
 
 export interface CoreRuntime {
   readonly store: Store;
   readonly now: () => Date;
+  /** Erfüllt sich, sobald der gespeicherte Zustand geladen ist. */
+  readonly ready: Promise<void>;
   /**
    * Eine Änderung des Anwenders: wartet, bis der Kern geladen ist, führt `build` als
    * Schreibvorgang aus und merkt danach einen Abgleich vor.

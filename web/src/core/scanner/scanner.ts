@@ -31,7 +31,7 @@ import {
 } from "./camera";
 import { ScanDeduper } from "./dedupe";
 import { createDetector, createZxingFallback, type CodeDetector, type DetectorKind, type Frame } from "./detector";
-import { classifyDetected, type DetectedCode } from "./formats";
+import { classifyDetected, isLabelTooSmall, type DetectedCode } from "./formats";
 import { ScreenWakeLock } from "./wake-lock";
 
 /** Abstand zwischen zwei Auswertungen: etwa zehn je Sekunde. */
@@ -46,6 +46,8 @@ const NATIVE_FAILURES_BEFORE_FALLBACK = 3;
 export const UNKNOWN_PATIENCE_MS = 500;
 /** War ein fremder Code länger als so nicht zu sehen, beginnt das Abwarten von vorn. */
 const UNKNOWN_GAP_MS = 1_000;
+/** So lange bleibt der Hinweis „Näher ran" stehen, nachdem das zu kleine Etikett zuletzt zu sehen war. */
+export const TOO_SMALL_LINGER_MS = 600;
 
 export type ScannerStatus =
   /** Die Kamera ist aus. */
@@ -77,6 +79,11 @@ export interface ScannerState {
   zoom: { min: number; max: number; step: number; value: number } | null;
   /** Der Bildschirm wird wach gehalten. */
   wake_lock: boolean;
+  /**
+   * Gezielt wird auf ein Etikett, das im Bild zu klein ist, um zu zählen (`MIN_LABEL_SIDE_RATIO`):
+   * Die Ansicht zeigt „Näher ran". Gebucht wird nichts.
+   */
+  too_small: boolean;
 }
 
 const INITIAL_STATE: ScannerState = {
@@ -88,6 +95,7 @@ const INITIAL_STATE: ScannerState = {
   torch: { available: false, on: false },
   zoom: null,
   wake_lock: false,
+  too_small: false,
 };
 
 /** Was der Scanner von außen braucht; in Tests durch Nachbildungen ersetzbar. */
@@ -134,10 +142,14 @@ export class Scanner {
   /** Der Aufrufer will scannen; bleibt auch wahr, während die App im Hintergrund ist. */
   private wanted = false;
   private paused = false;
+  /** Seit wann die Auswertung angehalten ist. */
+  private pausedAt = 0;
   private disposed = false;
   private listening = false;
   /** Der fremde Code, der gerade allein im Bild ist: seit wann, und wann zuletzt gesehen. */
   private unknownPending: { key: string; since: number; last: number } | null = null;
+  /** Wann zuletzt auf ein zu kleines Etikett gezielt wurde. */
+  private tooSmallAt = 0;
 
   private readonly onVisibility = () => {
     if (document.visibilityState === "hidden") {
@@ -206,13 +218,16 @@ export class Scanner {
 
   /** Hält die Auswertung an, ohne die Kamera zu schließen (z. B. solange ein Dialog offen ist). */
   pause(): void {
-    this.paused = true;
+    if (!this.paused) {
+      this.paused = true;
+      this.pausedAt = this.deps.now();
+    }
   }
 
   resume(): void {
     if (this.paused) {
       this.paused = false;
-      this.deduper.refresh(this.deps.now());
+      this.deduper.refresh(this.deps.now(), this.pausedAt);
     }
   }
 
@@ -336,7 +351,7 @@ export class Scanner {
     this.unknownPending = null;
     this.releaseCamera();
     this.wakeLock.release();
-    this.patch({ status: "idle", error: null, torch: { available: false, on: false }, zoom: null, wake_lock: false });
+    this.patch({ status: "idle", error: null, torch: { available: false, on: false }, zoom: null, wake_lock: false, too_small: false });
   }
 
   private releaseCamera(): void {
@@ -421,6 +436,10 @@ export class Scanner {
     let failures = 0;
     while (run === this.generation) {
       const started = this.deps.now();
+      // Der Hinweis „Näher ran" verschwindet kurz nachdem das Etikett nicht mehr zu sehen ist.
+      if (this.state.get().too_small && (this.paused || started - this.tooSmallAt > TOO_SMALL_LINGER_MS)) {
+        this.patch({ too_small: false });
+      }
       if (!this.paused) {
         const frame = this.grabFrame();
         const detector = this.detector;
@@ -517,6 +536,9 @@ export class Scanner {
    * - Fremde Codes (der Werbe-QR neben dem Barcode, ein verlesener Barcode) zählen nur, wenn
    *   nichts Bekanntes im Bild ist, und erst, wenn sie eine halbe Sekunde lang zu sehen waren:
    *   Der Barcode daneben wird oft einen Augenblick später lesbar.
+   * - Das Etikett einer Packung oder Zone zählt erst ab einer Mindestgröße im Bild
+   *   (`MIN_LABEL_SIDE_RATIO`, src/core/scanner/formats.ts). Ein kleineres gilt als nicht gesehen,
+   *   damit es beim Näherkommen sofort zählt. Wird gerade darauf gezielt, steht `too_small`.
    */
   private report(codes: readonly DetectedCode[], frame: Frame): void {
     if (codes.length === 0) {
@@ -524,16 +546,44 @@ export class Scanner {
     }
     const now = this.deps.now();
     const distance = (code: DetectedCode) => (code.center ? Math.hypot(code.center.x - frame.width / 2, code.center.y - frame.height / 2) : Number.MAX_VALUE);
-    // Jeder Wert einmal, der Mitte am nächsten zuerst.
+    // Jeder Wert einmal, der Mitte am nächsten zuerst. Etiketten, die im Bild zu klein sind
+    // (das Etikett im Regal dahinter), zählen nicht: Sie gelten als nicht gesehen.
     const entries = new Map<string, ScanResult>();
+    const tooSmall = new Map<string, ScanResult>();
+    /** Der Code, auf den gezielt wird, wenn die Größe keine Rolle spielte. */
+    let aimed: string | null = null;
+    let aimedKnown = false;
     for (const code of [...codes].sort((a, b) => distance(a) - distance(b))) {
       const key = `${code.format}:${code.rawValue}`;
-      if (!entries.has(key)) {
-        entries.set(key, classifyDetected(code));
+      if (entries.has(key) || tooSmall.has(key)) {
+        continue;
       }
+      const result = classifyDetected(code);
+      if (result.kind !== "unknown" && !aimedKnown) {
+        aimed = key;
+        aimedKnown = true;
+      } else if (aimed === null) {
+        aimed = key;
+      }
+      (isLabelTooSmall(code, frame.width) ? tooSmall : entries).set(key, result);
+    }
+    for (const key of tooSmall.keys()) {
+      // Ein eben gescanntes Etikett, das weggezogen wird, bleibt gesperrt, solange es zu sehen ist.
+      this.deduper.see(key, now);
     }
     const all = [...entries];
     const target = all.find(([, result]) => result.kind !== "unknown") ?? all[0];
+    if (aimed !== null && tooSmall.has(aimed) && (!target || target[1].kind === "unknown")) {
+      // Gezielt wird auf ein Etikett, das zu weit weg ist, und sonst ist nichts Gültiges im
+      // Bild: nichts buchen, sondern „Näher ran" zeigen. Nicht, wenn es eben erst gescannt wurde.
+      if (!this.deduper.suppressed(aimed, now)) {
+        this.tooSmallAt = now;
+        if (!this.state.get().too_small) {
+          this.patch({ too_small: true });
+        }
+      }
+      return;
+    }
     if (!target) {
       return;
     }

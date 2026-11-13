@@ -1,7 +1,7 @@
 import { useId, useMemo, useState, type FormEvent } from "react";
 
 import { formatDate, productSubtitle, productTitle, useCore, type RemovalReason } from "@/contract";
-import { Checkbox, errorText, FieldGroup, Notice, PackageId, packagesText, REMOVAL_REASON_LABELS, REMOVAL_REASON_OPTIONS, useReturnFocus, ZoneLabel } from "@/ui";
+import { Checkbox, errorText, FieldGroup, Notice, PackageId, packagesText, REMOVAL_REASON_LABELS, REMOVAL_REASON_OPTIONS, ZoneLabel } from "@/ui";
 import { Button, Dialog, SegmentedControl, useToast } from "@/ui/base";
 
 import styles from "./dialogs.module.css";
@@ -37,7 +37,6 @@ function byExpiry(a: StockEntry, b: StockEntry): number {
  * Danach bietet eine Meldung „Rückgängig" an; die Packungen liegen in der Lösch-Historie.
  */
 export function RemoveDialog({ stock, packageIds, initialSelection = "all", initialReason = "consumed", onClose }: RemoveDialogProps) {
-  useReturnFocus();
   const core = useCore();
   const toast = useToast();
   const formId = useId();

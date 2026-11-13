@@ -10,6 +10,7 @@ import { renderApp } from "@/app/render.test-setup";
 import { DEVICE_IDS } from "@/mock";
 import { resetThemeForTests, THEME_STORAGE_KEY } from "@/ui/theme";
 
+import { describeConnection, describeLookup } from ".";
 import { sortDevices } from "./DevicesSection";
 
 function value<T>(live: Live<T>): T {
@@ -228,16 +229,21 @@ describe("Über und Abmelden", () => {
     await ready();
     const about = section("Über");
     expect(about).toHaveTextContent("Stowly 0.0.0-test · Server 0.1.0");
-    expect(about).toHaveTextContent("Lokaler Speicher");
-    expect(about).toHaveTextContent("unbekannt");
-    expect(about).toHaveTextContent("HTTPS");
+    // Die Tests laufen unter http://localhost: Das ist eine lokale, für den Browser sichere Adresse.
+    expect(about).toHaveTextContent("lokal (Entwicklung)");
     expect(about).toHaveTextContent("Open Food Facts (ODbL)");
+    const appSection = section("Diese App");
+    expect(appSection).toHaveTextContent("Lokaler Speicher");
+    expect(appSection).toHaveTextContent("unbekannt");
   });
 
   it("sagt, wenn die Adresse kein Scannen erlaubt", async () => {
     renderApp({ scenarios: ["insecure"] }, ROUTES.settings);
     await ready();
-    expect(section("Über")).toHaveTextContent("http (eingeschränkt)");
+    // Maßgeblich ist, was der Kern meldet: ohne sicheren Kontext kein Scannen, auch wenn die Adresse lokal ist.
+    expect(section("Über")).toHaveTextContent("ohne sicheren Kontext");
+    expect(section("Über")).toHaveTextContent("Scannen, Offline-Betrieb und Installation verweigert der Browser hier");
+    expect(section("Diese App")).toHaveTextContent("Über eine http-Adresse lässt der Browser keine Installation zu.");
   });
 
   it("meldet nach Rückfrage ab", async () => {
@@ -248,5 +254,116 @@ describe("Über und Abmelden", () => {
     await waitFor(() => expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "logout" }));
     // Die nächste Anmeldung beginnt wieder beim Bestand.
     await waitFor(() => expect(window.location.pathname).toBe(ROUTES.stock));
+  });
+});
+
+describe("Diese App: Installation und Speicher", () => {
+  it("bietet die Installation an, wenn der Browser sie anbietet, und zeigt danach nichts mehr davon", async () => {
+    const core = renderApp({ scenarios: ["installable"] }, ROUTES.settings);
+    const promptInstall = vi.spyOn(core.app, "promptInstall");
+    await ready();
+    await userEvent.click(within(section("Diese App")).getByRole("button", { name: "Stowly installieren" }));
+    expect(promptInstall).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(section("Diese App")).toHaveTextContent("Stowly läuft als installierte App."));
+    expect(within(section("Diese App")).queryByRole("button", { name: "Stowly installieren" })).not.toBeInTheDocument();
+    // Auch der einmalige Hinweis im Rahmen ist damit fort.
+    expect(screen.queryByText("Stowly als App installieren")).not.toBeInTheDocument();
+  });
+
+  it("zeigt auf dem iPhone die Anleitung mit dem Grund", async () => {
+    renderApp({ scenarios: ["ios"] }, ROUTES.settings);
+    await ready();
+    const app = section("Diese App");
+    expect(app).toHaveTextContent("Installation auf dem iPhone");
+    expect(app).toHaveTextContent("Ohne Installation löscht Safari die lokalen Daten nach sieben Tagen ohne Nutzung.");
+    const steps = within(app).getAllByRole("listitem").map((item) => item.textContent);
+    expect(steps[0]).toContain("Teilen");
+    expect(steps[1]).toContain("Zum Home-Bildschirm");
+    expect(within(app).queryByRole("button", { name: "Stowly installieren" })).not.toBeInTheDocument();
+  });
+
+  it("sagt ohne Angebot des Browsers, wo die Installation zu finden ist", async () => {
+    renderApp({}, ROUTES.settings);
+    await ready();
+    expect(section("Diese App")).toHaveTextContent("Dieser Browser bietet gerade keine Installation an.");
+    expect(section("Diese App")).toHaveTextContent("nicht installiert");
+  });
+
+  it("erklärt nicht zugesagten Speicher und fragt auf Wunsch erneut an", async () => {
+    const base = renderApp({}, ROUTES.settings);
+    await ready();
+    // Der Browser hat abgelehnt (das meldet der Kern; die Attrappe kennt die Lage nicht von sich aus).
+    const state = base.app.state as unknown as { update(change: (value: object) => object): void };
+    state.update((current) => ({ ...current, storage_persistent: false }));
+    const app = section("Diese App");
+    expect(await within(app).findByText(/Der Browser darf die Kopie auf diesem Gerät löschen/)).toBeInTheDocument();
+
+    const request = vi.spyOn(base.app, "requestPersistence");
+    await userEvent.click(within(app).getByRole("button", { name: "Erneut anfragen" }));
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Der Browser behält die Daten auf diesem Gerät jetzt dauerhaft.")).toBeInTheDocument();
+    expect(section("Diese App")).toHaveTextContent("dauerhaft");
+    expect(within(section("Diese App")).queryByRole("button", { name: "Erneut anfragen" })).not.toBeInTheDocument();
+  });
+
+  it("sagt, wenn der Browser auch auf Nachfrage nicht zusagt", async () => {
+    const base = renderApp({}, ROUTES.settings);
+    await ready();
+    (base.app.state as unknown as { update(change: (value: object) => object): void }).update((current) => ({ ...current, storage_persistent: false }));
+    vi.spyOn(base.app, "requestPersistence").mockResolvedValue(false);
+    await userEvent.click(await within(section("Diese App")).findByRole("button", { name: "Erneut anfragen" }));
+    expect(await screen.findByText("Der Browser hat nicht zugesagt. Als installierte App stehen die Chancen besser.")).toBeInTheDocument();
+  });
+});
+
+describe("Zeilen „Verbindung“ und „Produktdaten“", () => {
+  it("nennt die Verbindung beim Namen: HTTPS, lokal oder http", () => {
+    expect(describeConnection({ protocol: "https:", hostname: "stowly.home" }, true)).toEqual({
+      value: "HTTPS",
+      hint: "Über die HTTPS-Adresse sind Scannen und Offline-Betrieb möglich.",
+    });
+    for (const hostname of ["localhost", "127.0.0.1", "[::1]", "app.localhost"]) {
+      expect(describeConnection({ protocol: "http:", hostname }, true).value, hostname).toBe("lokal (Entwicklung)");
+    }
+    expect(describeConnection({ protocol: "http:", hostname: "localhost" }, true).hint).toContain("wie eine sichere Adresse");
+    const lan = describeConnection({ protocol: "http:", hostname: "192.168.1.20" }, false);
+    expect(lan.value).toBe("http (eingeschränkt)");
+    expect(lan.hint).toContain("Scannen, Offline-Betrieb und Installation verweigert der Browser hier");
+    expect(lan.hint).toContain("Die HTTPS-Adresse von Stowly hebt das auf.");
+  });
+
+  it("lässt den Kern entscheiden, ob Scannen und Offline-Betrieb gehen", () => {
+    // Die Adresse sagt „sicher", der Kern meldet das Gegenteil: Dann gilt der Kern.
+    expect(describeConnection({ protocol: "https:", hostname: "stowly.home" }, false).hint).toContain("verweigert der Browser hier");
+    expect(describeConnection({ protocol: "http:", hostname: "localhost" }, false).hint).toContain("ohne sicheren Kontext");
+    // Noch unbekannt (der Kern lädt): kein falsches Versprechen bei http.
+    expect(describeConnection({ protocol: "http:", hostname: "192.168.1.20" }, undefined).hint).toContain("verweigert der Browser hier");
+  });
+
+  it("richtet die Produktdaten danach, ob der Server nachschlägt", async () => {
+    expect(describeLookup(true)).toEqual({ value: "Open Food Facts (ODbL)", hint: "Namen und Bilder zu unbekannten Barcodes schlägt der Server dort nach." });
+    expect(describeLookup(false).hint).toContain("Der Server schlägt keine Produktdaten nach (abgeschaltet).");
+    expect(describeLookup(null)).toEqual({ value: "noch unbekannt", hint: "Ob der Server Produktdaten nachschlägt, steht nach dem nächsten Abgleich fest." });
+    expect(describeLookup(undefined).value).toBe("noch unbekannt");
+
+    const core = renderApp({ scenarios: ["no-lookup"] }, ROUTES.settings);
+    await ready();
+    expect(section("Über")).toHaveTextContent("Der Server schlägt keine Produktdaten nach (abgeschaltet).");
+    expect(section("Über")).not.toHaveTextContent("Open Food Facts");
+    core.control.setLookupEnabled(true);
+    await waitFor(() => expect(section("Über")).toHaveTextContent("Open Food Facts (ODbL)"));
+  });
+});
+
+describe("Ungültige Eingaben in den Einstellungen", () => {
+  it("zeigt beim Umbenennen eines Geräts den genauen Satz des Kerns", async () => {
+    renderApp({}, ROUTES.settings);
+    await ready();
+    await userEvent.click(await within(section("Geräte")).findByRole("button", { name: "Umbenennen: Handy Küche" }));
+    const dialog = screen.getByRole("dialog", { name: "Gerät umbenennen" });
+    await userEvent.clear(within(dialog).getByLabelText("Name des Geräts"));
+    await userEvent.type(within(dialog).getByLabelText("Name des Geräts"), "n".repeat(61));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Der Name des Geräts ist zu lang (höchstens 60 Zeichen).");
   });
 });

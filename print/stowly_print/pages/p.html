@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Stowly: Etiketten drucken</title>
+<style>
+:root { color-scheme: light dark; --fg: #1c1b1a; --muted: #6b6762; --bg: #f7f5f2; --card: #ffffff; --line: #dedad4; --accent: #2f6f4f; --accent-fg: #ffffff; --bad: #a3271f; --warn: #8a5a00; }
+@media (prefers-color-scheme: dark) { :root { --fg: #f1efec; --muted: #a8a39c; --bg: #171615; --card: #22201e; --line: #3a3733; --accent: #6fbf95; --accent-fg: #0f1a14; --bad: #ff8b82; --warn: #f0c36a; } }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 1.25rem 1rem 3rem; font: 1.0625rem/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); }
+main { max-width: 34rem; margin: 0 auto; }
+h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+p { margin: .5rem 0; }
+.muted { color: var(--muted); }
+.note { margin: 1rem 0; padding: .75rem 1rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--card); }
+.note.bad { border-color: var(--bad); color: var(--bad); }
+button { display: block; width: 100%; margin: 1rem 0 .5rem; padding: .9rem 1rem; font: inherit; font-weight: 600; color: var(--accent-fg); background: var(--accent); border: 0; border-radius: .75rem; }
+button:disabled { opacity: .55; }
+button.plain { color: var(--fg); background: transparent; border: 1px solid var(--line); font-weight: 400; }
+ol { list-style: none; margin: 1rem 0; padding: 0; border: 1px solid var(--line); border-radius: .75rem; background: var(--card); }
+li { padding: .65rem 1rem; border-top: 1px solid var(--line); }
+li:first-child { border-top: 0; }
+.name { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.result { display: block; color: var(--muted); }
+.result.ok { color: var(--accent); }
+.result.bad { color: var(--bad); }
+.result.open { color: var(--warn); }
+a { color: var(--accent); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+<h1>Etiketten drucken</h1>
+<p id="lead" class="muted">Einen Augenblick …</p>
+<p id="problem" class="note bad" hidden></p>
+<ol id="list" hidden></ol>
+<button id="go" type="button" hidden>Drucken</button>
+<button id="again" type="button" class="plain" hidden>Stand erneut abfragen</button>
+<p id="summary" class="note" hidden></p>
+<p id="back" hidden><a id="backlink" rel="noreferrer">Zurück zu Stowly</a></p>
+<noscript><p class="note bad">Diese Seite braucht JavaScript.</p></noscript>
+</main>
+<script>
+"use strict";
+(function () {
+  var MAX_JOBS = 20;
+  var ERRORS = {
+    no_media: "Die Etiketten sind leer.",
+    media_mismatch: "Es ist eine andere Rolle eingelegt als eingerichtet.",
+    cover_open: "Der Deckel des Druckers ist offen.",
+    cutter_jam: "Das Messer des Druckers klemmt.",
+    overheated: "Der Drucker ist überhitzt.",
+    busy: "Der Drucker ist belegt.",
+    offline: "Der Drucker ist nicht erreichbar.",
+    config: "Die Angaben zum Drucker passen nicht zum Treiber.",
+    cancelled: "Der Auftrag wurde verworfen.",
+    interrupted: "Der Druck wurde unterbrochen. Bitte am Drucker nachsehen, ob das Etikett herauskam.",
+    unknown_printer: "Diesen Drucker hat der Druckdienst nicht.",
+    invalid_request: "Der Druckdienst versteht den Auftrag nicht.",
+    render_failed: "Das Etikett lässt sich für diesen Drucker nicht aufbereiten.",
+    queue_full: "Im Druckdienst warten schon zu viele Aufträge.",
+    unauthorized: "Das Token des Druckers stimmt nicht. Bitte in Stowly den Drucker prüfen.",
+    boot_mismatch: "Der Druckdienst ist gerade neu gestartet. Bitte noch einmal auf „Drucken“ tippen.",
+    job_conflict: "Diese Kennung hat der Druckdienst schon mit anderem Inhalt gesehen."
+  };
+
+  function el(id) { return document.getElementById(id); }
+  function show(node, visible) { node.hidden = !visible; }
+
+  function fail(message) {
+    el("lead").textContent = "Hier gibt es nichts zu drucken.";
+    el("problem").textContent = message;
+    show(el("problem"), true);
+  }
+
+  function decode(fragment) {
+    var text = fragment.replace(/-/g, "+").replace(/_/g, "/");
+    while (text.length % 4) { text += "="; }
+    var binary = atob(text);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) { bytes[i] = binary.charCodeAt(i); }
+    return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+  }
+
+  function isText(value) { return typeof value === "string"; }
+
+  function check(payload) {
+    if (!payload || typeof payload !== "object" || payload.v !== 1) { return "Diese Seite versteht die übergebenen Aufträge nicht (andere Version)."; }
+    if (!isText(payload.token) || !payload.token) { return "In der Übergabe fehlt das Token des Druckers."; }
+    if (payload.printer !== null && payload.printer !== undefined && !isText(payload.printer)) { return "Die Angabe zum Drucker ist unbrauchbar."; }
+    if (!payload.template || typeof payload.template !== "object") { return "In der Übergabe fehlt die Vorlage."; }
+    if (!Array.isArray(payload.jobs) || payload.jobs.length === 0) { return "Die Übergabe enthält keine Etiketten."; }
+    if (payload.jobs.length > MAX_JOBS) { return "Es sind mehr als " + MAX_JOBS + " Etiketten auf einmal. Bitte in Stowly in kleineren Gruppen drucken."; }
+    for (var i = 0; i < payload.jobs.length; i++) {
+      var job = payload.jobs[i];
+      if (!job || !isText(job.id) || !/^[A-Za-z0-9_-]{1,64}$/.test(job.id) || !job.data || typeof job.data !== "object") { return "Ein Etikett in der Übergabe ist unbrauchbar."; }
+    }
+    return null;
+  }
+
+  function label(job) {
+    var data = job.data || {};
+    var title = isText(data.title) && data.title ? data.title : "Etikett";
+    return isText(data.id) && data.id ? title + " (" + data.id + ")" : title;
+  }
+
+  function describe(job) {
+    var code = job.error && job.error.code;
+    if (job.state === "printed") { return ["gedruckt", "ok"]; }
+    if (job.state === "sent") { return ["an den Drucker gesendet", "ok"]; }
+    if (job.state === "failed") { return ["nicht gedruckt: " + (ERRORS[code] || (job.error && job.error.message) || code || "unbekannter Fehler"), "bad"]; }
+    if (job.state === "unknown") { return ["Ausgang offen: " + (ERRORS[code] || "Bitte am Drucker nachsehen."), "open"]; }
+    return ["wartet noch im Druckdienst", "open"];
+  }
+
+  function request(path, options) {
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (controller) { controller.abort(); } }, 45000);
+    options = options || {};
+    options.cache = "no-store";
+    if (controller) { options.signal = controller.signal; }
+    return fetch(path, options).then(function (response) {
+      return response.json().then(function (body) { return { status: response.status, body: body }; }, function () { return { status: response.status, body: null }; });
+    }).then(function (result) { clearTimeout(timer); return result; }, function (error) { clearTimeout(timer); throw error; });
+  }
+
+  var payload = null;
+  var rows = [];
+  var kinds = [];  // je Etikett: "" (noch nichts), "ok", "bad", "open"
+  var busy = false;
+
+  function setResult(index, text, kind) {
+    rows[index].textContent = text;
+    rows[index].className = "result" + (kind ? " " + kind : "");
+    kinds[index] = kind;
+  }
+
+  function count(kind) {
+    var total = 0;
+    for (var i = 0; i < kinds.length; i++) { if (kinds[i] === kind) { total++; } }
+    return total;
+  }
+
+  function finish() {
+    var ok = count("ok"), bad = count("bad"), open = kinds.length - ok - bad;
+    var text = ok === kinds.length
+      ? "Fertig: " + (ok === 1 ? "Das Etikett ist" : "Alle " + ok + " Etiketten sind") + " beim Drucker."
+      : "Beim Drucker: " + ok + " von " + kinds.length + "." + (bad ? " Nicht gedruckt: " + bad + "." : "") + (open ? " Offen: " + open + "." : "");
+    el("summary").textContent = text + " Stowly fragt in der App bei jedem Etikett nach, ob es gedruckt wurde.";
+    show(el("summary"), true);
+    busy = false;
+    el("go").disabled = false;
+    el("again").disabled = false;
+    el("go").textContent = "Noch einmal versuchen";
+    show(el("go"), ok < kinds.length);
+    show(el("again"), open > 0);
+  }
+
+  // Bricht ab: Was noch nicht eingereicht ist, bleibt liegen.
+  function stop(from) {
+    for (var i = from; i < kinds.length; i++) { if (kinds[i] !== "ok") { setResult(i, "nicht eingereicht", "bad"); } }
+    finish();
+  }
+
+  function submit(index, bootId) {
+    // Was schon beim Drucker ist, wird nicht noch einmal eingereicht.
+    while (index < kinds.length && kinds[index] === "ok") { index++; }
+    if (index >= kinds.length) { finish(); return; }
+    var job = payload.jobs[index];
+    setResult(index, "wird gedruckt …", "");
+    var body = {
+      token: payload.token,
+      printer: payload.printer === undefined ? null : payload.printer,
+      template: payload.template,
+      data: job.data,
+      copies: 1,
+      cut: true,
+      expect_boot_id: bootId
+    };
+    var options = { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(body) };
+    request("/v1/jobs/" + encodeURIComponent(job.id) + "?wait=30", options).then(function (result) {
+      if ((result.status === 200 || result.status === 201) && result.body && result.body.state) {
+        var text = describe(result.body);
+        setResult(index, text[0], text[1]);
+        submit(index + 1, bootId);
+        return;
+      }
+      var error = (result.body && result.body.error) || {};
+      if (error.code === "job_conflict") { query(index, function () { submit(index + 1, bootId); }); return; }
+      setResult(index, "nicht gedruckt: " + (ERRORS[error.code] || error.message || "Der Druckdienst antwortet mit Fehler " + result.status + "."), "bad");
+      // Mit falschem Token, nach einem Neustart oder bei voller Schlange scheitern die übrigen genauso.
+      if (error.code === "unauthorized" || error.code === "boot_mismatch" || error.code === "queue_full") { stop(index + 1); return; }
+      submit(index + 1, bootId);
+    }, function () {
+      setResult(index, "Keine Antwort vom Druckdienst. Ob gedruckt wurde, ist offen.", "open");
+      stop(index + 1);
+    });
+  }
+
+  function query(index, next) {
+    var job = payload.jobs[index];
+    request("/v1/jobs/" + encodeURIComponent(job.id) + "?wait=10").then(function (result) {
+      if (result.status === 200 && result.body && result.body.state) {
+        var text = describe(result.body);
+        setResult(index, text[0], text[1]);
+      } else if (result.status === 404) {
+        setResult(index, "Der Druckdienst kennt diesen Auftrag nicht (mehr).", "open");
+      } else {
+        setResult(index, "Der Stand ließ sich nicht abfragen.", "open");
+      }
+      next();
+    }, function () { setResult(index, "Keine Antwort vom Druckdienst.", "open"); next(); });
+  }
+
+  function start() {
+    if (busy) { return; }
+    busy = true;
+    el("go").disabled = true;
+    show(el("summary"), false);
+    show(el("problem"), false);
+    show(el("again"), false);
+    for (var i = 0; i < kinds.length; i++) { if (kinds[i] !== "ok") { setResult(i, "wartet", ""); } }
+    request("/v1/health").then(function (result) {
+      if (result.status !== 200 || !result.body || result.body.app !== "stowly-print" || !result.body.boot_id) { throw new Error("health"); }
+      submit(0, result.body.boot_id);
+    }).catch(function () {
+      el("problem").textContent = "Der Druckdienst antwortet nicht. Ist der Drucker eingeschaltet und das Handy noch in seinem WLAN?";
+      show(el("problem"), true);
+      stop(0);
+    });
+  }
+
+  function refresh() {
+    if (busy) { return; }
+    busy = true;
+    el("again").disabled = true;
+    var pending = [];
+    for (var i = 0; i < kinds.length; i++) { if (kinds[i] === "open") { pending.push(i); } }
+    (function step() {
+      if (!pending.length) { finish(); return; }
+      query(pending.shift(), step);
+    })();
+  }
+
+  function init() {
+    var fragment = location.hash.replace(/^#/, "");
+    if (!fragment) { fail("Diese Seite wird von Stowly aus geöffnet: In der App beim Etikett „Über die Seite des Druckers drucken“ wählen."); return; }
+    try { payload = decode(fragment); } catch (error) { fail("Die übergebenen Aufträge sind nicht lesbar."); return; }
+    var problem = check(payload);
+    if (problem) { payload = null; fail(problem); return; }
+    // Das Token nicht in der Adresszeile und im Verlauf stehen lassen.
+    try { history.replaceState(null, "", location.pathname); } catch (error) { /* geht auch ohne */ }
+
+    var list = el("list");
+    for (var i = 0; i < payload.jobs.length; i++) {
+      var item = document.createElement("li");
+      var name = document.createElement("span");
+      name.className = "name";
+      name.textContent = label(payload.jobs[i]);
+      var result = document.createElement("span");
+      result.className = "result";
+      result.textContent = "noch nicht gedruckt";
+      item.appendChild(name);
+      item.appendChild(result);
+      list.appendChild(item);
+      rows.push(result);
+      kinds.push("");
+    }
+    var total = payload.jobs.length;
+    el("lead").textContent = total === 1 ? "Ein Etikett wartet auf den Druck." : total + " Etiketten warten auf den Druck.";
+    show(list, true);
+    show(el("go"), true);
+    el("go").addEventListener("click", start);
+    el("again").addEventListener("click", refresh);
+
+    if (isText(payload.back) && /^https?:\/\//i.test(payload.back)) {
+      try {
+        var target = new URL(payload.back);
+        if (target.protocol === "http:" || target.protocol === "https:") {
+          el("backlink").href = target.href;
+          show(el("back"), true);
+        }
+      } catch (error) { /* keine brauchbare Adresse: kein Verweis */ }
+    }
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

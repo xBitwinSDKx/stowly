@@ -1,7 +1,7 @@
 /**
- * Kleine Hooks der Oberfläche: Medienabfragen, „heute", Ansichts-Vorlieben, Fokus.
+ * Kleine Hooks der Oberfläche: Medienabfragen, „heute", Ansichts-Vorlieben.
  */
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { startTransition, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
 import { todayLocal } from "@/contract";
 
@@ -113,32 +113,39 @@ export function useUiFlag(key: string, fallback: boolean): [boolean, (value: boo
   return [value, update];
 }
 
-/**
- * Gibt den Fokus an das Element zurück, das ihn hatte, als die Komponente entstand.
- * Für Dialoge, die nur gerendert werden, solange sie offen sind: Der Browser stellt den
- * Fokus nur wieder her, wenn ein <dialog> geschlossen wird, nicht wenn er verschwindet.
- */
-export function useReturnFocus(): void {
-  // Beim ersten Rendern merken: Effekte laufen erst, wenn der Dialog den Fokus schon hat.
-  const [opener] = useState(() => (typeof document === "undefined" ? null : document.activeElement));
-  useEffect(() => {
-    return () => {
-      if (opener instanceof HTMLElement && opener.isConnected) {
-        opener.focus({ preventScroll: true });
-      }
-    };
-  }, [opener]);
-}
+/** So viele Einträge einer langen Liste stehen sofort da; der Rest folgt in Schritten dieser Größe. */
+export const LIST_FIRST = 40;
+export const LIST_STEP = 80;
 
 /**
- * Setzt den Fokus beim Öffnen eines Dialogs in dieses Feld: `<TextField ref={focusOnOpen} />`.
+ * Zeichnet eine lange Liste in Abschnitten: Die ersten Einträge stehen sofort da, der Rest
+ * folgt im Hintergrund, ohne die Bedienung aufzuhalten (jeder Schritt ist für React
+ * unterbrechbar). Bei einem Bestand mit Hunderten Produkten bleibt so der erste Blick und
+ * jeder Wechsel der Darstellung flüssig.
  *
- * Ein <dialog> entscheidet beim Öffnen selbst, wohin der Fokus geht, und achtet dabei auf
- * das Attribut "autofocus"; Reacts `autoFocus` kommt dafür zu früh. Am Handy bleibt das
- * Feld ohne Fokus, sonst spränge mit jedem Dialog sofort die Tastatur auf.
+ * @param total    Länge der Liste
+ * @param resetKey ändert er sich, beginnt die Liste wieder mit dem ersten Abschnitt
+ *                 (z. B. wenn alle Zeilen ihr Aussehen wechseln)
+ * @returns wie viele Einträge jetzt zu zeichnen sind
  */
-export function focusOnOpen(element: HTMLElement | null): void {
-  if (element && !(typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches)) {
-    element.setAttribute("autofocus", "");
+export function useProgressiveCount(total: number, resetKey: string): number {
+  const [state, setState] = useState({ key: resetKey, count: LIST_FIRST });
+  let count = state.count;
+  if (state.key !== resetKey) {
+    // Abgeleiteter Zustand: sofort mit dem ersten Abschnitt weiterzeichnen, nicht erst nach einem Effekt.
+    count = LIST_FIRST;
+    setState({ key: resetKey, count });
   }
+
+  useEffect(() => {
+    if (count >= total) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      startTransition(() => setState((current) => (current.key === resetKey ? { key: resetKey, count: Math.min(total, current.count + LIST_STEP) } : current)));
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [count, total, resetKey]);
+
+  return Math.min(count, total);
 }

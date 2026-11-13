@@ -81,6 +81,20 @@
   gap: var(--space-1) var(--space-2);
 }
 
+/* Anleitung in Schritten (Installation auf dem iPhone) */
+.steps {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: 1.4em;
+  list-style: decimal;
+}
+
+.steps svg {
+  display: inline-block;
+  vertical-align: -0.15em;
+}
+
 @media (min-width: 48rem) {
   .switchRow {
     padding-right: var(--space-5);

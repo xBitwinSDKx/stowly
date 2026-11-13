@@ -180,6 +180,14 @@
   box-shadow: var(--shadow-sm);
 }
 
+/* „Näher ran": ein Etikett ist erkannt, aber zu klein im Bild. Deutlicher als der übliche Hinweis, ohne zu blinken. */
+.closer {
+  border-color: var(--color-warn);
+  color: var(--color-text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+}
+
 .center {
   position: absolute;
   inset: 0;
@@ -247,6 +255,11 @@
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.lastLabels {
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
 .lastIds {

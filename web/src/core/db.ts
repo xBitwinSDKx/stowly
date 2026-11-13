@@ -9,6 +9,8 @@
  *   outbox                                    die wartenden Befehle in der Reihenfolge ihrer Entstehung
  *   id_pool                                   der Vorrat an Packungs-IDs in der Reihenfolge der Zuteilung
  *   problems                                  abgelehnte und verdrängte Befehle
+ *   deliveries                                Buchführung des Zustellens: je Etikett, was an welchen
+ *                                             Druckdienst hinausging (seit Version 2; nie im Sync)
  *   kv                                        Einzelwerte: Sitzung, Sync-Stand, Geräte-Einstellungen
  *
  * Was die App anzeigt, steht nirgends: Es ist immer „Stand des Servers plus wartende Befehle"
@@ -24,6 +26,13 @@ import type { Command, HouseholdSettings, LabelTemplate, Package, Printer, Print
 import type { DevicePrefs, SessionDevice, SyncProblem } from "@/contract/core";
 
 export const DEFAULT_DB_NAME = "stowly";
+
+/**
+ * Version des Aufbaus der lokalen Datenbank. Öffnet ein Tab mit einer neueren App die Datenbank
+ * in einer höheren Version, müssen ältere Tabs ihre Verbindung schließen (`versionchange`,
+ * siehe src/core/store.ts).
+ */
+export const DB_VERSION = 2;
 
 export interface OutboxEntry {
   /** Laufende Nummer: die Reihenfolge, in der der Anwender gehandelt hat. */
@@ -42,6 +51,45 @@ export interface PoolEntry {
 export interface StoredProblem extends SyncProblem {
   /** Laufende Nummer des Eintreffens, für eine stabile Reihenfolge bei gleichem `at`. */
   recorded: number;
+}
+
+/** Der Inhalt eines Druckauftrags (docs/etiketten.md, 5.4): Was hier steht, bestimmt `content_hash`. */
+export interface DeliveryContent {
+  /** Name des Druckers im Dienst: am Server die `Printer.id`, am Pi `direct.printer` (null = Standarddrucker). */
+  printer: string | null;
+  /** `LabelTemplate.body`, unverändert. */
+  template: { [key: string]: unknown };
+  /** Fertig formatierte Zeichenketten des Etiketts. */
+  data: { [key: string]: string };
+  copies: number;
+  cut: boolean;
+}
+
+/**
+ * Buchführung des Zustellens für ein Etikett (docs/etiketten.md, 4.1, Schritt 3).
+ *
+ * Der Eintrag entsteht, **bevor** der Auftrag zum ersten Mal hinausgeht. Daran hängt „nie
+ * doppelt": Gibt es ihn, kann der Auftrag unterwegs sein, und jede Wiederholung schickt genau
+ * diesen Inhalt mit genau dieser `boot_id`. Gibt es keinen, ist nie etwas hinausgegangen.
+ *
+ * - "sending":  festgeschrieben und vielleicht abgeschickt, bisher ohne Antwort
+ * - "accepted": Der Dienst hat den Auftrag angenommen (das Etikett ist "queued" oder weiter).
+ * - "handoff":  an die Seite des Druckdienstes übergeben (5.7); `content` und `boot_id` sind
+ *               dann null, denn eingereicht hat die Seite, nicht die App.
+ */
+export interface DeliveryEntry {
+  /** Kennung des Etiketts, zugleich die des Auftrags beim Druckdienst. */
+  job_id: string;
+  /** Der Drucker, an den der Auftrag geht (`Printer.id`). */
+  printer_id: string;
+  /** Basis-Adresse, über die abgeschickt wurde; "" beim Druckdienst des Servers. */
+  url: string;
+  /** `boot_id` aus der Abfrage vor dem ersten Absenden, nach dem Annehmen die aus der Antwort. */
+  boot_id: string | null;
+  content: DeliveryContent | null;
+  phase: "sending" | "accepted" | "handoff";
+  /** Wann der Eintrag entstand (Geräteuhr). */
+  created_at: string;
 }
 
 /**
@@ -93,6 +141,12 @@ export interface KvValues {
   prefs: DevicePrefs;
   /** Tokens, die beim Server noch gesperrt werden müssen (Abmelden ohne Netz). */
   revocations: readonly string[];
+  /**
+   * Adressräume ("local", "loopback"), in denen dieses Gerät einen Druckdienst erreicht hat,
+   * obwohl der Browser die Erlaubnis für das lokale Netzwerk als „noch offen" meldet: Dort
+   * fragt er gar nicht (src/core/print/connect.ts).
+   */
+  open_networks: readonly string[];
 }
 
 export interface KvEntry<K extends keyof KvValues = keyof KvValues> {
@@ -111,6 +165,7 @@ export class StowlyDb extends Dexie {
   outbox!: Table<OutboxEntry, number, Omit<OutboxEntry, "seq">>;
   id_pool!: Table<PoolEntry, number, Omit<PoolEntry, "n">>;
   problems!: Table<StoredProblem, string>;
+  deliveries!: Table<DeliveryEntry, string>;
   kv!: Table<KvEntry, string>;
 
   constructor(name: string = DEFAULT_DB_NAME) {
@@ -128,6 +183,10 @@ export class StowlyDb extends Dexie {
       id_pool: "++n, &id",
       problems: "id",
       kv: "key",
+    });
+    // Version 2 (Runde 2): die Buchführung des Zustellens. Alles Bisherige bleibt, wie es ist.
+    this.version(DB_VERSION).stores({
+      deliveries: "job_id",
     });
   }
 

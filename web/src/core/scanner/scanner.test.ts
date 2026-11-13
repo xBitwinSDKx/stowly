@@ -13,9 +13,9 @@ import { playFeedback, setFeedbackActive, unlockAudio } from "./feedback";
 import type { DetectedCode } from "./formats";
 import { Scanner, type ScannerOptions } from "./scanner";
 
-const PACKAGE = { rawValue: "STOWLY/P/A2B3C", format: "qr_code", center: { x: 50, y: 50 } } satisfies DetectedCode;
-const ZONE = { rawValue: "STOWLY/Z/3F2B8C1E5A474D099B6E0C1D2E3F4A5B", format: "qr_code", center: { x: 10, y: 10 } } satisfies DetectedCode;
-const PRODUCT = { rawValue: "4006381333931", format: "ean_13", center: { x: 50, y: 50 } } satisfies DetectedCode;
+const PACKAGE = { rawValue: "STOWLY/P/A2B3C", format: "qr_code", center: { x: 50, y: 50 }, side: 200 } satisfies DetectedCode;
+const ZONE = { rawValue: "STOWLY/Z/3F2B8C1E5A474D099B6E0C1D2E3F4A5B", format: "qr_code", center: { x: 10, y: 10 }, side: 200 } satisfies DetectedCode;
+const PRODUCT = { rawValue: "4006381333931", format: "ean_13", center: { x: 50, y: 50 }, side: 120 } satisfies DetectedCode;
 
 /** Derselbe Code an anderer Stelle des ausgewerteten Ausschnitts (800 × 800 Bildpunkte, Mitte bei 400/400). */
 function at(code: DetectedCode, x: number, y: number): DetectedCode {
@@ -350,7 +350,7 @@ describe("Auswertung", () => {
   it("meldet fremde Codes erst nach einer halben Sekunde und nie neben etwas Bekanntem", async () => {
     const env = setup();
     await env.scanner.start();
-    const foreign = { rawValue: "https://example.org/aktion", format: "qr_code", center: { x: 400, y: 400 } } satisfies DetectedCode;
+    const foreign = { rawValue: "https://example.org/aktion", format: "qr_code", center: { x: 400, y: 400 }, side: 200 } satisfies DetectedCode;
 
     // Der Werbe-QR wird zuerst lesbar, der Barcode daneben einen Augenblick später.
     env.state.visibleCodes = [foreign];
@@ -458,10 +458,22 @@ describe("Wiederholungen", () => {
     expect(deduper.accept("a", 5_800)).toBe(true);
     deduper.forget("a");
     expect(deduper.accept("a", 5_900)).toBe(true);
-    // Nach einer Pause gilt als gerade gesehen, was davor im Bild war.
-    deduper.refresh(20_000);
+    // Nach einer Pause (hier von 6 s bis 20 s) gilt als gerade gesehen, was davor im Bild war.
+    deduper.refresh(20_000, 6_000);
     expect(deduper.accept("a", 21_000)).toBe(false);
     expect(deduper.accept("a", 23_100)).toBe(true);
+  });
+
+  it("hält nach einer Pause nur gesperrt, was beim Anhalten noch im Bild war", () => {
+    const deduper = new ScanDeduper();
+    expect(deduper.accept("alt", 0)).toBe(true);
+    expect(deduper.accept("im-bild", 9_000)).toBe(true);
+    // Der Dialog öffnet sich bei 10 s und schließt bei 30 s.
+    deduper.refresh(30_000, 10_000);
+    // Was beim Öffnen noch vor der Kamera lag, bleibt gesperrt ...
+    expect(deduper.accept("im-bild", 30_100)).toBe(false);
+    // ... was schon lange weg war, zählt sofort wieder.
+    expect(deduper.accept("alt", 30_100)).toBe(true);
   });
 
   it("stellt zurück, was beim Melden eines anderen Codes mit im Bild war, ohne die Frist zu verlängern", () => {
@@ -555,5 +567,101 @@ describe("Rückmeldung", () => {
     expect(context?.state).toBe("suspended");
     Reflect.deleteProperty(navigator, "vibrate");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("Mindestgröße eines Etiketts im Bild", () => {
+  /** Derselbe Code mit einer anderen Kantenlänge im ausgewerteten Ausschnitt (800 Bildpunkte Kante). */
+  const sized = (code: DetectedCode, side: number): DetectedCode => ({ ...code, side });
+  // 7 % von 800 Bildpunkten sind 56.
+  const SMALL = 55;
+  const BIG = 57;
+
+  it("bucht ein zu kleines Etikett nicht und zeigt „Näher ran“; beim Näherkommen zählt es sofort", async () => {
+    const env = setup();
+    await env.scanner.start();
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), SMALL)];
+    await run(env, 3_000);
+    expect(env.scans).toEqual([]);
+    expect(env.scanner.state.get().too_small).toBe(true);
+
+    // Näher: Jetzt misst die Kante mehr als 7 % des Ausschnitts. Es galt bisher als nicht gesehen.
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), BIG)];
+    await run(env, 100);
+    expect(env.scans).toEqual([{ kind: "package", package_id: "A2B3C" }]);
+    await run(env, 700);
+    expect(env.scanner.state.get().too_small).toBe(false);
+  });
+
+  it("nimmt den Hinweis kurz nach dem Verschwinden des Etiketts zurück", async () => {
+    const env = setup();
+    await env.scanner.start();
+    env.state.visibleCodes = [sized(at(ZONE, 400, 400), SMALL)];
+    await run(env, 300);
+    expect(env.scanner.state.get().too_small).toBe(true);
+    env.state.visibleCodes = [];
+    await run(env, 500);
+    expect(env.scanner.state.get().too_small).toBe(true);
+    await run(env, 300);
+    expect(env.scanner.state.get().too_small).toBe(false);
+    expect(env.scans).toEqual([]);
+  });
+
+  it("lässt ein kleines Etikett im Hintergrund in Ruhe, wenn ein anderer gültiger Code im Bild ist", async () => {
+    const env = setup();
+    await env.scanner.start();
+    // Das Etikett im Regal liegt sogar näher an der Bildmitte als der Barcode in der Hand.
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), SMALL), at(PRODUCT, 600, 400)];
+    await run(env, 3_000);
+    expect(env.scans).toEqual([{ kind: "product", barcode: "4006381333931" }]);
+    expect(env.scanner.state.get().too_small).toBe(false);
+
+    // Der Barcode ist weg, das Etikett kommt näher: Es war nicht zurückgestellt, nur nicht gezählt.
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), BIG)];
+    await run(env, 100);
+    expect(env.scans).toHaveLength(2);
+  });
+
+  it("gilt nicht für Produkt-Barcodes und nicht für fremde Codes", async () => {
+    const env = setup();
+    await env.scanner.start();
+    env.state.visibleCodes = [sized(at(PRODUCT, 400, 400), 10)];
+    await run(env, 200);
+    expect(env.scans).toEqual([{ kind: "product", barcode: "4006381333931" }]);
+    expect(env.scanner.state.get().too_small).toBe(false);
+  });
+
+  it("zählt ein Etikett, dessen Größe sich nicht messen lässt", async () => {
+    const env = setup();
+    await env.scanner.start();
+    env.state.visibleCodes = [{ ...PACKAGE, center: null, side: null }];
+    await run(env, 200);
+    expect(env.scans).toEqual([{ kind: "package", package_id: "A2B3C" }]);
+  });
+
+  it("zeigt den Hinweis nicht für ein eben gescanntes Etikett, das weggezogen wird, und bucht es nicht noch einmal", async () => {
+    const env = setup();
+    await env.scanner.start();
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), 200)];
+    await run(env, 300);
+    expect(env.scans).toHaveLength(1);
+    // Die Packung wandert weg, das Etikett wird kleiner, bleibt aber im Bild.
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), 30)];
+    await run(env, 4_000);
+    expect(env.scanner.state.get().too_small).toBe(false);
+    // Kommt es wieder näher, ohne zwischendurch verschwunden zu sein, ist es dasselbe Etikett.
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), 200)];
+    await run(env, 500);
+    expect(env.scans).toHaveLength(1);
+  });
+
+  it("zeigt den Hinweis auch, wenn daneben nur ein fremder Code liegt, und meldet den fremden nicht", async () => {
+    const env = setup();
+    await env.scanner.start();
+    const foreign = { rawValue: "https://example.org/aktion", format: "qr_code", center: { x: 420, y: 400 }, side: 200 } satisfies DetectedCode;
+    env.state.visibleCodes = [foreign, sized(at(ZONE, 600, 400), SMALL)];
+    await run(env, 2_000);
+    expect(env.scans).toEqual([]);
+    expect(env.scanner.state.get().too_small).toBe(true);
   });
 });

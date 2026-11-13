@@ -13,9 +13,11 @@
  * - Abgleich im Hintergrund (Background Sync, Kennung `stowly-sync`): Auf Android weckt der
  *   Browser diesen Service Worker, sobald wieder Netz da ist, und er sendet die wartenden
  *   Änderungen, auch wenn die App geschlossen ist. Safari kann das nicht; dort gleicht die
- *   App über ihre übrigen Anlässe ab.
- *
- * Den Update-Ablauf (neue Version anbieten statt sofort übernehmen) baut Runde 2.
+ *   App über ihre übrigen Anlässe ab. Etiketten stellt der Service Worker nie zu: Einen
+ *   Drucker im lokalen Netzwerk darf nur eine Seite ansprechen (src/core/print).
+ * - Eine neue Version übernimmt nicht von selbst. Sie wartet, bis die Seite es verlangt
+ *   (Nachricht `SKIP_WAITING`, src/core/pwa/updates.ts), damit kein Tab mitten in der Arbeit
+ *   die Dateien unter den Füßen verliert. Nur der allererste Service Worker übernimmt sofort.
  *
  * Geprüft wird diese Datei mit eigenen Typen: npm run typecheck:sw (kein DOM). Was sie
  * importiert, muss deshalb ohne window und document auskommen.
@@ -28,6 +30,7 @@ import { CacheFirst } from "workbox-strategies";
 
 import { BACKGROUND_SYNC_TAG, runBackgroundSync } from "@/core/background";
 import { IMAGE_CACHE, IMAGE_PATH_PREFIX } from "@/core/images";
+import { isSkipWaitingMessage } from "@/core/pwa/updates";
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -37,8 +40,14 @@ interface SyncEvent extends ExtendableEvent {
   readonly lastChance: boolean;
 }
 
-// Bis der Update-Ablauf steht: Eine neue Version übernimmt sofort (siehe core/pwa/register.ts).
-void self.skipWaiting();
+// Eine neue Version wartet, bis die Seite sie übernehmen lässt (`app.applyUpdate()`).
+self.addEventListener("message", (event) => {
+  if (isSkipWaitingMessage(event.data)) {
+    void self.skipWaiting();
+  }
+});
+// Wer aktiv wird, steuert sofort alle offenen Seiten: beim ersten Besuch ohne Neuladen, bei
+// einer Aktualisierung alle Tabs zugleich (sie laden dann neu, siehe updates.ts).
 clientsClaim();
 
 cleanupOutdatedCaches();

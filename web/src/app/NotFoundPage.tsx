@@ -1,5 +1,6 @@
 import { ROUTES } from "@/contract";
-import { EmptyState, LinkButton } from "@/ui";
+import { EmptyState } from "@/ui";
+import { ButtonLink } from "@/ui/base";
 import { SearchIcon } from "@/ui/icons";
 
 import { PageBody, usePageTitle } from "./Page";
@@ -13,9 +14,9 @@ export function NotFoundPage() {
         icon={<SearchIcon />}
         title="Seite nicht gefunden"
         actions={
-          <LinkButton to={ROUTES.stock} variant="primary">
+          <ButtonLink to={ROUTES.stock} variant="primary">
             Zum Bestand
-          </LinkButton>
+          </ButtonLink>
         }
       >
         Diese Adresse gibt es in Stowly nicht.

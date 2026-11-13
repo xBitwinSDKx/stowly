@@ -26,7 +26,7 @@ import { APP_VERSION, CoreError, type AppState, type Core, type Device, type Ses
 import { createProductsApi, createPrefsUpdate, createSettingsApi, createZonesApi } from "./api/catalog";
 import { createDataApi } from "./api/data";
 import { createPrintApi, createPrintersApi } from "./api/printing";
-import { toCoreError, type CoreRuntime } from "./api/runtime";
+import { toCoreError, type CoreRuntime, type PrintRuntime } from "./api/runtime";
 import { createStockApi } from "./api/stock";
 import { checkDeviceName, invalid, LIMITS } from "./api/validate";
 import { BACKGROUND_SYNC_TAG } from "./background";
@@ -34,7 +34,13 @@ import { DEFAULT_DB_NAME, type StoredSession } from "./db";
 import { ApiClient, type FetchLike } from "./http";
 import { clearImages, preloadImages } from "./images";
 import { derived, Signal } from "./live";
+import { readPermission, type PermissionReader } from "./print/address";
+import { PrintServiceClient } from "./print/client";
+import { DeliveryEngine, PRINT_LOCK_NAME } from "./print/engine";
+import { DeliveryScheduler } from "./print/scheduler";
+import { InstallPrompt, isAppleMobile } from "./pwa/install";
 import { registerServiceWorker } from "./pwa/register";
+import type { AppUpdates } from "./pwa/updates";
 import { Store, type StoreState } from "./store";
 import { SyncEngine, type SyncOutcome, type SyncRunOptions } from "./sync/engine";
 import { SYNC_LOCK_NAME } from "./sync/lock";
@@ -52,9 +58,30 @@ export interface CoreOptions {
    * Ereignisse des Browsers), sondern nur über `sync.now()` und `session.login()`. Für Tests.
    */
   autoSync?: boolean;
-  /** Eigene Zeitgeber für die Wartezeiten des Abgleichs. Für Tests. */
+  /** Eigene Zeitgeber für die Wartezeiten des Abgleichs und des Zustellens. Für Tests. */
   timers?: SchedulerTimers;
+  /**
+   * Liest den Stand der Erlaubnis des Browsers für das lokale Netzwerk (Direktdruck).
+   * Vorgabe: die Permissions API. Für Tests.
+   */
+  permissions?: PermissionReader;
+  /** Gilt die Umgebung als sicherer Kontext? Vorgabe: `isSecureContext` des Browsers. Für Tests. */
+  secureContext?: boolean;
+  /** Lädt die Seite neu (`app.applyUpdate`). Vorgabe: `location.reload()`. Für Tests. */
+  reload?: () => void;
+  /**
+   * So lange wartet der Start darauf, dass ein Tab mit älterer App die lokale Datenbank
+   * freigibt, bevor der Kern ohne sie weitermacht. Vorgabe 8 Sekunden. Für Tests.
+   */
+  blockedTimeoutMs?: number;
 }
+
+/** Wie lange ein blockiertes Öffnen der Datenbank den Start aufhält. */
+const BLOCKED_TIMEOUT_MS = 8_000;
+
+const SUPERSEDED_MESSAGE = "Ein anderer Tab läuft schon mit einer neueren Version von Stowly. Diese Seite muss neu geladen werden.";
+const BLOCKED_MESSAGE = "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest. Schließe ihn, dann geht es hier weiter.";
+const NO_STORAGE_MESSAGE = "Die lokale Datenbank ist nicht verfügbar.";
 
 export interface StowlyCore extends Core {
   /** Erfüllt sich, sobald der gespeicherte Zustand geladen ist. */
@@ -92,6 +119,14 @@ function isInstalled(): boolean {
   return standalone || (navigator as { standalone?: boolean }).standalone === true;
 }
 
+/** iPhone und iPad im Browser, nicht installiert: Dort zeigt die Oberfläche die Anleitung statt einer Aufforderung. */
+function manualInstall(installed: boolean): AppState["manual_install"] {
+  if (installed || typeof navigator === "undefined") {
+    return null;
+  }
+  return isAppleMobile(navigator) ? "ios" : null;
+}
+
 export function createCore(options: CoreOptions = {}): StowlyCore {
   const now = options.now ?? (() => new Date());
   const autoSync = options.autoSync ?? true;
@@ -99,21 +134,40 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
   const fetchFn: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const hasWindow = typeof window !== "undefined" && typeof document !== "undefined";
 
-  const store = new Store({ dbName, now });
-  const api = new ApiClient(fetchFn);
   let disposed = false;
-  /** false, wenn der Browser keine lokale Datenbank zulässt. */
+  /** false, wenn der Browser keine lokale Datenbank zulässt (oder ein älterer Tab sie festhält). */
   let storageAvailable = true;
+  /** Das Öffnen der Datenbank wartet auf einen Tab mit älterer App. */
+  let blocked = false;
+  let onBlocked: (() => void) | null = null;
+
+  const store = new Store({
+    dbName,
+    now,
+    // Ein Tab mit neuerer App hat die Datenbank übernommen: Dieser kann nicht weiterarbeiten,
+    // bis er neu geladen ist. Der Store hat die Verbindung schon geschlossen.
+    onSuperseded: () => {
+      patchApp({ update_required: true });
+      scheduler.stop();
+      deliveries.stop();
+    },
+    onBlocked: () => {
+      blocked = true;
+      onBlocked?.();
+    },
+  });
+  const api = new ApiClient(fetchFn);
 
   // ---------------------------------------------------------------- Zustand der App
 
+  const installedAtStart = isInstalled();
   const app = new Signal<AppState>({
     version: APP_VERSION,
     // Über http://<LAN-IP> verweigert der Browser Kamera, Offline-Betrieb und Installation.
-    secure_context: typeof globalThis.isSecureContext === "boolean" ? globalThis.isSecureContext : true,
-    installed: isInstalled(),
+    secure_context: options.secureContext ?? (typeof globalThis.isSecureContext === "boolean" ? globalThis.isSecureContext : true),
+    installed: installedAtStart,
     can_install: false,
-    manual_install: null,
+    manual_install: manualInstall(installedAtStart),
     update_ready: false,
     update_required: false,
     storage_persistent: null,
@@ -188,8 +242,13 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
 
   /** Ein Abgleich samt Buchführung für `sync.status`. Wirft nicht. */
   async function runSync(runOptions?: SyncRunOptions): Promise<SyncOutcome> {
-    if (disposed || !storageAvailable) {
-      return { ok: false, error: new CoreError("not_supported", "Die lokale Datenbank ist nicht verfügbar.") };
+    if (disposed || !storageAvailable || store.superseded) {
+      const error = new CoreError("not_supported", store.superseded ? SUPERSEDED_MESSAGE : blocked ? BLOCKED_MESSAGE : NO_STORAGE_MESSAGE);
+      if (!disposed) {
+        // Ohne lokale Datenbank gibt es nichts abzugleichen; der Grund steht im Status.
+        patchStatus({ phase: "error", last_error: { code: error.code, message: error.message, at: now().toISOString() } });
+      }
+      return { ok: false, error };
     }
     patchStatus({ phase: "syncing" });
     const outcome = await engine.run(runOptions);
@@ -200,6 +259,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       patchStatus({ phase: "idle", online: true, last_error: null });
       if (outcome.synced) {
         void cacheImages();
+        // Was eben abgeglichen wurde, kann jetzt zum Drucker am Server; was dort gedruckt hat, ist jetzt bekannt.
+        deliveries.kick("sync");
       }
     } else {
       const { code, message } = outcome.error;
@@ -231,6 +292,42 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     timers: options.timers,
     auto: autoSync,
   });
+
+  // ---------------------------------------------------------------- Etiketten zustellen
+
+  const printClient = new PrintServiceClient(fetchFn);
+  const delivery = new DeliveryEngine({
+    store,
+    client: printClient,
+    now,
+    lockName: dbName === DEFAULT_DB_NAME ? PRINT_LOCK_NAME : `${PRINT_LOCK_NAME}:${dbName}`,
+    isSecureContext: () => app.get()?.secure_context !== false,
+    readPermission: options.permissions ?? readPermission,
+    onChange: () => scheduler.notifyChange(),
+    onUnauthorized: (token) => store.markRevoked(token).catch(() => undefined),
+    requestSync: () => {
+      if (autoSync && !disposed) {
+        void scheduler.request();
+      }
+    },
+  });
+  // Von selbst stellt nur eine Seite zu, nie der Service Worker und nie ein Kern ohne Fenster.
+  const deliveries = new DeliveryScheduler({
+    run: (runOptions) => (disposed || !storageAvailable ? Promise.resolve({ delivered: 0, pending: 0, problems: [], outstanding: 0 }) : delivery.run(runOptions)),
+    isVisible: () => !hasWindow || document.visibilityState !== "hidden",
+    timers: options.timers,
+    auto: autoSync && hasWindow,
+  });
+  const printRuntime: PrintRuntime = {
+    engine: delivery,
+    client: printClient,
+    flush: () => deliveries.flush(),
+    afterProbe: () => {
+      if (autoSync) {
+        void deliveries.flush();
+      }
+    },
+  };
 
   /** Lädt die Bilder der Produkte im Bestand vorab (docs/sync-protokoll.md, 9.6). */
   async function cacheImages(): Promise<void> {
@@ -293,26 +390,61 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
 
   // ---------------------------------------------------------------- Start
 
-  const ready: Promise<void> = (async () => {
-    try {
-      await store.load();
-    } catch (error) {
-      // Ohne lokale Datenbank (manche privaten Fenster) gibt es keinen Offline-Kern.
-      storageAvailable = false;
-      store.state.set({ ...store.snapshot, loaded: true });
-      console.warn("Stowly: Die lokale Datenbank ist nicht verfügbar.", error);
-    }
-    if (storageAvailable) {
-      // Was inzwischen jenseits der Aufbewahrung liegt, verschwindet schon beim Start (6.4).
-      await store.purgeExpired().catch((error: unknown) => console.warn("Stowly: Aufräumen beim Start ist gescheitert.", error));
-    }
+  /** Was nach dem Laden der Datenbank noch zum Start gehört. */
+  async function afterLoad(): Promise<void> {
+    // Was inzwischen jenseits der Aufbewahrung liegt, verschwindet schon beim Start (6.4).
+    await store.purgeExpired().catch((error: unknown) => console.warn("Stowly: Aufräumen beim Start ist gescheitert.", error));
     if (disposed) {
       return;
     }
     void checkPersistence(false);
     if (autoSync) {
       void scheduler.request();
+      deliveries.kick("start");
     }
+  }
+
+  const ready: Promise<void> = (async () => {
+    const loading = store.load();
+    // Hält ein Tab mit älterer App die Datenbank fest (er reagiert nicht, etwa weil der Browser
+    // ihn eingefroren hat), wartet dieser nicht ewig: Er macht ohne lokale Daten weiter und holt
+    // den Start nach, sobald die Datenbank frei wird.
+    const gaveUp = new Promise<"blocked">((resolve) => {
+      const arm = () => setTimeout(() => resolve("blocked"), options.blockedTimeoutMs ?? BLOCKED_TIMEOUT_MS);
+      if (blocked) {
+        arm();
+      } else {
+        onBlocked = arm;
+      }
+    });
+    let outcome: "loaded" | "blocked" | "failed";
+    try {
+      outcome = await Promise.race([loading.then(() => "loaded" as const), gaveUp]);
+    } catch (error) {
+      outcome = "failed";
+      // Ohne lokale Datenbank (manche privaten Fenster) gibt es keinen Offline-Kern.
+      console.warn("Stowly: Die lokale Datenbank ist nicht verfügbar.", error);
+    }
+    onBlocked = null;
+    if (outcome !== "loaded") {
+      storageAvailable = false;
+      store.state.set({ ...store.snapshot, loaded: true });
+      if (outcome === "blocked") {
+        console.warn("Stowly: Ein anderer Tab mit einer älteren Version hält die lokale Datenbank fest.");
+        void loading.then(
+          () => {
+            // Der andere Tab hat losgelassen: Jetzt beginnt der Kern wirklich.
+            storageAvailable = true;
+            blocked = false;
+            return disposed ? undefined : afterLoad();
+          },
+          () => undefined,
+        );
+      }
+      return;
+    }
+    blocked = false;
+    await afterLoad();
   })();
 
   // ---------------------------------------------------------------- Ereignisse des Browsers
@@ -329,6 +461,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     listen(document, "visibilitychange", () => {
       const visible = document.visibilityState !== "hidden";
       scheduler.notifyVisibility(visible);
+      deliveries.notifyVisibility(visible);
       if (!visible && store.snapshot.outbox.length > 0) {
         registerBackgroundSync();
       }
@@ -338,13 +471,33 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         registerBackgroundSync();
       }
     });
+  }
+
+  // ---------------------------------------------------------------- Lebenslauf der App
+
+  const reload = options.reload ?? (() => window.location.reload());
+  /** Der Update-Ablauf; null, wo es keinen Service Worker gibt. */
+  let updates: AppUpdates | null = null;
+  let installPrompt: InstallPrompt | null = null;
+  if (hasWindow) {
+    const setInstalled = () => {
+      const installed = isInstalled() || app.get()?.installed === true;
+      patchApp({ installed, manual_install: manualInstall(installed), ...(installed ? { can_install: false } : {}) });
+    };
     if (typeof window.matchMedia === "function") {
       const media = window.matchMedia("(display-mode: standalone)");
-      const onChange = () => patchApp({ installed: isInstalled() });
-      media.addEventListener?.("change", onChange);
-      cleanups.push(() => media.removeEventListener?.("change", onChange));
+      media.addEventListener?.("change", setInstalled);
+      cleanups.push(() => media.removeEventListener?.("change", setInstalled));
     }
-    registerServiceWorker();
+    const prompt = new InstallPrompt(window, {
+      canInstall: (value) => patchApp({ can_install: value && app.get()?.installed !== true }),
+      installed: () => patchApp({ installed: true, can_install: false, manual_install: null }),
+    });
+    installPrompt = prompt;
+    cleanups.push(() => prompt.dispose());
+    if (autoSync) {
+      updates = registerServiceWorker((value) => patchApp({ update_ready: value }), reload);
+    }
   }
 
   // ---------------------------------------------------------------- Gemeinsames für die Schnittstelle
@@ -352,16 +505,27 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
   const runtime: CoreRuntime = {
     store,
     now,
+    ready,
     async change(build) {
       await ready;
       if (!storageAvailable) {
-        throw new CoreError("not_supported", "Die lokale Datenbank ist nicht verfügbar.");
+        throw new CoreError("not_supported", blocked ? BLOCKED_MESSAGE : NO_STORAGE_MESSAGE);
       }
-      const before = store.snapshot.outbox.length;
+      let commands = 0;
+      let requested = false;
       try {
-        const result = await store.mutate(build);
-        if (store.snapshot.outbox.length > before) {
+        const result = await store.mutate((mutation) => {
+          const value = build(mutation);
+          commands = mutation.commands.length;
+          requested = mutation.commands.some((command) => command.type === "print.request");
+          return value;
+        });
+        if (commands > 0) {
           scheduler.notifyChange();
+        }
+        if (requested) {
+          // Ein Etikett ist angefordert: an einen direkten Drucker geht es sofort, auch ohne Server.
+          deliveries.kick("request");
         }
         return result;
       } catch (error) {
@@ -510,8 +674,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       update: createPrefsUpdate(runtime),
     },
 
-    printers: createPrintersApi(runtime),
-    print: createPrintApi(runtime),
+    printers: createPrintersApi(runtime, printRuntime),
+    print: createPrintApi(runtime, printRuntime),
 
     devices: {
       async list(): Promise<Device[]> {
@@ -552,10 +716,17 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     app: {
       state: app,
       async applyUpdate() {
-        // Runde 2: Bis dahin übernimmt eine neue Version von selbst (src/core/pwa/register.ts).
+        const required = app.get().update_required;
+        if (updates) {
+          // Lässt die wartende Version übernehmen und lädt neu, sobald sie steuert. Ohne wartende
+          // Version wird nur neu geladen, wenn dieser Tab ohnehin nicht weiterarbeiten kann.
+          updates.apply(required);
+        } else if (required && hasWindow) {
+          reload();
+        }
       },
       async promptInstall() {
-        return false;
+        return installPrompt ? installPrompt.prompt() : false;
       },
       async requestPersistence() {
         await checkPersistence(true);
@@ -566,6 +737,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     dispose() {
       disposed = true;
       scheduler.stop();
+      deliveries.stop();
       for (const cleanup of cleanups) {
         cleanup();
       }

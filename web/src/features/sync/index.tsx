@@ -2,8 +2,8 @@ import { useMemo, useState } from "react";
 
 import { formatTimestamp, ROUTES, useCore, useLive } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
-import { LinkButton, List, ListRow, Notice, Section, timeAgo, useNow } from "@/ui";
-import { Badge, Button } from "@/ui/base";
+import { List, ListRow, Notice, Section, timeAgo, useNow } from "@/ui";
+import { Badge, Button, ButtonLink } from "@/ui/base";
 import { CircleCheckIcon, CloudOffIcon, RefreshIcon, WarningIcon } from "@/ui/icons";
 
 import { describeProblem, type ProblemLookup } from "./problems";
@@ -24,12 +24,13 @@ export function SyncPage() {
   const printers = useLive(core.data.printers);
   const packages = useLive(core.data.packages);
   const removed = useLive(core.data.removedPackages);
+  const printJobs = useLive(core.data.printJobs);
   const now = useNow();
   const [busy, setBusy] = useState(false);
 
   const lookup: ProblemLookup = useMemo(
-    () => ({ products: products ?? [], zones: zones ?? [], printers: printers ?? [], packages: [...(packages ?? []), ...(removed ?? [])] }),
-    [products, zones, printers, packages, removed],
+    () => ({ products: products ?? [], zones: zones ?? [], printers: printers ?? [], packages: [...(packages ?? []), ...(removed ?? [])], printJobs: printJobs ?? [] }),
+    [products, zones, printers, packages, removed, printJobs],
   );
 
   if (!status) {
@@ -129,9 +130,9 @@ export function SyncPage() {
                   {text.advice ? <p className={styles.advice}>{text.advice}</p> : null}
                   <div className={styles.problemActions}>
                     {text.inHistory ? (
-                      <LinkButton to={ROUTES.history} size="sm">
+                      <ButtonLink to={ROUTES.history} size="sm">
                         Zur Lösch-Historie
-                      </LinkButton>
+                      </ButtonLink>
                     ) : null}
                     <Button size="sm" variant="ghost" onClick={() => void core.sync.dismissProblem(problem.id)}>
                       Ausblenden

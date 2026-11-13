@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
+import { Link, type LinkProps } from "react-router";
 
 import styles from "./Button.module.css";
 import { cx } from "./cx";
@@ -58,6 +59,35 @@ export function Button({
       {children !== undefined && children !== null ? <span className={styles.label}>{children}</span> : null}
       {iconRight ? <span className={styles.icon}>{iconRight}</span> : null}
     </button>
+  );
+}
+
+export interface ButtonLinkProps extends Omit<LinkProps, "className"> {
+  /** Vorgabe "secondary". */
+  variant?: ButtonVariant;
+  /** Vorgabe "md". */
+  size?: ButtonSize;
+  /** Symbol vor dem Text. */
+  icon?: ReactNode;
+  /** Symbol hinter dem Text. */
+  iconRight?: ReactNode;
+  /** Volle Breite des Behälters. */
+  block?: boolean;
+  className?: string;
+}
+
+/**
+ * Sieht aus wie `Button`, ist aber ein Verweis (`Link` aus react-router): für alles, was zu
+ * einer anderen Ansicht führt („Jetzt scannen"). So funktioniert „in neuem Tab öffnen", und
+ * Screenreader sagen „Link". Braucht einen Router um sich.
+ */
+export function ButtonLink({ variant = "secondary", size = "md", icon, iconRight, block = false, className, children, ...rest }: ButtonLinkProps) {
+  return (
+    <Link {...rest} className={cx(styles.button, styles[variant], styles[size], block && styles.block, className)}>
+      {icon ? <span className={styles.icon}>{icon}</span> : null}
+      {children !== undefined && children !== null ? <span className={styles.label}>{children}</span> : null}
+      {iconRight ? <span className={styles.icon}>{iconRight}</span> : null}
+    </Link>
   );
 }
 

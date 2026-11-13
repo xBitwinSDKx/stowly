@@ -4,7 +4,7 @@
  */
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { addDays, formatDate, isPackageId, todayLocal, type Core, type Live, type Package } from "@/contract";
 import { App } from "@/app/App";
@@ -782,5 +782,176 @@ describe("Produktbilder", () => {
 
     image?.dispatchEvent(new Event("error"));
     await waitFor(() => expect(row?.querySelector("img")).toBeNull());
+  });
+});
+
+describe("Etiketten im Bestand", () => {
+  async function openBatches(): Promise<HTMLElement> {
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Details: Basmati Reis" }));
+    return screen.getByRole("region", { name: "Bestand im Detail: Basmati Reis" });
+  }
+
+  it("druckt aus der Chargen-Ansicht nach: mit Vorschau, für die gewählten Packungen", async () => {
+    const core = renderApp();
+    const request = vi.spyOn(core.print, "requestPackageLabels");
+    const panel = await openBatches();
+    const rice = packagesOf(core, "Basmati Reis");
+    const pair = rice.filter((pkg) => pkg.best_before === rice[0]?.best_before).map((pkg) => pkg.id).sort();
+    expect(pair).toHaveLength(2);
+
+    await userEvent.click(within(panel).getAllByRole("button", { name: /^Etikett drucken: / })[0] as HTMLElement);
+    const dialog = screen.getByRole("dialog", { name: "Etiketten drucken" });
+    // Die Vorschau zeigt das Etikett der ersten Packung, auf weißem Grund.
+    const image = await within(dialog).findByRole("img", { name: `Vorschau des Etiketts für die Packung ${pair[0] ?? ""}` });
+    expect(image).toHaveAttribute("src", expect.stringMatching(/^blob:/));
+    expect(image.closest("figure")).toHaveClass("frame");
+
+    // Bei mehreren Packungen ist nichts vorgewählt: Welche es ist, steht auf ihrem alten Etikett.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Etikett drucken" }));
+    expect(within(dialog).getByText("Bitte mindestens eine Packung auswählen.")).toBeInTheDocument();
+    expect(request).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "Alle 2 Packungen" }));
+    expect(dialog).toHaveTextContent("Druckt auf „Keller (Pi)“. Ein Nachdruck ist ein neues Etikett; das alte bleibt gültig.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "2 Etiketten drucken" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(pair));
+
+    // Danach sagt der Dialog, was mit den Etiketten ist, und bleibt auf dem Laufenden.
+    const done = await screen.findByRole("dialog", { name: "Etiketten angefordert" });
+    expect(within(done).getByRole("status")).toHaveTextContent("2 Etiketten stehen aus und werden gedruckt, sobald dieses Gerät den Drucker „Keller (Pi)“ erreicht.");
+    core.control.setPiReachable(true);
+    await waitFor(() => expect(within(done).getByRole("status")).toHaveTextContent("2 Etiketten sind am Drucker „Keller (Pi)“ gedruckt."));
+    await userEvent.click(within(done).getByRole("button", { name: "Fertig" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("wählt eine einzelne Packung vor", async () => {
+    const core = renderApp();
+    const request = vi.spyOn(core.print, "requestPackageLabels");
+    const panel = await openBatches();
+    const buttons = within(panel).getAllByRole("button", { name: /^Etikett drucken: / });
+    await userEvent.click(buttons[buttons.length - 1] as HTMLElement);
+    const dialog = screen.getByRole("dialog", { name: "Etikett drucken" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Etikett drucken" }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(request.mock.calls[0]?.[0]).toHaveLength(1);
+    expect(await screen.findByRole("dialog", { name: "Etikett angefordert" })).toBeInTheDocument();
+  });
+
+  it("sagt offline, dass die Vorschau den Server braucht, und druckt trotzdem", async () => {
+    const core = renderApp({ scenarios: ["offline", "at-pi"] });
+    const panel = await openBatches();
+    await userEvent.click(within(panel).getAllByRole("button", { name: /^Etikett drucken: / })[0] as HTMLElement);
+    const dialog = screen.getByRole("dialog", { name: "Etiketten drucken" });
+    expect(await within(dialog).findByText("Die Vorschau zeichnet der Server, und der ist gerade nicht erreichbar.")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+
+    // Im Keller: Der Server fehlt, der Pi ist da. Gedruckt wird trotzdem.
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "Alle 2 Packungen" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "2 Etiketten drucken" }));
+    const done = await screen.findByRole("dialog", { name: "Etiketten angefordert" });
+    await waitFor(() => expect(within(done).getByRole("status")).toHaveTextContent("2 Etiketten sind am Drucker „Keller (Pi)“ gedruckt."));
+    expect(value(core.sync.status).online).toBe(false);
+  });
+
+  it("druckt im Packungs-Dialog für die gewählten Packungen nach", async () => {
+    const core = renderApp();
+    const request = vi.spyOn(core.print, "requestPackageLabels");
+    const panel = await openBatches();
+    await userEvent.click(within(panel).getAllByRole("button", { name: /^Bearbeiten: / })[0] as HTMLElement);
+    const dialog = screen.getByRole("dialog", { name: "Packungen bearbeiten" });
+    expect(dialog).toHaveTextContent("Gedruckt wird der gespeicherte Stand.");
+    // Eine der beiden Packungen abwählen: Gedruckt wird nur die andere.
+    const boxes = within(dialog).getAllByRole("checkbox");
+    await userEvent.click(boxes[1] as HTMLElement);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Etikett drucken" }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(request.mock.calls[0]?.[0]).toHaveLength(1);
+    expect(await within(dialog).findByRole("status")).toHaveTextContent(/1 Etikett steht aus/);
+    // Der Dialog bleibt offen: Bearbeiten geht weiter.
+    expect(within(dialog).getByRole("button", { name: "Speichern" })).toBeInTheDocument();
+  });
+
+  it("bietet ohne Drucker keinen Nachdruck an", async () => {
+    const data = createSampleData();
+    renderApp({ data: { printers: [], printJobs: [], settings: { ...data.settings, default_printer_id: null } } });
+    const panel = await openBatches();
+    expect(within(panel).queryByRole("button", { name: /^Etikett drucken: / })).not.toBeInTheDocument();
+    await userEvent.click(within(panel).getAllByRole("button", { name: /^Bearbeiten: / })[0] as HTMLElement);
+    expect(within(screen.getByRole("dialog", { name: "Packungen bearbeiten" })).queryByRole("button", { name: /Etikett/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("Etiketten beim Einlagern von Hand", () => {
+  async function storeRice(dialog: HTMLElement): Promise<void> {
+    await userEvent.click(within(dialog).getByRole("button", { name: /Basmati Reis/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Einlagern" }));
+  }
+
+  it("zeigt den Schalter nur mit Drucker; er folgt der Einstellung des Geräts", async () => {
+    const core = renderApp();
+    const store = vi.spyOn(core.stock, "store");
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Von Hand einlagern" }));
+    const dialog = screen.getByRole("dialog", { name: "Von Hand einlagern" });
+    const labels = within(dialog).getByRole("switch", { name: /Etiketten/ });
+    expect(labels).toBeChecked();
+
+    // Ausschalten gilt für dieses Gerät, auch beim Scannen.
+    await userEvent.click(labels);
+    await waitFor(() => expect(value(core.prefs.value).print_labels).toBe(false));
+    expect(within(dialog).getByRole("switch", { name: /Etiketten/ })).not.toBeChecked();
+    await storeRice(dialog);
+    const done = await screen.findByRole("dialog", { name: "Eingelagert" });
+    expect(store.mock.calls[0]?.[0]).toMatchObject({ labels: false });
+    expect(done).toHaveTextContent("Etiketten sind auf diesem Gerät ausgeschaltet.");
+    expect(within(done).queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("sagt nach dem Einlagern, was mit den Etiketten ist", async () => {
+    const core = renderApp();
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Von Hand einlagern" }));
+    await storeRice(screen.getByRole("dialog", { name: "Von Hand einlagern" }));
+    const done = await screen.findByRole("dialog", { name: "Eingelagert" });
+    // Eingelagert wird in die Primärzone (Vorratsregal): Dort druckt der Standarddrucker am Server sofort.
+    await waitFor(() => expect(within(done).getByRole("status")).toHaveTextContent("1 Etikett ist am Drucker „Küche (Bild)“ gedruckt."));
+    expect(done).toHaveTextContent("Bis das Etikett klebt, hilft die ID von Hand auf der Packung.");
+    expect(value(core.data.printJobs).filter((job) => job.state === "printed" && job.device_id !== null).length).toBeGreaterThan(0);
+  });
+
+  it("meldet ausstehende Etiketten, wenn der Drucker nicht erreichbar ist", async () => {
+    renderApp({ scenarios: ["offline"] });
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Von Hand einlagern" }));
+    await storeRice(screen.getByRole("dialog", { name: "Von Hand einlagern" }));
+    const done = await screen.findByRole("dialog", { name: "Eingelagert" });
+    expect(within(done).getByRole("status")).toHaveTextContent("1 Etikett steht aus und wird gedruckt, sobald dieses Gerät den Drucker „Küche (Bild)“ erreicht.");
+  });
+
+  it("kennt ohne Drucker weder Schalter noch Etiketten", async () => {
+    const core = renderApp({ scenarios: ["empty"] });
+    const store = vi.spyOn(core.stock, "store");
+    await ready();
+    await userEvent.click(screen.getAllByRole("button", { name: "Von Hand einlagern" })[0] as HTMLElement);
+    const dialog = screen.getByRole("dialog", { name: "Von Hand einlagern" });
+    expect(within(dialog).queryByRole("switch", { name: /Etiketten/ })).not.toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Probierglas");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Einlagern" }));
+    const done = await screen.findByRole("dialog", { name: "Eingelagert" });
+    expect(store.mock.calls[0]?.[0]).toMatchObject({ labels: false });
+    expect(done).toHaveTextContent("Ohne Drucker gibt es keine Etiketten.");
+  });
+
+  it("zeigt bei einem zu langen Produktnamen den genauen Satz des Kerns", async () => {
+    renderApp();
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Von Hand einlagern" }));
+    const dialog = screen.getByRole("dialog", { name: "Von Hand einlagern" });
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Neues Produkt" }));
+    await userEvent.type(within(dialog).getByLabelText("Name"), "p".repeat(121));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Einlagern" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Der Name ist zu lang (höchstens 120 Zeichen).");
   });
 });

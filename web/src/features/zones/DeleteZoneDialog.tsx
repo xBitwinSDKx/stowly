@@ -1,7 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 
 import { useCore, type Zone } from "@/contract";
-import { errorText, Notice, packagesText, Select, useReturnFocus } from "@/ui";
+import { errorText, Notice, packagesText, Select } from "@/ui";
 import { Button, Dialog, useToast } from "@/ui/base";
 
 import styles from "./ZoneDialog.module.css";
@@ -19,7 +19,6 @@ export interface DeleteZoneDialogProps {
 
 /** Zone löschen: Ihre Packungen wandern in eine Zielzone, die hier gewählt wird. */
 export function DeleteZoneDialog({ zone, zones, packageCount, primary, onClose }: DeleteZoneDialogProps) {
-  useReturnFocus();
   const core = useCore();
   const toast = useToast();
   const formId = useId();

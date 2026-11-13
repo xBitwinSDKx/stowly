@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { isCoreError, useCore, useLive, type SessionState } from "@/contract";
 import { errorText, Logo, Notice } from "@/ui";
 import { Button, Card, IconButton, TextField } from "@/ui/base";
-import { CircleCheckIcon, EyeIcon, EyeOffIcon, InfoIcon, LockOpenIcon, WarningIcon } from "@/ui/icons";
+import { CircleCheckIcon, EyeIcon, EyeOffIcon, InfoIcon, LockOpenIcon, RefreshIcon, WarningIcon } from "@/ui/icons";
 
 import styles from "./LoginPage.module.css";
 
@@ -34,6 +34,7 @@ export function loginErrorText(error: unknown): string {
     not_configured: "Auf dem Server ist noch kein Haushalts-Passwort gesetzt. Es wird beim Einrichten des Servers festgelegt (STOWLY_PASSWORD).",
     offline: "Der Server ist nicht erreichbar. Zum Anmelden braucht es eine Verbindung zum Server.",
     protocol_mismatch: "Diese Version der App passt nicht zum Server. Bitte die Seite neu laden; hilft das nicht, muss der Server aktualisiert werden.",
+    // Nur der Rückfall: Sagt der Kern genau, was nicht stimmt, steht sein Satz da.
     invalid: "Bitte das Passwort und einen Namen für dieses Gerät angeben.",
     internal: "Die Anmeldung ist fehlgeschlagen. Bitte noch einmal versuchen.",
   });
@@ -53,12 +54,23 @@ function useCountdown(until: number | null): number {
   return until === null ? 0 : Math.max(0, Math.ceil((until - now) / 1000));
 }
 
+export interface LoginPageProps {
+  reason: SignedOutReason;
+  /**
+   * Der Name, unter dem dieses Gerät zuletzt angemeldet war (`SessionState.last_device_name`).
+   * Er wird vorgeschlagen, damit das Gerät nach einer Sperre nicht unter einem zweiten Namen
+   * in der Geräteliste steht.
+   */
+  lastDeviceName?: string | null;
+}
+
 /** Anmeldung mit dem Haushalts-Passwort und einem Namen für dieses Gerät. */
-export function LoginPage({ reason }: { reason: SignedOutReason }) {
+export function LoginPage({ reason, lastDeviceName = null }: LoginPageProps) {
   const core = useCore();
   const app = useLive(core.app.state);
   const [password, setPassword] = useState("");
-  const [deviceName, setDeviceName] = useState(suggestDeviceName);
+  const [deviceName, setDeviceName] = useState(() => (lastDeviceName && lastDeviceName.trim() !== "" ? lastDeviceName : suggestDeviceName()));
+  const [updating, setUpdating] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -109,6 +121,29 @@ export function LoginPage({ reason }: { reason: SignedOutReason }) {
             Die lokale Kopie der Daten wurde von diesem Gerät gelöscht.
           </Notice>
         ) : null}
+        {app?.update_ready && !app.update_required ? (
+          <Notice
+            tone="accent"
+            role="status"
+            icon={<RefreshIcon />}
+            title="Neue Version"
+            action={
+              <Button
+                size="sm"
+                variant="primary"
+                busy={updating}
+                onClick={() => {
+                  setUpdating(true);
+                  void core.app.applyUpdate().finally(() => setUpdating(false));
+                }}
+              >
+                Jetzt aktualisieren
+              </Button>
+            }
+          >
+            Eine neue Version von Stowly ist geladen und wartet auf den Neustart.
+          </Notice>
+        ) : null}
 
         <Card padding="lg">
           <form className={styles.form} onSubmit={(event) => void submit(event)} noValidate>
@@ -138,7 +173,6 @@ export function LoginPage({ reason }: { reason: SignedOutReason }) {
               autoComplete="off"
               value={deviceName}
               onChange={(event) => setDeviceName(event.target.value)}
-              maxLength={60}
             />
             {locked ? (
               <Notice tone="warn" role="alert" icon={<WarningIcon />} title="Zu viele Fehlversuche">

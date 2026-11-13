@@ -1,4 +1,4 @@
-import { useId, useState, type MouseEvent, type ReactNode } from "react";
+import { memo, useId, useState, type MouseEvent, type ReactNode } from "react";
 
 import { isPlaceholder, type Product } from "@/contract";
 import { ExpiryLabel, ZoneLabel } from "@/ui";
@@ -10,6 +10,9 @@ import { BatchPanel } from "./BatchPanel";
 import type { StockDialogs } from "./dialogs";
 import type { ProductGroup, SortKey, SortOrder } from "./model";
 import styles from "./StockList.module.css";
+
+/** Was die Liste von den Dialogen braucht: nur das Öffnen. So bleibt die Eigenschaft über das Zeichnen hinweg dieselbe. */
+export type DialogOpener = Pick<StockDialogs, "open">;
 
 export interface StockListProps {
   /** Die Zeilen, schon gefiltert und sortiert. */
@@ -24,7 +27,7 @@ export interface StockListProps {
    * Chargen-Ansichten offen stehen: Dann wäre jede Zeile markiert und keine mehr hervorgehoben.
    */
   markOpen: boolean;
-  dialogs: StockDialogs;
+  dialogs: DialogOpener;
   /** Adresse eines Produktbilds oder null. Nur gesetzt, wenn überhaupt ein Produkt ein Bild hat. */
   imageUrl: ((product: Product | undefined) => string | null) | null;
 }
@@ -93,7 +96,7 @@ function Zones({ group, max }: { group: ProductGroup; max: number }) {
   );
 }
 
-function rowActions(group: ProductGroup, open: boolean, panelId: string, onToggle: () => void, dialogs: StockDialogs, compact = false): ReactNode {
+function rowActions(group: ProductGroup, open: boolean, panelId: string, onToggle: () => void, dialogs: DialogOpener, compact = false): ReactNode {
   return (
     <>
       {compact ? (
@@ -140,6 +143,76 @@ function rowActions(group: ProductGroup, open: boolean, panelId: string, onToggl
   );
 }
 
+/** Was eine Zeile der Liste braucht. Alles davon bleibt gleich, solange sich an diesem Produkt nichts ändert. */
+interface GroupProps {
+  group: ProductGroup;
+  open: boolean;
+  /** Offene Zeile mit der Akzent-Kontur markieren. */
+  marked: boolean;
+  panelId: string;
+  multiZone: boolean;
+  onToggle: (productId: string) => void;
+  dialogs: DialogOpener;
+  imageUrl: ((product: Product | undefined) => string | null) | null;
+}
+
+/**
+ * Eine Produktgruppe der Tabelle: die Zeile und, wenn aufgeklappt, ihre Chargen-Ansicht.
+ * Wird nur neu gezeichnet, wenn sich an ihr etwas ändert: Bei einem großen Bestand hinge
+ * sonst jeder Tastendruck im Suchfeld an allen Zeilen.
+ */
+const TableGroup = memo(function TableGroup({ group, open, marked, panelId, multiZone, onToggle, dialogs, imageUrl, compact }: GroupProps & { compact: boolean }) {
+  const toggle = () => onToggle(group.product_id);
+
+  /** Ein Klick irgendwo in die Zeile klappt die Details auf; Schaltflächen behalten ihre eigene Wirkung. */
+  function rowClick(event: MouseEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("button, a, input, label")) {
+      return;
+    }
+    toggle();
+  }
+
+  return (
+    <div role="rowgroup" className={cx(styles.group, marked && styles.selected)}>
+      <div role="row" className={styles.row} onClick={rowClick}>
+        <div role="cell" className={styles.td}>
+          <div className={styles.product}>
+            {imageUrl ? <Thumb url={imageUrl(group.product)} /> : null}
+            <div className={styles.productText}>
+              <div className={styles.productTitle}>
+                <span className={table.primary}>{group.title}</span>
+                <PlaceholderBadge product={group.product} />
+              </div>
+              {group.subtitle !== "" ? <div className={table.secondary}>{group.subtitle}</div> : null}
+            </div>
+          </div>
+        </div>
+        {multiZone ? (
+          <div role="cell" className={styles.td}>
+            <Zones group={group} max={2} />
+          </div>
+        ) : null}
+        <div role="cell" className={styles.td}>
+          <ExpiryLabel date={group.critical} state={group.state} days={group.days} />
+        </div>
+        <div role="cell" className={cx(styles.td, styles.num)}>
+          {group.count}
+        </div>
+        <div role="cell" className={cx(styles.td, styles.actions)}>
+          {rowActions(group, open, panelId, toggle, dialogs, compact)}
+        </div>
+      </div>
+      {open ? (
+        <div role="row" className={styles.panelRow}>
+          <div role="cell" className={styles.panelCell}>
+            <BatchPanel id={panelId} group={group} multiZone={multiZone} wide dialogs={dialogs} onCollapse={toggle} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 /**
  * Die gruppierte Bestandsliste als Tabelle (Desktop): eine Zeile je Produkt.
  *
@@ -148,7 +221,20 @@ function rowActions(group: ProductGroup, open: boolean, panelId: string, onToggl
  * ihre Chargen-Ansicht offen ist. Die Spalten richten sich wie in einer Tabelle nach
  * ihrem breitesten Inhalt (Unterraster).
  */
-export function StockTable({ groups, multiZone, isOpen, onToggle, markOpen, dialogs, imageUrl, sort, onSort, detailsAll, onDetailsAll, compact }: StockTableProps) {
+export const StockTable = memo(function StockTable({
+  groups,
+  multiZone,
+  isOpen,
+  onToggle,
+  markOpen,
+  dialogs,
+  imageUrl,
+  sort,
+  onSort,
+  detailsAll,
+  onDetailsAll,
+  compact,
+}: StockTableProps) {
   const baseId = useId();
 
   function sortHead(key: SortKey, label: string, numeric = false) {
@@ -163,17 +249,9 @@ export function StockTable({ groups, multiZone, isOpen, onToggle, markOpen, dial
     );
   }
 
-  /** Ein Klick irgendwo in die Zeile klappt die Details auf; Schaltflächen behalten ihre eigene Wirkung. */
-  function rowClick(event: MouseEvent<HTMLDivElement>, productId: string) {
-    if (event.target instanceof Element && event.target.closest("button, a, input, label")) {
-      return;
-    }
-    onToggle(productId);
-  }
-
   return (
     <div className={table.wrap}>
-      <div role="table" aria-label="Bestand" className={cx(styles.list, !multiZone && styles.noZone, compact && styles.compact)}>
+      <div role="table" aria-label="Bestand" className={cx(styles.list, !multiZone && styles.noZone, compact && styles.compact, imageUrl !== null && styles.withThumbs)}>
         <div role="rowgroup" className={styles.head}>
           <div role="row" className={styles.headRow}>
             {sortHead("title", "Produkt")}
@@ -190,103 +268,93 @@ export function StockTable({ groups, multiZone, isOpen, onToggle, markOpen, dial
             </div>
           </div>
         </div>
-        {groups.map((group, index) => {
+        {groups.map((group) => {
           const open = isOpen(group.product_id);
-          const panelId = `${baseId}-${String(index)}`;
           return (
-            <div role="rowgroup" key={group.product_id} className={cx(styles.group, open && markOpen && styles.selected)}>
-              <div role="row" className={styles.row} onClick={(event) => rowClick(event, group.product_id)}>
-                <div role="cell" className={styles.td}>
-                  <div className={styles.product}>
-                    {imageUrl ? <Thumb url={imageUrl(group.product)} /> : null}
-                    <div className={styles.productText}>
-                      <div className={styles.productTitle}>
-                        <span className={table.primary}>{group.title}</span>
-                        <PlaceholderBadge product={group.product} />
-                      </div>
-                      {group.subtitle !== "" ? <div className={table.secondary}>{group.subtitle}</div> : null}
-                    </div>
-                  </div>
-                </div>
-                {multiZone ? (
-                  <div role="cell" className={styles.td}>
-                    <Zones group={group} max={2} />
-                  </div>
-                ) : null}
-                <div role="cell" className={styles.td}>
-                  <ExpiryLabel date={group.critical} state={group.state} days={group.days} />
-                </div>
-                <div role="cell" className={cx(styles.td, styles.num)}>
-                  {group.count}
-                </div>
-                <div role="cell" className={cx(styles.td, styles.actions)}>
-                  {rowActions(group, open, panelId, () => onToggle(group.product_id), dialogs, compact)}
-                </div>
-              </div>
-              {open ? (
-                <div role="row" className={styles.panelRow}>
-                  <div role="cell" className={styles.panelCell}>
-                    <BatchPanel id={panelId} group={group} multiZone={multiZone} wide dialogs={dialogs} onCollapse={() => onToggle(group.product_id)} />
-                  </div>
-                </div>
-              ) : null}
-            </div>
+            <TableGroup
+              key={group.product_id}
+              group={group}
+              open={open}
+              marked={open && markOpen}
+              // Die Kennung hängt am Produkt, nicht am Platz in der Liste: Sie bleibt beim Sortieren und Filtern dieselbe.
+              panelId={`${baseId}-${group.product_id}`}
+              multiZone={multiZone}
+              onToggle={onToggle}
+              dialogs={dialogs}
+              imageUrl={imageUrl}
+              compact={compact}
+            />
           );
         })}
       </div>
     </div>
   );
-}
+});
+
+/** Eine Produktgruppe als Karte (Handy). Wie die Zeile der Tabelle nur neu gezeichnet, wenn sich an ihr etwas ändert. */
+const CardGroup = memo(function CardGroup({ group, open, marked, panelId, multiZone, onToggle, dialogs, imageUrl }: GroupProps) {
+  const toggle = () => onToggle(group.product_id);
+  return (
+    <Card as="li" padding="none" selected={marked} className={styles.card}>
+      <div className={styles.cardMain}>
+        <div className={styles.product}>
+          {imageUrl ? <Thumb url={imageUrl(group.product)} /> : null}
+          <div className={styles.productText}>
+            <div className={styles.productTitle}>
+              <h3 className={styles.cardTitle}>{group.title}</h3>
+              <PlaceholderBadge product={group.product} />
+            </div>
+            {group.subtitle !== "" ? <div className={table.secondary}>{group.subtitle}</div> : null}
+          </div>
+        </div>
+        <dl className={cx(styles.values, !multiZone && styles.twoValues)}>
+          {multiZone ? (
+            <div>
+              <dt>Zone</dt>
+              <dd>
+                <Zones group={group} max={1} />
+              </dd>
+            </div>
+          ) : null}
+          <div>
+            <dt>Menge</dt>
+            <dd className="tabular">{group.count}</dd>
+          </div>
+          <div>
+            <dt>Kritischstes MHD</dt>
+            <dd>
+              <ExpiryLabel date={group.critical} state={group.state} days={group.days} />
+            </dd>
+          </div>
+        </dl>
+        <div className={styles.cardActions}>{rowActions(group, open, panelId, toggle, dialogs)}</div>
+      </div>
+      {open ? <BatchPanel id={panelId} group={group} multiZone={multiZone} wide={false} dialogs={dialogs} onCollapse={toggle} /> : null}
+    </Card>
+  );
+});
 
 /** Die gruppierte Bestandsliste als Karten (Handy): Name, drei beschriftete Werte, Aktionen. */
-export function StockCards({ groups, multiZone, isOpen, onToggle, markOpen, dialogs, imageUrl }: StockListProps) {
+export const StockCards = memo(function StockCards({ groups, multiZone, isOpen, onToggle, markOpen, dialogs, imageUrl }: StockListProps) {
   const baseId = useId();
   return (
     <ul className={styles.cards}>
-      {groups.map((group, index) => {
+      {groups.map((group) => {
         const open = isOpen(group.product_id);
-        const panelId = `${baseId}-${String(index)}`;
         return (
-          <Card as="li" key={group.product_id} padding="none" selected={open && markOpen} className={styles.card}>
-            <div className={styles.cardMain}>
-              <div className={styles.product}>
-                {imageUrl ? <Thumb url={imageUrl(group.product)} /> : null}
-                <div className={styles.productText}>
-                  <div className={styles.productTitle}>
-                    <h3 className={styles.cardTitle}>{group.title}</h3>
-                    <PlaceholderBadge product={group.product} />
-                  </div>
-                  {group.subtitle !== "" ? <div className={table.secondary}>{group.subtitle}</div> : null}
-                </div>
-              </div>
-              <dl className={cx(styles.values, !multiZone && styles.twoValues)}>
-                {multiZone ? (
-                  <div>
-                    <dt>Zone</dt>
-                    <dd>
-                      <Zones group={group} max={1} />
-                    </dd>
-                  </div>
-                ) : null}
-                <div>
-                  <dt>Menge</dt>
-                  <dd className="tabular">{group.count}</dd>
-                </div>
-                <div>
-                  <dt>Kritischstes MHD</dt>
-                  <dd>
-                    <ExpiryLabel date={group.critical} state={group.state} days={group.days} />
-                  </dd>
-                </div>
-              </dl>
-              <div className={styles.cardActions}>{rowActions(group, open, panelId, () => onToggle(group.product_id), dialogs)}</div>
-            </div>
-            {open ? (
-              <BatchPanel id={panelId} group={group} multiZone={multiZone} wide={false} dialogs={dialogs} onCollapse={() => onToggle(group.product_id)} />
-            ) : null}
-          </Card>
+          <CardGroup
+            key={group.product_id}
+            group={group}
+            open={open}
+            marked={open && markOpen}
+            panelId={`${baseId}-${group.product_id}`}
+            multiZone={multiZone}
+            onToggle={onToggle}
+            dialogs={dialogs}
+            imageUrl={imageUrl}
+          />
         );
       })}
     </ul>
   );
-}
+});
