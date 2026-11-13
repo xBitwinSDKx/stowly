@@ -102,7 +102,12 @@ async function connectServer(printer: Printer, options: ConnectOptions): Promise
   const endpoint: ServiceEndpoint = { kind: "server", token: options.deviceToken };
   const reply = await options.client.health(endpoint, null);
   if (!reply.ok) {
-    return reply.reached && reply.code === "unauthorized" ? { ok: false, problem: "offline", unauthorized: true } : { ok: false, problem: "offline" };
+    if (!reply.reached) {
+      return { ok: false, problem: "offline" };
+    }
+    // Der Server antwortet im Fehlerformat: Er ist da, nur sein Druckdienst nicht (503, solange er
+    // nicht läuft). Ein abgelehntes Token heißt dagegen: Das Gerät ist abgemeldet.
+    return reply.code === "unauthorized" ? { ok: false, problem: "offline", unauthorized: true } : { ok: false, problem: "unavailable" };
   }
   // Am Server heißt ein Drucker im Dienst wie seine `Printer.id`.
   const service = reply.value.printers.find((candidate) => candidate.name === printer.id) ?? null;

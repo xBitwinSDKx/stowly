@@ -13,6 +13,10 @@
  * ist; der direkte Drucker (Pi) nur mit der Ausgangslage "at-pi" oder nach
  * `stowlyMock.setPiReachable(true)`. Eigene ausstehende Etiketten eines erreichbaren
  * Druckers werden von selbst gedruckt; wie das ausgeht, bestimmt `stowlyMock.setPrintOutcome`.
+ * Warum der Pi nicht benutzbar ist, lässt sich mit `stowlyMock.setPiProblem("permission")`
+ * (oder einem anderen `PrinterProblem`) vorgeben. Wie im Kern ändert ein Zwischenstand kein
+ * Etikett mit Ausgang, und `print.flush` erfüllt sich nach dem Einreichen, nicht erst mit dem
+ * Ergebnis.
  */
 import {
   addDays,
@@ -37,6 +41,7 @@ import {
   newUuid,
   optionalText,
   printerIdForJob,
+  progressAfterOutcome,
   randomPackageId,
   requiredText,
   toLocalDate,
@@ -54,6 +59,7 @@ import {
   type Printer,
   type PrinterChanges,
   type PrinterProbe,
+  type PrinterProblem,
   type PrinterStatus,
   type PrintFlushReport,
   type PrintJob,
@@ -159,6 +165,12 @@ export interface MockControl {
   addProblem(problem: SyncProblem): void;
   /** Der direkte Drucker (Pi) ist erreichbar oder nicht; erreichbar druckt er Ausstehendes sofort. */
   setPiReachable(reachable: boolean): void;
+  /**
+   * Warum der direkte Drucker gerade nicht benutzbar ist, wie es der echte Kern meldet
+   * ("permission", "blocked", "not_verified", "unknown_printer", "insecure_context", …), oder
+   * null: dann gilt `setPiReachable`. Wirkt auf `printers.probe` und `print.flush`.
+   */
+  setPiProblem(problem: PrinterProblem | null): void;
   /** Wie die nächsten Drucke ausgehen: "printed" (Vorgabe), "failed" (Etiketten leer) oder "unknown". */
   setPrintOutcome(outcome: MockPrintOutcome): void;
   /** Der Server schlägt Barcodes nach oder nicht (`sync.status.lookup_enabled`). */
@@ -230,6 +242,8 @@ export function createMockCore(options: MockOptions = {}): MockCore {
 
   // Nachgespielter Druck (siehe Kopf der Datei).
   let piReachable = scenarios.has("at-pi");
+  /** Ein Grund, aus dem der Pi nicht benutzbar ist (`setPiProblem`); null = es gilt `piReachable`. */
+  let piProblem: PrinterProblem | null = null;
   let printOutcome: MockPrintOutcome = "printed";
   const troubled = scenarios.has("printer-trouble");
   const BOOT_IDS = { server: "5e77e700-0000-4000-8000-000000000001", pi: "c0ffee00-0000-4000-8000-000000000001" } as const;
@@ -441,7 +455,10 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   function setJobState(id: string, next: PrintJob["state"], error: string | null = null, changes: Partial<PrintJob> = {}): void {
     state.update((data) => ({
       ...data,
-      printJobs: data.printJobs.map((job) => (job.id === id ? { ...job, ...changes, state: next, error, updated_at: stamp() } : job)),
+      // Wie im Kern und beim Server: Ein Zwischenstand ändert kein Etikett mit Ausgang (Protokoll 6.6).
+      printJobs: data.printJobs.map((job) =>
+        job.id === id && !progressAfterOutcome(job.state, next) ? { ...job, ...changes, state: next, error, updated_at: stamp() } : job,
+      ),
     }));
   }
 
@@ -467,7 +484,17 @@ export function createMockCore(options: MockOptions = {}): MockCore {
 
   /** Erreicht dieses Gerät den Druckdienst des Druckers? */
   function reachable(printer: Printer): boolean {
-    return printer.connection === "server" ? syncStatus.get().online === true : piReachable;
+    return printer.connection === "server" ? syncStatus.get().online === true : piReachable && piProblem === null;
+  }
+
+  /** Warum ein Drucker nicht benutzbar ist, wie der Kern es meldet (nur, wenn er es nicht ist). */
+  function problemOf(printer: Printer): { problem: PrinterProblem; message: string } {
+    if (printer.connection === "server") {
+      return { problem: "offline", message: "Der Server ist nicht erreichbar." };
+    }
+    return piProblem === null
+      ? { problem: "unreachable", message: "Der Druckdienst antwortet auf keiner Adresse." }
+      : { problem: piProblem, message: "Der Druckdienst ist nicht benutzbar (Attrappe)." };
   }
 
   function ownDeviceId(): string | null {
@@ -533,11 +560,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       if (!seen.has(key)) {
         seen.add(key);
         report.problems.push(
-          !printer
-            ? { printer_id: null, problem: "no_printer", message: "Dem Etikett ist kein Drucker zugeordnet." }
-            : printer.connection === "server"
-              ? { printer_id: printer.id, problem: "offline", message: "Der Server ist nicht erreichbar." }
-              : { printer_id: printer.id, problem: "unreachable", message: "Der Druckdienst antwortet auf keiner Adresse." },
+          !printer ? { printer_id: null, problem: "no_printer", message: "Dem Etikett ist kein Drucker zugeordnet." } : { printer_id: printer.id, ...problemOf(printer) },
         );
       }
     }
@@ -1163,9 +1186,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         const printer = activePrinter(id);
         await wait();
         if (!reachable(printer)) {
-          return printer.connection === "server"
-            ? { reachable: false, url: null, health: null, problem: "offline", error: "Der Server ist nicht erreichbar." }
-            : { reachable: false, url: null, health: null, problem: "unreachable", error: "Der Druckdienst antwortet auf keiner Adresse." };
+          const { problem, message } = problemOf(printer);
+          // Wie im Kern: „unknown_printer" heißt, der Dienst antwortet, kennt den Drucker aber nicht.
+          return { reachable: problem === "unknown_printer", url: null, health: null, problem, error: message };
         }
         const status = printerStatusFor(printer);
         rememberStatus(status);
@@ -1233,8 +1256,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
       async flush() {
         const report = deliver();
-        // Wie im Kern: erfüllt sich erst nach dem Versuch, also wenn das Ergebnis feststeht.
-        await wait(2);
+        // Wie im Kern: erfüllt sich, sobald eingereicht ist; den Endzustand bringt das Nachfragen
+        // danach (hier: `deliver` setzt ihn nach der doppelten Wartezeit), über `data.printJobs`.
+        await wait();
         return report;
       },
       async preview(subject, previewOptions) {
@@ -1387,6 +1411,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       setPiReachable(next: boolean) {
         piReachable = next;
         if (next) {
+          deliverSoon();
+        }
+      },
+      setPiProblem(problem: PrinterProblem | null) {
+        piProblem = problem;
+        if (problem === null && piReachable) {
           deliverSoon();
         }
       },

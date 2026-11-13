@@ -14,7 +14,7 @@ import { ROUTES } from "@/contract/routes";
 
 import type { DeliveryEntry } from "../db";
 import { baseOf } from "../print/address";
-import { byRequestOrder, labelData, printerFor, templateFor } from "../print/content";
+import { byRequestOrder, labelData, labelIdsInOrder, printerFor, templateFor } from "../print/content";
 import { PRINT_TEXTS } from "../print/texts";
 import type { Mutation } from "../store";
 import type { Tables } from "../tables";
@@ -77,6 +77,14 @@ export function createPrintersApi(runtime: CoreRuntime, print: PrintRuntime): Pr
 
     async probe(id: string) {
       await runtime.ready;
+      const state = runtime.store.snapshot;
+      const printer = state.view.printers.get(id);
+      const unsynced = state.outbox.some(({ command }) => (command.type === "printer.create" || command.type === "printer.update") && command.printer_id === id);
+      if (printer?.connection === "server" && unsynced) {
+        // Einen eben angelegten oder geänderten Drucker kennt der Server erst nach dem Abgleich;
+        // sonst hieße es gleich nach dem Anlegen „Der Server kennt diesen Drucker nicht".
+        await print.syncFirst();
+      }
       let result;
       try {
         result = await print.engine.probe(id);
@@ -92,8 +100,7 @@ export function createPrintersApi(runtime: CoreRuntime, print: PrintRuntime): Pr
   };
 }
 
-function requestJob(mutation: Mutation, subject: { package_id: string } | { zone_id: string }, printerId: string | null): PrintJob {
-  const jobId = newUuid();
+function requestJob(mutation: Mutation, subject: { package_id: string } | { zone_id: string }, printerId: string | null, jobId: string = newUuid()): PrintJob {
   if ("package_id" in subject) {
     mutation.emit({ type: "print.request", job_id: jobId, kind: "package", package_id: subject.package_id, printer_id: printerId });
   } else {
@@ -143,7 +150,9 @@ export function createPrintApi(runtime: CoreRuntime, print: PrintRuntime): Print
         const packages = existingPackages(mutation.draft, packageIds);
         requirePrinter(mutation.draft);
         const printerId = chosenPrinter(mutation, options?.printer_id);
-        return packages.map((pkg) => requestJob(mutation, { package_id: pkg.id }, printerId));
+        // Aufsteigende Kennungen: So kommen die Etiketten in der Reihenfolge der Packungen aus dem Drucker.
+        const ids = labelIdsInOrder(packages.length);
+        return packages.map((pkg, index) => requestJob(mutation, { package_id: pkg.id }, printerId, ids[index]));
       });
     },
 
@@ -226,6 +235,21 @@ export function createPrintApi(runtime: CoreRuntime, print: PrintRuntime): Print
     async flush(): Promise<PrintFlushReport> {
       try {
         await runtime.ready;
+        // An einen Drucker am Server geht ein Etikett erst, wenn seine Anforderung abgeglichen ist
+        // (docs/etiketten.md, 4.1). Wer „jetzt drucken" sagt, meint das mit: erst abgleichen.
+        const state = runtime.store.snapshot;
+        const deviceId = state.session?.status === "signed_in" ? state.session.device?.id : undefined;
+        const waitsForSync = state.outbox.some(({ command }) => {
+          if (command.type !== "print.request") {
+            return false;
+          }
+          const job = state.view.print_jobs.get(command.job_id);
+          const printerId = job && job.device_id === deviceId && job.state === "pending" ? printerFor(state.view, job) : null;
+          return printerId !== null && state.view.printers.get(printerId)?.connection === "server";
+        });
+        if (waitsForSync) {
+          await print.syncFirst();
+        }
         const { delivered, pending, problems } = await print.flush();
         return { delivered, pending, problems };
       } catch {

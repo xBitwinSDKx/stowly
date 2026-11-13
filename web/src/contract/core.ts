@@ -437,6 +437,11 @@ export type NewPrinter =
 export type PrinterProblem =
   /** Drucker am Server: Der Server ist nicht erreichbar. */
   | "offline"
+  /**
+   * Drucker am Server: Der Server antwortet, sein Druckdienst aber nicht (er ließ sich nicht
+   * starten, `/print` antwortet mit 503; der Grund steht im Log des Servers). Abgleichen geht.
+   */
+  | "unavailable"
   /** Auf keiner Adresse hat in der Zeit etwas geantwortet: falsches WLAN, Pi aus, Zertifikat nicht installiert. */
   | "unreachable"
   /** Der Browser hat den Zugriff auf das lokale Netzwerk abgelehnt (Local Network Access). */
@@ -469,13 +474,24 @@ export interface PrintersApi {
   create(input: NewPrinter): Promise<Printer>;
   /** Nur die vorhandenen Schlüssel werden geändert. @throws CoreError not_found | invalid */
   update(id: string, changes: PrinterChanges): Promise<void>;
-  /** Löscht den Drucker; Zonen, die auf ihn zeigten, nutzen wieder den Standarddrucker. */
+  /**
+   * Löscht den Drucker. Zonen und Einstellungen, die auf ihn zeigten, stehen danach auf null
+   * (Kern und Server gleich): Seine Zonen nutzen wieder den Standarddrucker, und war er der
+   * Standarddrucker, gibt es keinen mehr. Ausstehende Etiketten folgen danach der Regel
+   * `printerIdForJob`. Ausnahme: Ein eigenes Etikett, das schon an ihn abgeschickt war (Antwort
+   * ausstehend) oder bei ihm wartet, bleibt bei ihm, bis sein Dienst antwortet; nur der weiß, ob
+   * es gedruckt wurde. Antwortet er nicht mehr, lässt es sich verwerfen (`print.cancel`).
+   */
   remove(id: string): Promise<void>;
   /**
    * Fragt den Druckdienst jetzt ab (`GET /v1/health`) und merkt sich das Ergebnis in
    * `data.printerStatus`. Wirft nicht, wenn der Dienst fehlt: Das steht im Ergebnis.
    * Bei einem direkten Drucker darf der Aufruf die Nachfrage des Browsers nach dem lokalen
    * Netzwerk auslösen; die Oberfläche ruft ihn deshalb nur auf eine Handlung des Anwenders hin.
+   * Kann die Nachfrage kommen (Erlaubnis noch offen), wartet die Abfrage bis zu 15 Sekunden auf
+   * die Antwort des Anwenders, über alle Adressen eines Druckers zusammen höchstens 20 Sekunden.
+   * Einen Drucker am Server, der noch nicht abgeglichen ist (eben angelegt oder geändert),
+   * gleicht der Kern vorher ab: Sonst kennte ihn der Server noch nicht.
    * @throws CoreError not_found
    */
   probe(id: string): Promise<PrinterProbe>;
@@ -489,7 +505,8 @@ export interface PrintFlushReport {
   pending: number;
   /**
    * Je Drucker, bei dem es nicht geklappt hat, der Grund. `printer_id: null` steht für
-   * Etiketten, denen kein Drucker zugeordnet ist.
+   * Etiketten, denen kein Drucker zugeordnet ist. Die Kennung kann auch die eines gelöschten
+   * Druckers sein (ein Etikett, das schon an ihn abgeschickt war; siehe `printers.remove`).
    */
   problems: { printer_id: string | null; problem: PrinterProblem | "no_printer"; message: string }[];
 }
@@ -536,9 +553,12 @@ export interface PrintApi {
   retry(jobId: string): Promise<PrintJob>;
   /**
    * Verwirft ein ausstehendes Etikett ("pending" oder "queued"), auch das eines anderen Geräts.
-   * Ein eigenes Etikett, das schon beim Druckdienst wartet ("queued"), wird zuerst dort
-   * verworfen: Druckt es inzwischen, scheitert der Aufruf mit "invalid" und das Etikett zeigt
-   * den Zustand des Dienstes; ist der Dienst nicht erreichbar, scheitert er mit "offline".
+   * Ein eigenes Etikett, das schon beim Druckdienst wartet ("queued") oder dorthin abgeschickt
+   * ist, wird zuerst dort verworfen: Druckt es inzwischen, scheitert der Aufruf mit "invalid" und
+   * das Etikett zeigt den Zustand des Dienstes. Ist der Dienst nicht erreichbar, wird ein
+   * ausstehendes trotzdem hier verworfen, ein wartendes nicht ("offline"), außer sein Drucker ist
+   * gelöscht: Dann wird auch das wartende hier verworfen. Druckt der Dienst es später doch, ist
+   * das kein doppelter Druck.
    * @throws CoreError not_found | invalid | offline
    */
   cancel(jobId: string): Promise<void>;
@@ -549,8 +569,12 @@ export interface PrintApi {
   resolveUnknown(jobId: string, printed: boolean): Promise<void>;
   /**
    * Versucht jetzt, alle eigenen ausstehenden Etiketten zuzustellen, und fragt den Stand der
-   * schon abgeschickten ab. Erfüllt sich nach dem Versuch, wirft nicht. Darf die Nachfrage des
-   * Browsers nach dem lokalen Netzwerk auslösen (wie `printers.probe`).
+   * schon abgeschickten ab. Erfüllt sich, sobald jedes ausstehende Etikett eingereicht und jedes
+   * schon abgeschickte einmal abgefragt ist, nicht erst beim Endzustand: Das Nachfragen läuft
+   * danach im Hintergrund weiter, sein Ergebnis kommt über `data.printJobs`. Wirft nicht. Darf
+   * die Nachfrage des Browsers nach dem lokalen Netzwerk auslösen (wie `printers.probe`).
+   * Wartet die Anforderung eines Etiketts für einen Drucker am Server noch in der Outbox, gleicht
+   * der Kern vorher ab: Ein Drucker am Server nimmt nur Etiketten an, die er schon kennt.
    */
   flush(): Promise<PrintFlushReport>;
   /**
@@ -577,6 +601,11 @@ export interface PrintApi {
    * Rest ruft die Oberfläche noch einmal. Sie öffnet die Adresse in einem neuen Tab. Die
    * übergebenen Etiketten gelten danach als "unknown" mit `error: "handoff"`: Die App erfährt
    * den Ausgang nicht und fragt nach.
+   * Übergeben werden nur Etiketten, die die App noch nie abgeschickt hat. Eines, das schon
+   * hinausging (Antwort ausstehend), bleibt "pending" und wird auf dem normalen Weg geklärt:
+   * Die Seite reichte es mit ihrer eigenen `boot_id` ein und druckte es nach einem Neustart des
+   * Pi womöglich ein zweites Mal. Bleibt so nichts übrig, scheitert der Aufruf mit "not_found"
+   * und einem Satz, der das sagt.
    * @throws CoreError not_found (Drucker unbekannt, oder nichts Eigenes steht aus) | invalid (kein direkter Drucker)
    */
   handoff(printerId: string): Promise<{ url: string; jobs: PrintJob[] }>;

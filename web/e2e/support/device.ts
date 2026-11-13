@@ -49,24 +49,66 @@ export interface SyncExchange {
   lost: boolean;
 }
 
+/** Eine Anfrage an einen Druckdienst (am Server unter `/print` oder direkt), wie sie hinausging. */
+export interface PrintCall {
+  method: string;
+  /** Vollständige Adresse. */
+  url: string;
+  /** Pfad unterhalb des Dienstes ohne Abfrage, z. B. "/v1/jobs/…" (am Server ohne "/print"). */
+  path: string;
+  /** Die Kopfzeilen, Namen klein geschrieben. */
+  headers: Record<string, string>;
+  /** Der Rumpf als JSON, sonst null. */
+  body: Record<string, unknown> | null;
+  /** HTTP-Status der Antwort; null ohne Antwort. */
+  status: number | null;
+  /** Die Antwort ging im Test verloren, nachdem der Dienst die Anfrage bearbeitet hatte. */
+  lost: boolean;
+}
+
+function headersOf(init: RequestInit | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  new Headers(init?.headers).forEach((entry, name) => {
+    result[name.toLowerCase()] = entry;
+  });
+  return result;
+}
+
 /** Die Leitung eines Geräts zum Server, mit Eingriffen für die Tests. */
 export class Network {
-  /** false: Keine Anfrage erreicht den Server. */
+  /** false: Keine Anfrage erreicht den Server. Direkte Drucker steuert `unreachable`. */
   online = true;
+  /** Ursprünge direkter Drucker, die das Gerät gerade nicht erreicht (nicht im WLAN des Pi). */
+  readonly unreachable = new Set<string>();
   /** So viele der nächsten Antworten auf einen Abgleich gehen verloren, nachdem der Server sie verbucht hat. */
   loseSyncResponses = 0;
+  /** So viele der nächsten Antworten auf das Einreichen eines Druckauftrags gehen verloren, nachdem der Dienst ihn bearbeitet hat. */
+  loseSubmitResponses = 0;
   /** Die nächste Anfrage eines Abgleichs ist so lange unterwegs, bevor sie beim Server ankommt. */
   delayNextSyncMs = 0;
   /** Verändert den Rumpf jeder Sync-Anfrage, bevor sie hinausgeht (z. B. eine andere Protokollversion). */
   rewriteSyncRequest: ((body: Record<string, unknown>) => void) | null = null;
   /** Alle Abgleiche dieses Geräts in ihrer Reihenfolge. */
   readonly syncs: SyncExchange[] = [];
+  /** Alle Anfragen an Druckdienste in ihrer Reihenfolge. */
+  readonly printCalls: PrintCall[] = [];
 
   constructor(private readonly baseUrl: string) {}
 
+  /** Die Aufträge, die dieses Gerät eingereicht hat (`POST /v1/jobs/{id}`), in ihrer Reihenfolge. */
+  submits(jobId?: string): PrintCall[] {
+    return this.printCalls.filter((call) => call.method === "POST" && /^\/v1\/jobs\/[^/]+$/.test(call.path) && (jobId === undefined || call.path === `/v1/jobs/${jobId}`));
+  }
+
   readonly fetch: FetchLike = async (input, init) => {
+    if (/^https?:\/\//.test(input)) {
+      return this.direct(input, init);
+    }
     if (!this.online) {
       throw new TypeError("fetch failed (Netz im Test abgeschaltet)");
+    }
+    if (input.startsWith("/print/")) {
+      return this.print(this.baseUrl + input, input.slice("/print".length), init);
     }
     if (input === "/api/sync" && this.delayNextSyncMs > 0) {
       const delay = this.delayNextSyncMs;
@@ -97,6 +139,40 @@ export class Network {
     return response;
   };
 
+  /** Eine Anfrage an einen direkten Drucker (Pi): eigene Adresse, ohne den Server. */
+  private direct(url: string, init: RequestInit | undefined): Promise<Response> {
+    const target = new URL(url);
+    if (this.unreachable.has(target.origin)) {
+      return Promise.reject(new TypeError("fetch failed (Druckdienst im Test nicht erreichbar)"));
+    }
+    return this.print(url, target.pathname, init);
+  }
+
+  /** Eine Anfrage an einen Druckdienst: aufzeichnen und, wenn der Test es will, die Antwort verlieren. */
+  private async print(url: string, pathWithQuery: string, init: RequestInit | undefined): Promise<Response> {
+    const path = pathWithQuery.split("?")[0] ?? pathWithQuery;
+    let body: Record<string, unknown> | null = null;
+    if (typeof init?.body === "string") {
+      try {
+        body = JSON.parse(init.body) as Record<string, unknown>;
+      } catch {
+        body = null;
+      }
+    }
+    const call: PrintCall = { method: init?.method ?? "GET", url, path, headers: headersOf(init), body, status: null, lost: false };
+    this.printCalls.push(call);
+    const response = await fetch(url, init);
+    call.status = response.status;
+    const submit = call.method === "POST" && /^\/v1\/jobs\/[^/]+$/.test(path);
+    if (submit && this.loseSubmitResponses > 0) {
+      this.loseSubmitResponses -= 1;
+      call.lost = true;
+      await response.arrayBuffer().catch(() => undefined);
+      throw new TypeError("fetch failed (Antwort im Test verloren)");
+    }
+    return response;
+  }
+
   /** Der letzte Abgleich, der beim Server angekommen ist. */
   get lastSync(): SyncExchange {
     const last = this.syncs.at(-1);
@@ -119,6 +195,20 @@ export function value<T>(live: Live<T>): T {
     throw new Error("Der Live-Wert ist noch nicht geladen.");
   }
   return current;
+}
+
+/**
+ * Wartet, bis `check` wahr ist: für das, was ein Kern im Hintergrund tut (das Nachfragen beim
+ * Druckdienst). Wirft nach `timeoutMs` mit `what` im Text.
+ */
+export async function until(check: () => boolean | Promise<boolean>, what: string, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await check())) {
+    if (Date.now() > deadline) {
+      throw new Error(`Nach ${timeoutMs / 1000} s noch nicht erreicht: ${what}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /** Erwartet, dass `action` mit einem CoreError dieses Codes scheitert, und liefert ihn. */

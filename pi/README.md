@@ -347,4 +347,4 @@ Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe
 |---|---|---|
 | V1 | Folienetikett (DK-22212) auf eine Gefrierdose, vier Wochen bei −18 °C | haftet noch; QR-Code mit beiden Handys lesbar, auch bereift |
 | V2 | Papieretikett (DK-22205) im Regal, mehrere Wochen | lesbar, löst sich nicht |
-| V3 | Lange Produktnamen | zwei Zeilen, kleiner, notfalls „…"; die ID vollständig. Bitte melden, ob das Einlagerdatum rechts unten vollständig ist: Sein Feld in der Vorlage ist für DejaVu Sans knapp bemessen und endet sonst mit „…" |
+| V3 | Lange Produktnamen | zwei Zeilen, kleiner, notfalls „…"; die ID und das Einlagerdatum rechts unten vollständig (die Felder sind für DejaVu bemessen: ID bei 6 mm, Datum bei 2,4 mm; reicht es nicht, werden sie etwas kleiner statt gekürzt). Bitte melden, wenn eines davon mit „…" endet |

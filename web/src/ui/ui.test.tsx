@@ -106,6 +106,10 @@ describe("Texte", () => {
     expect(errorText(new CoreError("invalid", "Die Menge muss zwischen 1 und 50 liegen."), { invalid: "Eigener Satz" })).toBe("Die Menge muss zwischen 1 und 50 liegen.");
     expect(errorText(new CoreError("invalid"))).toBe("Die Eingabe ist ungültig.");
     expect(errorText(new CoreError("invalid"), { invalid: "Eigener Satz" })).toBe("Eigener Satz");
+    // Ebenso "not_supported": Nur der Kern weiß, warum es hier nicht geht (keine lokale Datenbank, ein anderer Tab).
+    const blocked = "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest. Schließe ihn, dann geht es hier weiter.";
+    expect(errorText(new CoreError("not_supported", blocked))).toBe(blocked);
+    expect(errorText(new CoreError("not_supported"))).toBe("Das ist in dieser Ausbaustufe noch nicht verfügbar.");
     expect(errorText(new TypeError("x is undefined"))).toBe("Unerwarteter Fehler. Bitte noch einmal versuchen.");
   });
 });

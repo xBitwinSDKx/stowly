@@ -41,6 +41,7 @@
 import type { DriverStatus, Printer, PrintJob, PrintJobState, ServiceJob } from "@/contract/api.gen";
 import type { PrinterProbe, PrinterProblem, PrintFlushReport } from "@/contract/core";
 import { CoreError } from "@/contract/errors";
+import { progressAfterOutcome } from "@/contract/labels";
 
 import type { DeliveryEntry } from "../db";
 import type { Store, StoreState } from "../store";
@@ -752,6 +753,11 @@ export class DeliveryEngine {
       if (job.state === state && job.printer_id === printerId && job.boot_id === bootId && job.error === error) {
         return false;
       }
+      if (progressAfterOutcome(job.state, state)) {
+        // Ein Zwischenstand ändert kein Etikett mit Ausgang (docs/sync-protokoll.md, 6.6): Die
+        // Meldung bliebe ohne Wirkung. Die Buchführung oben gilt trotzdem; nachgefragt wird weiter.
+        return false;
+      }
       if (job.state === "cancelled" && state === "failed" && error === "cancelled") {
         // Hier schon verworfen, und der Dienst meldet dasselbe („gescheitert: verworfen"), etwa
         // weil eine Abfrage die Antwort auf das Verwerfen kreuzt: nichts Neues.
@@ -875,6 +881,7 @@ export class DeliveryEngine {
    * Antwort), wird zuerst beim Dienst verworfen, damit es dort nicht doch noch druckt. Ist der
    * Dienst nicht erreichbar, wird es trotzdem verworfen, wie jedes ausstehende Etikett auch
    * ohne Netz: Druckt der Dienst es später doch, ist das kein doppelter Druck.
+   * Ist sein Drucker gelöscht und antwortet nicht mehr, wird auch ein wartendes Etikett nur hier verworfen.
    * @throws CoreError offline (Dienst nicht erreichbar, Etikett wartet dort) | invalid (er druckt schon, oder der Ausgang ist offen)
    */
   async cancelAtService(jobId: string): Promise<void> {
@@ -889,9 +896,13 @@ export class DeliveryEngine {
     }
     const entry = state.deliveries.get(jobId);
     const printerId = entry?.printer_id ?? job.printer_id;
+    const printer = printerId === null ? undefined : state.view.printers.get(printerId);
+    // Den Drucker gibt es nicht mehr: Auf seine Antwort zu warten, hieße womöglich für immer.
+    const printerGone = printer === undefined || printer.deleted_at !== null;
     const unreachable = async (): Promise<void> => {
-      if (job.state === "pending") {
-        await this.cancelLocally(jobId);
+      if (job.state === "pending" || printerGone) {
+        // Druckt der Dienst es später doch, ist das kein doppelter Druck: Das Etikett ist nur verworfen.
+        await this.cancelLocally(jobId, printerGone);
         return;
       }
       throw new CoreError("offline", PRINT_TEXTS.cancel_offline);
@@ -935,11 +946,14 @@ export class DeliveryEngine {
     return unreachable();
   }
 
-  /** Verwirft ein ausstehendes Etikett nur hier (`print.report` mit "cancelled"), ohne den Dienst. */
-  private async cancelLocally(jobId: string): Promise<void> {
+  /**
+   * Verwirft ein Etikett nur hier (`print.report` mit "cancelled"), ohne den Dienst: ein
+   * ausstehendes, oder ein wartendes, dessen Drucker gelöscht ist und nicht antwortet.
+   */
+  private async cancelLocally(jobId: string, printerGone = false): Promise<void> {
     await this.deps.store.mutate((mutation) => {
       const current = mutation.draft.get("print_jobs", jobId);
-      if (!current || current.state !== "pending") {
+      if (!current || (current.state !== "pending" && !(printerGone && current.state === "queued"))) {
         // Inzwischen beim Dienst angekommen (ein anderer Tab hat zugestellt) oder erledigt.
         throw new CoreError("invalid", PRINT_TEXTS.not_pending);
       }

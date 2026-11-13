@@ -228,6 +228,8 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
                 key={entry.printer_id ?? "none"}
                 problem={entry.problem}
                 printer={printer}
+                // Ein Etikett, das schon an einen inzwischen gelöschten Drucker abgeschickt war, bleibt bei ihm.
+                name={entry.printer_id !== null && printer === undefined ? "Gelöschter Drucker" : undefined}
                 fallback={entry.message}
                 pendingOwn={printer ? pendingFor(printing, printer) : 0}
                 onHandoff={(target) => void actions.handoff(target)}

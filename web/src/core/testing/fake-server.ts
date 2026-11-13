@@ -65,6 +65,7 @@ import {
 } from "@/contract/api.gen";
 import { gtinCheckDigit, isStoreInternalBarcode, isValidBarcode } from "@/contract/barcode";
 import { isPackageId, isUuid, newUuid, randomPackageId } from "@/contract/ids";
+import { progressAfterOutcome } from "@/contract/labels";
 import { isDate, isTimestamp } from "@/contract/time";
 
 import { applyCommand } from "../commands/apply";
@@ -408,9 +409,14 @@ export class FakeServer {
         authorized: (headers) => this.deviceFor({ method: "", path: "", headers, body: "" }) !== null,
         printers: () => [...this.tables.printers.values()].filter((printer) => printer.deleted_at === null && printer.connection === "server"),
         job: (id) => this.tables.print_jobs.get(id),
-        writeJob: (id, state, printerId, bootId, error) => {
+        writeJob: (id, serviceState, printerId, bootId, serviceError) => {
           const job = this.tables.print_jobs.get(id);
-          if (job) {
+          // Wie der echte Server: Am Dienst verworfen heißt für das Etikett „verworfen" (etiketten.md, 5.8).
+          const cancelled = serviceState === "failed" && serviceError === "cancelled";
+          const state = cancelled ? "cancelled" : serviceState;
+          const error = cancelled ? null : serviceError;
+          // Und ein Zwischenstand ändert kein Etikett mit Ausgang (Protokoll 6.6).
+          if (job && !progressAfterOutcome(job.state, state)) {
             this.put("print_jobs", { ...job, state, printer_id: printerId, boot_id: bootId, error, updated_at: this.stamp() });
           }
         },

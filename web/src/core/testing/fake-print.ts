@@ -12,24 +12,26 @@
  *              bekannte, ausstehende Etiketten werden angenommen; Zustand von Etikett und
  *              Drucker schreibt der Dienst selbst in den Datenbestand; die `boot_id` bleibt.
  *
- * MASSGEBLICH IST DER VERTRAG, NICHT DIESE NACHBILDUNG. Der echte Dienst entsteht parallel und
- * ist hiergegen nie geprüft worden. Was sie nicht kann oder anders macht:
+ * MASSGEBLICH IST DER VERTRAG, NICHT DIESE NACHBILDUNG. In der Integration von Runde 2 ist sie
+ * gegen den echten Dienst (`stowly_print`) gehalten und in der Reihenfolge der Prüfungen, im
+ * Umgang mit unbekannten Schlüsseln und mit `wait` angeglichen worden; der echte Kern läuft
+ * zusätzlich gegen den echten Dienst (web/e2e/delivery.e2e.test.ts). Was sie nicht kann oder
+ * anders macht:
  *
  * - Es wird nichts gerendert. „Rendern" gelingt, wenn die Vorlage ein Objekt mit `schema: 1`
  *   ist und die Daten Zeichenketten sind; sonst `render_failed`. Die Mindestgröße der Module,
  *   Schriften und Maße prüft sie nicht. Bilder sind immer dasselbe winzige PNG.
- * - `png` (fertiges Bild als Notausgang) wird angenommen, aber nicht auf seine Größe geprüft.
+ * - `png` (fertiges Bild als Notausgang) wird angenommen, aber nicht auf Inhalt und Größe geprüft.
  * - Gedruckt wird sofort beim Einreichen und der Reihe nach, außer der Test hält den Drucker
  *   an (`pause`, `hangNext`). `wait` wartet deshalb nur mit `realWait` wirklich.
- * - Reihenfolge der Prüfungen beim Einreichen (der Vertrag legt sie nicht fest): Token, Form der
- *   Nutzlast, `expect_boot_id`, bekannte Kennung, am Server das Etikett, Drucker, Rendern,
- *   volle Warteschlange.
- * - Unbekannte Schlüssel in der Nutzlast sind `invalid_request`.
- * - Am Server schreibt sie ein beim Dienst verworfenes Etikett als `failed` mit `cancelled`
- *   fort und ein unterbrochenes als `unknown` mit `interrupted`; ob der echte Server dieselben
- *   Werte schreibt, legt der Vertrag nicht fest.
+ * - Reihenfolge der Prüfungen beim Einreichen wie im echten Dienst (docs/etiketten.md, 5.3):
+ *   Token, Form der Nutzlast und `wait`, `expect_boot_id`, bekannte Kennung, am Server das
+ *   Etikett, Drucker, volle Warteschlange, Rendern. Unbekannte Schlüssel übergeht sie.
+ * - Am Server schreibt sie ein beim Dienst verworfenes Etikett als `cancelled` fort (so meldet es
+ *   das Gerät auch) und ein unterbrochenes als `unknown` mit `interrupted`, wie der echte Server.
  * - Der Auftragsspeicher am Server lebt hier ebenfalls nur im Arbeitsspeicher; `restart` bildet
  *   nach, was die Datei des echten Dienstes über einen Neustart rettet.
+ * - Ein bekannter Pfad mit falscher Methode ist hier 404, beim echten Dienst 405.
  * - CORS, die Vorabanfrage (`OPTIONS`) und Local Network Access gehören zum Transport und zum
  *   Browser, nicht hierher (siehe `createFakeNetwork` in fake-api.ts).
  * - Die Seite `/p` (Notweg) ist nur ein Platzhalter.
@@ -162,8 +164,6 @@ async function hmacHex(key: string, message: string): Promise<string> {
   return Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-const JOB_KEYS = new Set(["token", "printer", "template", "data", "png", "copies", "cut", "expect_boot_id"]);
-
 interface ParsedRequest {
   printer: string | null;
   template: Record<string, unknown> | null;
@@ -174,9 +174,9 @@ interface ParsedRequest {
   expectBootId: string | null;
 }
 
-/** Prüft die Nutzlast eines Auftrags (wie `JobRequest.from_dict`); null = verletzt den Vertrag. */
+/** Prüft die Nutzlast eines Auftrags (wie `JobRequest.from_dict`: unbekannte Schlüssel zählen nicht); null = verletzt den Vertrag. */
 function parseJobRequest(body: unknown): ParsedRequest | null {
-  if (!isRecord(body) || Object.keys(body).some((key) => !JOB_KEYS.has(key))) {
+  if (!isRecord(body)) {
     return null;
   }
   const printer = body.printer ?? null;
@@ -520,11 +520,11 @@ export class FakePrintService {
     if (!printer) {
       return failure(404, "unknown_printer");
     }
-    if (request.png === null && request.template?.schema !== 1) {
-      return failure(422, "render_failed");
-    }
     if (this.queue.length >= this.queueLimit) {
       return failure(503, "queue_full");
+    }
+    if (request.png === null && request.template?.schema !== 1) {
+      return failure(422, "render_failed");
     }
     const job: StoredJob = { id, state: "queued", printer: printer.name, error: null, hash, data: request.data, image: false };
     this.jobs.set(id, job);
@@ -569,8 +569,10 @@ export class FakePrintService {
         return failure(400, "invalid_request");
       }
     }
-    const waitValue = Number(query.get("wait") ?? "0");
-    const waitS = Number.isFinite(waitValue) ? Math.min(30, Math.max(0, waitValue)) : 0;
+    // `wait`: 0 bis 30 Sekunden, Vorgabe 0; anderes ist wie beim echten Dienst `invalid_request`.
+    const waitRaw = query.get("wait");
+    const waitS = waitRaw === null || waitRaw === "" ? 0 : Number(waitRaw);
+    const waitValid = Number.isFinite(waitS) && waitS >= 0 && waitS <= 30;
 
     if (method === "GET" && path === "/v1/health") {
       const nonce = query.get("nonce");
@@ -627,6 +629,9 @@ export class FakePrintService {
       return job?.image ? png() : failure(404, "not_found");
     }
     if (suffix === "" && method === "GET") {
+      if (!waitValid) {
+        return failure(400, "invalid_request");
+      }
       await this.wait(id, waitS);
       const job = this.jobs.get(id);
       return job ? json(200, this.describe(job)) : failure(404, "not_found");
@@ -654,7 +659,7 @@ export class FakePrintService {
       if (!this.mayWrite(request, body)) {
         return failure(401, "unauthorized");
       }
-      const parsed = isUuid(id) ? parseJobRequest(body) : null;
+      const parsed = isUuid(id) && waitValid ? parseJobRequest(body) : null;
       if (!parsed) {
         return failure(400, "invalid_request");
       }

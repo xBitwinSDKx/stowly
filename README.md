@@ -2,7 +2,7 @@
 
 Selbst gehostete Lagerverwaltung für Lebensmittel. Jede Packung bekommt beim Einlagern ein Etikett mit einer 5-stelligen ID (Klartext und QR-Code), wird per Handy-Scan ein- und ausgebucht und erscheint in einer nach Produkt gruppierten Bestandsliste mit dem kritischsten MHD. Die App funktioniert im Keller ohne Netz und gleicht ab, sobald der Server wieder erreichbar ist.
 
-**Stand:** Grundgerüst der Stufe 1. Alle Teile starten, die Verträge stehen; die Funktionen selbst entstehen in zwei Runden (Plan: [`docs/plan-stufe-1.md`](docs/plan-stufe-1.md)).
+**Stand:** Stufe 1 nach zwei Runden samt Integration: Bestand, Offline-Betrieb, Scannen und Etikettendruck (Server und Raspberry Pi) laufen zusammen auf dem Entwicklungsrechner. In der Zielumgebung (Container, Handys, Drucker, Pi) ist noch nichts geprüft; die Prüflisten stehen in [`docs/betrieb.md`](docs/betrieb.md) und [`pi/README.md`](pi/README.md). Plan: [`docs/plan-stufe-1.md`](docs/plan-stufe-1.md).
 
 ## Aufbau
 
@@ -11,7 +11,7 @@ Selbst gehostete Lagerverwaltung für Lebensmittel. Jede Packung bekommt beim Ei
 | `server/` | Python 3.12, FastAPI, SQLite: maßgeblicher Bestand, Sync, Anmeldung. Paket `stowly`. |
 | `print/` | Paket `stowly_print`: Etikett rendern, Druckertreiber, Auftragsdienst. Läuft im Server und eigenständig auf dem Raspberry Pi; ohne FastAPI und pydantic. |
 | `web/` | React, TypeScript, Vite: eine App für Desktop und Handy, die immer auf ihrer lokalen Kopie arbeitet. |
-| `pi/` | Installation des Druckdienstes auf dem Raspberry Pi (Runde 2). |
+| `pi/` | Installation des Druckdienstes auf dem Raspberry Pi samt Anleitung und Prüfliste. |
 | `docs/` | Plan, technische Grundlagen und die Verträge. |
 
 In `web/src`:
@@ -91,9 +91,9 @@ Einzelne Bereiche lassen sich getrennt prüfen:
 | Ganze App mit echtem Kern | `npm run typecheck:app` | `npm test` |
 | Kern gegen den echten Server (`e2e`) | `npm run typecheck:e2e` | `npm run test:e2e` |
 
-`npm run test:e2e` startet für jede Testdatei den echten Server als eigenen Prozess (freier Port, temporäres Datenverzeichnis, Open Food Facts ausgeschaltet) und lässt den echten Offline-Kern dagegen laufen; es gehört nicht zu `npm test`, weil es die Python-Umgebung des Servers braucht. Das Python dafür ist das aus `.venv` im Repository oder das aus der Umgebungsvariable `STOWLY_E2E_PYTHON`. Die Zufallsfolgen (`e2e/random.e2e.test.ts`) laufen mit festen Startwerten; andere wählt die Umgebungsvariable `STOWLY_E2E_SEEDS`, zum Beispiel `1-50` oder `7,8,9`.
+`npm run test:e2e` startet für jede Testdatei den echten Server als eigenen Prozess (freier Port, temporäres Datenverzeichnis, Open Food Facts ausgeschaltet) und lässt den echten Offline-Kern dagegen laufen; `e2e/delivery.e2e.test.ts` startet dazu den eigenständigen Druckdienst (`python -m stowly_print serve`, Bild-Treiber) als zweiten Prozess, wie er auf dem Pi läuft, und zählt die Drucke an seinem Bild-Verzeichnis. Es gehört nicht zu `npm test`, weil es die Python-Umgebung des Servers braucht. Das Python dafür ist das aus `.venv` im Repository oder das aus der Umgebungsvariable `STOWLY_E2E_PYTHON`. Die Zufallsfolgen (`e2e/random.e2e.test.ts`) laufen mit festen Startwerten; andere wählt die Umgebungsvariable `STOWLY_E2E_SEEDS`, zum Beispiel `1-50` oder `7,8,9`.
 
-Ein anderer Port: `npm run dev:mock -- --port 8012 --strictPort`. Die Attrappe kennt Ausgangslagen, wählbar über die Adresse, auch mehrere mit Komma: `?mock=empty`, `single-zone`, `signed-out`, `revoked`, `offline`, `problems`, `update`, `update-required`, `insecure`, `ios`, `installable`, `no-lookup`, `large` (gut 2000 Packungen), `at-pi` (der direkte Drucker ist erreichbar) und `printer-trouble` (Passwort der Attrappe: `stowly`). In der Konsole des Browsers steht `stowlyMock` zum Eingreifen bereit, etwa `stowlyMock.setOnline(false)`, `stowlyMock.setPiReachable(true)` oder `stowlyMock.setPrintOutcome("unknown")`; was die Ausgangslagen und Eingriffe bedeuten, steht am Kopf von `web/src/mock/core.ts`. Die Attrappe zeigt unter `/scan` einen Platzhalter; mit `/scan?scan=real` lädt der Entwicklungsserver die echte Scan-Ansicht auf den Beispieldaten.
+Ein anderer Port: `npm run dev:mock -- --port 8012 --strictPort`. Die Attrappe kennt Ausgangslagen, wählbar über die Adresse, auch mehrere mit Komma: `?mock=empty`, `single-zone`, `signed-out`, `revoked`, `offline`, `problems`, `update`, `update-required`, `insecure`, `ios`, `installable`, `no-lookup`, `large` (gut 2000 Packungen), `at-pi` (der direkte Drucker ist erreichbar) und `printer-trouble` (Passwort der Attrappe: `stowly`). In der Konsole des Browsers steht `stowlyMock` zum Eingreifen bereit, etwa `stowlyMock.setOnline(false)`, `stowlyMock.setPiReachable(true)`, `stowlyMock.setPiProblem("permission")` oder `stowlyMock.setPrintOutcome("unknown")`; was die Ausgangslagen und Eingriffe bedeuten, steht am Kopf von `web/src/mock/core.ts`. Die Attrappe zeigt unter `/scan` einen Platzhalter; mit `/scan?scan=real` lädt der Entwicklungsserver die echte Scan-Ansicht auf den Beispieldaten.
 
 Wer darf was importieren, prüft `src/contract/boundaries.test.ts`.
 

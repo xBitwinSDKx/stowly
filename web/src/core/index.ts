@@ -339,6 +339,9 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         void deliveries.flush();
       }
     },
+    syncFirst: async () => {
+      await runSync();
+    },
   };
 
   /** Lädt die Bilder der Produkte im Bestand vorab (docs/sync-protokoll.md, 9.6). */

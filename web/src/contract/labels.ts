@@ -4,7 +4,7 @@
  * Die App schickt dem Druckdienst fertig formatierte Zeichenketten: Der Pi im Keller
  * hat keine Uhr und kennt keine Sprache. Die Vorlage setzt die Werte nur noch ein.
  */
-import type { HouseholdSettings, Package, PackageLabelData, Printer, PrintJob, Product, Zone, ZoneLabelData } from "./api.gen";
+import type { HouseholdSettings, Package, PackageLabelData, Printer, PrintJob, PrintJobState, Product, Zone, ZoneLabelData } from "./api.gen";
 import { packageQr, zoneQr } from "./qr";
 import { formatDate, toLocalDate } from "./time";
 
@@ -91,4 +91,20 @@ export function printerIdForJob(job: Pick<PrintJob, "printer_id" | "package_id" 
   const zoneId = job.zone_id ?? (job.package_id === null ? null : (lookup.package(job.package_id)?.zone_id ?? null));
   const zone = zoneId === null ? undefined : lookup.zone(zoneId);
   return usable(job.printer_id) ?? usable(zone?.printer_id) ?? usable(lookup.settings?.default_printer_id);
+}
+
+/** Zwischenstände eines Etiketts beim Druckdienst. */
+const PROGRESS_STATES: ReadonlySet<PrintJobState> = new Set(["queued", "printing"]);
+/** Ein Ausgang (auch der offene, "unknown") oder verworfen. */
+const OUTCOME_STATES: ReadonlySet<PrintJobState> = new Set(["printed", "sent", "failed", "cancelled", "unknown"]);
+
+/**
+ * Würde eine Meldung einen Zwischenstand (`queued`, `printing`) über ein Etikett schreiben, das
+ * schon einen Ausgang hat oder verworfen ist? Dann bleibt sie ohne Wirkung, gleich welchen
+ * Zeitpunkt sie trägt (docs/sync-protokoll.md, 6.6): beim Server (`print.report` und sein eigenes
+ * Fortschreiben, `progress_after_outcome` in server/stowly/sync/handlers.py), in der lokalen
+ * Vorwegnahme des Kerns, in den Nachbildungen und in der Attrappe.
+ */
+export function progressAfterOutcome(current: PrintJobState, reported: PrintJobState): boolean {
+  return PROGRESS_STATES.has(reported) && OUTCOME_STATES.has(current);
 }

@@ -605,6 +605,24 @@ describe("Drucker und Etiketten", () => {
     await expectCoreError(core.print.handoff(PRINTER_IDS.cellar), "not_found");
   });
 
+  it("meldet am Pi jeden Grund, den der Kern kennt, und lässt keinen Zwischenstand über einen Ausgang", async () => {
+    const core = mock({ scenarios: ["at-pi"] });
+    core.control.setPiProblem("permission");
+    expect(await core.printers.probe(PRINTER_IDS.cellar)).toMatchObject({ reachable: false, problem: "permission" });
+    const [job] = await core.print.requestPackageLabels([value(core.data.packages)[0]?.id ?? ""], { printer_id: PRINTER_IDS.cellar });
+    expect(await core.print.flush()).toMatchObject({ delivered: 0, problems: [{ printer_id: PRINTER_IDS.cellar, problem: "permission" }] });
+    core.control.setPiProblem("unknown_printer");
+    expect(await core.printers.probe(PRINTER_IDS.cellar)).toMatchObject({ reachable: true, problem: "unknown_printer" });
+    // Ohne Grund ist der Pi wieder da und druckt, was aussteht.
+    core.control.setPiProblem(null);
+    expect(value(core.data.printJobs).find((candidate) => candidate.id === job?.id)?.state).toBe("printed");
+
+    // docs/sync-protokoll.md, 6.6: Ein Zwischenstand ändert kein Etikett mit Ausgang. Die Attrappe
+    // druckt nur aus „queued"; ein gedrucktes Etikett bleibt gedruckt, auch nach einem neuen Versuch.
+    expect(await core.print.flush()).toEqual({ delivered: 0, pending: 0, problems: [] });
+    expect(value(core.data.printJobs).find((candidate) => candidate.id === job?.id)?.state).toBe("printed");
+  });
+
   it("liefert eine Vorschau und den Zustand eines Druckers", async () => {
     const core = mock();
     const preview = await core.print.preview({ kind: "zone", zone_id: ZONE_IDS.cellar });

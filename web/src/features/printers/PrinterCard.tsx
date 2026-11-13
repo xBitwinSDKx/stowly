@@ -25,6 +25,8 @@ export interface ProblemNoticeProps {
   problem: DeliveryProblem;
   /** Der betroffene Drucker; undefined bei Etiketten ohne Drucker. */
   printer: Printer | undefined;
+  /** Name für die Überschrift, wenn der Drucker nicht mehr in der Liste steht (gelöscht). */
+  name?: string;
   /** Rückfall, falls die App den Grund nicht kennt. */
   fallback?: string | null;
   /** Eigene ausstehende Etiketten für diesen Drucker: Dann lohnt der Notweg. */
@@ -36,15 +38,16 @@ export interface ProblemNoticeProps {
 }
 
 /** Warum ein Druckdienst gerade nicht benutzbar ist, mit dem nächsten Schritt und, wo er hilft, dem Notweg. */
-export function ProblemNotice({ problem, printer, fallback, pendingOwn, onHandoff, onAssign, busy = false }: ProblemNoticeProps) {
+export function ProblemNotice({ problem, printer, name, fallback, pendingOwn, onHandoff, onAssign, busy = false }: ProblemNoticeProps) {
   const text = problemText(problem, printer, window.location.origin, fallback);
   const handoff = printer?.connection === "direct" && handoffHelps(problem) && pendingOwn > 0 && onHandoff !== undefined;
+  const label = printer?.name ?? name;
   return (
     <Notice
       tone="warn"
       role="status"
       icon={<WarningIcon />}
-      title={printer ? `${printer.name}: ${text.title}` : text.title}
+      title={label ? `${label}: ${text.title}` : text.title}
       action={
         handoff ? (
           <Button size="sm" icon={<ExternalLinkIcon />} busy={busy} onClick={() => onHandoff(printer)}>

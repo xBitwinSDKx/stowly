@@ -286,6 +286,34 @@ describe("Drucker und Etiketten", () => {
     expect(state.print_jobs.get(uuid(4, 1))).toMatchObject({ state: "failed", error: "not_printed", printer_id: null, boot_id: null });
     expect(state.print_jobs.get(uuid(4, 2))).toMatchObject({ state: "printed", error: null, printer_id: uuid(3, 2), boot_id: null });
   });
+
+  it("lässt einen Zwischenstand nie über einen Ausgang schreiben, auch lokal", () => {
+    // docs/sync-protokoll.md, 6.6: queued oder printing ändern kein Etikett, das gedruckt,
+    // gesendet, gescheitert, verworfen oder unklar ist. Der Befehl gilt trotzdem.
+    const outcomesByState = ["printed", "sent", "failed", "cancelled", "unknown"] as const;
+    for (const outcome of outcomesByState) {
+      const start = tables({ packages: [pkg("AAAAA")] });
+      const { state, outcomes } = run(
+        start,
+        { type: "print.request", job_id: uuid(4, 1), kind: "package", package_id: "AAAAA" },
+        { type: "print.report", job_id: uuid(4, 1), state: outcome, printer_id: uuid(3, 1), boot_id: "boot-1", error: outcome === "failed" ? "no_media" : null },
+        { type: "print.report", job_id: uuid(4, 1), state: "queued", printer_id: uuid(3, 2), boot_id: "boot-2" },
+        { type: "print.report", job_id: uuid(4, 1), state: "printing", printer_id: uuid(3, 2), boot_id: "boot-2" },
+      );
+      expect(statuses(outcomes)).toEqual(["applied", "applied", "applied", "applied"]);
+      expect(state.print_jobs.get(uuid(4, 1))).toMatchObject({ state: outcome, printer_id: uuid(3, 1), boot_id: "boot-1" });
+    }
+    // Aus einem ausstehenden Etikett wird wie bisher ein wartendes, und ein Ausgang folgt auf den anderen.
+    const { state } = run(
+      tables({ packages: [pkg("AAAAA")] }),
+      { type: "print.request", job_id: uuid(4, 1), kind: "package", package_id: "AAAAA" },
+      { type: "print.report", job_id: uuid(4, 1), state: "queued", printer_id: uuid(3, 1), boot_id: "boot-1" },
+      { type: "print.report", job_id: uuid(4, 1), state: "printing", printer_id: uuid(3, 1), boot_id: "boot-1" },
+      { type: "print.report", job_id: uuid(4, 1), state: "unknown", printer_id: uuid(3, 1), boot_id: "boot-1", error: "handoff" },
+      { type: "print.report", job_id: uuid(4, 1), state: "printed", printer_id: uuid(3, 1), boot_id: "boot-1" },
+    );
+    expect(state.print_jobs.get(uuid(4, 1))).toMatchObject({ state: "printed", error: null });
+  });
 });
 
 describe("Erneut anwenden", () => {

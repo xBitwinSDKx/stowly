@@ -136,6 +136,12 @@ export function problemText(problem: DeliveryProblem, printer: Pick<Printer, "co
         title: "Der Server ist nicht erreichbar.",
         advice: "Dieser Drucker hängt am Server. Sobald der Server wieder erreichbar ist, werden die ausstehenden Etiketten gedruckt.",
       };
+    case "unavailable":
+      return {
+        title: "Der Druckdienst des Servers läuft nicht.",
+        advice:
+          "Der Server ist erreichbar, kann aber gerade nicht drucken; den Grund nennt sein Log. Die ausstehenden Etiketten bleiben stehen und werden gedruckt, sobald der Druckdienst wieder läuft.",
+      };
     case "unreachable":
       return {
         title: "Der Druckdienst antwortet auf keiner Adresse.",
@@ -500,6 +506,11 @@ export function describeRemoval(
         `Von ${String(affected.length)} ausstehenden Etiketten ${moved === 1 ? "geht eines" : `gehen ${String(moved)}`} danach an andere Drucker, ${stay === 1 ? "eines bleibt" : `${String(stay)} bleiben`} stehen, bis ein Drucker zuständig ist.`,
       );
     }
+  }
+  // Ausnahme der Regel (core.ts, `printers.remove`): Was schon an ihn abgeschickt ist, kann nur
+  // sein Dienst klären. Welches das ist, weiß nur der Kern; der Satz gilt deshalb für alle.
+  if (waiting.some((view) => view.printer?.id === printer.id)) {
+    labels.push("Was schon an diesen Drucker abgeschickt ist, bleibt bei ihm, bis er antwortet; antwortet er nicht mehr, lässt es sich verwerfen.");
   }
   labels.push("Etiketten werden dabei nicht gelöscht.");
   return { duties: sentences, labels };

@@ -2,7 +2,7 @@
  * Drucker-Ansicht auf der Attrappe: Drucker verwalten und zuordnen, ihr Zustand, Verbindung
  * prüfen, Etiketten ansehen, drucken, klären und nachdrucken.
  */
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -380,6 +380,7 @@ describe("Verbindung prüfen", () => {
   it("hat für jeden Grund einen Satz, der sagt, was zu tun ist", async () => {
     const cases: [PrinterProblem, string, string][] = [
       ["offline", "Der Server ist nicht erreichbar.", "Dieser Drucker hängt am Server."],
+      ["unavailable", "Der Druckdienst des Servers läuft nicht.", "den Grund nennt sein Log"],
       ["unreachable", "Der Druckdienst antwortet auf keiner Adresse.", "Zertifikat des Pi"],
       ["permission", "Der Browser hat den Zugriff auf das lokale Netzwerk abgelehnt.", "In den Einstellungen des Browsers"],
       ["blocked", "Der Druckdienst antwortet, lässt diese App aber nicht zu.", `als erlaubter Ursprung: ${window.location.origin}`],
@@ -485,6 +486,30 @@ describe("Etiketten", () => {
     expect(report).toHaveTextContent("Ist dieses Gerät im WLAN des Pi");
     expect(within(report).getByRole("button", { name: "Über die Seite des Druckers drucken" })).toBeInTheDocument();
     expect(value(core.data.printJobs).filter((entry) => entry.state === "pending" && entry.device_id === DEVICE_IDS.current)).toHaveLength(2);
+  });
+
+  it("nennt im Bericht einen gelöschten Drucker, bei dem noch ein abgeschicktes Etikett hängt", async () => {
+    // core.ts, printers.remove: Ein Etikett, das schon an den Drucker abgeschickt war, bleibt bei ihm.
+    const base = mock();
+    const core: Core = {
+      ...base,
+      print: {
+        ...base.print,
+        flush: async () => ({
+          delivered: 0,
+          pending: 2,
+          problems: [{ printer_id: "30000000-0000-4000-8000-0000000000aa", problem: "unreachable", message: "Rückfall des Kerns" }],
+        }),
+      },
+    };
+    renderWith(core);
+    await ready();
+    const labels = section("Etiketten");
+    await userEvent.click(within(labels).getByRole("button", { name: "Jetzt drucken (2)" }));
+    const report = await within(labels).findByLabelText("Ergebnis des Druckversuchs");
+    expect(report).toHaveTextContent("Gelöschter Drucker: Der Druckdienst antwortet auf keiner Adresse.");
+    // Den Notweg gibt es nur zu einem Drucker, den es noch gibt.
+    expect(within(report).queryByRole("button", { name: "Über die Seite des Druckers drucken" })).not.toBeInTheDocument();
   });
 
   it("nimmt den Bericht zurück, sobald die Etiketten doch noch gedruckt sind", async () => {
@@ -747,26 +772,35 @@ describe("Notweg über die Seite des Druckers", () => {
     expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
   });
 
-  it("schließt das Fenster wieder, wenn nichts zu übergeben ist", async () => {
-    const tab = { opener: {} as unknown, location: { replace: vi.fn() }, close: vi.fn() };
-    vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
-    const base = mock();
-    const core: Core = {
-      ...base,
-      print: {
-        ...base.print,
-        handoff: async () => {
-          throw new CoreError("not_found", "nothing pending");
+  it("schließt das Fenster wieder, wenn nichts zu übergeben ist, und sagt mit dem Satz des Kerns, warum", async () => {
+    // Der Kern übergibt nur nie abgeschickte Etiketten (core.ts, `print.handoff`); warum nichts übrig
+    // bleibt, weiß nur er: Die Oberfläche zeigt bei "not_found" seinen Satz.
+    const reasons = [
+      "Für diesen Drucker steht kein eigenes Etikett aus.",
+      "Die ausstehenden Etiketten dieses Druckers sind vielleicht schon beim Drucker angekommen und gehen deshalb nicht über die Seite des Druckdienstes.",
+    ];
+    for (const reason of reasons) {
+      const tab = { opener: {} as unknown, location: { replace: vi.fn() }, close: vi.fn() };
+      vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
+      const base = mock();
+      const core: Core = {
+        ...base,
+        print: {
+          ...base.print,
+          handoff: async () => {
+            throw new CoreError("not_found", reason);
+          },
         },
-      },
-    };
-    renderWith(core);
-    await ready();
-    await userEvent.click(within(card("Keller (Pi)")).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
-    const notice = await within(card("Keller (Pi)")).findByRole("status");
-    await userEvent.click(within(notice).getByRole("button", { name: "Über die Seite des Druckers drucken" }));
-    expect(await screen.findByText("Für diesen Drucker steht kein eigenes Etikett aus.")).toBeInTheDocument();
-    expect(tab.close).toHaveBeenCalledTimes(1);
-    expect(tab.location.replace).not.toHaveBeenCalled();
+      };
+      renderWith(core);
+      await ready();
+      await userEvent.click(within(card("Keller (Pi)")).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
+      const notice = await within(card("Keller (Pi)")).findByRole("status");
+      await userEvent.click(within(notice).getByRole("button", { name: "Über die Seite des Druckers drucken" }));
+      expect(await screen.findByText(reason)).toBeInTheDocument();
+      expect(tab.close).toHaveBeenCalledTimes(1);
+      expect(tab.location.replace).not.toHaveBeenCalled();
+      cleanup();
+    }
   });
 });

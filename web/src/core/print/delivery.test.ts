@@ -127,13 +127,14 @@ describe("Etikett an den Drucker am Server", () => {
     const stored = await storeLabelled(core);
     const jobId = stored.print_jobs[0]?.id ?? "";
 
-    // Vor dem Abgleich gibt es das Etikett im Server nicht: Es geht nichts hin.
-    expect(await core.print.flush()).toMatchObject({ delivered: 0, pending: 1, problems: [] });
-    expect(network.calls.filter(isSubmit)).toEqual([]);
-
-    await core.sync.now();
+    // Vor dem Abgleich gibt es das Etikett im Server nicht: „Jetzt drucken" gleicht deshalb zuerst ab.
+    expect(sent(harness, "print.request")).toEqual([]);
     const report = await core.print.flush();
     expect(report).toEqual({ delivered: 1, pending: 0, problems: [] });
+    expect(sent(harness, "print.request")).toMatchObject([{ job_id: jobId }]);
+    const firstSubmit = network.calls.findIndex(isSubmit);
+    const lastSync = network.calls.map((call) => call.path).lastIndexOf("/api/sync", firstSubmit);
+    expect(lastSync).toBeGreaterThanOrEqual(0);
     expect(jobOf(core, jobId)).toMatchObject({ state: "printed", printer_id: printerId, boot_id: server.print.bootId, error: null });
 
     // Genau ein Druck, mit den Daten des Etiketts und der Vorlage des Haushalts.
@@ -155,6 +156,18 @@ describe("Etikett an den Drucker am Server", () => {
     // Für Drucker am Server meldet kein Gerät den Zustand: Der Server schreibt selbst.
     expect(sent(harness, "printer.report")).toEqual([]);
     expect(value(core.data.printerStatus)).toMatchObject([{ printer_id: printerId, host: null, status: { reachable: true } }]);
+  });
+
+  it("gleicht vor „Verbindung prüfen“ ab, solange der Server einen eben angelegten Drucker noch nicht kennt", async () => {
+    const harness = await signedIn({});
+    const printer = await harness.core.printers.create({ name: "Küche", connection: "server", server: { driver: "image", model: null, address: null, media: "62" } });
+    expect(sent(harness, "printer.create")).toEqual([]);
+    expect(await harness.core.printers.probe(printer.id)).toMatchObject({ reachable: true, problem: null, error: null });
+    expect(sent(harness, "printer.create")).toMatchObject([{ printer_id: printer.id }]);
+    // Ist er abgeglichen, geht die Abfrage gleich hin.
+    const syncs = harness.server.syncRequests.length;
+    await harness.core.printers.probe(printer.id);
+    expect(harness.server.syncRequests).toHaveLength(syncs);
   });
 
   it("lässt das Etikett ausstehen, wenn der Server nicht erreichbar ist, und stellt später zu", async () => {
@@ -1208,6 +1221,37 @@ describe("Vorschau, Bild und Notweg", () => {
     await core.print.flush();
     expect(jobOf(core, sentId).state).toBe("printed");
     expect(pi.printed).toEqual([sentId]);
+  });
+
+  it("meldet bei einem übergebenen Etikett keinen Zwischenstand, nur den Ausgang", async () => {
+    // docs/sync-protokoll.md, 6.6: queued oder printing ändern ein unklares Etikett nicht. Der Kern
+    // erzeugt solche Meldungen deshalb gar nicht erst; jede Meldung ist ein Befehl in der Outbox.
+    const harness = await withPi();
+    const { core, pi, printerId } = harness;
+    harness.https.reachable = false;
+    harness.http.reachable = false;
+    const id = (await storeLabelled(core)).print_jobs[0]?.id ?? "";
+    const { url } = await core.print.handoff(printerId);
+    const fragment = url.slice(url.indexOf("#") + 1);
+    const binary = atob(fragment.replace(/-/g, "+").replace(/_/g, "/"));
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)))) as { template: Record<string, unknown>; jobs: { id: string; data: Record<string, string> }[] };
+
+    // Die Seite reicht ein; der Drucker arbeitet noch nicht.
+    pi.pause();
+    await pi.handle({ method: "POST", path: `/v1/jobs/${id}`, headers: {}, body: JSON.stringify({ token: pi.token, printer: null, template: payload.template, data: payload.jobs[0]?.data }) });
+    harness.https.reachable = true;
+    await core.print.flush();
+    await core.sync.now();
+    expect(jobOf(core, id)).toMatchObject({ state: "unknown", error: "handoff" });
+    const reports = () => sent(harness, "print.report").filter((command) => command.job_id === id).map((command) => command.state);
+    expect(reports()).toEqual(["unknown"]);
+
+    pi.resume();
+    await core.print.flush();
+    await core.sync.now();
+    expect(jobOf(core, id).state).toBe("printed");
+    expect(reports()).toEqual(["unknown", "printed"]);
+    expect(pi.printed).toEqual([id]);
   });
 
   it("gibt es den Notweg nur bei einem direkten Drucker", async () => {

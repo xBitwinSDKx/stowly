@@ -515,3 +515,73 @@ def test_the_state_of_a_label_does_not_depend_on_the_order_of_arrival(make_devic
             (label["state"], label["error"], label["printer_id"], label["boot_id"], label["updated_at"])
         )
     assert final == {("failed", "not_printed", None, None, clock.stamp(20))}
+
+
+def test_progress_never_overwrites_an_outcome(make_device, clock):
+    """Ein Zwischenstand (queued, printing) ändert ein Etikett mit Ausgang nicht, auch ein jüngerer.
+
+    So meldet ein Gerät ``queued`` etwa erst, nachdem der Server den Druck schon selbst als
+    ``printed`` fortgeschrieben hat. Der Befehl gilt (applied, mit Echo), stellt aber die Uhr nicht:
+    Ein späterer Ausgang mit älterem Zeitpunkt als der Zwischenstand gewinnt weiter.
+    """
+    phone, tablet, third = make_device("Handy"), make_device("Tablet"), make_device("Drittes")
+    pi, create = new_printer(phone)
+    _, package_id = phone.store("Reis")
+    phone.sync([create])
+    clock.advance(3600)
+
+    outcomes = [
+        ("printed", None),
+        ("sent", None),
+        ("failed", "no_media"),
+        ("cancelled", None),
+        ("unknown", "interrupted"),
+    ]
+    for outcome, error in outcomes:
+        job = ids.new_uuid()
+        phone.sync([phone.cmd("print.request", age=100, job_id=job, kind="package", package_id=package_id)])
+        phone.sync(
+            [
+                phone.cmd(
+                    "print.report",
+                    age=50,
+                    job_id=job,
+                    state=outcome,
+                    printer_id=pi,
+                    boot_id="b1",
+                    error=error,
+                )
+            ]
+        )
+        tablet.sync()
+        before = dict(tablet.print_jobs[job])
+        for progress in ("queued", "printing"):
+            data = tablet.sync(
+                [tablet.cmd("print.report", age=10, job_id=job, state=progress, printer_id=pi, boot_id="b2")]
+            )
+            assert statuses(data) == [("applied", None)]
+            # Echo: Das Etikett kommt in derselben Antwort zurück, so wie es war.
+            assert [label for label in data["changes"]["print_jobs"] if label["id"] == job] == [before]
+        assert tablet.print_jobs[job] == before
+
+        # Die Uhr steht noch beim Ausgang: Ein Ausgang mit Zeitpunkt zwischen beiden gilt.
+        third.sync(
+            [
+                third.cmd(
+                    "print.report", age=30, job_id=job, state="failed", error="not_printed", printer_id=pi
+                )
+            ]
+        )
+        tablet.sync()
+        assert (tablet.print_jobs[job]["state"], tablet.print_jobs[job]["error"]) == ("failed", "not_printed")
+
+        log = events_of(phone.client, phone, entity="print_job", entity_id=job)
+        assert [e["data"]["state"] for e in log] == ["pending", outcome, "failed"]
+
+    # Aus einem ausstehenden Etikett wird mit einem Zwischenstand wie bisher ein wartendes.
+    job = ids.new_uuid()
+    phone.sync([phone.cmd("print.request", job_id=job, kind="package", package_id=package_id)])
+    phone.sync([phone.cmd("print.report", job_id=job, state="queued", printer_id=pi, boot_id="b1")])
+    assert phone.print_jobs[job]["state"] == "queued"
+    phone.sync([phone.cmd("print.report", job_id=job, state="printing", printer_id=pi, boot_id="b1")])
+    assert phone.print_jobs[job]["state"] == "printing"

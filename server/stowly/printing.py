@@ -36,12 +36,23 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from stowly import auth, db, events
 from stowly.api import sync as sync_api
 from stowly.config import Settings
+from stowly.contract.entities import PrintJobState
 from stowly.contract.timeutil import format_timestamp
+from stowly.sync.handlers import progress_after_outcome
 from stowly_print.drivers import PrinterConfig, build_driver
 from stowly_print.drivers.image import ImageDriver
 from stowly_print.http import create_app as create_print_app
 from stowly_print.http import error_response as print_error_response
-from stowly_print.model import FINAL_STATES, DriverStatus, Job, JobRequest, ServiceError, to_dict
+from stowly_print.model import (
+    FINAL_STATES,
+    JOB_ERROR_CANCELLED,
+    DriverStatus,
+    Job,
+    JobRequest,
+    JobState,
+    ServiceError,
+    to_dict,
+)
 from stowly_print.render import Fonts
 from stowly_print.service import JobEvent, PrinterEntry, PrintService, ServiceFault
 from stowly_print.store import FileStore
@@ -256,10 +267,15 @@ class ServerPrinting:
         """Schreibt den Zustand eines Auftrags in sein Etikett, wie eine Meldung zum jetzigen Zeitpunkt.
 
         Die jüngste Meldung gilt (Feld-Uhr ``state``): Hat ein Gerät schon eine spätere gemeldet,
-        bleibt das Etikett, wie es ist. Liefert, ob geschrieben wurde.
+        bleibt das Etikett, wie es ist. Ein Zwischenstand ändert ein Etikett mit Ausgang nie.
+        Liefert, ob geschrieben wurde.
         """
         state = job.state.value
         error = None if job.error is None else job.error.code
+        if state == JobState.FAILED.value and error == JOB_ERROR_CANCELLED:
+            # Am Dienst verworfen: Für das Etikett heißt das „verworfen", so wie es das Gerät
+            # danach auch meldet (docs/etiketten.md, 5.8: beide Meldungen sagen dasselbe).
+            state, error = PrintJobState.CANCELLED.value, None
         con = db.connect(self._database)
         try:
             with db.transaction(con):
@@ -271,6 +287,10 @@ class ServerPrinting:
                     log.warning(
                         "Auftrag %s hat kein Etikett im Bestand; sein Zustand bleibt ungeschrieben.", job.id
                     )
+                    return False
+                # Ein Zwischenstand (queued, printing) ändert kein Etikett, das schon einen Ausgang
+                # hat oder verworfen ist (docs/sync-protokoll.md, 6.6).
+                if progress_after_outcome(str(row["state"]), state):
                     return False
                 clock = con.execute(
                     "SELECT at FROM field_clocks WHERE entity = 'print_job' AND entity_id = ? AND field = ?",

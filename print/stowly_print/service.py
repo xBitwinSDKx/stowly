@@ -258,6 +258,11 @@ class PrintService:
             if self._started:
                 return
             self._started = True
+            # Welche Schriften gelten, steht beim Start im Log, nicht erst beim ersten Etikett: Mit
+            # der eingebauten Schrift fehlen Umlaute und „ß" (sie werden ausgeschrieben).
+            fonts = self._fonts or rendering.default_fonts()
+            sources = ", ".join(f"{name}: {source}" for name, source in fonts.describe().items())
+            log.info("Schriften der Etiketten: %s", sources)
             for record in self._store.load():
                 entry = _Entry(record=record)
                 self._jobs[record.id] = entry

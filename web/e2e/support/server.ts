@@ -39,6 +39,8 @@ export interface ServerOptions {
   env?: Record<string, string>;
   /** false: ohne `--dev`, also ohne das Entwicklungs-Passwort. Vorgabe true. */
   dev?: boolean;
+  /** Läuft vor dem ersten Start mit dem leeren Datenverzeichnis (etwa, um eine Störung vorzubereiten). */
+  prepareData?: (dataDir: string) => void;
 }
 
 export interface CliResult {
@@ -65,7 +67,8 @@ export interface ServerHandle {
   dispose(): Promise<void>;
 }
 
-function pythonPath(): string {
+/** Das Python mit Server und Druckdienst (`stowly`, `stowly_print`). */
+export function pythonPath(): string {
   const configured = process.env.STOWLY_E2E_PYTHON?.trim();
   if (configured) {
     return configured;
@@ -80,11 +83,20 @@ function pythonPath(): string {
   return fallback;
 }
 
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function freePort(): Promise<number> {
+/** Ein freier Port, vom Betriebssystem vergeben; nie einer der Starteinträge beim Entwickeln. */
+export async function freePort(): Promise<number> {
+  let port = await anyPort();
+  while (RESERVED_PORTS.has(port)) {
+    port = await anyPort();
+  }
+  return port;
+}
+
+function anyPort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = createServer();
     probe.once("error", reject);
@@ -97,7 +109,7 @@ function freePort(): Promise<number> {
 }
 
 /** Wahr, wenn auf dem Port jemand Verbindungen annimmt. */
-function isListening(port: number): Promise<boolean> {
+export function isListening(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = createConnection({ host: "127.0.0.1", port });
     const done = (result: boolean) => {
@@ -160,11 +172,9 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
   mkdirSync(dataDir);
   mkdirSync(webDir);
   const pidFile = `${home}.pid`;
+  options.prepareData?.(dataDir);
 
-  let port = await freePort();
-  while (RESERVED_PORTS.has(port)) {
-    port = await freePort();
-  }
+  const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   const env = serverEnv(dataDir, webDir, options.env);
   // Sicherung: Ein Test darf das Nachschlagen nur gegen einen Ersatz auf diesem Rechner einschalten.

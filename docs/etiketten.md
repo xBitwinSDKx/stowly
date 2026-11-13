@@ -116,7 +116,7 @@ Für alle Elemente:
 - `value` setzt Daten über `{feld}` ein. Fehlende Felder sind leer. Geschweifte Klammern im Text werden verdoppelt (`{{`).
 - `when: "feld"` zeichnet das Element nur, wenn `data[feld]` nicht leer ist.
 - Unbekannte Elementtypen und ein unbekanntes `schema` lehnt der Renderer ab (`render_failed`), statt zu raten.
-- Schriften: die Familie DejaVu (frei lizenziert). `regular` ist `DejaVuSans.ttf`, `bold` ist `DejaVuSans-Bold.ttf`, `mono` ist `DejaVuSansMono-Bold.ttf`. Der Renderer sucht jede Datei zuerst im Paket (`print/stowly_print/fonts/`; dort liegt sie samt Lizenztext, wenn sie mitgeliefert wird), dann unter den Schriften des Systems (`/usr/share/fonts/truetype/dejavu/`, Debian-Paket `fonts-dejavu-core`). Das Container-Image und das Installationsskript des Pi installieren dieses Paket; im Betrieb wird auf dem Pi nichts nachgeladen. Fehlt eine Datei an beiden Stellen, nimmt der Renderer die in Pillow eingebaute Schrift und meldet das im Log, statt zu scheitern. Die Tests legen die Schriftquelle selbst fest, damit ihre Referenzbilder nicht davon abhängen, welche Schriften auf dem Rechner liegen.
+- Schriften: die Familie DejaVu (frei lizenziert). `regular` ist `DejaVuSans.ttf`, `bold` ist `DejaVuSans-Bold.ttf`, `mono` ist `DejaVuSansMono-Bold.ttf`. Der Renderer sucht jede Datei zuerst im Paket (`print/stowly_print/fonts/`; dort liegt sie samt Lizenztext, wenn sie mitgeliefert wird), dann unter den Schriften des Systems (`/usr/share/fonts/truetype/dejavu/`, Debian-Paket `fonts-dejavu-core`). Das Container-Image und das Installationsskript des Pi installieren dieses Paket; im Betrieb wird auf dem Pi nichts nachgeladen. Fehlt eine Datei an beiden Stellen, nimmt der Renderer die in Pillow eingebaute Schrift und meldet das im Log, statt zu scheitern. Welche Schrift für `regular`, `bold` und `mono` gilt, nennt der Druckdienst beim Start im Log. Zeichen, die eine Schrift nicht hat, schreibt der Renderer lesbar aus („ü" als „ue", „ß" als „ss"); das betrifft nur die eingebaute Schrift, DejaVu hat sie alle. Die Tests legen die Schriftquelle selbst fest, damit ihre Referenzbilder nicht davon abhängen, welche Schriften auf dem Rechner liegen.
 - Ein Renderer ohne Angabe eines Druckers (Vorschau am Server) rechnet mit der Vorgabe dieser Stufe: 62-mm-Rolle bei 300 dpi, also 696 Pixel druckbare Breite, Länge aus `media.length_mm` der Vorlage (342 Pixel).
 
 ## 4. Etiketten des Haushalts (`PrintJob`)
@@ -152,24 +152,28 @@ Regeln:
 
 - **Anfordern:** Befehl `print.request`. Beim Einlagern fordert die App je Packung ein Etikett an, wenn die Geräte-Einstellung „Etiketten" an ist. **Etiketten gibt es nur, wenn der Haushalt mindestens einen Drucker hat:** Ohne Drucker fordert die App keine an, sonst würden beim Einrichten des ersten Druckers alte Etiketten nachgedruckt.
 - **Entnommen vor dem Druck:** Wird eine Packung entnommen, solange ihr Etikett noch `pending` ist, verwirft die App es (`print.report` mit `cancelled`). Wiederherstellen holt es nicht zurück; ein neues Etikett fordert der Anwender ausdrücklich an.
-- **Fortschritt:** Das Gerät, das zustellt, meldet mit `print.report`, was daraus geworden ist: `queued`, sobald der Dienst angenommen hat, und den Endzustand (4.1). Hängt der Drucker am Server, schreibt der Server den Zustand zusätzlich selbst fort (5.8), damit er auch ankommt, wenn das Gerät inzwischen offline ist. Es gilt die jeweils jüngste Meldung, und sie gilt als Ganzes: Sie ersetzt Zustand, `printer_id`, `boot_id` und `error` so, wie sie im Befehl stehen; was sie nicht nennt, ist danach `null` ([`sync-protokoll.md`](sync-protokoll.md), 6.6). Wer meldet, schickt also den Drucker und die `boot_id` jedes Mal mit.
+- **Fortschritt:** Das Gerät, das zustellt, meldet mit `print.report`, was daraus geworden ist: `queued`, sobald der Dienst angenommen hat, und den Endzustand (4.1). Hängt der Drucker am Server, schreibt der Server den Zustand zusätzlich selbst fort (5.8), damit er auch ankommt, wenn das Gerät inzwischen offline ist. Es gilt die jeweils jüngste Meldung, und sie gilt als Ganzes: Sie ersetzt Zustand, `printer_id`, `boot_id` und `error` so, wie sie im Befehl stehen; was sie nicht nennt, ist danach `null` ([`sync-protokoll.md`](sync-protokoll.md), 6.6). Wer meldet, schickt also den Drucker und die `boot_id` jedes Mal mit. Ausnahme: Ein Zwischenstand (`queued`, `printing`) ändert nie ein Etikett, das schon einen Ausgang hat (`printed`, `sent`, `failed`, `unknown`) oder verworfen ist, gleich welchen Zeitpunkt er trägt; das gilt auch für das, was der Server selbst fortschreibt (5.8).
 - **Ein neuer Versuch ist ein neues Etikett** mit neuer Kennung (`print.request`). Das alte bleibt, wie es ist. Ein Auftrag druckt nie zweimal.
 - **Antwort auf die Nachfrage** bei `unknown`: „Ja" meldet `printed`, „Nein" meldet `failed` mit `error: "not_printed"`; danach bietet die App einen neuen Versuch an.
 - **Welcher Drucker:** `PrintJob.printer_id`, sonst der Drucker der Zone (bei Packungen die Zone, in der die Packung jetzt liegt), sonst `HouseholdSettings.default_printer_id`. Ein gelöschter Drucker zählt auf jeder Stufe als nicht gesetzt. Gibt es keinen, bleibt das Etikett `pending`. Entschieden wird bei jedem Zustellversuch neu; als Code: `printerIdForJob` in `web/src/contract/labels.ts`.
+- **Ausnahme: Was schon hinausging, bleibt bei seinem Drucker.** Ein Etikett, das das Gerät schon einmal abgeschickt hat (ohne Antwort, 5.4) oder das beim Dienst wartet, geht bei jedem weiteren Versuch an denselben Drucker, auch wenn sich die Zuordnung geändert hat oder er inzwischen gelöscht ist: Nur sein Dienst weiß, ob es gedruckt wurde. Antwortet ein gelöschter Drucker nicht mehr, lässt sich das Etikett verwerfen, auch ein wartendes; druckt es der Dienst später doch, ist das kein doppelter Druck.
+- **Drucker löschen** (`printer.delete`) setzt `zones.printer_id` und `default_printer_id`, die auf ihn zeigten, auf `null`, im Server wie in der lokalen Vorwegnahme der App ([`sync-protokoll.md`](sync-protokoll.md), 6.6).
 - Ein Etikett bleibt `pending`, solange es nachweislich bei keinem Druckdienst angekommen ist. Es wird später zugestellt (4.1).
 
 ### 4.1 Zustellen
 
 **Wer:** Nur das Gerät, das ein Etikett angefordert hat (`device_id`), stellt es zu, an den Drucker am Server genauso wie an den Pi. Nur dieses Gerät weiß, ob es den Auftrag schon einmal abgeschickt hat; deshalb braucht „nie doppelt" keine Absprache zwischen Geräten. Alle anderen Geräte zeigen das Etikett an und können es verwerfen. Will jemand es an einem anderen Gerät drucken, wird das alte verworfen und ein neues angefordert (in der App ein Schritt: „hier drucken"). Die Gerätekennung wechselt mit jeder Anmeldung; Etiketten, die ein Gerät vor einer Sperre angefordert und schon abgeglichen hatte, gehören danach keinem angemeldeten Gerät mehr und bleiben stehen, bis jemand sie verwirft oder übernimmt.
 
-**Wann:** nach dem Anfordern, nach jedem gelungenen Sync, beim Start der App, wenn sie wieder sichtbar wird, und auf Wunsch sofort. Solange eigene Etiketten ausstehen und die App sichtbar ist, versucht sie es von selbst erneut: nach 5, 15 und 60 Sekunden, danach alle 60 Sekunden. An einen Drucker am Server geht ein Etikett erst, wenn seine Anforderung abgeglichen ist (das Etikett also im Server existiert); an den Pi sofort, auch ohne Server.
+**Wann:** nach dem Anfordern, nach jedem gelungenen Sync, beim Start der App, wenn sie wieder sichtbar wird, und auf Wunsch sofort. Solange eigene Etiketten ausstehen und die App sichtbar ist, versucht sie es von selbst erneut: nach 5, 15 und 60 Sekunden, danach alle 60 Sekunden. An einen Drucker am Server geht ein Etikett erst, wenn seine Anforderung abgeglichen ist (das Etikett also im Server existiert); an den Pi sofort, auch ohne Server. Verlangt der Anwender das Zustellen (`print.flush`) und wartet eine solche Anforderung noch in der Outbox, gleicht die App vorher ab; ebenso vor „Verbindung prüfen“ (`printers.probe`) bei einem Drucker am Server, den der Server noch nicht kennt (angelegt oder geändert, noch nicht abgeglichen).
 
 **Wie**, je Drucker und Versuch:
 
 1. Zustand abfragen (`GET /v1/health`, 5.5) und die `boot_id` merken. Ein Abruf gilt für den ganzen Versuch, nicht je Etikett.
-2. Die Etiketten in der Reihenfolge ihrer Anforderung (`created_at`, dann `id`) nacheinander einreichen, nie nebeneinander: So kommen sie in der Reihenfolge der Packungen aus dem Drucker.
-3. **Vor dem ersten Absenden** hält die App dauerhaft fest (lokale Datenbank, nicht im Sync): Kennung, Drucker, Adresse, die `boot_id` und den **Inhalt** des Auftrags (Vorlage und Daten). Jede Wiederholung schickt genau diesen Inhalt und genau diese `boot_id` wieder, auch wenn sich Produktname oder Vorlage inzwischen geändert haben oder der Dienst neu gestartet ist (5.4).
+2. Die Etiketten in der Reihenfolge ihrer Anforderung (`created_at`, dann `id`) nacheinander einreichen, nie nebeneinander: So kommen sie in der Reihenfolge der Packungen aus dem Drucker. Fordert die App mehrere Etiketten in einem Schritt an (Einlagern, Nachdruck), tragen sie dasselbe `created_at`; ihre Kennungen vergibt sie deshalb aufsteigend in der Reihenfolge der Packungen.
+3. **Vor dem ersten Absenden** hält die App dauerhaft fest (lokale Datenbank, nicht im Sync): Kennung, Drucker, Adresse, die `boot_id` und den **Inhalt** des Auftrags (Vorlage und Daten). Jede Wiederholung schickt genau diesen Inhalt und genau diese `boot_id` wieder, auch wenn sich Produktname oder Vorlage inzwischen geändert haben oder der Dienst neu gestartet ist (5.4). Die Adresse ist nur Auskunft: Eine Wiederholung geht an die Adresse des Druckers, die gerade antwortet und sich ausweist; dass es derselbe Dienst im selben Lauf ist, sichern Nachweis und `boot_id`.
 4. Das Ergebnis melden (`print.report`): `queued`, sobald der Dienst angenommen hat, und den Endzustand; jeweils mit `printer_id` (der Drucker, an den es ging) und `boot_id`. `printing` muss nicht eigens gemeldet werden.
+
+Ein Versuch hat zwei Teile. Zuerst werden alle Drucker der Reihe nach bedient: einreichen, was aussteht, und einmal abfragen, was schon beim Dienst ist. Eingereicht wird mit `wait=5`, wenn die App von selbst zustellt (kommt der Endzustand gleich mit, genügt eine Meldung), und mit `wait=0` auf Wunsch des Anwenders: Dann wartet er auf den Bericht (`print.flush` erfüllt sich nach diesem Teil). Danach wird im Hintergrund nachgefragt (`wait=10`, höchstens 60 Sekunden je Drucker); will ein neuer Versuch zustellen, auch der eines anderen Tabs, bricht das Nachfragen ab und der neue fragt selbst wieder nach.
 
 Die Daten des Etiketts entstehen beim ersten Absenden aus dem, was die App dann zeigt (`packageLabelData`, `zoneLabelData`); `show_zone` ist gesetzt, wenn es mehr als eine Zone gibt.
 
@@ -183,10 +187,10 @@ Was die Antwort des Dienstes für das Etikett heißt:
 | 409 `job_conflict` | der Dienst kennt die Kennung schon: dessen Zustand übernehmen (`GET /v1/jobs/{id}`) |
 | 404 `unknown_printer`, 400 `invalid_request`, 422 `render_failed` | `failed` mit diesem Code |
 | 401 `unauthorized` | bleibt `pending`. Am Pi stimmt das Token des Druckers nicht: Die App versucht es an diesem Drucker erst wieder, wenn er geändert wurde oder der Anwender es ausdrücklich verlangt. Am Server ist das Gerät abgemeldet. |
-| 503 `queue_full`, 404 `not_found` und 409 `not_pending` (beide nur am Server, 5.8) | bleibt `pending`; die App gleicht ab und versucht es später |
+| 503 `queue_full`, 404 `not_found` und 409 `not_pending` (beide nur am Server, 5.8) | bleibt `pending`; die App gleicht ab und versucht es später. Antwortet schon die Abfrage des Zustands am Server mit einem Fehler (503, solange sein Druckdienst nicht läuft), nennt die App den Grund `unavailable`, nicht „Server nicht erreichbar“ |
 | Dienst nicht erreichbar | bleibt `pending` |
 
-Zeitgrenzen der App: Zustand 1,5 Sekunden, Einreichen 10 Sekunden, Nachfragen mit `wait=10` 15 Sekunden.
+Zeitgrenzen der App: Zustand 1,5 Sekunden, Einreichen 10 Sekunden, Nachfragen mit `wait=10` 15 Sekunden. Kann die Abfrage des Zustands die Nachfrage des Browsers nach dem lokalen Netzwerk auslösen (Erlaubnis noch offen, 5.6) und kommt der Versuch vom Anwender, bekommt sie bis zu 15 Sekunden, damit er die Nachfrage beantworten kann; alle Adressen eines Druckers zusammen höchstens 20 Sekunden.
 
 **Fehlercodes eines Etiketts** (`PrintJob.error`): die Drucker-Codes aus 5.5 (`no_media`, `media_mismatch`, `cover_open`, `cutter_jam`, `overheated`, `busy`, `offline`, `config`, `unknown`), dazu `unknown_printer`, `invalid_request`, `render_failed`, `cancelled` (am Dienst verworfen), `interrupted` (bei `unknown`: mitten im Druck unterbrochen), `handoff` (bei `unknown`: an die Seite des Druckdienstes übergeben, 5.7) und `not_printed` (der Anwender hat auf die Nachfrage mit Nein geantwortet). Die Oberfläche hat zu jedem einen Satz und zeigt unbekannte Codes unverändert.
 
@@ -220,7 +224,7 @@ Dieselbe Schnittstelle am Server und am Pi. Datentypen: `print/stowly_print/mode
 | Schreibende Aufrufe | brauchen das Token | brauchen das Token |
 | Name des Druckers im Auftrag (`printer`) | die `Printer.id`; ohne Angabe 404 `unknown_printer` | `Printer.direct.printer`, `null` = Standarddrucker des Dienstes (der erste in seiner Liste) |
 
-Das Token kommt entweder als `Authorization: Bearer <token>` oder im JSON-Rumpf als `"token"`. Der Vergleich läuft in konstanter Zeit.
+Das Token kommt entweder als `Authorization: Bearer <token>` oder im JSON-Rumpf als `"token"`, am Server wie am Pi. Der Vergleich läuft in konstanter Zeit. Als schreibend gelten Einreichen, Verwerfen und die Vorschau (`/v1/render`: Rendern kostet Rechenzeit); lesend sind `/v1/health`, `/v1/printers`, `GET /v1/jobs/{id}` und `/v1/jobs/{id}/image`.
 
 ### 5.2 Ohne Vorabanfrage zum Pi
 
@@ -262,7 +266,16 @@ Auftrag (`ServiceJobRequest`):
 }
 ```
 
-Entweder `template` und `data` oder `png`: ein fertiges 1-Bit-PNG in exakt passender Größe, Base64, als Notausgang. `copies` 1 bis 20. Geprüft wird die Nutzlast von `JobRequest.from_dict`.
+Entweder `template` und `data` oder `png`: ein fertiges 1-Bit-PNG in exakt passender Größe, Base64, als Notausgang. `copies` 1 bis 20. Geprüft wird die Nutzlast von `JobRequest.from_dict`; unbekannte Schlüssel übergeht sie. Ein Rumpf über der Grenze (ein PNG-Auftrag samt Base64-Aufschlag) ist `invalid_request`.
+
+Reihenfolge der Prüfungen beim Einreichen; die erste Verletzung bestimmt die Antwort:
+
+1. Ein zu großer Rumpf (`invalid_request`), ohne ihn ganz zu lesen.
+2. Anmeldung (`unauthorized`). Ohne gültiges Token erfährt der Aufrufer sonst nichts, auch nicht, dass der Rumpf kein JSON ist.
+3. Form: Rumpf, `wait` und Kennung (`invalid_request`).
+4. Lauf (`boot_mismatch`), dann die Kennung: schon bekannt mit gleichem Inhalt liefert den vorhandenen Zustand, mit anderem `job_conflict`.
+5. Nur am Server: das Etikett (`not_found`, `not_pending`). Ein verworfenes Etikett meldet so `not_pending`, auch wenn sein Drucker inzwischen gelöscht ist.
+6. Drucker (`unknown_printer`), Platz in der Warteschlange (`queue_full`), zuletzt das Rendern (`render_failed`).
 
 Antwort (`ServiceJob`): `id`, `state` (`queued`, `printing`, `printed`, `sent`, `failed`, `unknown`), `printer`, `boot_id`, `error` (`{ code, message }` oder `null`), `position` (Platz in der Warteschlange, 0 = als Nächstes; sonst `null`).
 
@@ -321,7 +334,11 @@ Was die App dabei beachtet:
 
 - **Nur von der Seite aus.** Aufrufe an einen direkten Drucker macht nie der Service Worker: Der Browser fragt nur dort um Erlaubnis, wo ein Fenster ist.
 - **`targetAddressSpace`** setzt die App bei jeder Anfrage an einen direkten Drucker passend zur Adresse: `"loopback"` für 127.0.0.0/8, `[::1]` und `localhost` (Entwicklung), sonst `"local"`. Browser ohne Local Network Access übergehen die Angabe.
-- **Die Nachfrage des Browsers** kann bei jeder Anfrage kommen, auch bei einer selbsttätigen im Hintergrund. Lehnt der Anwender ab, gilt der Drucker als nicht benutzbar (`permission`), bis er die Erlaubnis in den Einstellungen des Browsers erteilt; die App sagt, wo. Wo der Browser es anbietet, liest sie den Stand der Erlaubnis vorab (Permissions API).
+- **Die Nachfrage des Browsers** kann bei jeder Anfrage kommen, auch bei einer selbsttätigen im Hintergrund. Lehnt der Anwender ab, gilt der Drucker als nicht benutzbar (`permission`), bis er die Erlaubnis in den Einstellungen des Browsers erteilt; die App sagt, wo. Wo der Browser es anbietet, liest sie den Stand der Erlaubnis vorab (Permissions API, Namen `local-network` und `loopback-network`, in älteren Versionen `local-network-access`):
+  - abgelehnt: Es geht keine Anfrage hinaus (`permission`).
+  - noch offen: Eine Anfrage darf nur auf eine Handlung des Anwenders hin hinausgehen (`print.flush`, `printers.probe`), denn sie kann die Nachfrage auslösen; dann bekommt sie mehr Zeit (4.1, Zeitgrenzen). Selbsttätig wartet die App. Kommt die App selbst aus dem lokalen Netzwerk, fragt der Browser nie und meldet trotzdem dauerhaft „noch offen“: Hat eine Anfrage auf Wunsch des Anwenders eine Antwort bekommen und steht die Erlaubnis danach weiter auf „noch offen“, merkt sich das Gerät diesen Adressraum und stellt dort von da an auch selbsttätig zu.
+  - erteilt oder keine Auskunft: Die Anfrage läuft.
+  - Ändert sich die Erlaubnis (der Anwender antwortet erst, nachdem die auslösende Anfrage aufgegeben hat), stellt die App sofort zu.
 - **Fehlt der Ursprung der App in der Konfiguration des Dienstes,** scheitert die Anfrage für die App wie ein Netzfehler. Sie unterscheidet das durch eine zweite Anfrage ohne CORS (`mode: "no-cors"`): Kommt darauf eine Antwort, ist der Dienst da, lässt diese App aber nicht mitlesen (`blocked`).
 - Ein Zertifikat, dem der Browser nicht traut, sieht für die App aus wie „nicht erreichbar".
 
@@ -350,7 +367,8 @@ Darf der Browser den Pi aus der App heraus nicht ansprechen (iPhone, wenn die in
   Höchstens 20 Aufträge je Aufruf, alle mit derselben Vorlage (Packungs- und Zonen-Etiketten getrennt). `back` ist die Adresse, zu der die Seite einen Verweis „Zurück zu Stowly" zeigt, oder `null`; angenommen werden nur `http:`- und `https:`-Adressen, und die Seite leitet nie von selbst weiter.
 - Die Seite ist eine einzelne HTML-Datei ohne fremde Dateien. Sie zeigt, wie viele Etiketten sie drucken wird, wartet auf einen Tipp auf „Drucken", fragt dann den Zustand ab (`/v1/health`) und reicht die Aufträge in ihrer Reihenfolge ein (`POST /v1/jobs/{id}?wait=30`, mit der eben gesehenen `boot_id` als `expect_boot_id`). Zu jedem Etikett zeigt sie das Ergebnis im Klartext.
 - Die Kennungen sind die der Etiketten. Ein zweiter Aufruf derselben Adresse druckt deshalb nichts doppelt, solange der Dienst im selben Lauf ist.
-- In der App gelten die übergebenen Etiketten danach als `unknown` mit `error: "handoff"`: Sie erfährt den Ausgang nicht und fragt „Wurde das Etikett gedruckt?". Erreicht sie den Dienst später doch und kennt er den Auftrag, übernimmt sie dessen Zustand.
+- In der App gelten die übergebenen Etiketten danach als `unknown` mit `error: "handoff"`: Sie erfährt den Ausgang nicht und fragt „Wurde das Etikett gedruckt?". Erreicht sie den Dienst später doch und kennt er den Auftrag, übernimmt sie dessen Ausgang (einen Zwischenstand nicht, 4).
+- **Übergeben werden nur Etiketten, die die App noch nie abgeschickt hat.** Eines, das schon hinausging und auf eine Antwort wartet (5.4), bleibt `pending` und wird auf dem normalen Weg geklärt: Die Seite reichte es mit der `boot_id` ein, die sie selbst eben gesehen hat, und nach einem Neustart des Pi druckte es womöglich ein zweites Mal. Bleibt so nichts übrig, sagt die App das, statt eine leere Seite zu öffnen.
 
 ### 5.8 Der Druckdienst im Server
 
@@ -359,7 +377,8 @@ Der Server bindet denselben Dienst unter `/print` ein (`/print/v1/health` und so
 - **Anmeldung:** Jeder Aufruf braucht das Geräte-Token (`Authorization: Bearer`), auch die lesenden. Fehler kommen im Format des Servers; 401 behandelt die App wie überall (das Gerät ist abgemeldet). CORS-Kopfzeilen und die Seite `/p` gibt es dort nicht.
 - **Drucker:** alle nicht gelöschten `Printer` mit `connection = "server"`, unter ihrer `Printer.id` als Name. Ändert ein Sync-Befehl einen Drucker, gilt das für den nächsten Auftrag und die nächste Abfrage. Der Dienst hat keinen Standarddrucker.
 - **Nur bekannte Etiketten:** Ein Auftrag wird nur angenommen, wenn es ein Etikett (`PrintJob`) mit dieser Kennung gibt und es `pending` ist. Sonst 404 `not_found` (die Anforderung ist noch nicht abgeglichen) oder 409 `not_pending` (verworfen oder erledigt). Ein Auftrag, den der Dienst schon kennt, liefert wie immer seinen Zustand.
-- **Zustand fortschreiben:** Mit dem Annehmen und bei jedem Wechsel schreibt der Server Zustand, `printer_id`, `boot_id` und `error` des Etiketts selbst (Regel in [`sync-protokoll.md`](sync-protokoll.md), 6.6), damit er auch ankommt, wenn das Gerät inzwischen offline ist. Das Gerät meldet trotzdem; beide Meldungen sagen dasselbe.
+- **Zustand fortschreiben:** Mit dem Annehmen und bei jedem Wechsel schreibt der Server Zustand, `printer_id`, `boot_id` und `error` des Etiketts selbst (Regel in [`sync-protokoll.md`](sync-protokoll.md), 6.6), damit er auch ankommt, wenn das Gerät inzwischen offline ist. Das Gerät meldet trotzdem; beide Meldungen sagen dasselbe. Ein am Dienst verworfener Auftrag (`failed` mit `cancelled`) wird für das Etikett `cancelled` ohne Fehler, so wie es das Gerät meldet; ein unterbrochener `unknown` mit `interrupted`. Ein Zwischenstand ändert kein Etikett, das schon einen Ausgang hat (4).
+- **Läuft der Druckdienst im Server nicht** (er ließ sich beim Start nicht einrichten, etwa weil sein Verzeichnis nicht beschreibbar ist), antwortet jeder Aufruf unter `/print` mit 503 `queue_full` und dem Grund im Klartext; der Rest des Servers läuft weiter. Die App lässt die Etiketten ausstehen und nennt den Grund `unavailable`.
 - **Zustand der Drucker:** Der Server schreibt `PrinterStatus` seiner Drucker selbst: nach jedem Auftrag und bei jeder Abfrage durch eine App, höchstens einmal je Minute und Drucker, außer es hat sich etwas geändert. `host` ist `null`.
 - **Auftragsspeicher und `boot_id`** liegen in einer Datei im Datenverzeichnis und überleben den Neustart: Wartende Aufträge laufen weiter, einer, der beim Absturz gerade druckte, wird `unknown` (5.4).
 - **Bild-Treiber:** schreibt je Auftrag ein PNG ins Datenverzeichnis; `GET /print/v1/jobs/{id}/image` liefert es. So lässt sich der ganze Weg ohne Drucker ansehen.

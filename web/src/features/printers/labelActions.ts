@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 
-import { useCore, type Printer, type PrintFlushReport } from "@/contract";
+import { isCoreError, useCore, type Printer, type PrintFlushReport } from "@/contract";
 import { errorText, plural } from "@/ui";
 import { useToast } from "@/ui/base";
 
@@ -153,8 +153,11 @@ export function useLabelActions(): LabelActions {
         });
       } catch (error) {
         tab?.close();
+        // Bei "not_found" sagt der Kern, warum nichts übergeben wird; auch, wenn die ausstehenden
+        // Etiketten vielleicht schon beim Drucker sind (core.ts, `print.handoff`).
+        const reason = isCoreError(error) && error.code === "not_found" && error.message.trim() !== "" && error.message !== error.code ? error.message : null;
         toast.show({
-          message: errorText(error, { not_found: "Für diesen Drucker steht kein eigenes Etikett aus.", invalid: "Die Seite des Druckdienstes gibt es nur bei einem direkten Drucker." }),
+          message: reason ?? errorText(error, { not_found: "Für diesen Drucker steht kein eigenes Etikett aus.", invalid: "Die Seite des Druckdienstes gibt es nur bei einem direkten Drucker." }),
           tone: "danger",
         });
       } finally {

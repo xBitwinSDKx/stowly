@@ -6,6 +6,7 @@ import type { PrinterProblem } from "@/contract/core";
 
 export const PROBLEM_TEXTS: Record<PrinterProblem | "no_printer", string> = {
   offline: "Der Server ist nicht erreichbar.",
+  unavailable: "Der Server antwortet, sein Druckdienst aber nicht. Der Grund steht im Log des Servers.",
   unreachable: "Der Druckdienst antwortet auf keiner seiner Adressen. Ist das Gerät im WLAN des Druckers?",
   permission: "Der Browser hat dieser Seite den Zugriff auf das lokale Netzwerk verwehrt. Erlauben lässt er sich in den Einstellungen des Browsers für diese Seite.",
   blocked: "Der Druckdienst antwortet, lässt diese App aber nicht zu: Ihre Adresse fehlt in seiner Konfiguration.",

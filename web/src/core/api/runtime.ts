@@ -16,6 +16,12 @@ export interface PrintRuntime {
   flush(): Promise<DeliveryOutcome>;
   /** Der Anwender hat einen Drucker erreicht: zustellen, sofern der Kern von selbst zustellt. */
   afterProbe(): void;
+  /**
+   * Gleicht jetzt ab, bevor ein Aufruf den Druckdienst des Servers anspricht, der einen Drucker
+   * oder ein Etikett erst nach dem Abgleich kennt. Wirft nicht; scheitert der Abgleich, geht es
+   * trotzdem weiter.
+   */
+  syncFirst(): Promise<void>;
 }
 
 export interface CoreRuntime {

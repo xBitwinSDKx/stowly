@@ -7,7 +7,8 @@
  *
  * Es gibt hier keine Konfliktentscheidung nach Zeitstempeln (7.1): Lokal gilt immer der
  * eigene, noch unbestätigte Befehl. Ein Befehl, den der Server ablehnen würde, bleibt ohne
- * Wirkung; das Ergebnis sagt, warum.
+ * Wirkung; das Ergebnis sagt, warum. Regeln, die nicht vom Zeitpunkt abhängen, gelten auch
+ * lokal: Ein Zwischenstand eines Etiketts ändert keinen Ausgang (`progressAfterOutcome`).
  *
  * Ohne DOM: Diese Datei läuft auch im Service Worker.
  */
@@ -39,6 +40,7 @@ import type {
   Zone,
 } from "@/contract/api.gen";
 import { willLookUp } from "@/contract/barcode";
+import { progressAfterOutcome } from "@/contract/labels";
 
 import type { Draft } from "../tables";
 
@@ -545,6 +547,11 @@ function printReport(ws: Draft, cmd: CmdPrintReport, ctx: ApplyContext): ApplyOu
   const job = ws.get("print_jobs", cmd.job_id);
   if (!job) {
     return rejected("not_found");
+  }
+  // Ein Zwischenstand ändert kein Etikett mit Ausgang, gleich welchen Zeitpunkt er trägt: lokal
+  // wie beim Server (docs/sync-protokoll.md, 6.6).
+  if (progressAfterOutcome(job.state, cmd.state)) {
+    return APPLIED;
   }
   if (ctx.authoritative && job.updated_at > ctx.at) {
     return APPLIED;

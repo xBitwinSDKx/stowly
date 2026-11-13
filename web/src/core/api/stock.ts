@@ -10,6 +10,7 @@ import { CoreError } from "@/contract/errors";
 import { newUuid } from "@/contract/ids";
 
 import { barcodeOwner } from "../commands/apply";
+import { labelIdsInOrder } from "../print/content";
 import type { Mutation } from "../store";
 import type { CoreRuntime } from "./runtime";
 import {
@@ -110,13 +111,15 @@ export function createStockApi(runtime: CoreRuntime): StockApi {
         }
 
         // Etiketten gibt es nur, wenn der Haushalt einen Drucker hat (docs/etiketten.md, Abschnitt 4).
+        // Aufsteigende Kennungen: So kommen die Etiketten in der Reihenfolge der Packungen aus dem Drucker.
         const jobIds: string[] = [];
         if ((input.labels ?? mutation.prefs.print_labels) && hasPrinter(mutation.draft)) {
-          for (const packageId of packageIds) {
-            const jobId = newUuid();
+          const ids = labelIdsInOrder(packageIds.length);
+          packageIds.forEach((packageId, index) => {
+            const jobId = ids[index] as string;
             mutation.emit({ type: "print.request", job_id: jobId, kind: "package", package_id: packageId });
             jobIds.push(jobId);
-          }
+          });
         }
 
         const product = mutation.draft.get("products", productId);

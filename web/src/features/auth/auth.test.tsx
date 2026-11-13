@@ -50,6 +50,10 @@ describe("loginErrorText", () => {
     expect(loginErrorText(new CoreError("protocol_mismatch"))).toContain("passt nicht zum Server");
     expect(loginErrorText(new CoreError("invalid", "Der Name des Geräts ist zu lang (höchstens 60 Zeichen)."))).toBe("Der Name des Geräts ist zu lang (höchstens 60 Zeichen).");
     expect(loginErrorText(new CoreError("invalid"))).toContain("Bitte das Passwort und einen Namen");
+    // Hält ein anderer Tab die lokale Datenbank fest, sagt der Kern genau das.
+    expect(loginErrorText(new CoreError("not_supported", "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest."))).toBe(
+      "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest.",
+    );
     expect(loginErrorText(new Error("kaputt"))).toBe("Die Anmeldung ist fehlgeschlagen. Bitte noch einmal versuchen.");
   });
 });

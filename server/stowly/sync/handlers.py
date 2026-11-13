@@ -40,6 +40,21 @@ REMOVED_CLOCK = "removed"
 DISPLACED_CLOCK_PREFIX = "displaced."
 # Uhr für den Zustand eines Etiketts samt printer_id, boot_id und error.
 JOB_STATE_CLOCK = "state"
+# Zwischenstände eines Etiketts beim Druckdienst und die Zustände, die sie nie überschreiben:
+# ein Ausgang (auch der offene, ``unknown``) und das Verwerfen (Abschnitt 6.6).
+PROGRESS_STATES = frozenset({"queued", "printing"})
+OUTCOME_STATES = frozenset({"printed", "sent", "failed", "cancelled", "unknown"})
+
+
+def progress_after_outcome(current: str, reported: str) -> bool:
+    """Wahr, wenn ein Zwischenstand ein Etikett treffen würde, das schon einen Ausgang hat.
+
+    Eine solche Meldung ändert nichts, gleich welchen Zeitpunkt sie trägt: Sie ist älter als
+    das, was das Etikett schon weiß (etwa ``queued``, gemeldet, nachdem der Server ``printed``
+    selbst fortgeschrieben hat). Gilt für ``print.report`` und für das Fortschreiben des Servers.
+    """
+    return reported in PROGRESS_STATES and current in OUTCOME_STATES
+
 
 PACKAGE_FIELDS = ("best_before", "zone_id", "product_id")
 # Mehr Schritte hat keine Kette aus Zusammenführungen oder gelöschten Zonen; schützt vor Schleifen.
@@ -929,7 +944,11 @@ class CommandRunner:
         row = self.con.execute("SELECT * FROM print_jobs WHERE id = ?", (cmd.job_id,)).fetchone()
         if row is None:
             raise Reject(RejectCode.NOT_FOUND, "Das Etikett gibt es nicht.")
-        if not self._wins("print_job", row["id"], JOB_STATE_CLOCK):
+        # Ein Zwischenstand ändert kein Etikett mit Ausgang, gleich welchen Zeitpunkt er trägt; er
+        # stellt auch die Uhr nicht. Der Befehl gilt trotzdem (applied, mit Echo, ohne Protokoll).
+        if progress_after_outcome(row["state"], cmd.state.value) or not self._wins(
+            "print_job", row["id"], JOB_STATE_CLOCK
+        ):
             self._update("print_jobs", row["id"], {}, changed=False)
             return APPLIED
         state = cmd.state.value

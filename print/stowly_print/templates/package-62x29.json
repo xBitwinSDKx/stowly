@@ -9,7 +9,7 @@
     { "type": "text", "x": 26.0, "y": 11.3, "w": 32.4, "h": 3.4, "value": "{subtitle}", "font": "regular", "size": 2.8, "min_size": 2.2, "when": "subtitle" },
     { "type": "text", "x": 26.0, "y": 15.0, "w": 32.4, "h": 5.2, "value": "MHD {best_before}", "font": "bold", "size": 4.2, "min_size": 3.2, "when": "best_before" },
     { "type": "line", "x1": 26.0, "y1": 20.8, "x2": 58.4, "y2": 20.8, "width": 0.25 },
-    { "type": "text", "x": 26.0, "y": 21.4, "w": 20.0, "h": 6.8, "value": "{id}", "font": "mono", "size": 6.0, "valign": "middle" },
-    { "type": "text", "x": 46.0, "y": 21.4, "w": 12.4, "h": 6.8, "value": "{stored}", "font": "regular", "size": 2.4, "align": "right", "valign": "middle", "when": "stored" }
+    { "type": "text", "x": 26.0, "y": 21.4, "w": 18.4, "h": 6.8, "value": "{id}", "font": "mono", "size": 6.0, "min_size": 5.6, "valign": "middle" },
+    { "type": "text", "x": 44.4, "y": 21.4, "w": 14.0, "h": 6.8, "value": "{stored}", "font": "regular", "size": 2.4, "min_size": 2.0, "align": "right", "valign": "middle", "when": "stored" }
   ]
 }

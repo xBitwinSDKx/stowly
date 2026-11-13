@@ -169,7 +169,7 @@ describe("Sätze", () => {
   });
 
   it("hat zu jedem Grund, aus dem ein Druckdienst nicht benutzbar ist, einen Satz mit dem nächsten Schritt", () => {
-    const problems: DeliveryProblem[] = ["offline", "unreachable", "permission", "blocked", "not_verified", "unknown_printer", "insecure_context", "no_printer"];
+    const problems: DeliveryProblem[] = ["offline", "unavailable", "unreachable", "permission", "blocked", "not_verified", "unknown_printer", "insecure_context", "no_printer"];
     const titles = new Set<string>();
     for (const problem of problems) {
       const text = problemText(problem, cellar, "https://stowly.home");
@@ -193,7 +193,7 @@ describe("Sätze", () => {
 
   it("bietet den Notweg nur an, wo er hilft", () => {
     expect((["unreachable", "permission", "insecure_context"] as const).every(handoffHelps)).toBe(true);
-    expect((["offline", "blocked", "not_verified", "unknown_printer", "no_printer"] as const).some(handoffHelps)).toBe(false);
+    expect((["offline", "unavailable", "blocked", "not_verified", "unknown_printer", "no_printer"] as const).some(handoffHelps)).toBe(false);
     expect(handoffHelps(null)).toBe(false);
   });
 
@@ -339,9 +339,10 @@ describe("Drucker löschen", () => {
     if (!cellar || !kitchen) {
       throw new Error("Drucker fehlen in den Beispieldaten");
     }
+    const alreadySent = "Was schon an diesen Drucker abgeschickt ist, bleibt bei ihm, bis er antwortet; antwortet er nicht mehr, lässt es sich verwerfen.";
     expect(describeRemoval(cellar, data.zones, lookup, waiting(lookup), true)).toEqual({
       duties: ["Er druckt für „Keller“ und „Gefrierschrank“.", "Diese Zonen nutzen danach wieder den Standarddrucker „Küche (Bild)“."],
-      labels: ["3 ausstehende Etiketten gehen danach an „Küche (Bild)“.", "Etiketten werden dabei nicht gelöscht."],
+      labels: ["3 ausstehende Etiketten gehen danach an „Küche (Bild)“.", alreadySent, "Etiketten werden dabei nicht gelöscht."],
     });
     // Der Standarddrucker ohne eigene Zonen: Seine Etiketten gibt es gerade nicht, danach gibt es keinen Standarddrucker.
     expect(describeRemoval(kitchen, data.zones, lookup, waiting(lookup), true)).toEqual({
@@ -355,7 +356,7 @@ describe("Drucker löschen", () => {
         "Er druckt für „Keller“ und „Gefrierschrank“.",
         "Diese Zonen haben danach keinen Drucker, bis ihnen einer zugeordnet oder ein Standarddrucker gewählt ist.",
       ],
-      labels: ["3 ausstehende Etiketten bleiben stehen, bis ein Drucker zuständig ist.", "Etiketten werden dabei nicht gelöscht."],
+      labels: ["3 ausstehende Etiketten bleiben stehen, bis ein Drucker zuständig ist.", alreadySent, "Etiketten werden dabei nicht gelöscht."],
     });
   });
 

@@ -1039,3 +1039,20 @@ def test_service_must_be_started_before_it_accepts_jobs():
     finished(service, job.id)
     assert isinstance(recorder, Recorder)
     service.close()
+
+
+def test_start_names_the_fonts_in_the_log(tmp_path, caplog):
+    """Mit der eingebauten Schrift werden Umlaute ausgeschrieben: Das steht schon beim Start im Log."""
+    caplog.set_level("INFO", logger="stowly_print")
+    service, _recorder = make_service(start=False)
+    service.start()
+    assert "Schriften der Etiketten: regular: eingebaut, bold: eingebaut, mono: eingebaut" in caplog.text
+    service.close()
+
+    # Fehlt eine Datei im gesuchten Verzeichnis, sagt das Log auch das, und zwar beim Start.
+    caplog.clear()
+    service, _recorder = make_service(start=False, fonts=Fonts([tmp_path]))
+    service.start()
+    assert "Schrift DejaVuSans.ttf fehlt" in caplog.text
+    assert "regular: eingebaut" in caplog.text
+    service.close()

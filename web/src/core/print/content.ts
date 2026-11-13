@@ -6,6 +6,7 @@
  * `LabelTemplate` zur Art des Etiketts reist unverändert mit.
  */
 import type { PrintJob, PrintJobKind } from "@/contract/api.gen";
+import { newUuid } from "@/contract/ids";
 import { packageLabelData, printerIdForJob, zoneLabelData, type PrinterLookup } from "@/contract/labels";
 
 import { resolveProduct, resolveZone } from "../commands/apply";
@@ -72,4 +73,14 @@ export function printerFor(view: Tables, job: Pick<PrintJob, "printer_id" | "pac
 /** Reihenfolge des Zustellens: nach Anforderung, dann nach Kennung. */
 export function byRequestOrder(a: Pick<PrintJob, "created_at" | "id">, b: Pick<PrintJob, "created_at" | "id">): number {
   return a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id);
+}
+
+/**
+ * Kennungen für `count` Etiketten, die in einem Schritt angefordert werden. Sie tragen alle
+ * dasselbe `created_at`; dann entscheidet beim Zustellen die Kennung (`byRequestOrder`).
+ * Aufsteigend vergeben, kommen die Etiketten so in der Reihenfolge der Packungen aus dem Drucker
+ * (docs/etiketten.md, 4.1).
+ */
+export function labelIdsInOrder(count: number): string[] {
+  return Array.from({ length: count }, () => newUuid()).sort((a, b) => a.localeCompare(b));
 }

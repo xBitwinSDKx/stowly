@@ -319,6 +319,28 @@ def test_a_newer_report_of_a_device_wins_over_the_server(client, make_device, cl
     assert (device.print_jobs[second]["state"], device.print_jobs[second]["error"]) == ("unknown", "handoff")
 
 
+def test_the_server_never_writes_progress_over_an_outcome(client, make_device, clock):
+    """Was der Server selbst fortschreibt, folgt derselben Regel wie ``print.report``: Ein
+    Zwischenstand (queued, printing) ändert ein Etikett mit Ausgang nie, auch mit jüngerer Uhr."""
+    device = make_device()
+    printer_id = add_printer(device)
+    state = client.app.state.printing
+    for outcome in ("printed", "failed", "cancelled", "unknown"):
+        job_id = request_label(device, printer_id, f"Etikett {outcome}")
+        report = device.cmd("print.report", job_id=job_id, state=outcome, printer_id=printer_id, boot_id="b1")
+        assert statuses(device.sync([report])) == [("applied", None)]
+        before = dict(device.print_jobs[job_id])
+        clock.advance(60)
+        for progress in (JobState.QUEUED, JobState.PRINTING):
+            assert state.record_job(Job(job_id, progress, printer_id, "b2", None, None)) is False
+        device.sync()
+        assert device.print_jobs[job_id] == before
+    # Ein Ausgang des Servers mit jüngerer Uhr gilt wie bisher.
+    assert state.record_job(Job(job_id, JobState.PRINTED, printer_id, "b2", None, None)) is True
+    device.sync()
+    assert (device.print_jobs[job_id]["state"], device.print_jobs[job_id]["boot_id"]) == ("printed", "b2")
+
+
 def test_failures_end_as_failed_with_the_code_of_the_printer(client, make_device, settings):
     device = make_device()
     printer_id = add_printer(device)
@@ -358,7 +380,9 @@ def test_cancelling_a_waiting_job_at_the_service(client, make_device, settings):
         simulate.unlink()
     assert client.get(f"/print/v1/jobs/{first}?wait=10", headers=device.headers).json()["state"] == "printed"
     device.sync()
-    assert (device.print_jobs[second]["state"], device.print_jobs[second]["error"]) == ("failed", "cancelled")
+    # Der Dienst sagt „gescheitert: verworfen"; für das Etikett heißt das „verworfen", wie es das Gerät meldet.
+    label = device.print_jobs[second]
+    assert (label["state"], label["error"], label["printer_id"]) == ("cancelled", None, printer_id)
     assert [path.name for path in images_of(settings).glob("*.png")] == [f"{first}.png"]
 
 
