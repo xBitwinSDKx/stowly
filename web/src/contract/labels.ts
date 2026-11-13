@@ -4,7 +4,7 @@
  * Die App schickt dem Druckdienst fertig formatierte Zeichenketten: Der Pi im Keller
  * hat keine Uhr und kennt keine Sprache. Die Vorlage setzt die Werte nur noch ein.
  */
-import type { Package, PackageLabelData, Product, Zone, ZoneLabelData } from "./api.gen";
+import type { HouseholdSettings, Package, PackageLabelData, Printer, PrintJob, Product, Zone, ZoneLabelData } from "./api.gen";
 import { packageQr, zoneQr } from "./qr";
 import { formatDate, toLocalDate } from "./time";
 
@@ -63,4 +63,32 @@ export function zoneLabelData(zone: Pick<Zone, "id" | "name">): ZoneLabelData {
     title: zone.name,
     subtitle: "Lagerzone",
   };
+}
+
+/** Wo `printerIdForJob` nachschlägt. Kern und Oberfläche reichen ihre eigene Datenhaltung herein. */
+export interface PrinterLookup {
+  package(id: string): Pick<Package, "zone_id"> | undefined;
+  zone(id: string): Pick<Zone, "printer_id"> | undefined;
+  printer(id: string): Pick<Printer, "id" | "deleted_at"> | undefined;
+  settings: Pick<HouseholdSettings, "default_printer_id"> | null | undefined;
+}
+
+/**
+ * Welcher Drucker ein Etikett druckt (docs/etiketten.md, Abschnitt 4, „Welcher Drucker"):
+ * der am Etikett genannte, sonst der Drucker der Zone (bei Packungen die Zone, in der die
+ * Packung jetzt liegt), sonst der Standarddrucker des Haushalts. Ein gelöschter oder
+ * unbekannter Drucker zählt auf jeder Stufe als nicht gesetzt. null = es gibt keinen;
+ * das Etikett bleibt dann ausstehend.
+ */
+export function printerIdForJob(job: Pick<PrintJob, "printer_id" | "package_id" | "zone_id">, lookup: PrinterLookup): string | null {
+  const usable = (id: string | null | undefined): string | null => {
+    if (id === null || id === undefined) {
+      return null;
+    }
+    const printer = lookup.printer(id);
+    return printer && printer.deleted_at === null ? printer.id : null;
+  };
+  const zoneId = job.zone_id ?? (job.package_id === null ? null : (lookup.package(job.package_id)?.zone_id ?? null));
+  const zone = zoneId === null ? undefined : lookup.zone(zoneId);
+  return usable(job.printer_id) ?? usable(zone?.printer_id) ?? usable(lookup.settings?.default_printer_id);
 }

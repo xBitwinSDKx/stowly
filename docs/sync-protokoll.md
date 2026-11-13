@@ -233,7 +233,8 @@ Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
   },
   "cursor": 1240,
   "has_more": false,
-  "id_pool": { "grant": ["7K9QX", "…"], "target": 300 }
+  "id_pool": { "grant": ["7K9QX", "…"], "target": 300 },
+  "lookup_enabled": true
 }
 ```
 
@@ -242,6 +243,7 @@ Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
 - **`has_more`:** Eine Antwort enthält höchstens 5000 Datensätze. Bei `true` ruft die App sofort erneut ab, bis `false` kommt: ohne Befehle, mit `dataset_id` und `cursor` der Seite davor; als `have` nennt sie ihren Vorrat einschließlich dessen, was dieser Abgleich schon zugeteilt hat. Meldet eine Folgeseite selbst `reset: true` (der Bestand hat mitten im Blättern gewechselt), wendet die App nichts davon an und beginnt den Abgleich neu. Verweise können zwischen den Seiten vorübergehend ins Leere zeigen; die App wendet deshalb alle Seiten gemeinsam an (Abschnitt 9). Beim Blättern geht nichts verloren: Der gelieferte `cursor` ist immer ein Stand, bis zu dem die Antworten zusammen alles enthalten, über alle Tabellen hinweg. Tragen mehrere Zeilen denselben `rev` (ein Befehl, der viele Packungen auf einmal verschiebt), endet eine Seite nie mitten in diesem `rev`; sie darf dafür größer als 5000 werden.
 - **`dataset_id`** kennzeichnet den Datenbestand. **`reset: true`** kommt, wenn die `dataset_id` der Anfrage nicht die des Servers ist (auch beim ersten Sync) oder der `cursor` der Anfrage größer ist als der Stand des Servers vor den Befehlen dieser Anfrage. Die Antwort ist dann ein vollständiger Abzug ab `cursor = 0`; die App leert ihre Kopie vorher (Abschnitt 9.3). Die Befehle der Anfrage sind trotzdem verarbeitet, ihre Wirkung steckt im Abzug. Eine neue Kennung bekommt der Bestand mit jeder Sicherung (Abschnitt 11) und mit `python -m stowly --new-dataset`, nachdem eine Kopie der Datenbank auf anderem Weg zurückgespielt wurde.
 - **Was ein vollständiger Abzug weglässt:** Eine Antwort mit `reset: true` enthält keine entnommenen Packungen, deren `removed_at` länger zurückliegt als `trash_retention_days`, und keine Etiketten in einem Endzustand (`printed`, `sent`, `failed`, `cancelled`), deren `updated_at` länger als 30 Tage zurückliegt. **Jede andere Antwort liefert ausnahmslos alles mit `rev > cursor`, egal wie alt**, auch die Folgeseiten eines Abzugs. Ein Gerät, das länger offline war als die Aufbewahrungsdauer, muss erfahren, dass eine Packung inzwischen entnommen oder ein Etikett erledigt ist: Sonst zeigte es die Packung für immer im Bestand und stellte das Etikett noch einmal zu. Die App verwirft beides nach derselben Regel, beim Empfang und beim Start; was sie so verwirft, verschwindet auch dann aus ihrer Kopie, wenn es dort bis eben noch als Bestand oder als ausstehend geführt war. Gelöschte Zonen und zusammengeführte Produkte kommen immer mit: Die App braucht sie, um alten Verweisen zu folgen.
+- **`lookup_enabled`** sagt in jeder Antwort, ob dieser Server unbekannte Barcodes bei Open Food Facts nachschlägt (`STOWLY_OFF_ENABLED`, Abschnitt 10). Die App merkt sich den Wert über Neustarts und richtet danach, was sie verspricht und vorwegnimmt; bis zur ersten Antwort gilt er als unbekannt und wird wie „eingeschaltet" behandelt. Beim Abmelden vergisst sie ihn.
 - **Längere Aufbewahrung:** Vergrößert sich `trash_retention_days` in der Kopie der App (durch eine eigene Änderung oder durch eine Antwort), holt sie den Bestand beim nächsten Abgleich einmal vollständig neu (`dataset_id: null`, `cursor: 0`; der Server antwortet mit `reset: true`). Nur so reicht ihre Lösch-Historie wieder so weit zurück wie die des Servers.
 
 ### 6.5 Protokollversion
@@ -286,6 +288,7 @@ Genauer, wo die Tabelle es offen lässt:
 - **`product.merge`** mit einem Paar, das schon dasselbe Produkt ist (zweimal derselbe Wunsch, oder mit sich selbst): `applied` ohne Wirkung.
 - **`print.request`** lehnt nur ab, was es nie gab. Eine entnommene Packung, eine gelöschte Zone und ein gelöschter Drucker gelten: Das Entnehmen oder Löschen kann von einem anderen Gerät stammen. Ein Drucker, den es nie gab, ist `not_found`.
 - **`print.report`:** Eine Meldung, die gewinnt (7.1), ersetzt Zustand, `printer_id`, `boot_id` und `error` als Ganzes, wörtlich so, wie sie im Befehl stehen. Was der Befehl nicht nennt, ist danach `null`. Nur so hängt das Ergebnis nicht von der Reihenfolge ab, in der Meldungen eintreffen. Wer den Drucker am Etikett behalten will, schickt ihn mit; die App tut das beim Verwerfen und bei der Antwort auf „Wurde gedruckt?". `error` ist freier Text bis 200 Zeichen: der Fehlercode des Druckdienstes, oder `not_printed`, wenn der Anwender auf diese Frage mit Nein antwortet.
+- **Was der Server selbst schreibt:** Druckt der Server ein Etikett (Druckdienst unter `/print`, [`etiketten.md`](etiketten.md) 5.8), setzt er Zustand, `printer_id`, `boot_id` und `error` des Etiketts selbst, als hätte ein Gerät im selben Moment gemeldet: mit seiner eigenen Uhr als Zeitpunkt und nach derselben Regel (die jüngste Meldung gilt). Ebenso schreibt er den zuletzt gesehenen Zustand seiner eigenen Drucker fort. Beides läuft außerhalb eines Sync-Aufrufs, hebt den Stand der Änderungsfolge und erreicht die Geräte mit ihrem nächsten Abgleich. Für einen Drucker am Server schickt kein Gerät `printer.report`.
 - **`product.remove_barcode`** verlangt wie jeder Befehl mit Barcode eine gültige Prüfziffer.
 - **Befehle ohne Wirkung** schreiben nichts ins Ereignisprotokoll. Die App erzeugt sie gar nicht erst, wo sie es schon lokal erkennt (derselbe Grund auf eine entnommene Packung, Wiederherstellen einer Packung im Bestand, Umsortieren ohne Änderung, `changes` ohne Felder).
 
@@ -344,6 +347,8 @@ Eine Zusammenführung lässt sich nicht rückgängig machen. Die App fragt desha
 
 Legt ein Befehl etwas mit einer Kennung an, die es schon gibt, wird er abgelehnt (`id_conflict`). Bei UUIDs passiert das praktisch nie. Bei Packungs-IDs ist es der Fall, der nicht still geheilt werden darf: Das Etikett ist bereits gedruckt. Die App zeigt die Ablehnung in den Sync-Problemen; der Anwender lagert die Packung neu ein und ersetzt das Etikett.
 
+Die Etiketten, die das Gerät zu der abgelehnten Packung selbst angefordert hat, gehören zu einer Packung, die es nie gab; die ID trägt jetzt die Packung eines anderen Geräts. Das Gerät verwirft sie deshalb, sobald es die Ablehnung erfährt: Eine Anforderung (`print.request`), die noch in der Outbox wartet, entfernt es dort samt allen Meldungen dazu; für ein schon gesendetes Etikett, das noch nicht in einem Endzustand ist, meldet es `cancelled`. Zugestellt wird davon nichts mehr. Ein Etikett, das schon gedruckt ist, bleibt als Datensatz, wie es ist; das Sync-Problem sagt dem Anwender, dass er es entfernen und die Packung neu einlagern muss.
+
 ## 8. ID-Vorrat
 
 Eine gedruckte ID lässt sich nicht mehr ändern, also dürfen zwei Geräte offline nie dieselbe vergeben.
@@ -369,7 +374,7 @@ Eine gedruckte ID lässt sich nicht mehr ändern, also dürfen zwei Geräte offl
 |---|---|
 | `applied` | entfernt den Befehl aus der Outbox |
 | `displaced` | entfernt ihn und zeigt ihn unter den Sync-Problemen („liegt in der Lösch-Historie") |
-| `rejected` | entfernt ihn und zeigt ihn unter den Sync-Problemen mit `code`. Ihre lokale Kopie folgt wieder dem Server: Was nur wegen dieses Befehls da war, verschwindet. |
+| `rejected` | entfernt ihn und zeigt ihn unter den Sync-Problemen mit `code`. Ihre lokale Kopie folgt wieder dem Server: Was nur wegen dieses Befehls da war, verschwindet. Bei `package.create` mit `id_conflict` verwirft sie außerdem die eigenen Etiketten zu dieser Packung (7.5). |
 | 401 `unauthorized` | wechselt nach `signed_out` / `revoked`, behält Daten und Outbox |
 | 409 `protocol_mismatch` | sendet nicht mehr von selbst, fordert zum Aktualisieren auf; ein Abgleich auf Wunsch des Anwenders versucht es einmal |
 | Netzfehler, Zeitüberschreitung | „nicht erreichbar": lässt alles, wie es ist, und versucht es später erneut |
@@ -377,6 +382,8 @@ Eine gedruckte ID lässt sich nicht mehr ändern, also dürfen zwei Geräte offl
 | 413, 422, 500 im Fehlerformat des Servers | lässt alles, wie es ist, zeigt den Fehler in `sync.status` und versucht es später erneut. Das ist ein Fehler im Programm, nichts, was der Anwender beheben kann. |
 
 Bestätigt eine Antwort keinen einzigen der gesendeten Befehle, gilt der Versuch als gescheitert (`internal`); die Outbox bleibt, wie sie ist.
+
+Die Sync-Probleme sind begrenzt: Die App hebt höchstens 200 auf, die ältesten fallen weg. Ein Eintrag „verdrängt" erledigt sich von selbst, sobald seine Packung keine verdrängte Bearbeitung mehr trägt (wiederhergestellt, mit oder ohne Übernahme, oder nicht mehr in der Lösch-Historie).
 
 ### 9.3 Antwort anwenden
 
@@ -414,13 +421,15 @@ Nach einem Abgleich lädt die App die Bilder der Produkte im Bestand, die sie no
 
 Unbekannte Barcodes werden nie im Vordergrund nachgeschlagen: Das Produkt entsteht sofort als Platzhalter, der Server ergänzt Name und Bild später. Das gilt offline wie online, weil Open Food Facts nur 15 Abfragen je Minute und Adresse erlaubt.
 
-- **Wann:** Ein Produkt mit mindestens einem nicht ladeninternen Barcode bekommt beim Anlegen `lookup = pending`, ebenso nach `product.add_barcode` und nach einem Zusammenführen, wenn es danach etwas nachzuschlagen gibt und noch nichts gefunden ist. Der Server arbeitet die Wartenden im Hintergrund ab, höchstens 10 Abfragen je Minute. Die App zeigt ein eben angelegtes Produkt mit nachschlagbarem Barcode schon vor dem Abgleich als `pending`; maßgeblich ist danach, was der Server liefert.
+- **Wann:** Ein Produkt mit mindestens einem nicht ladeninternen Barcode bekommt beim Anlegen `lookup = pending`, ebenso nach `product.add_barcode` und nach einem Zusammenführen, wenn es danach etwas nachzuschlagen gibt und noch nichts gefunden ist. Der Server arbeitet die Wartenden im Hintergrund ab, höchstens 10 Abfragen je Minute. Die App zeigt ein eben angelegtes Produkt mit nachschlagbarem Barcode schon vor dem Abgleich als `pending`, außer der Server hat gemeldet, dass er nicht nachschlägt (`lookup_enabled: false`, Abschnitt 6.4): Dann beginnt es wie beim Server als `none`. Maßgeblich ist danach, was der Server liefert.
 - **Abruf:** `GET {STOWLY_OFF_URL}/api/v3/product/{barcode}?product_type=all&lc=de&fields=product_name_de,product_name,brands,quantity,image_front_small_url` mit `User-Agent: Stowly/<Version>`, ergänzt um `(<Kontakt>)`, wenn `STOWLY_OFF_CONTACT` gesetzt ist. Im Code steht nie eine persönliche Adresse.
 - **Ergebnis:** Gefunden: `lookup = found`. 404 mit `product_not_found`: `lookup = not_found`, endgültig. Netzfehler, 429 und 5xx: Das Produkt bleibt `pending`; neue Versuche nach 1 Minute, 5 Minuten, 30 Minuten, 3 Stunden, danach täglich.
 - **Übernahme:** Die Daten füllen **nur leere Felder** des Produkts (`name` aus `product_name_de`, sonst `product_name`; `brand` aus dem ersten Eintrag von `brands`; `quantity`; `image`). Die Uhren der Felder bleiben unberührt: Jede Eingabe eines Anwenders gewinnt, davor wie danach.
 - **Bild:** Der Server lädt `image_front_small_url` einmal herunter (nur JPEG, PNG, WebP, höchstens 300 KB) und speichert es in der Datenbank. Die Bild-ID ist der Anfang des SHA-256 des Inhalts (32 Hex-Zeichen) plus Endung, z. B. `9f2c…e1.jpg`.
 - **Dauerhaft:** Jedes Ergebnis steht in `off_lookups` und wird nie erneut abgefragt. Die Tabelle ist von `products` getrennt, damit die Daten trennbar bleiben (ODbL). Die App nennt die Quelle: „Open Food Facts (ODbL)".
-- `STOWLY_OFF_ENABLED=0` schaltet das Nachschlagen ab; Produkte bekommen dann `lookup = none`. Beim Start gleicht der Server `lookup` an die Einstellung an: Wartende werden `none`, und nach dem Wiedereinschalten warten Produkte mit nachschlagbarem Barcode erneut.
+- `STOWLY_OFF_ENABLED=0` schaltet das Nachschlagen ab; Produkte bekommen dann `lookup = none`. Beim Start gleicht der Server `lookup` an die Einstellung an: Wartende werden `none`, und nach dem Wiedereinschalten warten Produkte mit nachschlagbarem Barcode erneut. Jede Sync-Antwort nennt den Stand (`lookup_enabled`).
+- **Was die App verspricht:** Dass Name und Bild nachkommen, sagt sie nur, wenn es stimmt: bei einem Barcode, der nachgeschlagen wird (nicht ladenintern), und nur, solange der Server nicht `lookup_enabled: false` gemeldet hat. Die Regel steht als `willLookUp` in `web/src/contract/barcode.ts`; sie entscheidet auch über die lokale Vorwegnahme.
+- **Packungsgröße:** Ein Schätzzeichen am Ende der Mengenangabe von Open Food Facts (`e` oder `℮`, mit oder ohne Leerzeichen davor, etwa „400 g e") übernimmt der Server nicht; aus „400 g e" wird „400 g".
 - Tests rufen den echten Dienst nie auf.
 
 ## 11. Weitere Endpunkte
@@ -503,7 +512,9 @@ Die Ergebnisse einzelner Befehle (`CommandResult.code`) sind davon getrennt: Ein
 Daraus entstehen mit `python -m stowly.contract.export`:
 
 - [`docs/openapi.json`](openapi.json): alle Endpunkte und Schemata
-- `web/src/contract/api.gen.ts`: dieselben Typen und Konstanten für die Web-App (`ENDPOINTS`, `PROTOCOL_VERSION`, `COMMAND_TYPES`, das ID-Alphabet, die QR-Präfixe)
+- `web/src/contract/api.gen.ts`: dieselben Typen und Konstanten für die Web-App (`ENDPOINTS`, `PROTOCOL_VERSION`, `COMMAND_TYPES`, das ID-Alphabet, die QR-Präfixe, die Eingabegrenzen `LIMITS`)
+
+**Eingabegrenzen stehen an einer Stelle:** `server/stowly/contract/limits.py`. Die Modelle des Servers lesen sie dort, der Export schreibt sie als `LIMITS` in die Web-App, und dort prüfen der Kern und die Attrappe ihre Eingaben mit denselben Funktionen und Sätzen (`web/src/contract/input.ts`), bevor ein Befehl entsteht. Was die App annimmt, lehnt der Server deshalb nicht als `invalid` ab.
 
 Beide Dateien sind eingecheckt und werden nie von Hand geändert. Der Test `server/tests/test_contract.py::test_generated_files_are_current` schlägt fehl, sobald Modelle oder Endpunkte nicht mehr zu ihnen passen. **Eine Vertragsänderung ist also immer sichtbar:** Sie ändert die Modelle, beide erzeugten Dateien und dieses Dokument, und nur der Coordinator nimmt sie vor.
 
@@ -513,10 +524,11 @@ Regeln, die sich nicht als Typ ausdrücken lassen, gibt es als Funktionen auf be
 |---|---|---|
 | Packungs-IDs, UUIDs | `stowly/contract/ids.py` | `web/src/contract/ids.ts` |
 | QR-Inhalte | `stowly/contract/ids.py` | `web/src/contract/qr.ts` |
-| Barcodes | `stowly/contract/ids.py` | `web/src/contract/barcode.ts` |
+| Barcodes, „wird nachgeschlagen?" | `stowly/contract/ids.py` | `web/src/contract/barcode.ts` |
+| Eingabegrenzen | `stowly/contract/limits.py` | `LIMITS` in `api.gen.ts`, Prüfungen in `web/src/contract/input.ts` |
 | Zeitstempel, wirksamer Zeitpunkt | `stowly/contract/timeutil.py` | `web/src/contract/time.ts` |
 | MHD-Eingabe, Warnstufen | – | `web/src/contract/mhd.ts` |
-| Etikett-Daten | `stowly/contract/labels.py` (nur Typ) | `web/src/contract/labels.ts` |
+| Etikett-Daten, „welcher Drucker?" | `stowly/contract/labels.py` (nur Typ) | `web/src/contract/labels.ts` |
 
 Die Schnittstelle zwischen Oberfläche und Offline-Kern steht in `web/src/contract/core.ts`.
 

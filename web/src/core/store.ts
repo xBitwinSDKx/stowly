@@ -116,7 +116,12 @@ export class Mutation {
    */
   emit(input: CommandInput): Command {
     const command = { id: newUuid(), at: this.at, ...input } as Command;
-    const outcome = applyCommand(this.draft, command, { at: this.at, device_id: this.deviceId, authoritative: false });
+    const outcome = applyCommand(this.draft, command, {
+      at: this.at,
+      device_id: this.deviceId,
+      authoritative: false,
+      lookup_enabled: this.state.meta.lookup_enabled,
+    });
     if (outcome.status === "rejected") {
       throw new CoreError(REJECT_TO_ERROR[outcome.code], `Die Änderung ist nicht möglich (${command.type}: ${outcome.code}).`);
     }
@@ -283,23 +288,24 @@ export class Store {
     });
     outbox.sort((a, b) => a.seq - b.seq);
     pool.sort((a, b) => a.n - b.n);
+    const meta: SyncMeta = { ...INITIAL_SYNC_META, ...(values.get("sync") as Partial<SyncMeta> | undefined) };
     return {
       loaded: true,
       seq: (values.get("seq") as number | undefined) ?? 0,
       base,
-      view: this.project(previous.view, base, outbox, session),
+      view: this.project(previous.view, base, outbox, session, meta),
       outbox,
       pool: pool.map((entry) => entry.id),
       problems: problems.sort((a, b) => a.recorded - b.recorded),
       session,
       prefs: { ...DEFAULT_DEVICE_PREFS, ...(values.get("prefs") as Partial<DevicePrefs> | undefined) },
-      meta: { ...INITIAL_SYNC_META, ...(values.get("sync") as Partial<SyncMeta> | undefined) },
+      meta,
       revocations: (values.get("revocations") as string[] | undefined) ?? [],
     };
   }
 
   /** `base` plus wartende Befehle; Unverändertes behält die Referenzen aus `previous`. */
-  private project(previous: Tables, base: Tables, outbox: readonly OutboxEntry[], session: StoredSession | null): Tables {
+  private project(previous: Tables, base: Tables, outbox: readonly OutboxEntry[], session: StoredSession | null, meta: SyncMeta): Tables {
     if (outbox.length === 0) {
       return reconcile(previous, base);
     }
@@ -307,7 +313,7 @@ export class Store {
     replay(
       draft,
       outbox.map((entry) => entry.command),
-      session?.device?.id ?? null,
+      { device_id: session?.device?.id ?? null, lookup_enabled: meta.lookup_enabled },
     );
     return reconcile(previous, draft.commit());
   }
@@ -554,6 +560,8 @@ export class Store {
           last_synced_at: input.receivedAt.toISOString(),
           clock_offset_ms: Number.isFinite(serverNowMs) ? serverNowMs - input.receivedAt.getTime() : current.meta.clock_offset_ms,
           full_resync: current.meta.full_resync,
+          // Ein Server, der das Feld noch nicht kennt, ändert nichts am Gemerkten.
+          lookup_enabled: typeof last.lookup_enabled === "boolean" ? last.lookup_enabled : current.meta.lookup_enabled,
         };
       }
 
@@ -563,7 +571,7 @@ export class Store {
       }
 
       // 3. Die verbliebenen Befehle erneut anwenden.
-      const view = this.project(current.view, base, remaining, session);
+      const view = this.project(current.view, base, remaining, session, meta);
       if (input.login && (view.settings === null || ![...view.zones.values()].some((zone) => zone.deleted_at === null))) {
         // Angemeldet heißt: Es gibt mindestens eine Zone und die Einstellungen. Sonst bleibt das
         // Gerät abgemeldet; der Fehler bricht die Transaktion ab, nichts davon wird gespeichert.
@@ -601,7 +609,7 @@ export class Store {
       if (purged.print_jobs.length > 0) {
         await this.db.print_jobs.bulkDelete(purged.print_jobs);
       }
-      const view = this.project(current.view, purged.tables, current.outbox, current.session);
+      const view = this.project(current.view, purged.tables, current.outbox, current.session, current.meta);
       return { next: { ...current, base: purged.tables, view }, value: undefined };
     });
   }
@@ -637,7 +645,9 @@ export class Store {
       await Promise.all(TABLE_NAMES.map((table) => this.db.table(table).clear()));
       await Promise.all([this.db.outbox.clear(), this.db.id_pool.clear(), this.db.problems.clear()]);
       await this.db.kv.delete("settings");
-      const session: StoredSession = { status: "logout", token: null, device: null };
+      // Der Name bleibt als Vorschlag für die nächste Anmeldung; alles andere ist gelöscht.
+      const lastName = current.session?.device?.name ?? current.session?.last_device_name ?? null;
+      const session: StoredSession = { status: "logout", token: null, device: null, last_device_name: lastName };
       const token = current.session?.token ?? null;
       const revocations = token === null ? current.revocations : [...current.revocations, token];
       const prefs: DevicePrefs = { ...current.prefs, scan_zone_id: null };

@@ -245,7 +245,7 @@ describe("Über und Abmelden", () => {
     await ready();
     await userEvent.click(within(section("Abmelden")).getByRole("button", { name: "Abmelden" }));
     await userEvent.click(within(screen.getByRole("dialog", { name: "Dieses Gerät abmelden?" })).getByRole("button", { name: "Abmelden" }));
-    await waitFor(() => expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "logout" }));
+    await waitFor(() => expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "logout" }));
     // Die nächste Anmeldung beginnt wieder beim Bestand.
     await waitFor(() => expect(window.location.pathname).toBe(ROUTES.stock));
   });

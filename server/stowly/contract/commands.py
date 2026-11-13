@@ -35,6 +35,7 @@ from stowly.contract.entities import (
     ZoneMode,
     ZoneName,
 )
+from stowly.contract.limits import LIMITS
 from stowly_print.model import DriverStatus, HostHealth
 
 
@@ -55,7 +56,7 @@ class CmdProductCreate(CommandBase):
     brand: BrandName = ""
     quantity: QuantityText = ""
     warn_days: WarnDays | None = None
-    barcodes: list[Barcode] = Field(default_factory=list, max_length=20)
+    barcodes: list[Barcode] = Field(default_factory=list, max_length=LIMITS["barcodes"])
 
 
 class ProductChanges(Model):
@@ -163,7 +164,7 @@ class SettingsChanges(Model):
     zone_mode: ZoneMode = Field(default=None)
     primary_zone_id: Uuid | None = None
     warn_days: WarnDays = Field(default=None)
-    trash_retention_days: int = Field(default=None, ge=1, le=3650)
+    trash_retention_days: int = Field(default=None, ge=1, le=LIMITS["retention_days"])
     default_printer_id: Uuid | None = None
 
 

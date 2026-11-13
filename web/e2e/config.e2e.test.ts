@@ -22,7 +22,7 @@ it("lässt ohne STOWLY_PASSWORD niemanden herein und sagt es", async () => {
 
   const device = await newDevice(server.url, "Küche");
   await expectCoreError(device.login("stowly"), "not_configured");
-  expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+  expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
   // Der Server ist erreichbar, nur nicht eingerichtet.
   expect(device.status.online).toBe(true);
   // Die Hinweise auf der Konsole nennen den Grund.

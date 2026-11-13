@@ -416,6 +416,8 @@ def run(
         "cursor": page.cursor,
         "has_more": page.has_more,
         "id_pool": {"grant": granted, "target": ID_POOL_TARGET},
+        # Die App richtet danach, was sie verspricht und vorwegnimmt (Protokoll, Abschnitt 10).
+        "lookup_enabled": off_enabled,
     }
     try:
         # Die Antwort gegen den Vertrag prüfen, bevor sie hinausgeht.

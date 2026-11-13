@@ -39,7 +39,7 @@ it("sperrt nach fünf Fehlversuchen jede Anmeldung, lässt angemeldete Geräte a
   const honest = await newDevice(server.url, "Ehrlicher");
   const refused = await expectCoreError(honest.login(), "rate_limited");
   expect(refused.details.retry_after_s).toBeGreaterThanOrEqual(1);
-  expect(value(honest.core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+  expect(value(honest.core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
   // Der Server hat geantwortet: Er gilt als erreichbar.
   expect(honest.status.online).toBe(true);
 

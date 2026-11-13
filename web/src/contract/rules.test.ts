@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { Package, Product, Zone } from "./api.gen";
-import { isPlaceholder, packageLabelData, productSubtitle, productTitle, zoneLabelData } from "./labels";
+import { willLookUp } from "./barcode";
+import { isPlaceholder, packageLabelData, printerIdForJob, productSubtitle, productTitle, zoneLabelData } from "./labels";
 import { daysUntil, expiryState, parseBestBefore, warnDaysFor } from "./mhd";
 import { classifyScan, PRODUCT_BARCODE_FORMATS, SCAN_FORMATS } from "./qr";
 import { addDays, daysBetween, formatDate, lastDayOfMonth, makeDate, toLocalDate } from "./time";
@@ -197,5 +198,51 @@ describe("Etikett-Daten", () => {
       title: "Keller",
       subtitle: "Lagerzone",
     });
+  });
+});
+
+describe("Nachschlagen", () => {
+  it("verspricht nur, was der Server auch tut", () => {
+    expect(willLookUp("4006381333931", true)).toBe(true);
+    // Noch unbekannt (vor dem ersten Abgleich) gilt als eingeschaltet.
+    expect(willLookUp("4006381333931", null)).toBe(true);
+    expect(willLookUp("4006381333931", false)).toBe(false);
+    // Ladeninterne Codes (Präfix 2) werden nie nachgeschlagen.
+    expect(willLookUp("2112345678900", true)).toBe(false);
+    expect(willLookUp("2112345678900", null)).toBe(false);
+  });
+});
+
+describe("Welcher Drucker", () => {
+  const printers = new Map([
+    ["p-label", { id: "p-label", deleted_at: null }],
+    ["p-zone", { id: "p-zone", deleted_at: null }],
+    ["p-default", { id: "p-default", deleted_at: null }],
+    ["p-gone", { id: "p-gone", deleted_at: "2026-11-01T00:00:00.000Z" }],
+  ]);
+  const lookup = (zonePrinter: string | null, defaultPrinter: string | null) => ({
+    package: (id: string) => (id === "A2B3C" ? { zone_id: "zone-1" } : undefined),
+    zone: (id: string) => (id === "zone-1" ? { printer_id: zonePrinter } : undefined),
+    printer: (id: string) => printers.get(id),
+    settings: { default_printer_id: defaultPrinter },
+  });
+  const job = (printer_id: string | null) => ({ printer_id, package_id: "A2B3C", zone_id: null });
+
+  it("nimmt den genannten, sonst den der Zone, sonst den Standarddrucker", () => {
+    expect(printerIdForJob(job("p-label"), lookup("p-zone", "p-default"))).toBe("p-label");
+    expect(printerIdForJob(job(null), lookup("p-zone", "p-default"))).toBe("p-zone");
+    expect(printerIdForJob(job(null), lookup(null, "p-default"))).toBe("p-default");
+    expect(printerIdForJob(job(null), lookup(null, null))).toBeNull();
+    // Das Etikett einer Zone nimmt den Drucker dieser Zone.
+    expect(printerIdForJob({ printer_id: null, package_id: null, zone_id: "zone-1" }, lookup("p-zone", "p-default"))).toBe("p-zone");
+  });
+
+  it("übergeht gelöschte und unbekannte Drucker auf jeder Stufe", () => {
+    expect(printerIdForJob(job("p-gone"), lookup("p-zone", "p-default"))).toBe("p-zone");
+    expect(printerIdForJob(job("gibt-es-nicht"), lookup("p-gone", "p-default"))).toBe("p-default");
+    expect(printerIdForJob(job(null), lookup("p-gone", "p-gone"))).toBeNull();
+    // Eine Packung, die die lokale Kopie nicht kennt: Es bleibt der Standarddrucker.
+    expect(printerIdForJob({ printer_id: null, package_id: "ZZZZZ", zone_id: null }, lookup("p-zone", "p-default"))).toBe("p-default");
+    expect(printerIdForJob(job(null), { ...lookup(null, null), settings: null })).toBeNull();
   });
 });

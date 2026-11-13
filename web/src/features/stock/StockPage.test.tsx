@@ -761,7 +761,8 @@ describe("Auf- und Zuklappen", () => {
 
 describe("Produktbilder", () => {
   it("erscheinen erst, wenn überhaupt ein Produkt ein Bild hat", async () => {
-    renderApp();
+    // Die Beispieldaten haben ein Produkt mit Bild; hier keines.
+    renderApp({ data: { products: createSampleData().products.map((product) => ({ ...product, image: null })) } });
     await ready();
     expect(screen.getByRole("table", { name: "Bestand" }).querySelector("img")).toBeNull();
   });

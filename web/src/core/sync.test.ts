@@ -16,7 +16,7 @@ const NEW_RICE = { kind: "new", name: "Reis" } as const;
 describe("Anmelden", () => {
   it("meldet den geladenen Zustand und war noch nie angemeldet", async () => {
     const { core } = await start();
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
     expect(value(core.sync.status)).toMatchObject({ phase: "idle", pending: 0, last_synced_at: null });
   });
 
@@ -27,7 +27,7 @@ describe("Anmelden", () => {
     expect(fresh.session.state.get()).toEqual({ status: "loading" });
     expect(fresh.data.zones.get()).toBeUndefined();
     await fresh.ready;
-    expect(fresh.session.state.get()).toEqual({ status: "signed_out", reason: "never" });
+    expect(fresh.session.state.get()).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
     expect(fresh.data.zones.get()).toEqual([]);
     fresh.dispose();
     void another;
@@ -75,7 +75,7 @@ describe("Anmelden", () => {
     }
     const limited = await expectCoreError(core.session.login(FAKE_PASSWORD, "Handy"), "rate_limited");
     expect(limited.details.retry_after_s).toBe(60);
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
   });
 
   it("bleibt abgemeldet, wenn der erste Abgleich scheitert, und sperrt das eben ausgestellte Token wieder", async () => {
@@ -86,7 +86,7 @@ describe("Anmelden", () => {
       }
     };
     await expectCoreError(core.session.login(FAKE_PASSWORD, "Handy"), "offline");
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
     expect(server.deviceList).toHaveLength(1);
     expect(server.deviceList[0]?.revoked_at).toBeNull();
 
@@ -410,7 +410,7 @@ describe("Ergebnisse", () => {
     server.revoke();
     await core.sync.now();
 
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
     expect(value(core.sync.status)).toMatchObject({ phase: "error", pending: 3, last_error: { code: "unauthorized" }, online: true });
     expect(value(core.data.packages)).toHaveLength(2);
     expect(server.data.packages.size).toBe(0);
@@ -432,7 +432,7 @@ describe("Ergebnisse", () => {
     await core.sync.now();
     core.dispose();
     const reloaded = await another();
-    expect(value(reloaded.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(reloaded.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
     expect(value(reloaded.sync.status).pending).toBe(1);
   });
 

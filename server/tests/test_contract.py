@@ -259,6 +259,7 @@ def test_sync_request_and_response_round_trip():
             "cursor": 7,
             "has_more": False,
             "id_pool": {"grant": ["7K9QX"], "target": 300},
+            "lookup_enabled": True,
         }
     )
     dumped = response.model_dump(mode="json")
@@ -284,3 +285,25 @@ def test_wrong_method_uses_the_error_format(client):
     response = client.put("/api/health")
     assert response.status_code == 405
     assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_limits_are_one_place_for_models_and_web_app():
+    """``LIMITS`` steht in ``limits.py``; die Modelle und ``api.gen.ts`` lesen es von dort."""
+    from stowly.contract.entities import DirectPrinterConfig, Product, Zone
+    from stowly.contract.limits import LIMITS
+    from stowly.contract.tsgen import generate_typescript
+
+    generated = generate_typescript({"paths": {}, "components": {"schemas": {}}})
+    for name, value in LIMITS.items():
+        assert f"  {name}: {value}," in generated
+
+    def max_length(model, field):
+        return next(m.max_length for m in model.model_fields[field].metadata if hasattr(m, "max_length"))
+
+    assert max_length(Product, "name") == LIMITS["product_name"]
+    assert max_length(Zone, "name") == LIMITS["zone_name"]
+    assert max_length(DirectPrinterConfig, "urls") == LIMITS["printer_urls"]
+    with pytest.raises(ValidationError):
+        command("product.create", product_id=ID, barcodes=["4006381333931"] * (LIMITS["barcodes"] + 1))
+    with pytest.raises(TypeError):
+        LIMITS["product_name"] = 1  # type: ignore[index]

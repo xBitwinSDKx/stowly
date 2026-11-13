@@ -10,6 +10,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from stowly.contract.ids import BARCODE_PATTERN, PACKAGE_ID_PATTERN, UUID_PATTERN
+from stowly.contract.limits import LIMITS
 from stowly.contract.timeutil import DATE_PATTERN, TIMESTAMP_PATTERN
 from stowly_print.model import DriverStatus, HostHealth
 
@@ -21,15 +22,15 @@ Barcode = Annotated[str, Field(pattern=BARCODE_PATTERN)]
 Timestamp = Annotated[str, Field(pattern=TIMESTAMP_PATTERN)]
 DateStr = Annotated[str, Field(pattern=DATE_PATTERN)]
 
-ZoneName = Annotated[str, Field(min_length=1, max_length=60)]
-IconKey = Annotated[str, Field(min_length=1, max_length=32)]
-ColorKey = Annotated[str, Field(min_length=1, max_length=16)]
-ProductName = Annotated[str, Field(max_length=120)]
-BrandName = Annotated[str, Field(max_length=80)]
-QuantityText = Annotated[str, Field(max_length=40)]
-PrinterName = Annotated[str, Field(min_length=1, max_length=60)]
-DeviceName = Annotated[str, Field(min_length=1, max_length=60)]
-WarnDays = Annotated[int, Field(ge=0, le=3650)]
+ZoneName = Annotated[str, Field(min_length=1, max_length=LIMITS["zone_name"])]
+IconKey = Annotated[str, Field(min_length=1, max_length=LIMITS["icon"])]
+ColorKey = Annotated[str, Field(min_length=1, max_length=LIMITS["color"])]
+ProductName = Annotated[str, Field(max_length=LIMITS["product_name"])]
+BrandName = Annotated[str, Field(max_length=LIMITS["brand"])]
+QuantityText = Annotated[str, Field(max_length=LIMITS["quantity"])]
+PrinterName = Annotated[str, Field(min_length=1, max_length=LIMITS["printer_name"])]
+DeviceName = Annotated[str, Field(min_length=1, max_length=LIMITS["device_name"])]
+WarnDays = Annotated[int, Field(ge=0, le=LIMITS["warn_days"])]
 
 
 class Model(BaseModel):
@@ -172,7 +173,7 @@ class HouseholdSettings(Model):
     primary_zone_id: Uuid | None = Field(description="Primärzone; null = erste Zone der Reihenfolge.")
     warn_days: WarnDays = Field(description="Vorlaufzeit der MHD-Warnung in Tagen.")
     trash_retention_days: int = Field(
-        ge=1, le=3650, description="Aufbewahrungsdauer der Lösch-Historie in Tagen."
+        ge=1, le=LIMITS["retention_days"], description="Aufbewahrungsdauer der Lösch-Historie in Tagen."
     )
     default_printer_id: Uuid | None = Field(description="Drucker für Zonen ohne eigenen Drucker.")
     updated_at: Timestamp
@@ -186,28 +187,33 @@ class ServerPrinterConfig(Model):
 
     driver: PrinterDriver
     model: str | None = Field(
-        max_length=40, description="Modell für den Treiber, z. B. 'QL-820NWB'; null beim Bild-Treiber."
+        max_length=LIMITS["printer_model"],
+        description="Modell für den Treiber, z. B. 'QL-820NWB'; null beim Bild-Treiber.",
     )
     address: str | None = Field(
-        max_length=200,
+        max_length=LIMITS["printer_address"],
         description="'tcp://192.168.1.60:9100' oder 'usb://04f9:209b'; null beim Bild-Treiber.",
     )
     media: str = Field(
-        max_length=40, description="Rollenkennung des Treibers, z. B. '62' für die 62-mm-Endlosrolle."
+        max_length=LIMITS["printer_media"],
+        description="Rollenkennung des Treibers, z. B. '62' für die 62-mm-Endlosrolle.",
     )
 
 
 class DirectPrinterConfig(Model):
     """Druckdienst, den das Gerät selbst anspricht (Raspberry Pi im Keller)."""
 
-    urls: list[Annotated[str, Field(max_length=200)]] = Field(
+    urls: list[Annotated[str, Field(max_length=LIMITS["printer_url"])]] = Field(
         min_length=1,
-        max_length=4,
+        max_length=LIMITS["printer_urls"],
         description="Basis-Adressen in der Reihenfolge der Versuche, z. B. https://10.71.83.1:8443, dann http://10.71.83.1:8080.",
     )
-    token: str = Field(min_length=1, max_length=200, description="Bearer-Token des Druckdienstes.")
+    token: str = Field(
+        min_length=1, max_length=LIMITS["printer_token"], description="Bearer-Token des Druckdienstes."
+    )
     printer: str | None = Field(
-        max_length=60, description="Name des Druckers im Druckdienst; null = dessen Standarddrucker."
+        max_length=LIMITS["printer_queue"],
+        description="Name des Druckers im Druckdienst; null = dessen Standarddrucker.",
     )
 
 

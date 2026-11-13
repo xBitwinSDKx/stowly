@@ -54,7 +54,10 @@ export interface StoredProblem extends SyncProblem {
 export interface StoredSession {
   status: "signed_in" | "revoked" | "logout";
   token: string | null;
+  /** Das angemeldete Gerät; bleibt bei "revoked" stehen, fällt bei "logout" weg. */
   device: SessionDevice | null;
+  /** Nach dem Abmelden: der Name, den das Gerät zuletzt trug (Vorschlag für die Anmeldung). */
+  last_device_name?: string | null;
 }
 
 export interface SyncMeta {
@@ -68,6 +71,8 @@ export interface SyncMeta {
   clock_offset_ms: number;
   /** Beim nächsten Abgleich den Bestand vollständig neu holen (Aufbewahrungsdauer vergrößert). */
   full_resync: boolean;
+  /** `lookup_enabled` der letzten Antwort: Schlägt der Server Barcodes nach? null = unbekannt. */
+  lookup_enabled: boolean | null;
 }
 
 export const INITIAL_SYNC_META: SyncMeta = {
@@ -76,6 +81,7 @@ export const INITIAL_SYNC_META: SyncMeta = {
   last_synced_at: null,
   clock_offset_ms: 0,
   full_resync: false,
+  lookup_enabled: null,
 };
 
 export interface KvValues {

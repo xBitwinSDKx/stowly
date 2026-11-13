@@ -129,3 +129,37 @@ it("füllt Platzhalter aus dem Ergebnis, lässt Eingaben des Anwenders stehen un
   const history = (await raw.events({ entity: "product", entity_id: placeholder.product.id })).map((event) => event.type).reverse();
   expect(history).toEqual(["product.created", "product.lookup", "product.updated"]);
 });
+
+it("sagt dem Gerät, ob nachgeschlagen wird, und das Gerät verspricht nur dann etwas", async () => {
+  // Dieser Server schlägt nach: Der Kern erfährt es mit dem ersten Abgleich.
+  const device = await signedIn(server.url, "Küche");
+  expect(device.status.lookup_enabled).toBe(true);
+  expect(device.net.lastSync.response?.lookup_enabled).toBe(true);
+
+  // Ein zweiter Server mit abgeschaltetem Nachschlagen (die Vorgabe aller anderen Tests).
+  const plain = await startServer();
+  try {
+    const quiet = await signedIn(plain.url, "Keller");
+    expect(quiet.status.lookup_enabled).toBe(false);
+    const zone = firstZone(quiet);
+    const barcode = freshBarcode();
+
+    // Offline eingelagert: Der Platzhalter beginnt als "none", nicht als "pending" ...
+    quiet.net.online = false;
+    const stored = await quiet.core.stock.store({ product: { kind: "barcode", barcode }, zone_id: zone.id, best_before: null, count: 1, labels: false });
+    expect(stored.product.lookup).toBe("none");
+    // ... auch nach dem Neuladen der App, ohne dass der Server gefragt wurde.
+    await quiet.reload();
+    expect(quiet.status.lookup_enabled).toBe(false);
+    expect(product(quiet, stored.product.id).lookup).toBe("none");
+
+    // Und der Server sieht es genauso: Nach dem Abgleich ändert sich nichts.
+    quiet.net.online = true;
+    await quiet.sync();
+    expect(product(quiet, stored.product.id)).toMatchObject({ name: "", lookup: "none", barcodes: [barcode] });
+    const raw = await RawClient.login(plain.url);
+    await expectSameAsServer(quiet, raw);
+  } finally {
+    await plain.dispose();
+  }
+});

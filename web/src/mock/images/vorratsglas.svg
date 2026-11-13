@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="Vorratsglas">
+  <!-- Beispielbild der Attrappe: selbst gezeichnet, kein Foto, keine Marke. -->
+  <rect width="160" height="160" fill="#ece6d8"/>
+  <ellipse cx="80" cy="140" rx="46" ry="6" fill="#d8d0bd"/>
+  <rect x="44" y="50" width="72" height="90" rx="14" fill="#d4e6ea" stroke="#566f7a" stroke-width="4"/>
+  <path d="M48 78h64v48a10 10 0 0 1-10 10H58a10 10 0 0 1-10-10z" fill="#dba63f"/>
+  <rect x="56" y="88" width="48" height="30" rx="4" fill="#f8f4ea" stroke="#566f7a" stroke-width="2"/>
+  <path d="M64 98h32M64 108h20" stroke="#566f7a" stroke-width="3" stroke-linecap="round"/>
+  <rect x="48" y="38" width="64" height="16" rx="5" fill="#b3713b" stroke="#6f4423" stroke-width="4"/>
+  <path d="M56 60v14" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
+</svg>

@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from stowly.contract.entities import DeviceName, Model, Timestamp, Uuid
+from stowly.contract.limits import LIMITS
 
 
 class ErrorCode(StrEnum):
@@ -50,7 +51,7 @@ class ServerHealth(Model):
 
 
 class LoginRequest(Model):
-    password: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=LIMITS["password"])
     device_name: DeviceName
 
 

@@ -38,7 +38,7 @@ import type {
   RejectCode,
   Zone,
 } from "@/contract/api.gen";
-import { isStoreInternalBarcode } from "@/contract/barcode";
+import { willLookUp } from "@/contract/barcode";
 
 import type { Draft } from "../tables";
 
@@ -55,6 +55,18 @@ export interface ApplyContext {
    * des Geräts nicht mit der des Servers vergleichen lässt.
    */
   authoritative: boolean;
+  /**
+   * Schlägt der Server Barcodes nach (`SyncResponse.lookup_enabled`)? null = noch unbekannt.
+   * Nur bei false beginnt ein neues Produkt mit nachschlagbarem Barcode als `lookup: "none"`.
+   */
+  lookup_enabled: boolean | null;
+}
+
+/** Was der Kern über das Gerät und den Server weiß, wenn er wartende Befehle erneut anwendet. */
+export interface ReplayContext {
+  /** Gerät, das die Befehle erzeugt hat. */
+  device_id: string | null;
+  lookup_enabled: boolean | null;
 }
 
 const APPLIED: ApplyOutcome = { status: "applied" };
@@ -143,7 +155,7 @@ function productCreate(ws: Draft, cmd: CmdProductCreate, ctx: ApplyContext): App
     quantity: cmd.quantity ?? "",
     image: null,
     warn_days: cmd.warn_days ?? null,
-    lookup: wanted.some((barcode) => !isStoreInternalBarcode(barcode)) ? "pending" : "none",
+    lookup: wanted.some((barcode) => willLookUp(barcode, ctx.lookup_enabled)) ? "pending" : "none",
     barcodes: free.sort(),
     created_at: ctx.at,
     updated_at: ctx.at,
@@ -602,10 +614,10 @@ export function applyCommand(ws: Draft, command: Command, ctx: ApplyContext): Ap
  * Wendet die wartenden Befehle in ihrer Reihenfolge an. Ein einzelner Befehl, der dabei
  * scheitert, hält die übrigen nicht auf: Was die App zeigt, soll immer berechenbar bleiben.
  */
-export function replay(ws: Draft, commands: readonly Command[], deviceId: string | null): void {
+export function replay(ws: Draft, commands: readonly Command[], context: ReplayContext): void {
   for (const command of commands) {
     try {
-      applyCommand(ws, command, { at: command.at, device_id: deviceId, authoritative: false });
+      applyCommand(ws, command, { at: command.at, device_id: context.device_id, authoritative: false, lookup_enabled: context.lookup_enabled });
     } catch {
       // Ein Befehl mit unerwartetem Inhalt bleibt ohne Wirkung; der Server entscheidet über ihn.
     }

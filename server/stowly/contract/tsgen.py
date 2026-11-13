@@ -11,6 +11,8 @@ from typing import Any
 
 from stowly.contract import ID_POOL_TARGET, MAX_CHANGES_PER_SYNC, MAX_COMMANDS_PER_SYNC, PROTOCOL_VERSION, ids
 from stowly.contract.commands import COMMAND_TYPES
+from stowly.contract.limits import LIMITS
+from stowly_print.model import PrinterError, ServiceError
 
 REF_PREFIX = "#/components/schemas/"
 
@@ -175,6 +177,33 @@ def _constants() -> list[str]:
     for name, value, description in values:
         lines.append(f"/** {description} */")
         lines.append(f"export const {name} = {_literal(value)};")
+    lines.append("/**")
+    lines.append(" * Eingabegrenzen des Vertrags: Zeichen bei Texten, Anzahl bei Listen, Tage bei Fristen.")
+    lines.append(" * Kern und Attrappe prüfen damit, bevor ein Befehl entsteht (src/contract/input.ts).")
+    lines.append(" */")
+    lines.append("export const LIMITS = {")
+    lines.extend(f"  {name}: {_literal(value)}," for name, value in LIMITS.items())
+    lines.append("} as const;")
+    lists: list[tuple[str, str, list[str], str]] = [
+        (
+            "SERVICE_ERROR_CODES",
+            "ServiceErrorCode",
+            [code.value for code in ServiceError],
+            "Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3).",
+        ),
+        (
+            "PRINTER_ERROR_CODES",
+            "PrinterErrorCode",
+            [code.value for code in PrinterError],
+            "Codes in `DriverStatus.errors` und als Fehler eines gescheiterten Auftrags (docs/etiketten.md, 5.5).",
+        ),
+    ]
+    for name, type_name, items, description in lists:
+        lines.append(f"/** {description} */")
+        lines.append(f"export const {name} = [")
+        lines.extend(f"  {_literal(item)}," for item in items)
+        lines.append("] as const;")
+        lines.append(f"export type {type_name} = (typeof {name})[number];")
     lines.append("/** Alle Befehlsarten des Sync. */")
     lines.append("export const COMMAND_TYPES = [")
     lines.extend(f"  {_literal(kind)}," for kind in COMMAND_TYPES)

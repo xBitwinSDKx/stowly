@@ -5,7 +5,7 @@
  * erfüllt, sobald die Befehle in der Outbox stehen; auf den Server wartet sie nie.
  */
 import type { Package, PackageChanges, PrintJob, RemovalReason } from "@/contract/api.gen";
-import { MAX_STORE_COUNT, type ProductRef, type StockApi, type StoreInput, type StoreResult } from "@/contract/core";
+import type { ProductRef, StockApi, StoreInput, StoreResult } from "@/contract/core";
 import { CoreError } from "@/contract/errors";
 import { newUuid } from "@/contract/ids";
 
@@ -16,7 +16,9 @@ import {
   activeProduct,
   activeZone,
   checkBarcode,
+  checkBarcodeCount,
   checkBestBefore,
+  checkStoreCount,
   checkWarnDays,
   existingPackages,
   hasPrinter,
@@ -39,9 +41,7 @@ export function createProduct(
   const quantity = optionalText(input.quantity, LIMITS.quantity, "Die Packungsgröße");
   checkWarnDays(input.warn_days);
   const barcodes = [...new Set(input.barcodes ?? [])];
-  if (barcodes.length > LIMITS.barcodes) {
-    throw invalid(`Ein Produkt kann höchstens ${LIMITS.barcodes} Barcodes haben.`);
-  }
+  checkBarcodeCount(barcodes.length);
   for (const barcode of barcodes) {
     checkBarcode(barcode);
     const owner = barcodeOwner(mutation.draft, barcode);
@@ -97,9 +97,7 @@ export function createStockApi(runtime: CoreRuntime): StockApi {
   return {
     store(input: StoreInput): Promise<StoreResult> {
       return runtime.change((mutation) => {
-        if (!Number.isInteger(input.count) || input.count < 1 || input.count > MAX_STORE_COUNT) {
-          throw invalid(`Die Menge muss zwischen 1 und ${MAX_STORE_COUNT} liegen.`);
-        }
+        checkStoreCount(input.count);
         checkBestBefore(input.best_before);
         const zone = activeZone(mutation.draft, input.zone_id);
         const productId = resolveProductRef(mutation, input.product);

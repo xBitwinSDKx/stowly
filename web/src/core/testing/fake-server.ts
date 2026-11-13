@@ -29,7 +29,8 @@
  *   Zeitpunkte (Abschnitt 4); es fehlt auch die Schranke für ein unmögliches Alter.
  * - Open Food Facts wird nachgespielt: gerade Endziffer des Barcodes = gefunden, nach
  *   `lookupDelayMs`. `product.add_barcode` und ein Zusammenführen setzen `lookup` nicht auf
- *   `pending`. Bilder gibt es nicht (404).
+ *   `pending`. Bilder gibt es nicht (404). Mit `lookupEnabled: false` meldet jede Antwort
+ *   `lookup_enabled: false`, und neue Produkte beginnen mit `lookup: "none"`.
  * - `last_seen_at` rückt bei jedem Abgleich vor, im echten Server höchstens einmal je Minute.
  * - Es gibt kein Ereignisprotokoll, keinen Druckdienst, keine Grenze für die Größe einer
  *   Anfrage; die Sicherung ist keine SQLite-Datei; die Klartexte der Meldungen sind eigene,
@@ -100,6 +101,8 @@ export interface FakeServerOptions {
    * null = nie. Vorgabe null.
    */
   lookupDelayMs?: number | null;
+  /** false: Das Nachschlagen ist abgeschaltet (wie STOWLY_OFF_ENABLED=0). Vorgabe true. */
+  lookupEnabled?: boolean;
 }
 
 interface FakeDevice {
@@ -374,12 +377,14 @@ export class FakeServer {
   private readonly password: string;
   private readonly maxChanges: number;
   private readonly lookupDelayMs: number | null;
+  private readonly lookupEnabled: boolean;
 
   constructor(options: FakeServerOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.password = options.password ?? FAKE_PASSWORD;
     this.maxChanges = options.maxChanges ?? MAX_CHANGES_PER_SYNC;
     this.lookupDelayMs = options.lookupDelayMs ?? null;
+    this.lookupEnabled = options.lookupEnabled ?? true;
     this.seedDefaults();
     if (options.sample) {
       this.seedSample();
@@ -572,7 +577,12 @@ export class FakeServer {
       const draft = new Draft(this.tables);
       let outcome: ReturnType<typeof applyCommand>;
       try {
-        outcome = applyCommand(draft, command as Command, { at: effectiveAt, device_id: device?.id ?? null, authoritative: true });
+        outcome = applyCommand(draft, command as Command, {
+          at: effectiveAt,
+          device_id: device?.id ?? null,
+          authoritative: true,
+          lookup_enabled: this.lookupEnabled,
+        });
       } catch {
         outcome = { status: "rejected", code: "internal" };
       }
@@ -714,6 +724,7 @@ export class FakeServer {
       cursor: page.cursor,
       has_more: page.has_more,
       id_pool: { grant, target: ID_POOL_TARGET },
+      lookup_enabled: this.lookupEnabled,
     };
     return json(200, response);
   }

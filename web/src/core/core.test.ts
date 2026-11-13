@@ -256,6 +256,44 @@ describe("Einlagern und Entnehmen", () => {
     await syncClean(harness);
   });
 
+  it("richtet sich danach, ob der Server Barcodes nachschlägt", async () => {
+    // Vor der Anmeldung ist nichts bekannt.
+    const off = await start({ server: { lookupEnabled: false } });
+    expect(value(off.core.sync.status).lookup_enabled).toBeNull();
+    await off.core.session.login(FAKE_PASSWORD, "Handy");
+    expect(value(off.core.sync.status).lookup_enabled).toBe(false);
+
+    // Abgeschaltet: Der Platzhalter verspricht nichts, schon vor dem Abgleich und danach.
+    off.network.offline = true;
+    const zone = value(off.core.data.zones)[0]?.id ?? "";
+    const stored = await off.core.stock.store({ product: { kind: "barcode", barcode: sampleBarcode(510) }, zone_id: zone, best_before: null, count: 1 });
+    expect(stored.product.lookup).toBe("none");
+    expect(value(off.core.data.products).find((product) => product.id === stored.product.id)?.lookup).toBe("none");
+    // Auch nach dem Neuladen, ohne dass der Server gefragt wurde: Der Kern hat es sich gemerkt.
+    off.core.dispose();
+    const reloaded = await off.another();
+    expect(value(reloaded.sync.status).lookup_enabled).toBe(false);
+    expect(value(reloaded.data.products).find((product) => product.id === stored.product.id)?.lookup).toBe("none");
+    off.network.offline = false;
+    await reloaded.sync.now();
+    expect(value(reloaded.sync.status).pending).toBe(0);
+    expect(value(reloaded.data.products).find((product) => product.id === stored.product.id)?.lookup).toBe("none");
+
+    // Eingeschaltet: wie bisher "pending". Abmelden vergisst die Angabe wieder.
+    const on = await start();
+    await on.core.session.login(FAKE_PASSWORD, "Handy");
+    expect(value(on.core.sync.status).lookup_enabled).toBe(true);
+    const pending = await on.core.stock.store({
+      product: { kind: "barcode", barcode: sampleBarcode(511) },
+      zone_id: value(on.core.data.zones)[0]?.id ?? "",
+      best_before: null,
+      count: 1,
+    });
+    expect(pending.product.lookup).toBe("pending");
+    await on.core.session.logout({ discard_pending: true });
+    expect(value(on.core.sync.status).lookup_enabled).toBeNull();
+  });
+
   it("schlägt ladeninterne Codes nicht nach", async () => {
     const { core } = await household();
     const result = await core.stock.store({
@@ -553,7 +591,7 @@ describe("Zonen und Einstellungen", () => {
 describe("Sitzung und Sync", () => {
   it("meldet mit dem Haushalts-Passwort an", async () => {
     const { core } = await start();
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
     await expectCoreError(core.session.login("falsch", "Handy"), "invalid_password");
     await expectCoreError(core.session.login(FAKE_PASSWORD, " "), "invalid");
     await core.session.login(FAKE_PASSWORD, "Handy Küche");
@@ -573,7 +611,7 @@ describe("Sitzung und Sync", () => {
 
     // Abmelden gelingt auch offline.
     await core.session.logout({ discard_pending: true });
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "logout" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "logout" });
     // Die lokale Kopie, die Outbox und die Sync-Probleme sind gelöscht.
     expect(value(core.data.packages)).toEqual([]);
     expect(value(core.data.zones)).toEqual([]);
@@ -588,7 +626,7 @@ describe("Sitzung und Sync", () => {
     // Auch nach dem Neuladen: abgemeldet, nichts mehr da.
     core.dispose();
     const reloaded = await another();
-    expect(value(reloaded.session.state)).toEqual({ status: "signed_out", reason: "logout" });
+    expect(value(reloaded.session.state)).toMatchObject({ status: "signed_out", reason: "logout" });
     expect(value(reloaded.data.products)).toEqual([]);
 
     // Neu anmelden holt den Bestand wieder; die verworfenen Zonen gibt es nicht.
@@ -600,7 +638,7 @@ describe("Sitzung und Sync", () => {
   it("meldet ohne ungesendete Änderungen einfach ab und sperrt das Token", async () => {
     const { core, server } = await household();
     await core.session.logout();
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "logout" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "logout" });
     await expect.poll(() => server.deviceList[0]?.revoked_at).not.toBeNull();
   });
 
@@ -654,7 +692,38 @@ describe("Sitzung und Sync", () => {
     const { core, server } = await household();
     server.revoke();
     await core.sync.now();
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
+  });
+
+  it("nennt nach dem Sperren und nach dem Abmelden den letzten Namen des Geräts", async () => {
+    const { core, server, another } = await household();
+    const session = value(core.session.state);
+    await core.devices.rename(session.status === "signed_in" ? session.device.id : "", "Handy Keller");
+
+    // Gesperrt: Die Anmeldung soll den bisherigen Namen vorschlagen können.
+    server.revoke();
+    await core.sync.now();
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked", last_device_name: "Handy Keller" });
+
+    // Auch nach dem Neuladen.
+    core.dispose();
+    const reloaded = await another();
+    expect(value(reloaded.session.state)).toEqual({ status: "signed_out", reason: "revoked", last_device_name: "Handy Keller" });
+
+    // Wieder angemeldet unter einem neuen Namen, dann abgemeldet: Der Name überlebt das Löschen der lokalen Kopie.
+    await reloaded.session.login(FAKE_PASSWORD, "Handy Küche");
+    await reloaded.session.logout();
+    expect(value(reloaded.session.state)).toEqual({ status: "signed_out", reason: "logout", last_device_name: "Handy Küche" });
+    reloaded.dispose();
+    const again = await another();
+    expect(value(again.session.state)).toEqual({ status: "signed_out", reason: "logout", last_device_name: "Handy Küche" });
+
+    // Abmelden aus dem gesperrten Zustand behält den Namen ebenfalls.
+    await again.session.login(FAKE_PASSWORD, "Handy Küche");
+    server.revoke();
+    await again.sync.now();
+    await again.session.logout({ discard_pending: true });
+    expect(value(again.session.state)).toEqual({ status: "signed_out", reason: "logout", last_device_name: "Handy Küche" });
   });
 
   it("wirft bei sync.now() nie", async () => {
@@ -698,7 +767,7 @@ describe("Geräte und Sicherung (brauchen den Server)", () => {
 
     // Das eigene Gerät sperren meldet es ab; Daten und Outbox bleiben.
     await core.devices.revoke(mine?.id ?? "");
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
     expect(value(core.data.packages).length).toBeGreaterThan(0);
     await expectCoreError(core.devices.list(), "unauthorized");
   });
@@ -723,7 +792,7 @@ describe("Geräte und Sicherung (brauchen den Server)", () => {
     const { core, server } = await household();
     server.revoke();
     await expectCoreError(core.devices.list(), "unauthorized");
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
   });
 
   it("lädt die Sicherung als Blob mit dem Namen des Servers", async () => {

@@ -171,7 +171,7 @@ describe("Abgleich im Hintergrund (Service Worker)", () => {
     server.revoke();
     const outcome = await runBackgroundSync({ fetch: network.fetch, now: clock.now, dbName });
     expect(outcome).toMatchObject({ ok: false, error: { code: "unauthorized" } });
-    await expect.poll(() => value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    await expect.poll(() => value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
     expect(value(core.sync.status).pending).toBe(1);
   });
 });
@@ -346,7 +346,7 @@ describe("Ohne lokale Datenbank", () => {
     const open = vi.spyOn(Dexie.prototype, "open").mockRejectedValue(new Error("IndexedDB ist gesperrt"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { core } = await start();
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
     await expectCoreError(core.session.login(FAKE_PASSWORD, "Handy"), "not_supported");
     await expectCoreError(core.zones.create({ name: "Keller" }), "not_supported");
     await expect(core.sync.now()).resolves.toBeUndefined();

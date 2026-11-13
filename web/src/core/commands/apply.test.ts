@@ -45,7 +45,7 @@ function run(start: Tables, ...payloads: Payload[]): { state: Tables; outcomes: 
   const draft = new Draft(start);
   const outcomes = payloads.map((payload) => {
     counter += 1;
-    return applyCommand(draft, { id: uuid(9, counter), at: T1, ...payload } as Command, { at: T1, device_id: uuid(5, 1), authoritative: false });
+    return applyCommand(draft, { id: uuid(9, counter), at: T1, ...payload } as Command, { at: T1, device_id: uuid(5, 1), authoritative: false, lookup_enabled: null });
   });
   return { state: draft.commit(), outcomes };
 }
@@ -295,7 +295,7 @@ describe("Erneut anwenden", () => {
       // Ohne Nutzlast darf ein Befehl abgelehnt werden, aber nie als unbekannte Art durchfallen oder werfen.
       const outcome = (() => {
         try {
-          return applyCommand(draft, { id: uuid(9, 0), at: T1, type, changes: {} } as unknown as Command, { at: T1, device_id: null, authoritative: false });
+          return applyCommand(draft, { id: uuid(9, 0), at: T1, type, changes: {} } as unknown as Command, { at: T1, device_id: null, authoritative: false, lookup_enabled: null });
         } catch {
           return null;
         }
@@ -315,7 +315,7 @@ describe("Erneut anwenden", () => {
         { id: uuid(9, 2), at: T1, type: "noch.unbekannt" } as unknown as Command,
         { id: uuid(9, 3), at: T1, type: "zone.update", zone_id: uuid(1, 1), changes: { name: "Keller" } },
       ],
-      null,
+      { device_id: null, lookup_enabled: null },
     );
     expect(draft.commit().zones.get(uuid(1, 1))?.name).toBe("Keller");
   });

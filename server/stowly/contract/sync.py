@@ -96,3 +96,6 @@ class SyncResponse(Model):
         description="true = sofort erneut abrufen (ohne Befehle), es gibt weitere Änderungen."
     )
     id_pool: IdPoolGrant
+    lookup_enabled: bool = Field(
+        description="Schlägt der Server unbekannte Barcodes bei Open Food Facts nach? false = abgeschaltet (STOWLY_OFF_ENABLED=0)."
+    )

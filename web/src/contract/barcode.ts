@@ -45,3 +45,14 @@ export function normalizeBarcode(raw: string): string | null {
 export function isStoreInternalBarcode(code: string): boolean {
   return code.startsWith("2");
 }
+
+/**
+ * Schlägt der Server diesen Barcode bei Open Food Facts nach, wenn daraus ein Produkt entsteht?
+ * `lookupEnabled` ist `SyncStatus.lookup_enabled`: Nur ein ausdrückliches `false` schaltet ab;
+ * `null` (noch unbekannt) gilt als eingeschaltet. Dieselbe Regel entscheidet, ob ein neues
+ * Produkt lokal mit `lookup: "pending"` oder `"none"` beginnt und ob die Oberfläche verspricht,
+ * dass Name und Bild nachkommen.
+ */
+export function willLookUp(barcode: string, lookupEnabled: boolean | null): boolean {
+  return lookupEnabled !== false && !isStoreInternalBarcode(barcode);
+}

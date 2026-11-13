@@ -446,6 +446,20 @@ def test_switched_off_means_none_and_no_requests(settings, clock):
     con.close()
 
 
+def test_every_sync_answer_says_whether_lookups_are_on(settings, clock, bench):
+    """Die App richtet danach, was sie verspricht und lokal vorwegnimmt (Protokoll 6.4 und 10)."""
+    # Eingeschaltet: auf der ersten Seite, auf einer leeren Antwort und mit Befehlen.
+    assert bench.device.sync(dataset_id=None, cursor=0)["lookup_enabled"] is True
+    assert bench.device.sync()["lookup_enabled"] is True
+    _, create = bench.device.product("", barcodes=[EAN_A])
+    assert bench.device.sync([create])["lookup_enabled"] is True
+
+    # Abgeschaltet (die Vorgabe der Tests).
+    plain = Device(TestClient(create_app(settings)), "Rechner", clock=clock)
+    assert plain.sync()["lookup_enabled"] is False
+    assert plain.sync()["lookup_enabled"] is False
+
+
 # --- Drosselung --------------------------------------------------------------------------
 
 

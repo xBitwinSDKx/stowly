@@ -25,7 +25,7 @@ afterEach(disposeDevices);
 describe("Anmeldung und erster Abzug", () => {
   it("meldet an, holt den vollständigen Bestand und einen vollen ID-Vorrat", async () => {
     const device = await newDevice(server.url, "Küche");
-    expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
 
     await device.login();
 
@@ -92,7 +92,7 @@ describe("Anmeldung und erster Abzug", () => {
   it("lehnt ein falsches Passwort ab und meldet das Gerät nicht an", async () => {
     const device = await newDevice(server.url, "Fremdes Gerät");
     await expectCoreError(device.login("falsch"), "invalid_password");
-    expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
     expect(device.status.online).toBe(true);
     expect(device.net.syncs).toHaveLength(0);
 
@@ -152,7 +152,7 @@ describe("Abmelden und Sperren", () => {
     expect(value(cellar.core.session.state).status).toBe("signed_in");
 
     await cellar.core.session.logout({ discard_pending: true });
-    expect(value(cellar.core.session.state)).toEqual({ status: "signed_out", reason: "logout" });
+    expect(value(cellar.core.session.state)).toMatchObject({ status: "signed_out", reason: "logout" });
     expect(value(cellar.core.data.packages)).toEqual([]);
     expect(value(cellar.core.data.zones)).toEqual([]);
     expect(cellar.status.pending).toBe(0);
@@ -181,7 +181,7 @@ describe("Abmelden und Sperren", () => {
 
     const status = await cellar.trySync();
     expect(status.last_error?.code).toBe("unauthorized");
-    expect(value(cellar.core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(cellar.core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
     // Daten und Outbox bleiben.
     expect(cellar.status.pending).toBe(3);
     expect(
@@ -191,9 +191,9 @@ describe("Abmelden und Sperren", () => {
         .sort(),
     ).toEqual([...packageIds].sort());
 
-    // Auch nach dem Neuladen der App.
+    // Auch nach dem Neuladen der App. Der bisherige Name steht als Vorschlag für die Anmeldung bereit.
     await cellar.reload();
-    expect(value(cellar.core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(cellar.core.session.state)).toEqual({ status: "signed_out", reason: "revoked", last_device_name: "Keller D" });
     expect(cellar.status.pending).toBe(3);
 
     await cellar.login();
@@ -216,7 +216,7 @@ describe("Abmelden und Sperren", () => {
   it("meldet ein Gerät ab, das sich selbst sperrt", async () => {
     const device = await signedIn(server.url, "Küche E");
     await device.core.devices.revoke(device.session.id);
-    expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(device.core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
     await expectCoreError(device.core.devices.list(), "unauthorized");
   });
 });

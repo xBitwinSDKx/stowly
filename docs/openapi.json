@@ -2786,6 +2786,10 @@
           "id_pool": {
             "$ref": "#/components/schemas/IdPoolGrant"
           },
+          "lookup_enabled": {
+            "description": "Schlägt der Server unbekannte Barcodes bei Open Food Facts nach? false = abgeschaltet (STOWLY_OFF_ENABLED=0).",
+            "type": "boolean"
+          },
           "protocol": {
             "type": "integer"
           },
@@ -2814,7 +2818,8 @@
           "changes",
           "cursor",
           "has_more",
-          "id_pool"
+          "id_pool",
+          "lookup_enabled"
         ],
         "type": "object"
       },

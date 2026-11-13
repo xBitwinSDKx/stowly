@@ -22,6 +22,58 @@ export const PACKAGE_ID_LENGTH = 5;
 export const QR_PACKAGE_PREFIX = "STOWLY/P/";
 /** Beginn des QR-Inhalts eines Zonen-Etiketts. */
 export const QR_ZONE_PREFIX = "STOWLY/Z/";
+/**
+ * Eingabegrenzen des Vertrags: Zeichen bei Texten, Anzahl bei Listen, Tage bei Fristen.
+ * Kern und Attrappe prüfen damit, bevor ein Befehl entsteht (src/contract/input.ts).
+ */
+export const LIMITS = {
+  product_name: 120,
+  brand: 80,
+  quantity: 40,
+  zone_name: 60,
+  icon: 32,
+  color: 16,
+  printer_name: 60,
+  device_name: 60,
+  password: 200,
+  barcodes: 20,
+  warn_days: 3650,
+  retention_days: 3650,
+  printer_model: 40,
+  printer_address: 200,
+  printer_media: 40,
+  printer_urls: 4,
+  printer_url: 200,
+  printer_token: 200,
+  printer_queue: 60,
+} as const;
+/** Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3). */
+export const SERVICE_ERROR_CODES = [
+  "invalid_request",
+  "unauthorized",
+  "not_found",
+  "unknown_printer",
+  "job_conflict",
+  "boot_mismatch",
+  "not_cancellable",
+  "not_pending",
+  "render_failed",
+  "queue_full",
+] as const;
+export type ServiceErrorCode = (typeof SERVICE_ERROR_CODES)[number];
+/** Codes in `DriverStatus.errors` und als Fehler eines gescheiterten Auftrags (docs/etiketten.md, 5.5). */
+export const PRINTER_ERROR_CODES = [
+  "no_media",
+  "media_mismatch",
+  "cover_open",
+  "cutter_jam",
+  "overheated",
+  "busy",
+  "offline",
+  "config",
+  "unknown",
+] as const;
+export type PrinterErrorCode = (typeof PRINTER_ERROR_CODES)[number];
 /** Alle Befehlsarten des Sync. */
 export const COMMAND_TYPES = [
   "product.create",
@@ -768,6 +820,8 @@ export interface SyncResponse {
   /** true = sofort erneut abrufen (ohne Befehle), es gibt weitere Änderungen. */
   has_more: boolean;
   id_pool: IdPoolGrant;
+  /** Schlägt der Server unbekannte Barcodes bei Open Food Facts nach? false = abgeschaltet (STOWLY_OFF_ENABLED=0). */
+  lookup_enabled: boolean;
 }
 
 export interface Zone {

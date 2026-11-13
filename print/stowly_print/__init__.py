@@ -21,8 +21,10 @@ from stowly_print.model import (
     JobRequest,
     JobState,
     Media,
+    PrinterError,
     PrinterInfo,
     PrintOutcome,
+    ServiceError,
     to_dict,
 )
 
@@ -42,7 +44,9 @@ __all__ = [
     "JobState",
     "Media",
     "PrintOutcome",
+    "PrinterError",
     "PrinterInfo",
+    "ServiceError",
     "__version__",
     "to_dict",
 ]

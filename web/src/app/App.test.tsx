@@ -152,7 +152,7 @@ describe("Abmelden", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Abmelden" }));
 
     expect(await screen.findByRole("heading", { name: "Anmelden" })).toBeInTheDocument();
-    expect(core.session.state.get()).toEqual({ status: "signed_out", reason: "logout" });
+    expect(core.session.state.get()).toMatchObject({ status: "signed_out", reason: "logout" });
     expect(screen.getByText("Abgemeldet")).toBeInTheDocument();
   });
 
@@ -172,7 +172,7 @@ describe("Abmelden", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Abmelden" }));
     await userEvent.click(screen.getByRole("button", { name: "Verwerfen und abmelden" }));
-    await waitFor(() => expect(core.session.state.get()).toEqual({ status: "signed_out", reason: "logout" }));
+    await waitFor(() => expect(core.session.state.get()).toMatchObject({ status: "signed_out", reason: "logout" }));
     expect(logout).toHaveBeenCalledWith({ discard_pending: true });
   });
 

@@ -25,6 +25,46 @@ MAX_DATA_FIELDS = 32
 MAX_DATA_VALUE_LENGTH = 500
 MAX_PNG_BYTES = 512 * 1024
 
+# Mehr wartende Aufträge nimmt ein Dienst nicht an (503 ``queue_full``).
+MAX_QUEUED_JOBS = 100
+# So viele Aufträge merkt sich ein Dienst mit Speicher im RAM mindestens je Lauf, auch erledigte
+# und verworfene: Eine verspätete Wiederholung darf nicht doch noch drucken.
+MIN_REMEMBERED_JOBS = 10_000
+
+
+class ServiceError(StrEnum):
+    """Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3)."""
+
+    INVALID_REQUEST = "invalid_request"  # 400: Nutzlast verletzt den Vertrag
+    UNAUTHORIZED = "unauthorized"  # 401: Token fehlt oder ist falsch
+    NOT_FOUND = "not_found"  # 404: Auftrag unbekannt (am Server auch: kein Etikett mit dieser Kennung)
+    UNKNOWN_PRINTER = "unknown_printer"  # 404: diesen Drucker hat der Dienst nicht
+    JOB_CONFLICT = "job_conflict"  # 409: dieselbe Kennung mit anderem Inhalt
+    BOOT_MISMATCH = "boot_mismatch"  # 409: expect_boot_id passt nicht, details.boot_id nennt die aktuelle
+    NOT_CANCELLABLE = "not_cancellable"  # 409: der Auftrag wartet nicht mehr
+    NOT_PENDING = "not_pending"  # 409, nur am Server: das Etikett ist verworfen oder erledigt
+    RENDER_FAILED = "render_failed"  # 422: Vorlage oder Daten lassen sich nicht rendern
+    QUEUE_FULL = "queue_full"  # 503: zu viele wartende Aufträge
+
+
+class PrinterError(StrEnum):
+    """Codes in ``DriverStatus.errors`` und als Fehler eines gescheiterten Auftrags (docs/etiketten.md, 5.5)."""
+
+    NO_MEDIA = "no_media"  # Etiketten leer
+    MEDIA_MISMATCH = "media_mismatch"  # andere Rolle eingelegt als eingerichtet
+    COVER_OPEN = "cover_open"
+    CUTTER_JAM = "cutter_jam"
+    OVERHEATED = "overheated"
+    BUSY = "busy"
+    OFFLINE = "offline"  # Gerät nicht gefunden oder nicht verbunden
+    CONFIG = "config"  # Modell, Adresse oder Rolle passen nicht zum Treiber
+    UNKNOWN = "unknown"
+
+
+# Fehler eines Auftrags, die nicht vom Drucker stammen (``Job.error.code``).
+JOB_ERROR_CANCELLED = "cancelled"  # verworfen, solange er wartete (Zustand failed)
+JOB_ERROR_INTERRUPTED = "interrupted"  # mitten im Druck unterbrochen (Zustand unknown)
+
 
 class JobState(StrEnum):
     """Zustand eines Auftrags im Druckdienst."""

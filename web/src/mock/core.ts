@@ -4,23 +4,48 @@
  * Sie verhält sich nach außen wie der echte Kern (src/contract/core.ts), vereinfacht aber
  * alles dahinter: Es gibt keine Outbox und keine Konflikte, der „Sync" ist eine Stoppuhr.
  * Nach dem Neuladen der Seite sind alle Änderungen weg.
+ *
+ * Gleich wie im Kern: die Eingabeprüfungen samt ihren Sätzen (src/contract/input.ts), die
+ * Regel, welcher Drucker ein Etikett druckt (`printerIdForJob`), und „Löschen gewinnt": Eine
+ * Änderung an einer entnommenen Packung wird aufgehoben statt angewendet.
+ *
+ * Der Druck ist nachgespielt: Ein Drucker am Server ist erreichbar, solange der Server es
+ * ist; der direkte Drucker (Pi) nur mit der Ausgangslage "at-pi" oder nach
+ * `stowlyMock.setPiReachable(true)`. Eigene ausstehende Etiketten eines erreichbaren
+ * Druckers werden von selbst gedruckt; wie das ausgeht, bestimmt `stowlyMock.setPrintOutcome`.
  */
 import {
   addDays,
   APP_VERSION,
   CoreError,
+  checkBarcode,
+  checkBarcodeCount,
+  checkBestBefore,
+  checkDeviceName,
+  checkDirectConfig,
+  checkRetentionDays,
+  checkServerConfig,
+  checkStoreCount,
+  checkWarnDays,
+  checkZoneColor,
+  checkZoneIcon,
+  cleanText,
   DEFAULT_DEVICE_PREFS,
-  isDate,
-  isStoreInternalBarcode,
-  isValidBarcode,
-  MAX_STORE_COUNT,
+  LIMITS,
+  MAX_HANDOFF_JOBS,
+  MAX_SYNC_PROBLEMS,
   newUuid,
+  optionalText,
+  printerIdForJob,
   randomPackageId,
+  requiredText,
   toLocalDate,
+  willLookUp,
   type AppState,
   type Core,
   type Device,
   type DevicePrefs,
+  type DisplacedChange,
   type NewPrinter,
   type NewProduct,
   type NewZone,
@@ -29,6 +54,8 @@ import {
   type Printer,
   type PrinterChanges,
   type PrinterProbe,
+  type PrinterStatus,
+  type PrintFlushReport,
   type PrintJob,
   type Product,
   type ProductChanges,
@@ -45,9 +72,10 @@ import {
   type ZoneChanges,
 } from "@/contract";
 
+import { MOCK_IMAGES, SAMPLE_IMAGE_ID } from "./images";
 import { derived, LiveValue } from "./live";
 import { PREVIEW_PNG_BASE64 } from "./preview";
-import { createEmptyData, createSampleData, createSingleZoneData, DEVICE_IDS, type MockData } from "./sample";
+import { createEmptyData, createLargeData, createSampleData, createSingleZoneData, DEVICE_IDS, PRINTER_IDS, troubledPrinterStatus, type MockData } from "./sample";
 
 /**
  * Ausgangslagen zum Ausprobieren, im Browser über `?mock=…` wählbar (mehrere mit Komma):
@@ -59,11 +87,53 @@ import { createEmptyData, createSampleData, createSingleZoneData, DEVICE_IDS, ty
  * - "offline":     Server nicht erreichbar, vier ungesendete Änderungen
  * - "problems":    eine abgelehnte und eine verdrängte Änderung
  * - "update":      eine neue Version der App wartet
+ * - "update-required": ein anderer Tab hat die lokale Datenbank übernommen; dieser muss neu laden
  * - "insecure":    Aufruf über http://<LAN-IP>: kein Scannen, kein Offline-Betrieb
+ * - "ios":         iPhone im Browser, nicht installiert: Anleitung statt Aufforderung
+ * - "installable": der Browser bietet die Installation an
+ * - "no-lookup":   der Server schlägt keine Barcodes nach (STOWLY_OFF_ENABLED=0)
+ * - "large":       großer Bestand: gut 2000 Packungen in gut 300 Produkten
+ * - "at-pi":       dieses Gerät ist im WLAN des Pi: Der direkte Drucker ist erreichbar.
+ *                  Zusammen mit "offline" ist das die Lage im Keller.
+ * - "printer-trouble": beide Drucker melden Störungen (Etiketten leer, Pi heiß, SD-Karte)
  */
-export type MockScenario = "empty" | "single-zone" | "signed-out" | "revoked" | "offline" | "problems" | "update" | "insecure";
+export type MockScenario =
+  | "empty"
+  | "single-zone"
+  | "signed-out"
+  | "revoked"
+  | "offline"
+  | "problems"
+  | "update"
+  | "update-required"
+  | "insecure"
+  | "ios"
+  | "installable"
+  | "no-lookup"
+  | "large"
+  | "at-pi"
+  | "printer-trouble";
 
-export const MOCK_SCENARIOS: readonly MockScenario[] = ["empty", "single-zone", "signed-out", "revoked", "offline", "problems", "update", "insecure"];
+export const MOCK_SCENARIOS: readonly MockScenario[] = [
+  "empty",
+  "single-zone",
+  "signed-out",
+  "revoked",
+  "offline",
+  "problems",
+  "update",
+  "update-required",
+  "insecure",
+  "ios",
+  "installable",
+  "no-lookup",
+  "large",
+  "at-pi",
+  "printer-trouble",
+];
+
+/** Wie ein nachgespielter Druck ausgeht. */
+export type MockPrintOutcome = "printed" | "failed" | "unknown";
 
 export const MOCK_PASSWORD = "stowly";
 
@@ -87,6 +157,12 @@ export interface MockControl {
   setUpdateReady(ready: boolean): void;
   /** Fügt eine abgelehnte oder verdrängte Änderung hinzu. */
   addProblem(problem: SyncProblem): void;
+  /** Der direkte Drucker (Pi) ist erreichbar oder nicht; erreichbar druckt er Ausstehendes sofort. */
+  setPiReachable(reachable: boolean): void;
+  /** Wie die nächsten Drucke ausgehen: "printed" (Vorgabe), "failed" (Etiketten leer) oder "unknown". */
+  setPrintOutcome(outcome: MockPrintOutcome): void;
+  /** Der Server schlägt Barcodes nach oder nicht (`sync.status.lookup_enabled`). */
+  setLookupEnabled(enabled: boolean): void;
   /** Aktueller Datenbestand der Attrappe. */
   snapshot(): MockData;
 }
@@ -99,10 +175,6 @@ function sortZones(zones: Zone[]): Zone[] {
   return [...zones].sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "de"));
 }
 
-function clean(text: string | undefined): string {
-  return (text ?? "").trim();
-}
-
 export function createMockCore(options: MockOptions = {}): MockCore {
   const scenarios = new Set(options.scenarios ?? []);
   const clock = options.now ?? (() => new Date());
@@ -110,19 +182,25 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   const stamp = () => clock().toISOString();
   const today = () => toLocalDate(clock());
 
-  const base = scenarios.has("empty")
+  const chosen = scenarios.has("empty")
     ? createEmptyData(clock())
     : scenarios.has("single-zone")
       ? createSingleZoneData(clock())
-      : createSampleData(clock());
+      : scenarios.has("large")
+        ? createLargeData(clock())
+        : createSampleData(clock());
+  const base: MockData = scenarios.has("printer-trouble") ? { ...chosen, printerStatus: troubledPrinterStatus(clock()) } : chosen;
   const state = new LiveValue<MockData>({ ...base, ...options.data });
+
+  /** Name, unter dem das Gerät der Attrappe angemeldet ist oder zuletzt war. */
+  const currentName = () => state.get().devices.find((device) => device.current)?.name ?? null;
 
   const session = new LiveValue<SessionState>(
     scenarios.has("signed-out")
-      ? { status: "signed_out", reason: "never" }
+      ? { status: "signed_out", reason: "never", last_device_name: null }
       : scenarios.has("revoked")
-        ? { status: "signed_out", reason: "revoked" }
-        : { status: "signed_in", device: { id: DEVICE_IDS.current, name: "Dieses Gerät" } },
+        ? { status: "signed_out", reason: "revoked", last_device_name: currentName() }
+        : { status: "signed_in", device: { id: DEVICE_IDS.current, name: currentName() ?? "Dieses Gerät" } },
   );
 
   const offline = scenarios.has("offline");
@@ -133,18 +211,28 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     last_synced_at: offline ? new Date(clock().getTime() - 3 * 3_600_000).toISOString() : stamp(),
     last_error: offline ? { code: "offline", message: "Der Server ist nicht erreichbar.", at: stamp() } : null,
     server_version: "0.1.0",
+    lookup_enabled: !scenarios.has("no-lookup"),
   });
 
+  /** Alle Sync-Probleme, wie sie eingetroffen sind; was die Oberfläche sieht, ist `visibleProblems`. */
   const problems = new LiveValue<SyncProblem[]>(scenarios.has("problems") ? sampleProblems(state.get(), stamp()) : []);
   const prefs = new LiveValue<DevicePrefs>({ ...DEFAULT_DEVICE_PREFS });
   const app = new LiveValue<AppState>({
     version: APP_VERSION,
     secure_context: !scenarios.has("insecure"),
     installed: false,
-    can_install: false,
+    can_install: scenarios.has("installable"),
+    manual_install: scenarios.has("ios") ? "ios" : null,
     update_ready: scenarios.has("update"),
+    update_required: scenarios.has("update-required"),
     storage_persistent: null,
   });
+
+  // Nachgespielter Druck (siehe Kopf der Datei).
+  let piReachable = scenarios.has("at-pi");
+  let printOutcome: MockPrintOutcome = "printed";
+  const troubled = scenarios.has("printer-trouble");
+  const BOOT_IDS = { server: "5e77e700-0000-4000-8000-000000000001", pi: "c0ffee00-0000-4000-8000-000000000001" } as const;
 
   // ---------------------------------------------------------------- Hilfen
 
@@ -247,18 +335,6 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     return state.get().products.find((product) => product.deleted_at === null && product.barcodes.includes(barcode));
   }
 
-  function checkBarcode(barcode: string): void {
-    if (!isValidBarcode(barcode)) {
-      throw new CoreError("invalid", `Kein gültiger Barcode: ${barcode}`);
-    }
-  }
-
-  function checkWarnDays(value: number | null | undefined): void {
-    if (value !== null && value !== undefined && (!Number.isInteger(value) || value < 0 || value > 3650)) {
-      throw new CoreError("invalid", "Die Vorlaufzeit muss zwischen 0 und 3650 Tagen liegen.");
-    }
-  }
-
   function newPackageId(): string {
     for (;;) {
       const id = randomPackageId();
@@ -268,17 +344,18 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     }
   }
 
+  /** Baut ein Produkt aus schon geprüften Angaben. */
   function buildProduct(input: NewProduct, lookup: Product["lookup"]): Product {
     const now = stamp();
     return {
       id: newUuid(),
-      name: clean(input.name),
-      brand: clean(input.brand),
-      quantity: clean(input.quantity),
+      name: input.name,
+      brand: input.brand ?? "",
+      quantity: input.quantity ?? "",
       image: null,
       warn_days: input.warn_days ?? null,
       lookup,
-      barcodes: [...(input.barcodes ?? [])].sort(),
+      barcodes: [...new Set(input.barcodes ?? [])].sort(),
       created_at: now,
       updated_at: now,
       deleted_at: null,
@@ -303,6 +380,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
                 name: found && product.name === "" ? `Beispielprodukt ${barcode.slice(-4)}` : product.name,
                 brand: found && product.brand === "" ? "Beispielmarke" : product.brand,
                 quantity: found && product.quantity === "" ? "500 g" : product.quantity,
+                image: found && product.image === null ? SAMPLE_IMAGE_ID : product.image,
                 updated_at: stamp(),
               }
             : product,
@@ -321,21 +399,25 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       if (known) {
         return { product: known, created: false };
       }
-      const lookup = isStoreInternalBarcode(ref.barcode) ? "none" : "pending";
-      return { product: buildProduct({ name: ref.name ?? "", barcodes: [ref.barcode] }, lookup), created: true };
+      // Dieselbe Regel wie im Kern: Nur was der Server nachschlägt, beginnt als "pending".
+      const lookup = willLookUp(ref.barcode, syncStatus.get().lookup_enabled) ? "pending" : "none";
+      const name = optionalText(ref.name, LIMITS.product_name, "Der Name");
+      return { product: buildProduct({ name, barcodes: [ref.barcode] }, lookup), created: true };
     }
-    if (clean(ref.name) === "") {
-      throw new CoreError("invalid", "Das Produkt braucht einen Namen.");
-    }
+    const name = requiredText(ref.name, LIMITS.product_name, "Das Produkt");
+    const brand = optionalText(ref.brand, LIMITS.brand, "Die Marke");
+    const quantity = optionalText(ref.quantity, LIMITS.quantity, "Die Packungsgröße");
     checkWarnDays(ref.warn_days);
-    for (const barcode of ref.barcodes ?? []) {
+    const barcodes = [...new Set(ref.barcodes ?? [])];
+    checkBarcodeCount(barcodes.length);
+    for (const barcode of barcodes) {
       checkBarcode(barcode);
       const owner = barcodeOwner(barcode);
       if (owner) {
         throw new CoreError("barcode_taken", "Der Barcode gehört schon zu einem anderen Produkt.", { product_id: owner.id });
       }
     }
-    return { product: buildProduct(ref, "none"), created: true };
+    return { product: buildProduct({ name, brand, quantity, warn_days: ref.warn_days ?? null, barcodes }, "none"), created: true };
   }
 
   function buildJob(subject: { package_id: string } | { zone_id: string }, printerId: string | null): PrintJob {
@@ -356,10 +438,10 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     };
   }
 
-  function setJobState(id: string, next: PrintJob["state"], error: string | null = null): void {
+  function setJobState(id: string, next: PrintJob["state"], error: string | null = null, changes: Partial<PrintJob> = {}): void {
     state.update((data) => ({
       ...data,
-      printJobs: data.printJobs.map((job) => (job.id === id ? { ...job, state: next, error, updated_at: stamp() } : job)),
+      printJobs: data.printJobs.map((job) => (job.id === id ? { ...job, ...changes, state: next, error, updated_at: stamp() } : job)),
     }));
   }
 
@@ -371,14 +453,167 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     return job;
   }
 
-  /** Welcher Drucker ein Etikett druckt: der genannte, sonst der der Zone, sonst der Standarddrucker. */
+  /** Welcher Drucker ein Etikett druckt: dieselbe Regel wie im Kern (`printerIdForJob`). */
   function printerFor(job: PrintJob): Printer | undefined {
     const data = state.get();
-    const pkg = job.package_id ? data.packages.find((candidate) => candidate.id === job.package_id) : undefined;
-    const zoneId = job.zone_id ?? pkg?.zone_id;
-    const zone = data.zones.find((candidate) => candidate.id === zoneId);
-    const printerId = job.printer_id ?? zone?.printer_id ?? data.settings.default_printer_id;
-    return data.printers.find((printer) => printer.id === printerId && printer.deleted_at === null);
+    const printerId = printerIdForJob(job, {
+      package: (id) => data.packages.find((candidate) => candidate.id === id),
+      zone: (id) => data.zones.find((candidate) => candidate.id === id),
+      printer: (id) => data.printers.find((candidate) => candidate.id === id),
+      settings: data.settings,
+    });
+    return data.printers.find((printer) => printer.id === printerId);
+  }
+
+  /** Erreicht dieses Gerät den Druckdienst des Druckers? */
+  function reachable(printer: Printer): boolean {
+    return printer.connection === "server" ? syncStatus.get().online === true : piReachable;
+  }
+
+  function ownDeviceId(): string | null {
+    const current = session.get();
+    return current.status === "signed_in" ? current.device.id : null;
+  }
+
+  /** Die eigenen ausstehenden Etiketten: Nur die stellt dieses Gerät zu. */
+  function ownPending(): PrintJob[] {
+    const own = ownDeviceId();
+    return state
+      .get()
+      .printJobs.filter((job) => job.state === "pending" && job.device_id === own)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  }
+
+  function printerStatusFor(printer: Printer): PrinterStatus {
+    const direct = printer.connection === "direct";
+    const sample = troubled ? troubledPrinterStatus(clock()).find((status) => status.printer_id === (direct ? PRINTER_IDS.cellar : PRINTER_IDS.kitchen)) : undefined;
+    return {
+      printer_id: printer.id,
+      observed_at: stamp(),
+      boot_id: direct ? BOOT_IDS.pi : BOOT_IDS.server,
+      status: sample?.status ?? { reachable: true, ready: true, media_detected: direct ? true : null, errors: [] },
+      host: direct
+        ? (sample?.host ?? {
+            uptime_s: 4321,
+            temperature_c: 49.8,
+            throttled: false,
+            undervoltage: null,
+            storage_errors: 0,
+            storage_read_only: false,
+            overlay_used_pct: 8.1,
+            memory_available_mb: 298,
+          })
+        : null,
+    };
+  }
+
+  function rememberStatus(status: PrinterStatus): void {
+    state.update((data) => ({
+      ...data,
+      printerStatus: [...data.printerStatus.filter((candidate) => candidate.printer_id !== status.printer_id), status],
+    }));
+  }
+
+  /**
+   * Ein Zustellversuch: Eigene ausstehende Etiketten eines erreichbaren Druckers werden
+   * angenommen ("queued") und nach der Wartezeit gedruckt. Liefert, was der Versuch gebracht hat.
+   */
+  function deliver(): PrintFlushReport {
+    const report: PrintFlushReport = { delivered: 0, pending: 0, problems: [] };
+    const accepted: { job: PrintJob; printer: Printer }[] = [];
+    const seen = new Set<string | null>();
+    for (const job of ownPending()) {
+      const printer = printerFor(job);
+      if (printer && reachable(printer)) {
+        accepted.push({ job, printer });
+        continue;
+      }
+      report.pending += 1;
+      const key = printer?.id ?? null;
+      if (!seen.has(key)) {
+        seen.add(key);
+        report.problems.push(
+          !printer
+            ? { printer_id: null, problem: "no_printer", message: "Dem Etikett ist kein Drucker zugeordnet." }
+            : printer.connection === "server"
+              ? { printer_id: printer.id, problem: "offline", message: "Der Server ist nicht erreichbar." }
+              : { printer_id: printer.id, problem: "unreachable", message: "Der Druckdienst antwortet auf keiner Adresse." },
+        );
+      }
+    }
+    report.delivered = accepted.length;
+    if (accepted.length === 0) {
+      return report;
+    }
+    for (const printer of new Set(accepted.map((entry) => entry.printer))) {
+      rememberStatus(printerStatusFor(printer));
+    }
+    for (const { job, printer } of accepted) {
+      const bootId = printer.connection === "direct" ? BOOT_IDS.pi : BOOT_IDS.server;
+      setJobState(job.id, "queued", null, { printer_id: printer.id, boot_id: bootId });
+    }
+    const outcome = printOutcome;
+    later(() => {
+      for (const { job } of accepted) {
+        if (state.get().printJobs.find((candidate) => candidate.id === job.id)?.state !== "queued") {
+          continue; // inzwischen verworfen
+        }
+        if (outcome === "printed") {
+          setJobState(job.id, "printed");
+        } else if (outcome === "failed") {
+          setJobState(job.id, "failed", "no_media");
+        } else {
+          setJobState(job.id, "unknown", "interrupted");
+        }
+      }
+      changed(accepted.length);
+    }, 2);
+    return report;
+  }
+
+  /** Stellt nach einer Änderung von selbst zu, so wie es der Kern tut. */
+  function deliverSoon(): void {
+    later(() => {
+      deliver();
+    });
+  }
+
+  /** Eine Bearbeitung, die eine entnommene Packung traf: aufheben statt anwenden (Sync-Protokoll 7.2). */
+  function displace(pkg: Package, fresh: DisplacedChange[], at: string): Package {
+    const kept = (pkg.displaced?.changes ?? []).filter((old) => !fresh.some((change) => change.field === old.field));
+    return { ...pkg, displaced: { at, changes: [...kept, ...fresh] } };
+  }
+
+  /**
+   * Was `sync.problems` zeigt: höchstens `MAX_SYNC_PROBLEMS`, und ein "displaced"-Eintrag nur,
+   * solange seine Packung die verdrängte Bearbeitung noch trägt.
+   */
+  const visibleProblems = new LiveValue<SyncProblem[]>([]);
+  function refreshProblems(): void {
+    const packages = state.get().packages;
+    const next = problems
+      .get()
+      .filter((problem) => {
+        if (problem.status !== "displaced" || problem.command.type !== "package.update") {
+          return true;
+        }
+        const packageId = problem.command.package_id;
+        const pkg = packages.find((candidate) => candidate.id === packageId);
+        return pkg !== undefined && pkg.removed_at !== null && pkg.displaced !== null;
+      })
+      .slice(0, MAX_SYNC_PROBLEMS);
+    const current = visibleProblems.get();
+    if (next.length !== current.length || next.some((problem, index) => problem !== current[index])) {
+      visibleProblems.set(next);
+    }
+  }
+  refreshProblems();
+  problems.subscribe(refreshProblems);
+  state.subscribe(refreshProblems);
+
+  function previewImage(): Blob {
+    const bytes = Uint8Array.from(atob(PREVIEW_PNG_BASE64), (char) => char.charCodeAt(0));
+    return new Blob([bytes], { type: "image/png" });
   }
 
   // ---------------------------------------------------------------- Die Schnittstelle
@@ -389,13 +624,10 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       async login(password, deviceName) {
         await wait();
         requireOnline();
-        if (clean(deviceName) === "") {
-          throw new CoreError("invalid", "Das Gerät braucht einen Namen.");
-        }
+        const name = checkDeviceName(deviceName);
         if (password !== MOCK_PASSWORD) {
           throw new CoreError("invalid_password", "Das Passwort stimmt nicht.");
         }
-        const name = clean(deviceName);
         state.update((data) => ({
           ...data,
           devices: data.devices.map((device) => (device.current ? { ...device, name, last_seen_at: stamp() } : device)),
@@ -409,13 +641,15 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           throw new CoreError("pending_changes", "Es gibt ungesendete Änderungen.", { pending });
         }
         syncStatus.update((status) => ({ ...status, pending: 0 }));
-        session.set({ status: "signed_out", reason: "logout" });
+        problems.set([]);
+        // Der Name bleibt als Vorschlag für die nächste Anmeldung.
+        session.set({ status: "signed_out", reason: "logout", last_device_name: currentName() });
       },
     },
 
     sync: {
       status: syncStatus,
-      problems,
+      problems: visibleProblems,
       async now() {
         syncStatus.update((status) => ({ ...status, phase: "syncing" }));
         await wait();
@@ -494,18 +728,15 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         return barcodeOwner(barcode);
       },
       imageUrl(image) {
-        return `/api/images/${encodeURIComponent(image)}`;
+        // Die Bilder der Attrappe liegen in der App selbst; alles andere zeigt wie im Kern auf den Server.
+        return MOCK_IMAGES[image] ?? `/api/images/${encodeURIComponent(image)}`;
       },
     },
 
     stock: {
       async store(input: StoreInput): Promise<StoreResult> {
-        if (!Number.isInteger(input.count) || input.count < 1 || input.count > MAX_STORE_COUNT) {
-          throw new CoreError("invalid", `Die Menge muss zwischen 1 und ${MAX_STORE_COUNT} liegen.`);
-        }
-        if (input.best_before !== null && !isDate(input.best_before)) {
-          throw new CoreError("invalid", "Das MHD ist kein gültiges Datum.");
-        }
+        checkStoreCount(input.count);
+        checkBestBefore(input.best_before);
         const zone = activeZone(input.zone_id);
         const { product, created } = resolveProduct(input.product);
         const now = stamp();
@@ -542,6 +773,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         const firstBarcode = product.barcodes[0];
         if (created && product.lookup === "pending" && firstBarcode) {
           simulateLookup(product.id, firstBarcode);
+        }
+        if (jobs.length > 0) {
+          deliverSoon();
         }
         return { product, packages, print_jobs: jobs };
       },
@@ -596,30 +830,62 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
 
       async update(packageIds: string[], changes: PackageChanges) {
-        existingPackages(packageIds);
-        if (changes.best_before !== undefined && changes.best_before !== null && !isDate(changes.best_before)) {
-          throw new CoreError("invalid", "Das MHD ist kein gültiges Datum.");
+        const targets = existingPackages(packageIds);
+        if ("best_before" in changes) {
+          checkBestBefore(changes.best_before ?? null);
         }
         const zoneId = changes.zone_id === undefined ? undefined : activeZone(changes.zone_id).id;
         const productId = changes.product_id === undefined ? undefined : activeProduct(changes.product_id).id;
+        const fresh: DisplacedChange[] = [];
+        if ("best_before" in changes) {
+          fresh.push({ field: "best_before", value: changes.best_before ?? null });
+        }
+        if (zoneId !== undefined) {
+          fresh.push({ field: "zone_id", value: zoneId });
+        }
+        if (productId !== undefined) {
+          fresh.push({ field: "product_id", value: productId });
+        }
+        if (fresh.length === 0) {
+          return; // ohne Felder: ohne Wirkung
+        }
         const now = stamp();
         mutate(
           (data) => ({
             ...data,
-            packages: data.packages.map((pkg) =>
-              packageIds.includes(pkg.id)
-                ? {
-                    ...pkg,
-                    best_before: "best_before" in changes ? (changes.best_before ?? null) : pkg.best_before,
-                    zone_id: zoneId ?? pkg.zone_id,
-                    product_id: productId ?? pkg.product_id,
-                    updated_at: now,
-                  }
-                : pkg,
-            ),
+            packages: data.packages.map((pkg) => {
+              if (!packageIds.includes(pkg.id)) {
+                return pkg;
+              }
+              if (pkg.removed_at !== null) {
+                // Löschen gewinnt: Die Bearbeitung wird aufgehoben, nicht angewendet.
+                return displace(pkg, fresh, now);
+              }
+              return {
+                ...pkg,
+                best_before: "best_before" in changes ? (changes.best_before ?? null) : pkg.best_before,
+                zone_id: zoneId ?? pkg.zone_id,
+                product_id: productId ?? pkg.product_id,
+                updated_at: now,
+              };
+            }),
           }),
           packageIds.length,
         );
+        // Der echte Kern erfährt es erst beim Abgleich; die Attrappe trägt das Sync-Problem sofort ein.
+        const displaced: SyncProblem[] = targets
+          .filter((pkg) => pkg.removed_at !== null)
+          .map((pkg) => ({
+            id: newUuid(),
+            at: now,
+            status: "displaced",
+            code: null,
+            message: null,
+            command: { id: newUuid(), at: now, type: "package.update", package_id: pkg.id, changes },
+          }));
+        if (displaced.length > 0) {
+          problems.update((list) => [...displaced, ...list]);
+        }
       },
     },
 
@@ -631,9 +897,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
       async update(id: string, changes: ProductChanges) {
         const product = activeProduct(id);
-        if (changes.name !== undefined && clean(changes.name) === "") {
-          throw new CoreError("invalid", "Das Produkt braucht einen Namen.");
-        }
+        const name = changes.name === undefined ? undefined : requiredText(changes.name, LIMITS.product_name, "Das Produkt");
+        const brand = changes.brand === undefined ? undefined : optionalText(changes.brand, LIMITS.brand, "Die Marke");
+        const quantity = changes.quantity === undefined ? undefined : optionalText(changes.quantity, LIMITS.quantity, "Die Packungsgröße");
         checkWarnDays(changes.warn_days);
         mutate((data) => ({
           ...data,
@@ -641,9 +907,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             candidate.id === product.id
               ? {
                   ...candidate,
-                  name: changes.name === undefined ? candidate.name : clean(changes.name),
-                  brand: changes.brand === undefined ? candidate.brand : clean(changes.brand),
-                  quantity: changes.quantity === undefined ? candidate.quantity : clean(changes.quantity),
+                  name: name ?? candidate.name,
+                  brand: brand ?? candidate.brand,
+                  quantity: quantity ?? candidate.quantity,
                   warn_days: "warn_days" in changes ? (changes.warn_days ?? null) : candidate.warn_days,
                   updated_at: stamp(),
                 }
@@ -661,6 +927,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         if (owner) {
           return;
         }
+        checkBarcodeCount(product.barcodes.length + 1);
         mutate((data) => ({
           ...data,
           products: data.products.map((candidate) =>
@@ -706,16 +973,21 @@ export function createMockCore(options: MockOptions = {}): MockCore {
 
     zones: {
       async create(input: NewZone) {
-        if (clean(input.name) === "") {
-          throw new CoreError("invalid", "Die Zone braucht einen Namen.");
+        const name = requiredText(input.name, LIMITS.zone_name, "Die Zone");
+        const icon = input.icon ?? "box";
+        const color = input.color ?? null;
+        checkZoneIcon(icon);
+        checkZoneColor(color);
+        if (input.printer_id) {
+          activePrinter(input.printer_id);
         }
         const now = stamp();
         const zones = state.get().zones.filter((zone) => zone.deleted_at === null);
         const zone: Zone = {
           id: newUuid(),
-          name: clean(input.name),
-          icon: input.icon ?? "box",
-          color: input.color ?? null,
+          name,
+          icon,
+          color,
           sort: zones.reduce((highest, candidate) => Math.max(highest, candidate.sort), -1) + 1,
           printer_id: input.printer_id ?? null,
           created_at: now,
@@ -728,8 +1000,15 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
       async update(id: string, changes: ZoneChanges) {
         const zone = activeZone(id);
-        if (changes.name !== undefined && clean(changes.name) === "") {
-          throw new CoreError("invalid", "Die Zone braucht einen Namen.");
+        const name = changes.name === undefined ? undefined : requiredText(changes.name, LIMITS.zone_name, "Die Zone");
+        if (changes.icon !== undefined) {
+          checkZoneIcon(changes.icon);
+        }
+        if ("color" in changes) {
+          checkZoneColor(changes.color ?? null);
+        }
+        if (changes.printer_id) {
+          activePrinter(changes.printer_id);
         }
         mutate((data) => ({
           ...data,
@@ -737,7 +1016,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             candidate.id === zone.id
               ? {
                   ...candidate,
-                  name: changes.name === undefined ? candidate.name : clean(changes.name),
+                  name: name ?? candidate.name,
                   icon: changes.icon ?? candidate.icon,
                   color: "color" in changes ? (changes.color ?? null) : candidate.color,
                   sort: changes.sort ?? candidate.sort,
@@ -796,10 +1075,14 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         if (changes.default_printer_id) {
           activePrinter(changes.default_printer_id);
         }
-        checkWarnDays(changes.warn_days);
-        const retention = changes.trash_retention_days;
-        if (retention !== undefined && (!Number.isInteger(retention) || retention < 1 || retention > 3650)) {
-          throw new CoreError("invalid", "Die Aufbewahrungsdauer muss zwischen 1 und 3650 Tagen liegen.");
+        if (changes.warn_days !== undefined) {
+          if (changes.warn_days === null) {
+            throw new CoreError("invalid", "Die Vorlaufzeit des Haushalts darf nicht leer sein.");
+          }
+          checkWarnDays(changes.warn_days);
+        }
+        if (changes.trash_retention_days !== undefined) {
+          checkRetentionDays(changes.trash_retention_days);
         }
         mutate((data) => ({ ...data, settings: { ...data.settings, ...changes, updated_at: stamp() } }));
       },
@@ -814,13 +1097,18 @@ export function createMockCore(options: MockOptions = {}): MockCore {
 
     printers: {
       async create(input: NewPrinter) {
-        if (clean(input.name) === "") {
-          throw new CoreError("invalid", "Der Drucker braucht einen Namen.");
+        const name = requiredText(input.name, LIMITS.printer_name, "Der Drucker");
+        if (input.connection === "server") {
+          checkServerConfig(input.server);
+        } else if (input.connection === "direct") {
+          checkDirectConfig(input.direct);
+        } else {
+          throw new CoreError("invalid", "Unbekannte Art der Verbindung.");
         }
         const now = stamp();
         const printer: Printer = {
           id: newUuid(),
-          name: clean(input.name),
+          name,
           connection: input.connection,
           server: input.connection === "server" ? input.server : null,
           direct: input.connection === "direct" ? input.direct : null,
@@ -833,11 +1121,15 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
       async update(id: string, changes: PrinterChanges) {
         const printer = activePrinter(id);
-        if (changes.name !== undefined && clean(changes.name) === "") {
-          throw new CoreError("invalid", "Der Drucker braucht einen Namen.");
-        }
-        if ((changes.server && printer.connection !== "server") || (changes.direct && printer.connection !== "direct")) {
+        const name = changes.name === undefined ? undefined : requiredText(changes.name, LIMITS.printer_name, "Der Drucker");
+        if ((changes.server !== undefined && printer.connection !== "server") || (changes.direct !== undefined && printer.connection !== "direct")) {
           throw new CoreError("invalid", "Die Art der Verbindung lässt sich nicht ändern.");
+        }
+        if (changes.server !== undefined) {
+          checkServerConfig(changes.server);
+        }
+        if (changes.direct !== undefined) {
+          checkDirectConfig(changes.direct);
         }
         mutate((data) => ({
           ...data,
@@ -845,7 +1137,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             candidate.id === printer.id
               ? {
                   ...candidate,
-                  name: changes.name === undefined ? candidate.name : clean(changes.name),
+                  name: name ?? candidate.name,
                   server: changes.server ?? candidate.server,
                   direct: changes.direct ?? candidate.direct,
                   updated_at: stamp(),
@@ -870,25 +1162,20 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       async probe(id: string): Promise<PrinterProbe> {
         const printer = activePrinter(id);
         await wait();
-        if (printer.connection === "server" && !syncStatus.get().online) {
-          return { reachable: false, url: null, health: null, error: "Der Server ist nicht erreichbar." };
+        if (!reachable(printer)) {
+          return printer.connection === "server"
+            ? { reachable: false, url: null, health: null, problem: "offline", error: "Der Server ist nicht erreichbar." }
+            : { reachable: false, url: null, health: null, problem: "unreachable", error: "Der Druckdienst antwortet auf keiner Adresse." };
         }
-        const health = sampleHealth(printer);
-        const observed = stamp();
-        state.update((data) => ({
-          ...data,
-          printerStatus: [
-            ...data.printerStatus.filter((status) => status.printer_id !== printer.id),
-            {
-              printer_id: printer.id,
-              observed_at: observed,
-              boot_id: health.boot_id,
-              status: health.printers?.[0]?.status ?? null,
-              host: health.host,
-            },
-          ],
-        }));
-        return { reachable: true, url: printer.direct?.urls[0] ?? null, health, error: null };
+        const status = printerStatusFor(printer);
+        rememberStatus(status);
+        const health = sampleHealth(printer, status);
+        // Ein direkter Drucker bringt seinen Zustand mit dem nächsten Abgleich zum Server (`printer.report`).
+        if (printer.connection === "direct") {
+          changed();
+        }
+        deliverSoon();
+        return { reachable: true, url: printer.direct?.urls[0] ?? null, health, problem: null, error: null };
       },
     },
 
@@ -896,24 +1183,36 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       async requestPackageLabels(packageIds: string[], requestOptions) {
         existingPackages(packageIds);
         requirePrinter();
-        const jobs = packageIds.map((id) => buildJob({ package_id: id }, requestOptions?.printer_id ?? null));
+        const printerId = requestOptions?.printer_id ? activePrinter(requestOptions.printer_id).id : null;
+        const jobs = [...new Set(packageIds)].map((id) => buildJob({ package_id: id }, printerId));
         mutate((data) => ({ ...data, printJobs: [...data.printJobs, ...jobs] }), jobs.length);
+        deliverSoon();
         return jobs;
       },
       async requestZoneLabel(zoneId: string, requestOptions) {
         const zone = activeZone(zoneId);
         requirePrinter();
-        const job = buildJob({ zone_id: zone.id }, requestOptions?.printer_id ?? null);
+        const printerId = requestOptions?.printer_id ? activePrinter(requestOptions.printer_id).id : null;
+        const job = buildJob({ zone_id: zone.id }, printerId);
         mutate((data) => ({ ...data, printJobs: [...data.printJobs, job] }));
+        deliverSoon();
         return job;
       },
       async retry(jobId: string) {
         const old = findJob(jobId);
-        if (!["failed", "unknown", "cancelled"].includes(old.state)) {
+        // Ein ausstehendes Etikett eines anderen Geräts übernehmen: das alte verwerfen, ein eigenes anlegen.
+        const takeOver = old.state === "pending" && old.device_id !== ownDeviceId();
+        if (!takeOver && !["failed", "unknown", "cancelled"].includes(old.state)) {
           throw new CoreError("invalid", "Nur fehlgeschlagene, unklare oder verworfene Etiketten lassen sich wiederholen.");
         }
-        const job = buildJob(old.package_id ? { package_id: old.package_id } : { zone_id: old.zone_id ?? "" }, old.printer_id);
-        mutate((data) => ({ ...data, printJobs: [...data.printJobs, job] }));
+        // Ein inzwischen gelöschter Drucker gilt als nicht gewählt.
+        const stillThere = state.get().printers.some((printer) => printer.id === old.printer_id && printer.deleted_at === null);
+        const job = buildJob(old.package_id ? { package_id: old.package_id } : { zone_id: old.zone_id ?? "" }, stillThere ? old.printer_id : null);
+        if (takeOver) {
+          setJobState(old.id, "cancelled");
+        }
+        mutate((data) => ({ ...data, printJobs: [...data.printJobs, job] }), takeOver ? 2 : 1);
+        deliverSoon();
         return job;
       },
       async cancel(jobId: string) {
@@ -933,23 +1232,53 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         changed();
       },
       async flush() {
-        const pending = state.get().printJobs.filter((job) => job.state === "pending" && printerFor(job));
-        for (const job of pending) {
-          setJobState(job.id, "printing");
-        }
+        const report = deliver();
+        // Wie im Kern: erfüllt sich erst nach dem Versuch, also wenn das Ergebnis feststeht.
         await wait(2);
-        for (const job of pending) {
-          setJobState(job.id, "printed");
-        }
-        if (pending.length > 0) {
-          changed(pending.length);
-        }
+        return report;
       },
-      async preview() {
+      async preview(subject, previewOptions) {
+        if (subject.kind === "package") {
+          existingPackages([subject.package_id]);
+        } else {
+          activeZone(subject.zone_id);
+        }
+        if (previewOptions?.printer_id) {
+          activePrinter(previewOptions.printer_id);
+        }
         await wait();
         requireOnline();
-        const bytes = Uint8Array.from(atob(PREVIEW_PNG_BASE64), (char) => char.charCodeAt(0));
-        return new Blob([bytes], { type: "image/png" });
+        return previewImage();
+      },
+      async image(jobId: string) {
+        const job = findJob(jobId);
+        const printer = state.get().printers.find((candidate) => candidate.id === job.printer_id);
+        if (printer?.server?.driver !== "image" || !["printed", "sent"].includes(job.state)) {
+          throw new CoreError("not_found", "Zu diesem Etikett gibt es kein Bild.");
+        }
+        await wait();
+        requireOnline();
+        return previewImage();
+      },
+      async handoff(printerId: string) {
+        const printer = activePrinter(printerId);
+        if (printer.connection !== "direct" || !printer.direct) {
+          throw new CoreError("invalid", "Die Seite des Druckdienstes gibt es nur bei einem direkten Drucker.");
+        }
+        const waiting = ownPending().filter((job) => printerFor(job)?.id === printer.id);
+        // Eine Übergabe trägt eine Vorlage: nur Etiketten der Art des ältesten.
+        const jobs = waiting.filter((job) => job.kind === waiting[0]?.kind).slice(0, MAX_HANDOFF_JOBS);
+        if (jobs.length === 0) {
+          throw new CoreError("not_found", "Für diesen Drucker steht kein eigenes Etikett aus.");
+        }
+        for (const job of jobs) {
+          setJobState(job.id, "unknown", "handoff", { printer_id: printer.id });
+        }
+        changed(jobs.length);
+        const base = printer.direct.urls.find((url) => url.startsWith("http://")) ?? printer.direct.urls[0] ?? "";
+        const handed = state.get().printJobs.filter((job) => jobs.some((candidate) => candidate.id === job.id));
+        // Die Attrappe hat keinen Druckdienst: Die Adresse zeigt nur, wie sie aussähe.
+        return { url: `${base.replace(/\/+$/, "")}/p#attrappe-${jobs.length}`, jobs: handed };
       },
     },
 
@@ -960,11 +1289,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         return state.get().devices;
       },
       async rename(id: string, name: string) {
+        const wanted = checkDeviceName(name);
         await wait(0.5);
         requireOnline();
-        if (clean(name) === "") {
-          throw new CoreError("invalid", "Das Gerät braucht einen Namen.");
-        }
         let renamed: Device | undefined;
         state.update((data) => ({
           ...data,
@@ -972,7 +1299,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             if (device.id !== id) {
               return device;
             }
-            renamed = { ...device, name: clean(name) };
+            renamed = { ...device, name: wanted };
             return renamed;
           }),
         }));
@@ -997,7 +1324,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           devices: data.devices.map((candidate) => (candidate.id === id ? { ...candidate, revoked_at: candidate.revoked_at ?? stamp() } : candidate)),
         }));
         if (device.current) {
-          session.set({ status: "signed_out", reason: "revoked" });
+          session.set({ status: "signed_out", reason: "revoked", last_device_name: device.name });
         }
       },
     },
@@ -1016,10 +1343,19 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     app: {
       state: app,
       async applyUpdate() {
-        app.update((value) => ({ ...value, update_ready: false }));
+        // Der echte Kern lädt die App neu; die Attrappe räumt nur die Anzeige ab.
+        app.update((value) => ({ ...value, update_ready: false, update_required: false }));
       },
       async promptInstall() {
-        return false;
+        if (!app.get().can_install) {
+          return false;
+        }
+        app.update((value) => ({ ...value, can_install: false, installed: true }));
+        return true;
+      },
+      async requestPersistence() {
+        app.update((value) => ({ ...value, storage_persistent: true }));
+        return true;
       },
     },
 
@@ -1035,15 +1371,30 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           syncScheduled = false;
           changed(0);
         }
+        if (online) {
+          deliverSoon();
+        }
       },
       revoke() {
-        session.set({ status: "signed_out", reason: "revoked" });
+        session.set({ status: "signed_out", reason: "revoked", last_device_name: currentName() });
       },
       setUpdateReady(ready: boolean) {
         app.update((value) => ({ ...value, update_ready: ready }));
       },
       addProblem(problem: SyncProblem) {
         problems.update((list) => [problem, ...list]);
+      },
+      setPiReachable(next: boolean) {
+        piReachable = next;
+        if (next) {
+          deliverSoon();
+        }
+      },
+      setPrintOutcome(outcome: MockPrintOutcome) {
+        printOutcome = outcome;
+      },
+      setLookupEnabled(enabled: boolean) {
+        syncStatus.update((status) => ({ ...status, lookup_enabled: enabled }));
       },
       snapshot() {
         return state.get();
@@ -1054,32 +1405,22 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   return core;
 }
 
-function sampleHealth(printer: Printer): ServiceHealth {
+function sampleHealth(printer: Printer, status: PrinterStatus): ServiceHealth {
   const direct = printer.connection === "direct";
   return {
     app: "stowly-print",
     version: "0.1.0",
     protocol: 1,
-    boot_id: direct ? "c0ffee00-0000-4000-8000-000000000001" : "server",
+    boot_id: status.boot_id ?? "",
     uptime_s: 4321,
     proof: null,
-    host: direct
-      ? {
-          uptime_s: 4321,
-          temperature_c: 49.8,
-          throttled: false,
-          undervoltage: null,
-          storage_errors: 0,
-          storage_read_only: false,
-          overlay_used_pct: 8.1,
-          memory_available_mb: 298,
-        }
-      : null,
+    host: status.host,
     printers: [
       {
-        name: direct ? "ql800" : "bild",
-        driver: direct ? "brother_ql" : "image",
-        model: direct ? "QL-800" : null,
+        // Am Server heißt ein Drucker im Druckdienst wie seine Kennung, am Pi trägt er einen eigenen Namen.
+        name: direct ? (printer.direct?.printer ?? "ql800") : printer.id,
+        driver: direct ? "brother_ql" : (printer.server?.driver ?? "image"),
+        model: direct ? "QL-800" : (printer.server?.model ?? null),
         capabilities: {
           dpi: 300,
           media: { width_mm: 62, length_mm: null, printable_px: 696 },
@@ -1088,7 +1429,7 @@ function sampleHealth(printer: Printer): ServiceHealth {
           status_query: direct,
           confirms_print: direct,
         },
-        status: { reachable: true, ready: true, media_detected: direct ? true : null, errors: [] },
+        status: status.status ?? { reachable: true, ready: true, media_detected: null, errors: [] },
       },
     ],
   };
@@ -1096,7 +1437,8 @@ function sampleHealth(printer: Printer): ServiceHealth {
 
 function sampleProblems(data: MockData, at: string): SyncProblem[] {
   const active = data.packages.filter((pkg) => pkg.removed_at === null);
-  const removed = data.packages.find((pkg) => pkg.removed_at !== null);
+  // Die entnommene Packung, die wirklich eine verdrängte Bearbeitung trägt.
+  const removed = data.packages.find((pkg) => pkg.removed_at !== null && pkg.displaced !== null);
   const first = active[0];
   const result: SyncProblem[] = [];
   if (first) {

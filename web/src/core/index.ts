@@ -28,7 +28,7 @@ import { createDataApi } from "./api/data";
 import { createPrintApi, createPrintersApi } from "./api/printing";
 import { toCoreError, type CoreRuntime } from "./api/runtime";
 import { createStockApi } from "./api/stock";
-import { clean, invalid, LIMITS } from "./api/validate";
+import { checkDeviceName, invalid, LIMITS } from "./api/validate";
 import { BACKGROUND_SYNC_TAG } from "./background";
 import { DEFAULT_DB_NAME, type StoredSession } from "./db";
 import { ApiClient, type FetchLike } from "./http";
@@ -69,13 +69,15 @@ function sessionState(session: StoredSession | null): SessionState {
   if (session?.status === "signed_in" && session.device) {
     return { status: "signed_in", device: session.device };
   }
+  // Der zuletzt bekannte Name: Die Anmeldung schlägt ihn vor.
+  const lastName = session?.device?.name ?? session?.last_device_name ?? null;
   if (session?.status === "revoked") {
-    return { status: "signed_out", reason: "revoked" };
+    return { status: "signed_out", reason: "revoked", last_device_name: lastName };
   }
   if (session?.status === "logout") {
-    return { status: "signed_out", reason: "logout" };
+    return { status: "signed_out", reason: "logout", last_device_name: lastName };
   }
-  return { status: "signed_out", reason: "never" };
+  return { status: "signed_out", reason: "never", last_device_name: null };
 }
 
 function sameError(a: SyncStatus["last_error"], b: SyncStatus["last_error"]): boolean {
@@ -111,7 +113,9 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     secure_context: typeof globalThis.isSecureContext === "boolean" ? globalThis.isSecureContext : true,
     installed: isInstalled(),
     can_install: false,
+    manual_install: null,
     update_ready: false,
+    update_required: false,
     storage_persistent: null,
   });
 
@@ -137,7 +141,15 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
 
   // ---------------------------------------------------------------- Status des Abgleichs
 
-  const status = new Signal<SyncStatus>({ online: null, phase: "idle", pending: 0, last_synced_at: null, last_error: null, server_version: null });
+  const status = new Signal<SyncStatus>({
+    online: null,
+    phase: "idle",
+    pending: 0,
+    last_synced_at: null,
+    last_error: null,
+    server_version: null,
+    lookup_enabled: null,
+  });
 
   function patchStatus(changes: Partial<SyncStatus>): void {
     status.update((current) => {
@@ -148,6 +160,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         next.pending === current.pending &&
         next.last_synced_at === current.last_synced_at &&
         next.server_version === current.server_version &&
+        next.lookup_enabled === current.lookup_enabled &&
         sameError(next.last_error, current.last_error);
       return same ? current : next;
     });
@@ -155,7 +168,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
 
   const unsubscribeStore = store.state.subscribe(() => {
     const state = store.snapshot;
-    patchStatus({ pending: state.outbox.length, last_synced_at: state.meta.last_synced_at });
+    patchStatus({ pending: state.outbox.length, last_synced_at: state.meta.last_synced_at, lookup_enabled: state.meta.lookup_enabled });
   });
 
   const engine = new SyncEngine({
@@ -385,10 +398,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     if (!storageAvailable) {
       throw new CoreError("not_supported", "Der Browser lässt keine lokale Datenbank zu (privates Fenster?). Ohne sie kann Stowly nicht arbeiten.");
     }
-    const name = clean(deviceName);
-    if (name === "" || name.length > LIMITS.device_name) {
-      throw invalid(name === "" ? "Das Gerät braucht einen Namen." : `Der Name des Geräts ist zu lang (höchstens ${LIMITS.device_name} Zeichen).`);
-    }
+    const name = checkDeviceName(deviceName);
     if (typeof password !== "string" || password === "" || password.length > LIMITS.password) {
       throw new CoreError("invalid_password", "Das Passwort stimmt nicht.");
     }
@@ -515,10 +525,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         return devices;
       },
       async rename(id, name) {
-        const wanted = clean(name);
-        if (wanted === "" || wanted.length > LIMITS.device_name) {
-          throw invalid(wanted === "" ? "Das Gerät braucht einen Namen." : `Der Name des Geräts ist zu lang (höchstens ${LIMITS.device_name} Zeichen).`);
-        }
+        const wanted = checkDeviceName(name);
         const device = await runtime.server((token) => api.renameDevice(token, id, wanted));
         await store.renameDevice(device.id, device.name).catch(() => undefined);
         return device;
@@ -549,6 +556,10 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       },
       async promptInstall() {
         return false;
+      },
+      async requestPersistence() {
+        await checkPersistence(true);
+        return app.get().storage_persistent === true;
       },
     },
 

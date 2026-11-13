@@ -168,9 +168,18 @@ export function createPrintApi(runtime: CoreRuntime): PrintApi {
 
     async flush() {
       // Runde 2: Etiketten zustellen. Bis dahin bleiben sie "pending".
+      return { delivered: 0, pending: 0, problems: [] };
     },
 
     async preview() {
+      throw new CoreError("not_supported", ROUND_2);
+    },
+
+    async image() {
+      throw new CoreError("not_supported", ROUND_2);
+    },
+
+    async handoff() {
       throw new CoreError("not_supported", ROUND_2);
     },
   };

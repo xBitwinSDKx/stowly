@@ -12,7 +12,7 @@ export { Badge, type BadgeProps, type BadgeTone } from "./Badge";
 export { Button, IconButton, type ButtonProps, type ButtonSize, type ButtonVariant, type IconButtonProps } from "./Button";
 export { Card, type CardPadding, type CardProps, type CardTone } from "./Card";
 export { cx } from "./cx";
-export { Dialog, type DialogProps } from "./Dialog";
+export { Dialog, dialogFocus, dialogFocusAlways, type DialogProps } from "./Dialog";
 export { SegmentedControl, type SegmentedControlProps, type SegmentedOption } from "./SegmentedControl";
 export { Spinner, type SpinnerProps } from "./Spinner";
 export { Switch, type SwitchProps } from "./Switch";

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -8,6 +8,8 @@ import {
   Button,
   Card,
   Dialog,
+  dialogFocus,
+  dialogFocusAlways,
   IconButton,
   SegmentedControl,
   Spinner,
@@ -120,6 +122,70 @@ describe("Dialog", () => {
     await userEvent.click(screen.getByRole("button", { name: "Öffnen" }));
     await userEvent.click(screen.getByRole("button", { name: "Fertig" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  function Focused({ mode }: { mode: "pointer" | "always" | "none" }) {
+    const [open, setOpen] = useState(false);
+    const [mounted, setMounted] = useState(true);
+    return (
+      <>
+        <Button onClick={() => setOpen(true)}>Öffnen</Button>
+        <Button onClick={() => setMounted(false)}>Entfernen</Button>
+        {mounted ? (
+          <Dialog open={open} onClose={() => setOpen(false)} title="Name ändern">
+            <TextField label="Zuerst" />
+            <TextField ref={mode === "pointer" ? dialogFocus : mode === "always" ? dialogFocusAlways : undefined} label="Name" />
+          </Dialog>
+        ) : null}
+      </>
+    );
+  }
+
+  it("setzt den Anfangsfokus in das markierte Feld und gibt ihn beim Schließen zurück", async () => {
+    render(<Focused mode="pointer" />);
+    const opener = screen.getByRole("button", { name: "Öffnen" });
+    await userEvent.click(opener);
+    expect(screen.getByLabelText("Name")).toHaveFocus();
+
+    await userEvent.click(screen.getByRole("button", { name: "Schließen" }));
+    expect(opener).toHaveFocus();
+  });
+
+  it("lässt den Fokus ohne Markierung am Dialog selbst, nicht am Schließen-Knopf", async () => {
+    render(<Focused mode="none" />);
+    await userEvent.click(screen.getByRole("button", { name: "Öffnen" }));
+    const dialog = screen.getByRole("dialog", { name: "Name ändern" });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    expect(within(dialog).getByRole("button", { name: "Schließen" })).not.toHaveFocus();
+    expect(document.activeElement?.tagName).toBe("DIV");
+  });
+
+  it("öffnet bei Fingerbedienung nur auf Wunsch die Tastatur", async () => {
+    // Fingerbedienung: Die Abfrage "(pointer: coarse)" trifft zu.
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes("coarse"), media: query })) as unknown as typeof window.matchMedia;
+    try {
+      const { unmount } = render(<Focused mode="pointer" />);
+      await userEvent.click(screen.getByRole("button", { name: "Öffnen" }));
+      expect(screen.getByLabelText("Name")).not.toHaveFocus();
+      unmount();
+
+      render(<Focused mode="always" />);
+      await userEvent.click(screen.getByRole("button", { name: "Öffnen" }));
+      expect(screen.getByLabelText("Name")).toHaveFocus();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it("gibt den Fokus auch zurück, wenn der offene Dialog aus dem Baum fällt", async () => {
+    render(<Focused mode="pointer" />);
+    const opener = screen.getByRole("button", { name: "Öffnen" });
+    await userEvent.click(opener);
+    expect(screen.getByLabelText("Name")).toHaveFocus();
+    // Ohne Klick entfernen: Der Fokus liegt noch im Dialog.
+    act(() => screen.getByRole("button", { name: "Entfernen", hidden: true }).click());
+    expect(opener).toHaveFocus();
   });
 
   it("bietet ohne dismissable kein Schließen von außen an", async () => {

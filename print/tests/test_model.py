@@ -3,6 +3,7 @@ import io
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -18,7 +19,9 @@ from stowly_print import (
     JobRequest,
     JobState,
     Media,
+    PrinterError,
     PrinterInfo,
+    ServiceError,
     to_dict,
 )
 from stowly_print.drivers import Driver
@@ -168,3 +171,18 @@ def test_driver_protocol_is_structural():
 
     assert isinstance(Fake(), Driver)
     assert not isinstance(object(), Driver)
+
+
+def test_error_codes_match_the_contract_document():
+    """Die Codes im Code und in docs/etiketten.md sind dieselben (Abschnitte 5.3 und 5.5)."""
+    document = (Path(__file__).resolve().parents[2] / "docs" / "etiketten.md").read_text(encoding="utf-8")
+    after_head = document.split("| HTTP | `code` | Wann |", 1)[1].splitlines()
+    rows = [line for line in after_head[: after_head.index("", 1)] if line.startswith(("| 4", "| 5"))]
+    in_table = {line.split("|")[2].strip().strip("`") for line in rows}
+    assert in_table == {code.value for code in ServiceError}
+
+    status_line = next(
+        line for line in document.splitlines() if line.startswith("Zustand eines Druckers (`DriverStatus`)")
+    )
+    listed = status_line.split("mit diesen Codes:", 1)[1].split(".", 1)[0]
+    assert [part.strip().strip("`") for part in listed.split(",")] == [code.value for code in PrinterError]

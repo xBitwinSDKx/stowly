@@ -16,8 +16,12 @@ import {
   activeZone,
   activeZones,
   checkBarcode,
+  checkBarcodeCount,
   checkReference,
+  checkRetentionDays,
   checkWarnDays,
+  checkZoneColor,
+  checkZoneIcon,
   invalid,
   LIMITS,
   optionalText,
@@ -72,9 +76,7 @@ export function createProductsApi(runtime: CoreRuntime): ProductsApi {
         if (owner) {
           return;
         }
-        if (product.barcodes.length >= LIMITS.barcodes) {
-          throw invalid(`Ein Produkt kann höchstens ${LIMITS.barcodes} Barcodes haben.`);
-        }
+        checkBarcodeCount(product.barcodes.length + 1);
         mutation.emit({ type: "product.add_barcode", product_id: product.id, barcode });
       });
     },
@@ -100,18 +102,6 @@ export function createProductsApi(runtime: CoreRuntime): ProductsApi {
   };
 }
 
-function checkIcon(icon: unknown): asserts icon is string {
-  if (typeof icon !== "string" || icon === "" || icon.length > LIMITS.icon) {
-    throw invalid("Das Symbol der Zone ist ungültig.");
-  }
-}
-
-function checkColor(color: unknown): asserts color is string | null {
-  if (color !== null && (typeof color !== "string" || color === "" || color.length > LIMITS.color)) {
-    throw invalid("Die Farbe der Zone ist ungültig.");
-  }
-}
-
 export function createZonesApi(runtime: CoreRuntime): ZonesApi {
   return {
     create(input: NewZone) {
@@ -120,8 +110,8 @@ export function createZonesApi(runtime: CoreRuntime): ZonesApi {
         const icon = input.icon ?? "box";
         const color = input.color ?? null;
         const printerId = input.printer_id ?? null;
-        checkIcon(icon);
-        checkColor(color);
+        checkZoneIcon(icon);
+        checkZoneColor(color);
         checkReference(printerId, "Drucker der Zone");
         // Hinter der letzten Zone.
         const sort = activeZones(mutation.draft).reduce((highest, zone) => Math.max(highest, zone.sort), -1) + 1;
@@ -143,12 +133,12 @@ export function createZonesApi(runtime: CoreRuntime): ZonesApi {
           wanted.name = requiredText(changes.name, LIMITS.zone_name, "Die Zone");
         }
         if (changes.icon !== undefined) {
-          checkIcon(changes.icon);
+          checkZoneIcon(changes.icon);
           wanted.icon = changes.icon;
         }
         if ("color" in changes) {
           const color = changes.color ?? null;
-          checkColor(color);
+          checkZoneColor(color);
           wanted.color = color;
         }
         if (changes.sort !== undefined) {
@@ -226,9 +216,7 @@ export function createSettingsApi(runtime: CoreRuntime): SettingsApi {
         }
         if (changes.trash_retention_days !== undefined) {
           const days = changes.trash_retention_days;
-          if (!Number.isInteger(days) || days < 1 || days > LIMITS.retention_days) {
-            throw invalid(`Die Aufbewahrungsdauer muss zwischen 1 und ${LIMITS.retention_days} Tagen liegen.`);
-          }
+          checkRetentionDays(days);
           wanted.trash_retention_days = days;
         }
         if ("default_printer_id" in changes) {

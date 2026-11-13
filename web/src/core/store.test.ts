@@ -45,6 +45,7 @@ function response(changes: Partial<Changes>, extra: Partial<SyncResponse> = {}):
     cursor: 1,
     has_more: false,
     id_pool: { grant: [], target: 300 },
+    lookup_enabled: true,
     ...extra,
   };
 }
@@ -185,7 +186,8 @@ describe("Antwort anwenden", () => {
     expect(report.applied).toBe(false);
     expect(store.snapshot.base.packages.size).toBe(0);
     expect(await store.db.packages.count()).toBe(0);
-    expect(store.snapshot.session).toEqual({ status: "logout", token: null, device: null });
+    // Der Name des Geräts bleibt als Vorschlag für die nächste Anmeldung.
+    expect(store.snapshot.session).toEqual({ status: "logout", token: null, device: null, last_device_name: "Test" });
   });
 
   it("meldet nur an, wenn der erste Abzug Zonen und Einstellungen enthält", async () => {

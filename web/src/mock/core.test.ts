@@ -4,9 +4,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { addDays, CoreError, expiryState, isPackageId, isUuid, isValidBarcode, todayLocal, warnDaysFor, type Live } from "@/contract";
+import { addDays, CoreError, expiryState, isPackageId, isUuid, isValidBarcode, LIMITS, todayLocal, warnDaysFor, type Live } from "@/contract";
 
-import { createMockCore, createSampleData, MOCK_PASSWORD, PRINTER_IDS, sampleBarcode, ZONE_IDS } from ".";
+import { createMockCore, createSampleData, DEVICE_IDS, MOCK_PASSWORD, PRINTER_IDS, sampleBarcode, ZONE_IDS } from ".";
 
 const NOW = new Date("2026-11-13T10:00:00.000Z");
 
@@ -368,7 +368,7 @@ describe("Zonen und Einstellungen", () => {
 describe("Sitzung und Sync", () => {
   it("meldet mit dem Haushalts-Passwort an", async () => {
     const core = mock({ scenarios: ["signed-out"] });
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never" });
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
     await expectCoreError(core.session.login("falsch", "Handy"), "invalid_password");
     await expectCoreError(core.session.login(MOCK_PASSWORD, " "), "invalid");
     await core.session.login(MOCK_PASSWORD, "Handy Küche");
@@ -380,7 +380,7 @@ describe("Sitzung und Sync", () => {
     const error = await expectCoreError(core.session.logout(), "pending_changes");
     expect(error.details.pending).toBe(4);
     await core.session.logout({ discard_pending: true });
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "logout" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "logout" });
   });
 
   it("sammelt Änderungen, solange der Server fehlt, und gleicht danach ab", async () => {
@@ -410,7 +410,87 @@ describe("Sitzung und Sync", () => {
   it("meldet ein gesperrtes Token", () => {
     const core = mock();
     core.control.revoke();
-    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
+  });
+
+  it("nennt nach dem Sperren und nach dem Abmelden den letzten Namen des Geräts", async () => {
+    const core = mock();
+    await core.devices.rename(DEVICE_IDS.current, "Handy Keller");
+    core.control.revoke();
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "revoked", last_device_name: "Handy Keller" });
+    await core.session.login(MOCK_PASSWORD, "Handy Küche");
+    await core.session.logout();
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "logout", last_device_name: "Handy Küche" });
+  });
+
+  it("richtet sich danach, ob der Server Barcodes nachschlägt", async () => {
+    const core = mock({ scenarios: ["no-lookup"] });
+    const input = { zone_id: ZONE_IDS.shelf, best_before: null, count: 1 } as const;
+    const off = await core.stock.store({ ...input, product: { kind: "barcode", barcode: sampleBarcode(520) } });
+    expect(off.product.lookup).toBe("none");
+    core.control.setLookupEnabled(true);
+    const on = await core.stock.store({ ...input, product: { kind: "barcode", barcode: sampleBarcode(522) } });
+    // Gerade Endziffer: Die Attrappe „findet" das Produkt samt Bild.
+    expect(value(core.data.products).find((product) => product.id === on.product.id)).toMatchObject({ lookup: "found", image: expect.any(String) });
+    expect(core.data.imageUrl(value(core.data.products).find((product) => product.id === on.product.id)?.image ?? "").startsWith("data:image/svg+xml,")).toBe(true);
+  });
+
+  it("hebt eine Bearbeitung an einer entnommenen Packung auf, statt sie anzuwenden", async () => {
+    const core = mock();
+    const [target] = value(core.data.packages).filter((pkg) => pkg.best_before !== null);
+    const before = target?.best_before ?? null;
+    const id = target?.id ?? "";
+    await core.stock.remove([id], "consumed");
+    await core.stock.update([id], { best_before: "2031-01-31" });
+
+    // Löschen gewinnt: Das MHD bleibt, die Bearbeitung liegt an der Packung und unter den Sync-Problemen.
+    const removed = await core.data.findPackage(id);
+    expect(removed).toMatchObject({ best_before: before, displaced: { changes: [{ field: "best_before", value: "2031-01-31" }] } });
+    expect(value(core.sync.problems)[0]).toMatchObject({ status: "displaced", command: { type: "package.update", package_id: id } });
+
+    // Eine zweite Bearbeitung ersetzt je Feld die erste und lässt andere Felder stehen.
+    await core.stock.update([id], { zone_id: ZONE_IDS.fridge });
+    await core.stock.update([id], { best_before: null });
+    expect((await core.data.findPackage(id))?.displaced?.changes).toEqual([
+      { field: "zone_id", value: ZONE_IDS.fridge },
+      { field: "best_before", value: null },
+    ]);
+
+    // Wiederherstellen ohne Übernahme: wie vor dem Entnehmen, und die Probleme erledigen sich von selbst.
+    await core.stock.restore([id]);
+    expect(await core.data.findPackage(id)).toMatchObject({ best_before: before, displaced: null, removed_at: null });
+    expect(value(core.sync.problems).filter((problem) => problem.status === "displaced")).toEqual([]);
+
+    // Mit Übernahme gilt die Bearbeitung.
+    await core.stock.remove([id], "consumed");
+    await core.stock.update([id], { best_before: "2031-02-28" });
+    await core.stock.restore([id], { apply_displaced: true });
+    expect(await core.data.findPackage(id)).toMatchObject({ best_before: "2031-02-28", displaced: null });
+  });
+
+  it("prüft Eingaben mit denselben Grenzen und Sätzen wie der Kern", async () => {
+    const core = mock();
+    const long = "x".repeat(LIMITS.product_name + 1);
+    const message = async (action: Promise<unknown>) => (await expectCoreError(action, "invalid")).message;
+
+    expect(await message(core.products.create({ name: long }))).toBe("Der Name ist zu lang (höchstens 120 Zeichen).");
+    expect(await message(core.products.create({ name: "Reis", brand: "x".repeat(81) }))).toBe("Die Marke ist zu lang (höchstens 80 Zeichen).");
+    expect(await message(core.products.create({ name: "Reis", barcodes: Array.from({ length: 21 }, (_, n) => sampleBarcode(600 + n)) }))).toBe(
+      "Ein Produkt kann höchstens 20 Barcodes haben.",
+    );
+    expect(await message(core.zones.create({ name: "z".repeat(61) }))).toBe("Der Name ist zu lang (höchstens 60 Zeichen).");
+    expect(await message(core.zones.create({ name: "Garage", icon: "" }))).toBe("Das Symbol der Zone ist ungültig.");
+    expect(await message(core.settings.update({ trash_retention_days: 0 }))).toBe("Die Aufbewahrungsdauer muss zwischen 1 und 3650 Tagen liegen.");
+    expect(await message(core.settings.update({ warn_days: 3651 }))).toBe("Die Vorlaufzeit muss zwischen 0 und 3650 Tagen liegen.");
+    expect(await message(core.devices.rename(DEVICE_IDS.current, "g".repeat(61)))).toBe("Der Name des Geräts ist zu lang (höchstens 60 Zeichen).");
+    expect(
+      await message(core.printers.create({ name: "Flur", connection: "direct", direct: { urls: [], token: "t", printer: null } })),
+    ).toBe("Die Angaben zum Druckdienst sind unvollständig.");
+    const zone = { zone_id: ZONE_IDS.shelf, best_before: null } as const;
+    expect(await message(core.stock.store({ ...zone, count: 51, product: { kind: "new", name: "Reis" } }))).toBe("Die Menge muss zwischen 1 und 50 liegen.");
+    // Texte werden an den Rändern gekürzt, bevor sie gemessen werden.
+    const trimmed = await core.products.create({ name: `  ${"y".repeat(LIMITS.product_name)}  ` });
+    expect(trimmed.name).toHaveLength(LIMITS.product_name);
   });
 });
 
@@ -437,12 +517,22 @@ describe("Drucker und Etiketten", () => {
   it("führt Etiketten durch ihre Zustände", async () => {
     const core = mock();
     const pkg = value(core.data.packages)[0];
-    const [job] = await core.print.requestPackageLabels([pkg?.id ?? ""]);
+    // Der Drucker des Kellers hängt am Pi, und der ist von hier aus nicht erreichbar.
+    const [job] = await core.print.requestPackageLabels([pkg?.id ?? ""], { printer_id: PRINTER_IDS.cellar });
     expect(job?.state).toBe("pending");
-
-    await core.print.flush();
     const state = (id: string) => value(core.data.printJobs).find((candidate) => candidate.id === id)?.state;
+
+    const blocked = await core.print.flush();
+    expect(blocked).toMatchObject({ delivered: 0, problems: [{ printer_id: PRINTER_IDS.cellar, problem: "unreachable" }] });
+    expect(blocked.pending).toBeGreaterThanOrEqual(1);
+    expect(state(job?.id ?? "")).toBe("pending");
+
+    // Im WLAN des Pi druckt die Attrappe von selbst, was dieses Gerät angefordert hat.
+    core.control.setPiReachable(true);
     expect(state(job?.id ?? "")).toBe("printed");
+    expect(value(core.data.printJobs).find((candidate) => candidate.id === job?.id)).toMatchObject({ printer_id: PRINTER_IDS.cellar });
+    expect(await core.print.flush()).toEqual({ delivered: 0, pending: 0, problems: [] });
+    core.control.setPiReachable(false);
 
     const unknown = value(core.data.printJobs).find((candidate) => candidate.state === "unknown");
     await core.print.resolveUnknown(unknown?.id ?? "", false);
@@ -460,15 +550,98 @@ describe("Drucker und Etiketten", () => {
     expect(zoneJob).toMatchObject({ kind: "zone", zone_id: ZONE_IDS.cellar, package_id: null, state: "pending" });
   });
 
+  it("druckt am Drucker des Servers von selbst und zeigt, wie es ausgeht", async () => {
+    const core = mock();
+    const state = (id: string) => value(core.data.printJobs).find((candidate) => candidate.id === id);
+
+    // Die Zone „Vorratsregal" hat keinen eigenen Drucker: Es gilt der Standarddrucker am Server.
+    const done = await core.print.requestZoneLabel(ZONE_IDS.shelf);
+    expect(state(done.id)).toMatchObject({ state: "printed", printer_id: PRINTER_IDS.kitchen, error: null });
+    expect((await core.print.image(done.id)).type).toBe("image/png");
+
+    core.control.setPrintOutcome("failed");
+    const failed = await core.print.requestZoneLabel(ZONE_IDS.shelf);
+    expect(state(failed.id)).toMatchObject({ state: "failed", error: "no_media" });
+    await expectCoreError(core.print.image(failed.id), "not_found");
+
+    core.control.setPrintOutcome("unknown");
+    const open = await core.print.requestZoneLabel(ZONE_IDS.shelf);
+    expect(state(open.id)).toMatchObject({ state: "unknown" });
+    await core.print.resolveUnknown(open.id, true);
+    expect(state(open.id)).toMatchObject({ state: "printed" });
+
+    // Ohne Server bleibt das Etikett ausstehend und wird gedruckt, sobald er wieder da ist.
+    core.control.setPrintOutcome("printed");
+    core.control.setOnline(false);
+    const waiting = await core.print.requestZoneLabel(ZONE_IDS.shelf);
+    expect(state(waiting.id)).toMatchObject({ state: "pending" });
+    expect((await core.print.flush()).problems).toContainEqual(expect.objectContaining({ printer_id: PRINTER_IDS.kitchen, problem: "offline" }));
+    core.control.setOnline(true);
+    expect(state(waiting.id)).toMatchObject({ state: "printed" });
+  });
+
+  it("stellt nur eigene Etiketten zu und übernimmt fremde auf Wunsch", async () => {
+    const core = mock({ scenarios: ["at-pi"] });
+    const foreign = value(core.data.printJobs).find((job) => job.state === "pending" && job.device_id !== DEVICE_IDS.current);
+    expect(foreign).toBeDefined();
+    await core.print.flush();
+    const state = (id: string) => value(core.data.printJobs).find((candidate) => candidate.id === id)?.state;
+    // Die eigenen sind gedruckt, das fremde wartet weiter auf sein Gerät.
+    expect(value(core.data.printJobs).filter((job) => job.state === "pending").map((job) => job.id)).toEqual([foreign?.id]);
+
+    const own = await core.print.retry(foreign?.id ?? "");
+    expect(state(foreign?.id ?? "")).toBe("cancelled");
+    expect(own).toMatchObject({ package_id: foreign?.package_id, device_id: DEVICE_IDS.current });
+    expect(state(own.id)).toBe("printed");
+  });
+
+  it("übergibt ausstehende Etiketten an die Seite des Druckdienstes", async () => {
+    const core = mock();
+    await expectCoreError(core.print.handoff(PRINTER_IDS.kitchen), "invalid");
+    const { url, jobs } = await core.print.handoff(PRINTER_IDS.cellar);
+    expect(url.startsWith("http://10.71.83.1:8080/p#")).toBe(true);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.every((job) => job.state === "unknown" && job.error === "handoff")).toBe(true);
+    await expectCoreError(core.print.handoff(PRINTER_IDS.cellar), "not_found");
+  });
+
   it("liefert eine Vorschau und den Zustand eines Druckers", async () => {
     const core = mock();
     const preview = await core.print.preview({ kind: "zone", zone_id: ZONE_IDS.cellar });
     expect(preview.type).toBe("image/png");
     expect(preview.size).toBeGreaterThan(1000);
 
+    // Von hier aus ist der Pi nicht zu erreichen: Das steht im Ergebnis, der Aufruf wirft nicht.
+    const before = value(core.data.printerStatus).find((status) => status.printer_id === PRINTER_IDS.cellar)?.observed_at;
+    expect(await core.printers.probe(PRINTER_IDS.cellar)).toEqual({
+      reachable: false,
+      url: null,
+      health: null,
+      problem: "unreachable",
+      error: "Der Druckdienst antwortet auf keiner Adresse.",
+    });
+    expect(value(core.data.printerStatus).find((status) => status.printer_id === PRINTER_IDS.cellar)?.observed_at).toBe(before);
+
+    core.control.setPiReachable(true);
     const probe = await core.printers.probe(PRINTER_IDS.cellar);
-    expect(probe).toMatchObject({ reachable: true, url: "https://10.71.83.1:8443", error: null });
+    expect(probe).toMatchObject({ reachable: true, url: "https://10.71.83.1:8443", problem: null, error: null });
+    expect(probe.health?.host?.temperature_c).toBeTypeOf("number");
     expect(value(core.data.printerStatus).find((status) => status.printer_id === PRINTER_IDS.cellar)?.observed_at).toBe(NOW.toISOString());
+
+    // Der Drucker am Server heißt im Druckdienst wie seine Kennung.
+    const kitchen = await core.printers.probe(PRINTER_IDS.kitchen);
+    expect(kitchen).toMatchObject({ reachable: true, url: null, problem: null });
+    expect(kitchen.health?.printers[0]?.name).toBe(PRINTER_IDS.kitchen);
+    core.control.setOnline(false);
+    expect(await core.printers.probe(PRINTER_IDS.kitchen)).toMatchObject({ reachable: false, problem: "offline" });
+  });
+
+  it("zeigt gestörte Drucker", async () => {
+    const core = mock({ scenarios: ["printer-trouble", "at-pi"] });
+    const pi = value(core.data.printerStatus).find((status) => status.printer_id === PRINTER_IDS.cellar);
+    expect(pi).toMatchObject({ status: { ready: false, errors: ["no_media"] }, host: { storage_read_only: true, throttled: true } });
+    const probe = await core.printers.probe(PRINTER_IDS.cellar);
+    expect(probe.health?.printers[0]?.status.errors).toEqual(["no_media"]);
   });
 });
 
@@ -480,7 +653,22 @@ describe("Ausgangslagen", () => {
 
     expect(value(mock({ scenarios: ["update"] }).app.state).update_ready).toBe(true);
     expect(value(mock({ scenarios: ["insecure"] }).app.state).secure_context).toBe(false);
-    expect(value(mock({ scenarios: ["revoked"] }).session.state)).toEqual({ status: "signed_out", reason: "revoked" });
+    expect(value(mock({ scenarios: ["revoked"] }).session.state)).toEqual({ status: "signed_out", reason: "revoked", last_device_name: "Dieses Gerät" });
+    expect(value(mock({ scenarios: ["update-required"] }).app.state).update_required).toBe(true);
+    expect(value(mock({ scenarios: ["ios"] }).app.state).manual_install).toBe("ios");
+    expect(value(mock({ scenarios: ["no-lookup"] }).sync.status).lookup_enabled).toBe(false);
+    expect(value(mock().sync.status).lookup_enabled).toBe(true);
+  });
+
+  it("hat einen großen Bestand zum Prüfen der Geschwindigkeit", () => {
+    const large = mock({ scenarios: ["large"] });
+    const packages = value(large.data.packages);
+    expect(packages.length).toBeGreaterThan(1800);
+    expect(packages.length).toBeLessThan(2400);
+    expect(new Set(packages.map((pkg) => pkg.id)).size).toBe(packages.length);
+    expect(value(large.data.products).length).toBeGreaterThan(300);
+    const productIds = new Set(value(large.data.products).map((product) => product.id));
+    expect(packages.every((pkg) => productIds.has(pkg.product_id) && isPackageId(pkg.id))).toBe(true);
   });
 
   it("nimmt eigene Daten an", () => {

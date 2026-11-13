@@ -19,11 +19,13 @@
  * 4. Ausnahmen davon brauchen den Server und sind am Kommentar „braucht den Server"
  *    zu erkennen: Sie scheitern offline mit CoreError "offline".
  * 5. Fehler sind immer `CoreError` (src/contract/errors.ts).
- * 6. Eingaben prüft der Kern nach den Grenzen des Servers, bevor ein Befehl entsteht; was
+ * 6. Eingaben werden nach den Grenzen des Servers geprüft, bevor ein Befehl entsteht; was
  *    sie verletzt, scheitert sofort mit "invalid" statt später als Sync-Problem: Produktname
  *    120 Zeichen, Marke 80, Packungsgröße 40, Zonenname 60, Geräte- und Druckername 60,
  *    höchstens 20 Barcodes je Produkt, Vorlaufzeit 0 bis 3650 Tage, Aufbewahrung 1 bis 3650
- *    Tage. Texte werden an den Rändern gekürzt (trim). Die Attrappe ist hier großzügiger.
+ *    Tage. Texte werden an den Rändern gekürzt (trim). Die Zahlen stehen in `LIMITS`
+ *    (api.gen.ts), die Prüfungen samt ihren Sätzen in src/contract/input.ts; Kern und
+ *    Attrappe benutzen beide dieselben. Bei "invalid" ist `message` ein Satz für die Anzeige.
  * 7. Ein Aufruf ohne Wirkung gelingt und erzeugt keinen Befehl: derselbe Grund auf eine schon
  *    entnommene Packung, Wiederherstellen einer Packung im Bestand, `update` ohne Felder,
  *    Umsortieren ohne Änderung, ein Barcode, den das Produkt nicht hat, `merge(a, a)`.
@@ -53,6 +55,7 @@ import type {
   Zone,
   ZoneChanges,
 } from "./api.gen";
+import { PRINTER_ERROR_CODES } from "./api.gen";
 import type { CoreErrorCode } from "./errors";
 
 // --------------------------------------------------------------------------------------
@@ -92,8 +95,12 @@ export type SessionState =
    * - "logout": der Anwender hat sich abgemeldet, die lokale Kopie ist gelöscht
    * - "revoked": der Server hat das Token gesperrt. Lokale Daten und ungesendete Änderungen
    *   liegen noch vor und werden nach erneuter Anmeldung gesendet.
+   *
+   * `last_device_name` ist der Name, unter dem dieses Gerät zuletzt angemeldet war, oder null
+   * (bei "never" immer null). Die Anmeldung schlägt ihn vor: Nach einer Sperre soll das Gerät
+   * nicht unter einem zweiten Namen in der Geräteliste stehen. Er überlebt auch das Abmelden.
    */
-  | { status: "signed_out"; reason: "never" | "logout" | "revoked" }
+  | { status: "signed_out"; reason: "never" | "logout" | "revoked"; last_device_name: string | null }
   | { status: "signed_in"; device: SessionDevice };
 
 export interface SessionApi {
@@ -117,6 +124,7 @@ export interface SessionApi {
   /**
    * Meldet ab und löscht die lokale Kopie samt ID-Vorrat, dazu die Sync-Probleme und die
    * vorab geladenen Produktbilder. Von den Geräte-Einstellungen fällt nur `scan_zone_id` weg.
+   * Der Name des Geräts bleibt als Vorschlag für die nächste Anmeldung (`last_device_name`).
    * Gelingt auch offline; das Token wird beim Server gesperrt, sobald er erreichbar ist.
    * @throws CoreError pending_changes, wenn ungesendete Änderungen vorliegen und
    *         `discard_pending` nicht gesetzt ist (`details.pending` = Anzahl)
@@ -147,6 +155,13 @@ export interface SyncStatus {
   last_error: { code: CoreErrorCode; message: string; at: string } | null;
   /** Version des Servers laut letzter Antwort oder null. */
   server_version: string | null;
+  /**
+   * Schlägt der Server unbekannte Barcodes bei Open Food Facts nach? So, wie es die letzte
+   * Antwort eines Abgleichs gesagt hat; der Kern merkt es sich über Neustarts. null = noch
+   * unbekannt (nicht angemeldet, oder seit der Anmeldung kein Abgleich). Nur bei `false`
+   * verspricht die Oberfläche kein Nachschlagen; siehe `willLookUp` (barcode.ts).
+   */
+  lookup_enabled: boolean | null;
 }
 
 /** Ein Befehl, den der Server nicht (oder nicht wie gewünscht) ausgeführt hat. */
@@ -168,9 +183,18 @@ export interface SyncProblem {
   command: Command;
 }
 
+/** So viele Sync-Probleme hebt der Kern höchstens auf. */
+export const MAX_SYNC_PROBLEMS = 200;
+
 export interface SyncApi {
   readonly status: Live<SyncStatus>;
-  /** Abgelehnte und verdrängte Änderungen, neueste zuerst, bis der Anwender sie wegklickt. */
+  /**
+   * Abgelehnte und verdrängte Änderungen, neueste zuerst, bis der Anwender sie wegklickt.
+   * Höchstens `MAX_SYNC_PROBLEMS`; kommen mehr dazu, fallen die ältesten weg. Ein Eintrag
+   * "displaced" verschwindet von selbst, sobald seine Packung keine verdrängte Bearbeitung
+   * mehr trägt (wiederhergestellt, mit oder ohne Übernahme, oder nicht mehr in der
+   * Lösch-Historie): Dann gibt es nichts mehr zu übernehmen.
+   */
   readonly problems: Live<SyncProblem[]>;
 
   /**
@@ -225,7 +249,9 @@ export type ProductRef =
   /**
    * Ein gescannter Barcode (gespeicherte Form). Kennt die lokale Kopie ihn, wird dieses
    * Produkt verwendet. Sonst entsteht sofort ein Platzhalter; Name und Bild ergänzt der
-   * Server später aus Open Food Facts. `name` setzt den Namen gleich von Hand.
+   * Server später aus Open Food Facts, wenn er diesen Barcode nachschlägt (`willLookUp`:
+   * nicht bei ladeninternen Codes, nicht bei abgeschaltetem Nachschlagen; das Produkt hat
+   * dann von Anfang an `lookup: "none"`). `name` setzt den Namen gleich von Hand.
    */
   | { kind: "barcode"; barcode: string; name?: string }
   /** Ein neues Produkt ohne Scan. */
@@ -290,7 +316,8 @@ export interface StockApi {
    * Schlüssel werden geändert; `best_before: null` entfernt das MHD.
    * Trifft die Änderung eine entnommene Packung, wird sie nicht angewendet, sondern in
    * `Package.displaced` aufgehoben (Sync-Protokoll 7.2); `restore` mit `apply_displaced`
-   * übernimmt sie. Die Attrappe wendet sie stattdessen an.
+   * übernimmt sie. Der Aufruf gelingt trotzdem; nach dem Abgleich steht die Änderung als
+   * "displaced" in `sync.problems` (die Attrappe trägt sie dort sofort ein).
    * @throws CoreError not_found | invalid
    */
   update(packageIds: string[], changes: PackageChanges): Promise<void>;
@@ -386,10 +413,42 @@ export interface PrefsApi {
 // --------------------------------------------------------------------------------------
 // Drucker und Etiketten
 // --------------------------------------------------------------------------------------
+//
+// Wie gedruckt wird, steht in docs/etiketten.md (Abschnitte 4 bis 6). Kurz:
+//
+// - Ein Etikett ist ein synchronisierter Datensatz (`PrintJob`). Anfordern heißt: anlegen im
+//   Zustand "pending". Das gelingt immer, auch offline.
+// - **Zugestellt wird ein Etikett nur von dem Gerät, das es angefordert hat**
+//   (`PrintJob.device_id`), und zwar an den Druckdienst seines Druckers: beim Drucker am
+//   Server an `<App>/print`, beim direkten Drucker an den Pi. Nur dieses Gerät weiß, ob es den
+//   Auftrag schon einmal abgeschickt hat; so druckt nichts doppelt. Andere Geräte zeigen das
+//   Etikett nur an.
+// - Der Kern stellt von selbst zu (nach dem Anfordern, nach jedem Abgleich, beim Start, wenn
+//   ein Drucker wieder erreichbar ist) und auf Wunsch sofort (`print.flush`). Erreicht er den
+//   Dienst nicht, bleibt das Etikett "pending".
+// - Welcher Drucker ein Etikett druckt, entscheidet `printerIdForJob` (labels.ts), bei jedem
+//   Versuch neu.
 
 export type NewPrinter =
   | { name: string; connection: "server"; server: ServerPrinterConfig }
   | { name: string; connection: "direct"; direct: DirectPrinterConfig };
+
+/** Warum ein Druckdienst gerade nicht benutzbar ist. Die Oberfläche hat zu jedem Wert einen Satz. */
+export type PrinterProblem =
+  /** Drucker am Server: Der Server ist nicht erreichbar. */
+  | "offline"
+  /** Auf keiner Adresse hat in der Zeit etwas geantwortet: falsches WLAN, Pi aus, Zertifikat nicht installiert. */
+  | "unreachable"
+  /** Der Browser hat den Zugriff auf das lokale Netzwerk abgelehnt (Local Network Access). */
+  | "permission"
+  /** Es antwortet etwas, aber diese App darf nicht mitlesen: Ihr Ursprung fehlt in der Konfiguration des Druckdienstes. */
+  | "blocked"
+  /** Es antwortet etwas anderes als ein Stowly-Druckdienst, oder das Token stimmt nicht (Nachweis falsch). */
+  | "not_verified"
+  /** Der Dienst kennt diesen Drucker nicht (`direct.printer` falsch, oder am Server nicht eingerichtet). */
+  | "unknown_printer"
+  /** Direkter Drucker, aber die App läuft ohne HTTPS (`secure_context: false`): Der Browser lässt den Direktdruck nicht zu. */
+  | "insecure_context";
 
 /** Ergebnis einer Sofort-Abfrage eines Druckers. */
 export interface PrinterProbe {
@@ -399,7 +458,9 @@ export interface PrinterProbe {
   url: string | null;
   /** Antwort des Druckdienstes oder null. */
   health: ServiceHealth | null;
-  /** Warum nicht erreichbar, als Text für die Anzeige; sonst null. */
+  /** Warum nicht benutzbar; null, wenn alles passt. Auch bei `reachable: true` möglich ("unknown_printer"). */
+  problem: PrinterProblem | null;
+  /** Dasselbe als Satz, als Rückfall für die Anzeige; sonst null. */
   error: string | null;
 }
 
@@ -411,11 +472,48 @@ export interface PrintersApi {
   /** Löscht den Drucker; Zonen, die auf ihn zeigten, nutzen wieder den Standarddrucker. */
   remove(id: string): Promise<void>;
   /**
-   * Fragt den Druckdienst jetzt ab und merkt sich das Ergebnis in `data.printerStatus`.
-   * Runde 2; bis dahin CoreError not_supported.
+   * Fragt den Druckdienst jetzt ab (`GET /v1/health`) und merkt sich das Ergebnis in
+   * `data.printerStatus`. Wirft nicht, wenn der Dienst fehlt: Das steht im Ergebnis.
+   * Bei einem direkten Drucker darf der Aufruf die Nachfrage des Browsers nach dem lokalen
+   * Netzwerk auslösen; die Oberfläche ruft ihn deshalb nur auf eine Handlung des Anwenders hin.
+   * @throws CoreError not_found
    */
   probe(id: string): Promise<PrinterProbe>;
 }
+
+/** Was ein Zustellversuch gebracht hat. */
+export interface PrintFlushReport {
+  /** Etiketten, die bei einem Druckdienst angekommen sind (jetzt "queued" oder weiter). */
+  delivered: number;
+  /** Eigene Etiketten, die danach weiter ausstehen. */
+  pending: number;
+  /**
+   * Je Drucker, bei dem es nicht geklappt hat, der Grund. `printer_id: null` steht für
+   * Etiketten, denen kein Drucker zugeordnet ist.
+   */
+  problems: { printer_id: string | null; problem: PrinterProblem | "no_printer"; message: string }[];
+}
+
+/** So viele Etiketten übergibt `print.handoff` höchstens auf einmal. */
+export const MAX_HANDOFF_JOBS = 20;
+
+/**
+ * Was in `PrintJob.error` stehen kann (docs/etiketten.md, 4.1): die Codes des Druckers, die des
+ * Druckdienstes und die der App selbst ("handoff": an die Seite des Druckdienstes übergeben;
+ * "not_printed": der Anwender hat auf „Wurde gedruckt?" mit Nein geantwortet). Die Oberfläche
+ * hat zu jedem einen Satz und zeigt einen unbekannten Code unverändert.
+ */
+export const PRINT_JOB_ERROR_CODES = [
+  ...PRINTER_ERROR_CODES,
+  "unknown_printer",
+  "invalid_request",
+  "render_failed",
+  "cancelled",
+  "interrupted",
+  "handoff",
+  "not_printed",
+] as const;
+export type PrintJobErrorCode = (typeof PRINT_JOB_ERROR_CODES)[number];
 
 export interface PrintApi {
   /**
@@ -429,9 +527,20 @@ export interface PrintApi {
   /**
    * Neuer Versuch für ein Etikett in "failed", "unknown" oder "cancelled". Legt ein neues
    * Etikett an; das alte bleibt, wie es ist (ein Auftrag druckt nie zweimal).
+   *
+   * Auch für ein ausstehendes Etikett ("pending"), das ein **anderes** Gerät angefordert hat:
+   * Dann wird das alte verworfen ("cancelled") und ein neues für dieses Gerät angelegt. Das
+   * andere Gerät druckt es nicht mehr, sobald es abgeglichen hat; die Oberfläche sagt das dazu.
+   * @throws CoreError not_found | invalid (Zustand passt nicht)
    */
   retry(jobId: string): Promise<PrintJob>;
-  /** Verwirft ein ausstehendes Etikett ("pending" oder "queued"). */
+  /**
+   * Verwirft ein ausstehendes Etikett ("pending" oder "queued"), auch das eines anderen Geräts.
+   * Ein eigenes Etikett, das schon beim Druckdienst wartet ("queued"), wird zuerst dort
+   * verworfen: Druckt es inzwischen, scheitert der Aufruf mit "invalid" und das Etikett zeigt
+   * den Zustand des Dienstes; ist der Dienst nicht erreichbar, scheitert er mit "offline".
+   * @throws CoreError not_found | invalid | offline
+   */
   cancel(jobId: string): Promise<void>;
   /**
    * Antwort des Anwenders auf „Wurde das Etikett gedruckt?" bei einem Etikett in "unknown":
@@ -439,15 +548,38 @@ export interface PrintApi {
    */
   resolveUnknown(jobId: string, printed: boolean): Promise<void>;
   /**
-   * Versucht jetzt, alle ausstehenden Etiketten zuzustellen. Erfüllt sich nach dem Versuch,
-   * wirft nicht. Runde 2; bis dahin ohne Wirkung.
+   * Versucht jetzt, alle eigenen ausstehenden Etiketten zuzustellen, und fragt den Stand der
+   * schon abgeschickten ab. Erfüllt sich nach dem Versuch, wirft nicht. Darf die Nachfrage des
+   * Browsers nach dem lokalen Netzwerk auslösen (wie `printers.probe`).
    */
-  flush(): Promise<void>;
+  flush(): Promise<PrintFlushReport>;
   /**
-   * Vorschau eines Etiketts als PNG. Braucht den Server.
-   * Runde 2; bis dahin CoreError not_supported.
+   * Vorschau eines Etiketts als PNG, gerendert vom Druckdienst des Servers. Braucht den Server.
+   * `printer_id` rendert für genau diesen Drucker am Server; ohne Angabe (oder bei einem
+   * direkten Drucker) für die Vorgabe: 62-mm-Rolle bei 300 dpi, 696 x 342 Pixel.
+   * @throws CoreError offline | not_found | invalid (Vorlage lässt sich nicht rendern)
    */
-  preview(subject: { kind: "package"; package_id: string } | { kind: "zone"; zone_id: string }): Promise<Blob>;
+  preview(
+    subject: { kind: "package"; package_id: string } | { kind: "zone"; zone_id: string },
+    options?: { printer_id?: string | null },
+  ): Promise<Blob>;
+  /**
+   * Das Bild, das ein Drucker mit Bild-Treiber für dieses Etikett geschrieben hat (PNG).
+   * Braucht den Druckdienst dieses Druckers.
+   * @throws CoreError not_found (kein Bild-Treiber, oder noch nicht gedruckt) | offline
+   */
+  image(jobId: string): Promise<Blob>;
+  /**
+   * Notweg für einen direkten Drucker, den der Browser nicht ansprechen darf (iPhone ohne
+   * gültiges Zertifikat): liefert die Adresse einer Seite des Druckdienstes, die die eigenen
+   * ausstehenden Etiketten dieses Druckers selbst einreicht (docs/etiketten.md, 5.7), höchstens
+   * `MAX_HANDOFF_JOBS` und nur die einer Art (die des ältesten: Packungen oder Zonen); für den
+   * Rest ruft die Oberfläche noch einmal. Sie öffnet die Adresse in einem neuen Tab. Die
+   * übergebenen Etiketten gelten danach als "unknown" mit `error: "handoff"`: Die App erfährt
+   * den Ausgang nicht und fragt nach.
+   * @throws CoreError not_found (Drucker unbekannt, oder nichts Eigenes steht aus) | invalid (kein direkter Drucker)
+   */
+  handoff(printerId: string): Promise<{ url: string; jobs: PrintJob[] }>;
 }
 
 // --------------------------------------------------------------------------------------
@@ -489,20 +621,41 @@ export interface AppState {
   secure_context: boolean;
   /** Die App läuft installiert vom Home-Bildschirm. */
   installed: boolean;
-  /** Der Browser bietet die Installation an (`promptInstall`). */
+  /** Der Browser bietet die Installation an (`promptInstall`), Android und Desktop. */
   can_install: boolean;
+  /**
+   * "ios": iPhone oder iPad im Browser, nicht installiert. Dort gibt es keine Aufforderung;
+   * die Oberfläche zeigt die Anleitung („Teilen", dann „Zum Home-Bildschirm"). Sonst null.
+   */
+  manual_install: "ios" | null;
   /** Eine neue Version ist geladen und wartet auf `applyUpdate`. */
   update_ready: boolean;
+  /**
+   * Dieser Tab kann nicht weiterarbeiten, bis er neu geladen ist: Ein anderer Tab läuft schon
+   * mit einer neueren Version und hat die lokale Datenbank übernommen (`versionchange`).
+   * Schreibaufrufe scheitern solange mit "not_supported". Die Oberfläche zeigt das als Sperre
+   * mit einem Knopf für `applyUpdate`.
+   */
+  update_required: boolean;
   /** Der Browser hat zugesagt, die lokalen Daten nicht zu löschen; null = unbekannt. */
   storage_persistent: boolean | null;
 }
 
 export interface AppApi {
   readonly state: Live<AppState>;
-  /** Wechselt auf die neue Version (lädt die App neu). Runde 2; bis dahin ohne Wirkung. */
+  /**
+   * Wechselt auf die neue Version: aktiviert den wartenden Service Worker und lädt die App
+   * neu. Ohne wartende Version lädt der Aufruf nur neu, wenn `update_required` gilt.
+   */
   applyUpdate(): Promise<void>;
-  /** Zeigt den Installationsdialog des Browsers; true, wenn angenommen. Runde 2; bis dahin false. */
+  /** Zeigt den Installationsdialog des Browsers; true, wenn angenommen. Ohne `can_install`: false. */
   promptInstall(): Promise<boolean>;
+  /**
+   * Bittet den Browser, die lokalen Daten dauerhaft zu behalten (`navigator.storage.persist`),
+   * und liefert die Antwort; sie steht danach auch in `state.storage_persistent`. Der Kern
+   * fragt nach der Anmeldung von selbst einmal; dies ist der Knopf für „noch einmal".
+   */
+  requestPersistence(): Promise<boolean>;
 }
 
 // --------------------------------------------------------------------------------------
