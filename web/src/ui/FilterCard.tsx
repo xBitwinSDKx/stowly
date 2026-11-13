@@ -14,7 +14,7 @@ export interface FilterCardProps {
   count: number;
   /** Füllstand des Balkens, 0 bis 1. */
   share: number;
-  /** Was die Zahl zählt, für Screenreader und Tooltip. Vorgabe "Packungen". */
+  /** Was die Zahl zählt, für Screenreader und Tooltip. Vorgabe: "Packung" bei genau einer, sonst "Packungen". */
   unit?: string;
   /** Die Karte ist der aktive Filter: farbig hinterlegt. */
   active: boolean;
@@ -26,15 +26,16 @@ export interface FilterCardProps {
  * Zonen-Karte nach dem Entwurf: Name, Symbol, Fortschrittsbalken, „Status: n".
  * Antippen schaltet den Filter ein und wieder aus.
  */
-export function FilterCard({ label, icon, color, count, share, unit = "Packungen", active, onClick, className }: FilterCardProps) {
+export function FilterCard({ label, icon, color, count, share, unit, active, onClick, className }: FilterCardProps) {
   const percent = Math.round(Math.min(1, Math.max(0, share)) * 100);
+  const counted = unit ?? (count === 1 ? "Packung" : "Packungen");
   return (
     <button
       type="button"
       className={cx(styles.card, active && styles.active, className)}
       style={{ "--card-color": color } as CSSProperties}
       aria-pressed={active}
-      title={`${label}: ${String(count)} ${unit}`}
+      title={`${label}: ${String(count)} ${counted}`}
       onClick={onClick}
     >
       <span className={styles.head}>
@@ -48,7 +49,7 @@ export function FilterCard({ label, icon, color, count, share, unit = "Packungen
       </span>
       <span className={styles.status}>
         Status: <span className={cx(styles.count, "tabular")}>{count}</span>
-        <span className="sr-only"> {unit}</span>
+        <span className="sr-only"> {counted}</span>
       </span>
     </button>
   );

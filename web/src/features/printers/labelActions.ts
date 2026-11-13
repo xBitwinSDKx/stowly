@@ -21,8 +21,12 @@ export interface LabelActions {
   flush(): Promise<PrintFlushReport | null>;
   /** Notweg: übergibt die ausstehenden Etiketten an die Seite des Druckdienstes und öffnet sie. */
   handoff(printer: Printer): Promise<void>;
-  /** Die Seite des Druckdienstes ließ sich nicht von selbst öffnen (der Browser hat das Fenster blockiert). */
-  blocked: { url: string; printer: Printer } | null;
+  /**
+   * Die Seite des Druckdienstes ließ sich nicht von selbst öffnen (der Browser hat das Fenster
+   * blockiert). `jobIds` nennt die übergebenen Etiketten: Der Verweis gilt nur, solange eines
+   * davon noch auf die Antwort des Anwenders wartet.
+   */
+  blocked: { url: string; printer: Printer; jobIds: readonly string[] } | null;
 }
 
 /**
@@ -36,7 +40,7 @@ export function useLabelActions(): LabelActions {
   const core = useCore();
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
-  const [blocked, setBlocked] = useState<{ url: string; printer: Printer } | null>(null);
+  const [blocked, setBlocked] = useState<LabelActions["blocked"]>(null);
 
   const run = useCallback(
     async (key: string, action: () => Promise<void>, texts: Parameters<typeof errorText>[1] = {}) => {
@@ -145,7 +149,7 @@ export function useLabelActions(): LabelActions {
           tab.opener = null;
           tab.location.replace(url);
         } else {
-          setBlocked({ url, printer });
+          setBlocked({ url, printer, jobIds: jobs.map((job) => job.id) });
         }
         toast.show({
           message: `${plural(jobs.length, "Etikett", "Etiketten")} an die Seite des Druckers übergeben. Stowly fragt danach, ob gedruckt wurde.`,

@@ -770,6 +770,13 @@ describe("Notweg über die Seite des Druckers", () => {
     expect(link).toHaveAttribute("href", "http://10.71.83.1:8080/p#attrappe-2");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    expect(screen.getByText(/Die Seite des Druckers druckt sie nach einem Tipp auf „Drucken“\./)).toBeInTheDocument();
+
+    // Der Verweis gilt nur, solange eines der übergebenen Etiketten offen ist: Ist die Nachfrage
+    // beantwortet, verschwindet er. Sonst druckte ein späterer Tipp darauf die Etiketten womöglich
+    // ein zweites Mal (nach einem Neustart des Pi kennt sein Dienst die Aufträge nicht mehr).
+    await userEvent.click(within(section("Etiketten")).getByRole("button", { name: "Alle gedruckt" }));
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Seite des Druckers öffnen" })).not.toBeInTheDocument());
   });
 
   it("schließt das Fenster wieder, wenn nichts zu übergeben ist, und sagt mit dem Satz des Kerns, warum", async () => {

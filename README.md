@@ -2,7 +2,7 @@
 
 Selbst gehostete Lagerverwaltung für Lebensmittel. Jede Packung bekommt beim Einlagern ein Etikett mit einer 5-stelligen ID (Klartext und QR-Code), wird per Handy-Scan ein- und ausgebucht und erscheint in einer nach Produkt gruppierten Bestandsliste mit dem kritischsten MHD. Die App funktioniert im Keller ohne Netz und gleicht ab, sobald der Server wieder erreichbar ist.
 
-**Stand:** Stufe 1 nach zwei Runden samt Integration: Bestand, Offline-Betrieb, Scannen und Etikettendruck (Server und Raspberry Pi) laufen zusammen auf dem Entwicklungsrechner. In der Zielumgebung (Container, Handys, Drucker, Pi) ist noch nichts geprüft; die Prüflisten stehen in [`docs/betrieb.md`](docs/betrieb.md) und [`pi/README.md`](pi/README.md). Plan: [`docs/plan-stufe-1.md`](docs/plan-stufe-1.md).
+**Stand:** Stufe 1 nach zwei Runden samt Integration: Bestand, Offline-Betrieb, Scannen und Etikettendruck (Server und Raspberry Pi) laufen zusammen auf dem Entwicklungsrechner. In der Zielumgebung (Container, Handys, Drucker, Pi) ist noch nichts geprüft: [`docs/pruefliste.md`](docs/pruefliste.md) führt Schritt für Schritt hindurch, die Tabellen mit Befehl und erwartetem Ergebnis stehen in [`docs/betrieb.md`](docs/betrieb.md) und [`pi/README.md`](pi/README.md). Plan: [`docs/plan-stufe-1.md`](docs/plan-stufe-1.md).
 
 ## Aufbau
 

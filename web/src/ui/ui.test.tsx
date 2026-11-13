@@ -390,6 +390,7 @@ describe("Karten und Marken", () => {
     const card = screen.getByRole("button", { name: /Keller/ });
     expect(card).toHaveAttribute("aria-pressed", "false");
     expect(card).toHaveTextContent("Status: 21");
+    expect(card).toHaveAttribute("title", "Keller: 21 Packungen");
     expect(card.querySelector(".fill")).toHaveStyle({ width: "47%" });
     await userEvent.click(card);
     expect(onClick).toHaveBeenCalledTimes(1);
@@ -399,6 +400,12 @@ describe("Karten und Marken", () => {
     expect(screen.getByRole("button", { name: /Keller/ })).toHaveClass("active");
     // leere Zone: kein Balken
     expect(screen.getByRole("button", { name: /Keller/ }).querySelector(".fill")).toBeNull();
+
+    // genau eine: Einzahl, für Screenreader und Tooltip
+    rerender(<FilterCard label="Keller" icon={<svg />} color="var(--palette-blue)" count={1} share={0.1} active={false} onClick={onClick} />);
+    expect(screen.getByRole("button", { name: /Keller/ })).toHaveAttribute("title", "Keller: 1 Packung");
+    expect(screen.getByRole("button", { name: /Keller/ })).toHaveTextContent("Status: 1 Packung");
+    expect(screen.getByRole("button", { name: /Keller/ })).not.toHaveTextContent("Packungen");
   });
 
   it("ExpiryLabel setzt die Warnstufen ab", () => {

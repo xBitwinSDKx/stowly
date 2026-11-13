@@ -141,6 +141,12 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
   /** Der Drucker, für den eine Meldung des Zustellversuchs gilt. */
   const printerOf = (id: string | null) => (id === null ? undefined : printing.data.printers.get(id));
 
+  // Der Verweis auf die Seite des Druckdienstes gilt, solange eines der übergebenen Etiketten noch
+  // offen ist. Danach verschwindet er: Die Seite druckte sie nach einem Neustart des Pi ein zweites Mal.
+  const handed = actions.blocked;
+  const blocked =
+    handed !== null && printing.jobs.some((view) => handed.jobIds.includes(view.job.id) && view.job.state === "unknown" && view.job.error === "handoff") ? handed : null;
+
   function row(view: JobView) {
     const { job } = view;
     const state = JOB_STATES[job.state];
@@ -241,19 +247,19 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
         </div>
       ) : null}
 
-      {actions.blocked ? (
+      {blocked ? (
         <Notice
           tone="warn"
           role="status"
           title="Der Browser hat das neue Fenster blockiert."
           action={
-            <a className={styles.external} href={actions.blocked.url} target="_blank" rel="noreferrer noopener">
+            <a className={styles.external} href={blocked.url} target="_blank" rel="noreferrer noopener">
               <ExternalLinkIcon size={16} aria-hidden="true" />
               Seite des Druckers öffnen
             </a>
           }
         >
-          Die Etiketten sind an „{actions.blocked.printer.name}“ übergeben. Die Seite druckt sie, sobald sie geöffnet ist.
+          Die Etiketten sind an „{blocked.printer.name}“ übergeben. Die Seite des Druckers druckt sie nach einem Tipp auf „Drucken“.
         </Notice>
       ) : null}
 
