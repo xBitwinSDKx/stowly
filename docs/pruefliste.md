@@ -18,9 +18,16 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - `brother_ql` und `usb` lassen sich importieren
 - [ ] **4.** Anmelden per `curl`. Nach `restart` und nach `down`/`up` sind die Daten noch da. Ohne `STOWLY_PUBLISH` ist der Port von außen nicht erreichbar. Im Log steht die Zeile zu Open Food Facts. `docker compose stop` endet in höchstens 15 Sekunden, auch während eine App auf ein Etikett wartet, und in deutlich unter 5 Sekunden, während nur ein Scan auf das Nachschlagen wartet. (A10–A15, F9)
 
+**Stand 14.11.2026** (Synology mit DSM 6.2.4, Docker 20.10.3, `docker-compose` 1.28.5; [`betrieb.md`](betrieb.md), Abschnitt 4.4):
+- **1. teilweise:** Beide Stufen bauen durch, die drei `pip install` wie beschrieben, bis „No broken requirements found.". Offen: `pip freeze`.
+- **2. teilweise:** Der Container läuft; `/api/health` (`"configured": true`), `/` und `/sw.js` antworten. Offen: Zustand `healthy`, Benutzer und Rechte.
+- Stolpersteine, beide in Abschnitt 4.4 beschrieben: `sudo` fand `docker` nicht, und einmal brach pip mit `ReadTimeoutError` ab (Internet des NAS). Der zweite Lauf ging durch.
+
 ## B. HTTPS davor
 
 - [ ] **5.** Nginx Proxy Manager (B1–B5) oder Tailscale (B6–B8) einrichten. Die Kopfzeile `Content-Security-Policy` kommt unverändert durch (H1). `/print/v1/health` ohne Token antwortet mit 401 (F7).
+
+**Stand 14.11.2026:** Statt Nginx Proxy Manager der Reverse Proxy von DSM, unter `https://<IP des NAS>:8443` mit einem Zertifikat der Stowly Drucker-CA ([`betrieb.md`](betrieb.md), Abschnitt 4.4). Die Kopfzeile `Content-Security-Policy` kommt unverändert durch, `/print/v1/health` ohne Token antwortet mit 401, `/`, `/sw.js` und das Manifest kommen mit `Cache-Control: no-cache`.
 
 ## C. Handys über die HTTPS-Adresse
 
@@ -30,6 +37,8 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - Die Kamera in der Scan-Ansicht erlauben; das Bild erscheint.
   - Mit VoiceOver (iPhone) bzw. TalkBack (Android): In „Von Hand einlagern" auf „Einlagern" tippen. Angesagt wird „beschäftigt" bzw. „nicht verfügbar", der Fokus bleibt auf der Schaltfläche, danach wird der Dialog „Eingelagert" angesagt.
   - Mit der Bildschirmtastatur: In Einstellungen → Geräte „Umbenennen", neuen Namen tippen, zweimal schnell die Eingabetaste: Das Gerät wird genau einmal umbenannt.
+
+**Stand 14.11.2026:** Am iPhone (iOS 27) öffnet sich die App vom NAS ohne Zertifikatswarnung, ließ sich installieren und anmelden. Offen: Android und die Unterpunkte oben.
 
 ## D. Drucker am Server
 
@@ -71,7 +80,8 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - Der Pi war über HTTPS mit einem Zertifikat der Stowly Drucker-CA erreichbar; „Verbindung prüfen" klappte.
   - Ein neues Produkt einlagern: Der Name kam sofort, das Etikett kam direkt nach dem Anlegen.
   - Stolperstein: Der Schalter unter Zertifikatsvertrauenseinstellungen war aus. Safari ließ sich mit „trotzdem besuchen" täuschen, die App meldete „antwortet auf keiner Adresse" (`pi/README.md`, Abschnitt 2).
-- Offen: alles unter `stowly.home`, im Keller-WLAN, Android, die Gegenproben.
+- Danach dasselbe mit der App vom NAS (`https://<IP des NAS>:8443`, [`betrieb.md`](betrieb.md), Abschnitt 4.4): Drucker am iPhone angelegt, „Verbindung prüfen" klappte, das Etikett kam. Der Ursprung der App musste dafür in `origins` des Pi.
+- Offen: im Keller-WLAN, Android, die Gegenproben.
 
 - [ ] **17.** Über die HTTPS-Adresse der App einen Drucker „Direkt (Raspberry Pi)" anlegen: `https://10.71.83.1:8443`, `http://10.71.83.1:8080`, Token (T1). Im WLAN des Pi „Verbindung prüfen": Chrome fragt einmal nach dem Zugriff auf das lokale Netzwerk, erlauben. Erwartet: „erreicht über https://…"; die Karte zeigt den Rechner des Pi und „zuletzt gesehen".
 - [ ] **18.** Gegenproben (T5):
@@ -155,9 +165,9 @@ Auf dem Entwicklungsrechner geprüft:
 - der Sensor per Aufruf
 - eine automatische Sicherung, entschlüsselt und geöffnet
 
-Am iPhone (iOS 27, Testaufbau mit eigener CA, 14.11.2026) kamen Testnachricht und Tagesnachricht an.
+Am iPhone (iOS 27, Testaufbau mit eigener CA, 14.11.2026) kamen Testnachricht und Tagesnachricht an. Am selben Tag lief Stowly erstmals mit Docker auf einer Synology (Abschnitt A); auch von dort kam die Testnachricht an.
 
-Offen sind Docker, Android, Home Assistant mit Bring! und das echte Programm `age`.
+Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf dem Server und das echte Programm `age`.
 
 ## M. Umstieg
 
@@ -198,6 +208,7 @@ Offen sind Docker, Android, Home Assistant mit Bring! und das echte Programm `ag
 
 - [x] **49.** iPhone, installierte App, iOS 27, Testaufbau: Testnachricht und Tagesnachricht kommen an. Titel „Testnachricht" bzw. „MHD-Hinweis", darunter von iOS „from" mit dem Namen der App (14.11.2026).
 - [ ] **50.** Dasselbe auf dem eigenen Server mit eurer CA (I1–I6), dazu die Tagesnachricht „nur Neues" (I8–I12).
+  - **Stand 14.11.2026:** Vom NAS (DSM, Zertifikat der Stowly Drucker-CA) kam die Testnachricht an. Offen: die Tagesnachricht „nur Neues".
 - [ ] **51.** Android, Chrome, im Browser und installiert:
   - Testnachricht senden.
   - Tippen auf die Testnachricht öffnet die Einstellungen, auf die Tagesnachricht die Warnungen, ohne die App neu zu laden.

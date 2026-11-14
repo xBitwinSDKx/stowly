@@ -3,7 +3,8 @@
 # Anleitung und Prüfliste: docs/betrieb.md
 # USB-Drucker direkt am Server (zuschaltbar): docker-compose.usb.yml
 #
-# In der Zielumgebung noch nicht gestartet: Auf dem Entwicklungsrechner gibt es kein Docker.
+# Auf dem Entwicklungsrechner gibt es kein Docker. Gestartet ist Stowly so bisher auf einer Synology
+# mit DSM 6.2.4 (docs/betrieb.md, Abschnitt 4.4).
 services:
   stowly:
     build: .

@@ -2,12 +2,12 @@
 
 Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar machen, auf den Handys installieren, sichern, aktualisieren. Was Stowly ist und wie es aufgebaut ist, steht in [`../README.md`](../README.md) und [`plan-stufe-1.md`](plan-stufe-1.md).
 
-> **Stand.** `Dockerfile`, `docker-compose.yml` und `docker-compose.usb.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate, Drucker und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst samt Druckdienst mit dem Bild-Treiber (automatische Tests und Durchläufe von Hand unter Windows, die Web-App mit eingeschalteter Content-Security-Policy im Browser). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden. Aus Stufe 2 sind die automatische Sicherung, die Benachrichtigungen samt Tagesnachricht, die Zeitzone, der Abgleich mit Bring! über Home Assistant und der Sensor für Home Assistant bisher nur mit automatischen Tests geprüft (Testschlüssel für age, nachgebildete Push-Dienste, ein nachgebildetes Home Assistant, eingestellte Uhr); am Gerät, mit `age` und am echten Home Assistant prüfen sie D7 bis D13, I, J und K. Für den Raspberry Pi gibt es eine eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
+> **Stand.** `Dockerfile`, `docker-compose.yml` und `docker-compose.usb.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate, Drucker und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst samt Druckdienst mit dem Bild-Treiber (automatische Tests und Durchläufe von Hand unter Windows, die Web-App mit eingeschalteter Content-Security-Policy im Browser). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden. Aus Stufe 2 sind die automatische Sicherung, die Benachrichtigungen samt Tagesnachricht, die Zeitzone, der Abgleich mit Bring! über Home Assistant und der Sensor für Home Assistant bisher nur mit automatischen Tests geprüft (Testschlüssel für age, nachgebildete Push-Dienste, ein nachgebildetes Home Assistant, eingestellte Uhr); am Gerät, mit `age` und am echten Home Assistant prüfen sie D7 bis D13, I, J und K. Für den Raspberry Pi gibt es eine eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md). Am 14.11.2026 liefen Bau und Start erstmals in einer Zielumgebung, auf einer Synology mit DSM 6.2.4 (Abschnitt 4.4); was dort geprüft ist, steht in [`pruefliste.md`](pruefliste.md).
 
 ## 1. Überblick
 
 - Stowly läuft als **ein Container mit einem Prozess**. Er liefert die Web-App und die Schnittstelle auf Port 8010 und spricht nur HTTP.
-- **HTTPS stellt ein Reverse Proxy davor bereit.** Beschrieben sind zwei Wege: Nginx Proxy Manager mit eigener Zertifizierungsstelle (Abschnitt 4) und Tailscale (Abschnitt 5).
+- **HTTPS stellt ein Reverse Proxy davor bereit.** Beschrieben sind zwei Wege: Nginx Proxy Manager mit eigener Zertifizierungsstelle (Abschnitt 4) und Tailscale (Abschnitt 5). Auf einer Synology übernimmt das der Reverse Proxy von DSM (Abschnitt 4.4).
 - **Offline-Betrieb, Kamera und die Installation als App gehen nur über die HTTPS-Adresse** (Abschnitt 6).
 - Alle Daten liegen in **einer SQLite-Datei** in einem Docker-Volume (Abschnitt 10).
 
@@ -19,7 +19,7 @@ Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar mach
 | Docker Engine mit Compose-Plugin (`docker compose version` zeigt Version 2 oder neuer) | Bau und Betrieb des Containers |
 | Internet beim Bauen | lädt die Basis-Images und die Pakete von npm und PyPI (von PyPI nur Dateien, die auf Version und Prüfsumme festgelegt sind, Abschnitt 9.1) |
 | etwa 1 GB Plattenplatz für den Bau, danach wenige hundert MB | Images; die Datenbank selbst bleibt klein |
-| ein Reverse Proxy mit HTTPS: Nginx Proxy Manager **oder** Tailscale | siehe Abschnitte 4 und 5 |
+| ein Reverse Proxy mit HTTPS: Nginx Proxy Manager **oder** Tailscale **oder** der von Synology DSM | siehe Abschnitte 4, 4.4 und 5 |
 | im Betrieb optional Internet | für das Nachschlagen bei Open Food Facts und für Benachrichtigungen (die Push-Dienste von Apple, Google, Mozilla und Microsoft, Abschnitt 15) |
 | für die automatische Sicherung: `age` auf einem eigenen Rechner | Schlüssel erzeugen und Sicherungen öffnen (Abschnitt 8.1); auf dem Server nicht nötig |
 | optional Home Assistant mit der Integration Bring! | die Einkaufsliste in Bring! (Abschnitt 17) und der Sensor mit Ansage (Abschnitt 18) |
@@ -147,6 +147,44 @@ networks:
 Danach `docker compose up -d`. Im Proxy Host steht dann `stowly` als Forward Hostname.
 
 Probe von einem Rechner im Heimnetz: `https://stowly.home/api/health` zeigt `"app":"stowly"`, ohne Zertifikatswarnung.
+
+### 4.4 Synology DSM
+
+Erprobt am 14.11.2026 auf DSM 6.2.4 (Docker 20.10.3, `docker-compose` 1.28.5, Kernel 3.10 ohne seccomp) mit einer FRITZ!Box als DNS-Server im Heimnetz. `docker-compose.yml` bleibt unverändert; HTTPS übernimmt der Reverse Proxy von DSM, Nginx Proxy Manager braucht es nicht. Die Images (Debian 13) laufen auch auf dem alten Kernel.
+
+**Dateien auf das NAS** ohne Git: der vierte Weg aus Abschnitt 12 (`git archive`).
+
+**Bauen und starten** per SSH im Ordner der Dateien. `docker-compose` liegt unter `/usr/local/bin`, und das fehlt `sudo` im Suchpfad. Compose ruft zum Bauen `docker` auf und bräche sonst mit „No such file or directory: 'docker'" ab:
+
+```
+sudo env PATH="/usr/local/bin:$PATH" /usr/local/bin/docker-compose up -d --build
+```
+
+Hakt die Internetverbindung des NAS, bricht pip im Bau mit `ReadTimeoutError` bei `files.pythonhosted.org` ab. Dann den Befehl einfach noch einmal starten: Fertige Schritte nimmt Docker aus dem Zwischenspeicher.
+
+**Adresse ohne eigenen DNS-Server.** Eine FRITZ!Box löst keine eigenen Namen wie `stowly.home` auf, nur Gerätenamen unter `.fritz.box`. Ohne Pi-hole oder einen anderen eigenen DNS-Server nimmt man die feste IP-Adresse des NAS mit einem freien Port, etwa `https://<IP des NAS>:8443`. Das Zertifikat trägt dann die IP-Adresse als Subject Alternative Name. Ausstellen lässt es sich mit der Zertifizierungsstelle des Pi; vertraut ihr das Handy schon, braucht es kein weiteres Profil:
+
+```
+bash pi/make-cert.sh issue --ip <IP des NAS> --key-type rsa \
+  --ca-cert stowly-zertifikat/stowly-ca.crt --ca-key stowly-zertifikat/stowly-ca.key \
+  --out stowly-zertifikat/nas
+```
+
+Die Dateien heißen auch hier `pi.crt` und `pi.key`. Die IP-Adresse des NAS muss fest sein. Wechselt sie, passt das Zertifikat nicht mehr, und mit der Adresse wechselt der Speicher der App (Abschnitt 6): Sie muss auf jedem Handy neu installiert werden.
+
+**In DSM 6.2** (in DSM 7 heißen die Stellen ähnlich):
+
+1. Systemsteuerung → Sicherheit → Zertifikat → Hinzufügen → „Neues Zertifikat hinzufügen" → „Zertifikat importieren", **nicht** als Standardzertifikat festlegen. Privater Schlüssel `pi.key`, Zertifikat `pi.crt`, kein Zwischenzertifikat. Lehnt DSM den Schlüssel ab, ihn mit `openssl rsa -in pi.key -traditional -out pi-rsa.key` umwandeln und `pi-rsa.key` nehmen.
+2. Systemsteuerung → Anwendungsportal → Reverse Proxy → Erstellen: Quelle `HTTPS`, Hostname `*`, Port `8443`; Ziel `HTTP`, Hostname `127.0.0.1`, Port `8010`. HSTS aus, keine eigenen Kopfzeilen. `127.0.0.1` statt `localhost`, denn der Container ist nur über IPv4 erreichbar.
+3. Sicherheit → Zertifikat → Konfigurieren: beim Eintrag für Port 8443 das importierte Zertifikat wählen.
+
+DSM reicht `Cache-Control` und `Content-Security-Policy` unverändert durch, begrenzt die Größe von Anfragen nicht und wartet 60 Sekunden auf eine Antwort; das genügt Stowly.
+
+Dazu:
+
+- **Druckdienst:** Der Pi muss die neue Adresse als Ursprung kennen: `https://<IP des NAS>:8443` in `origins` (`pi/README.md`, Abschnitt „Konfiguration"), danach `sudo systemctl restart stowly-print`.
+- **Passwort sichtbar:** Die Docker-App von DSM zeigt beim Container alle Umgebungsvariablen an, auch `STOWLY_PASSWORD`. Dieses Fenster nicht abfotografieren oder weitergeben.
+- **Noch nicht erprobt:** der Ordner `./backups` der automatischen Sicherung auf einer Freigabe von DSM. Dort entscheidet die Windows-ACL der Freigabe über den Zugriff, nicht allein `chown 10001:10001` (Abschnitt 8.1).
 
 ## 5. Tailscale
 
@@ -371,7 +409,7 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 
 ## 12. Das Repository auf den Server bringen
 
-Das Repository hat kein Remote. Drei Wege auf den Debian-Server, alle über SSH (`<benutzer>@<server>` ist der eigene Zugang). Auf dem Server liegt danach ein Ordner `~/stowly`, in dem `docker compose` läuft; `.env` und `docker-compose.override.yml` legt man dort einmal an, keiner der Wege überschreibt sie.
+Das Repository hat kein Remote. Vier Wege auf den Server, alle über SSH (`<benutzer>@<server>` ist der eigene Zugang). Auf dem Server liegt danach ein Ordner `~/stowly`, in dem `docker compose` läuft; `.env` und `docker-compose.override.yml` legt man dort einmal an, keiner der Wege überschreibt sie.
 
 **Git-Bundle.** Das ganze Repository samt Verlauf als eine Datei. Vorteil: Auf dem Server liegt ein echtes Git-Repository, ein Stand lässt sich mit `git log` nachsehen und mit `git checkout` zurückholen, und es braucht nur `scp`. Nachteil: Jede Aktualisierung braucht ein neues Bundle und einen Kopierschritt, und die Datei enthält immer den ganzen Verlauf.
 
@@ -419,6 +457,15 @@ git push server main
 # Server: holen und starten (beim ersten Mal und nach jedem git push)
 cd ~/stowly && git pull origin main
 docker compose up -d --build
+```
+
+**`git archive` über SSH.** Packt den letzten Commit und entpackt ihn auf dem Server, etwa auf einem NAS ohne Git (Abschnitt 4.4). Vorteil: Es kommt genau der committete Stand an, ohne `.git`, Daten oder lokale Dateien, und auf dem Server braucht es nur `tar`. Nachteil: Kein Verlauf auf dem Server, und Dateien, die es im neuen Stand nicht mehr gibt, bleiben dort liegen.
+
+```
+# Entwicklungsrechner, im Repository
+git archive --format=tar HEAD | ssh <benutzer>@<server> 'mkdir -p ~/stowly && tar -xf - -C ~/stowly'
+# Server
+cd ~/stowly && docker compose up -d --build
 ```
 
 ## 13. Content-Security-Policy

@@ -2,8 +2,8 @@
 # (/print) und die gebaute Web-App auf Port 8010 und spricht nur HTTP. HTTPS stellt der Reverse
 # Proxy davor bereit (Nginx Proxy Manager oder Tailscale), siehe docs/betrieb.md.
 #
-# In der Zielumgebung noch nicht gebaut: Auf dem Entwicklungsrechner gibt es kein Docker.
-# Die Prüfliste dafür steht in docs/betrieb.md.
+# Auf dem Entwicklungsrechner gibt es kein Docker. Gebaut ist das Image bisher auf einer Synology
+# mit DSM 6.2.4 (docs/betrieb.md, Abschnitt 4.4); die Prüfliste steht in docs/pruefliste.md.
 
 # ---------------------------------------------------------------- Web-App bauen
 FROM node:26-slim AS web
