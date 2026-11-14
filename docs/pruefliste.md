@@ -58,7 +58,14 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
 - [ ] **15.** Access Point: Android „verbunden bleiben", iPhone, DHCP, WLAN-QR-Code am Kellereingang (R1–R5).
 - [ ] **16.** Die Zertifizierungsstelle auf Android und iPhone installieren; `https://10.71.83.1:8443/v1/health` öffnet sich ohne Warnung (S1, S2).
 
+**Stand 14.11.2026** (Raspberry Pi 5 mit Raspberry Pi OS Lite 64-bit, Brother QL-570 am USB, im Heim-WLAN):
+- **13. teilweise:** SD-Karte, `install.sh` zweimal hintereinander und der Dienst laufen; die Versionen aus Trixie sind wie in P2 erwartet. Offen: Zertifikat (S4), Rechte, Journal.
+- **14. teilweise, mit dem QL-570 statt QL-800:** Der Probedruck kam und sah gut aus. Offen: Umlaute und QR-Code genau ansehen, Deckel, Rolle, Kabel, Drucker aus und ein.
+- **Behoben** dabei: die falsche Meldung „Speicher nur lesbar" (`print/stowly_print/health.py`).
+
 ## F. Direktdruck aus der App
+
+**Stand 14.11.2026:** Aus der App unter `http://localhost:8010` (Chrome/Edge am PC im Heimnetz) ließ sich der Pi über `http://<Adresse des Pi>:8080` als Drucker anlegen, prüfen und bedrucken. Die Punkte unten mit HTTPS, Handy und Keller-WLAN stehen noch aus.
 
 - [ ] **17.** Über die HTTPS-Adresse der App einen Drucker „Direkt (Raspberry Pi)" anlegen: `https://10.71.83.1:8443`, `http://10.71.83.1:8080`, Token (T1). Im WLAN des Pi „Verbindung prüfen": Chrome fragt einmal nach dem Zugriff auf das lokale Netzwerk, erlauben. Erwartet: „erreicht über https://…"; die Karte zeigt den Rechner des Pi und „zuletzt gesehen".
 - [ ] **18.** Gegenproben (T5):

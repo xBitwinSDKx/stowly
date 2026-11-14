@@ -2,7 +2,21 @@
 
 Der Pi steht im Keller beim Etikettendrucker, spannt dort ein eigenes WLAN ohne Internet auf und nimmt Etiketten direkt vom Handy an: über HTTPS (`https://10.71.83.1:8443`) und HTTP (`http://10.71.83.1:8080`). Er hat keine Verbindung zum Server und keine Uhr; den Zustand von Pi und Drucker bringt das Handy beim nächsten Abgleich mit. Protokoll: [`../docs/etiketten.md`](../docs/etiketten.md), Hintergrund: [`../docs/recherche.md`](../docs/recherche.md), Abschnitte 3 bis 8.
 
-> **Stand: in der Zielumgebung ungetestet.** Auf dem Entwicklungsrechner gab es weder Pi noch Drucker. Geprüft sind der Druckdienst selbst (automatische Tests und ein Lauf unter Windows mit dem Bild-Treiber, HTTP und HTTPS), die Brother-Ansteuerung gegen nachgebildete Geräte und das Zertifikats-Skript. Installation, Access Point, Schreibschutz und der Brother am echten Gerät sind nur geschrieben, nicht ausprobiert. Bitte beim ersten Aufsetzen die [Prüfliste](#prüfliste-am-gerät) abhaken und Abweichungen melden.
+> **Stand: teilweise am Gerät geprüft (14.11.2026).** Auf einem Raspberry Pi 5 mit Raspberry Pi OS Lite (64-bit, Trixie) und einem Brother QL-570 am USB liefen:
+> - `install.sh` zweimal (Erstinstallation und Aktualisierung)
+> - der Probedruck
+> - der Direktdruck aus der App über HTTP, von einem PC im Heimnetz aus (`http://localhost:…` als Ursprung)
+>
+> Dabei fiel ein Fehler auf und ist behoben: Wegen `ProtectSystem=strict` meldete der Dienst „Speicher nur lesbar", obwohl die Karte beschreibbar war.
+>
+> Noch nicht am Gerät ausprobiert sind:
+> - der Access Point
+> - HTTPS mit Zertifikat vom Handy
+> - der Schreibschutz
+> - der Pi Zero
+> - der QL-800
+>
+> Bitte beim Aufsetzen die [Prüfliste](#prüfliste-am-gerät) abhaken und Abweichungen melden.
 
 ## Was hier liegt
 
@@ -25,9 +39,15 @@ Die Skripte werden mit `sudo bash pi/…` aufgerufen; sie brauchen dafür kein A
 | Netzteil 5 V, mindestens 2,5 A, Micro-USB | Der Zero kann Unterspannung nicht melden; ein schwaches Netzteil zeigt sich nur in seltsamen Fehlern |
 | microSD-Karte, 16 bis 32 GB, „High Endurance" oder A1 | |
 | USB-OTG-Adapter (Micro-USB-Stecker auf USB-A-Buchse) | für das Druckerkabel |
-| Brother QL-800 (USB) | alternativ QL-820NWBc; den kann auch der Server über das Netz ansprechen |
+| Brother QL-800 (USB) | alternativ QL-820NWBc; den kann auch der Server über das Netz ansprechen. Der ältere **QL-570** (nur USB) geht ebenso, am Pi 5 geprüft. |
 | Endlosrollen 62 mm: DK-22205 (Papier, Regal), DK-22212 (Folie, Gefrierschrank) | Etiketten werden auf 29 mm geschnitten |
 | zum Einrichten: Rechner mit SD-Kartenleser und Raspberry Pi Imager, Heim-WLAN mit Internet | nur für die Installation |
+
+**Raspberry Pi 5** statt Zero (am 14.11.2026 geprüft):
+- Raspberry Pi OS Lite **64-bit** nehmen.
+- Der Drucker kommt direkt an eine USB-A-Buchse, ohne OTG-Adapter.
+- Netzteil: das offizielle mit 27 W, USB-C.
+- Alles Weitere gilt unverändert.
 
 Führt ein Netzwerkkabel in den Keller, geht es einfacher: ein gewöhnlicher WLAN-Access-Point dort, und der Server druckt direkt auf einen Netzwerkdrucker ([`../docs/betrieb.md`](../docs/betrieb.md), Abschnitt 14).
 
@@ -98,7 +118,8 @@ sudo bash pi/install.sh --origin https://stowly.home --cert pi.crt --key pi.key
 ```
 
 - `--origin` ist die Adresse, unter der die App läuft (ohne Pfad), etwa `https://stowly.home` oder `https://<rechner>.<tailnet>.ts.net`; mehrfach möglich. Nur von diesen Ursprüngen darf die App den Pi direkt ansprechen.
-- `--model` (Vorgabe `QL-800`; auch `QL-810W`, `QL-820NWB`) und `--address` (Vorgabe `usb://04f9` = der erste Brother am USB) nur, wenn es nicht der QL-800 am USB ist.
+- `--model` (Vorgabe `QL-800`; auch `QL-810W`, `QL-820NWB`, `QL-570` und die übrigen der Brother-Bibliothek) und `--address` (Vorgabe `usb://04f9` = der erste Brother am USB) nur, wenn es nicht der QL-800 am USB ist.
+- `sudo` fragt beim Benutzer aus dem Imager nach dessen Passwort. Wer den Pi von einem anderen Rechner aus einrichtet, startet den Befehl per `ssh -t …`, damit die Frage dort ankommt.
 - Das Skript sagt vor jedem Schritt, was es tut, und bricht bei einem Fehler ab: Systempakete (`python3-pil`, `python3-usb`, `python3-segno`, `python3-starlette`, `python3-uvicorn`, `python3-venv`, `python3-setuptools`, `fonts-dejavu-core`, `libusb-1.0-0`, `hostapd`, `dnsmasq`, `qrencode`, dazu `overlayroot` für den Schreibschutz am Ende), Benutzer `stowly-print` in der Gruppe `plugdev`, Programm in `/opt/stowly-print` (venv mit den Systempaketen, kein FastAPI, kein pydantic), die Brother-Bibliothek von PyPI auf Version und Prüfsumme festgelegt, udev-Regel, Konfiguration, Journal nur im Arbeitsspeicher (höchstens 16 MB), Systemdienst mit `Restart=always`, zuletzt eine Probe.
 - Gebaut wird mit `python3-setuptools` aus Debian, ohne eigene Bau-Umgebung: das Programm und `packbits` (gibt es nur als Quellpaket). So lädt pip nichts, was nicht in `print/requirements-brother.txt` mit Prüfsumme steht.
 - Am Ende steht das **Token** des Druckers: Es kommt in Stowly beim Drucker ins Feld „Token" (Schritt 7) und steht auch in `/etc/stowly-print/stowly-print.toml`.
@@ -108,7 +129,7 @@ sudo bash pi/install.sh --origin https://stowly.home --cert pi.crt --key pi.key
 
 - **Editor-Lite-Modus aus:** Beim QL-800 leuchtet sonst die grüne Lampe „Editor Lite", und der Drucker meldet sich als USB-Speicher statt als Drucker. Die Taste gedrückt halten, bis die Lampe aus ist.
 - Rolle einlegen (62 mm endlos), Drucker per USB-Kabel und OTG-Adapter an die **Daten-Buchse** des Pi (beim Zero die mittlere, „USB", nicht „PWR"), Drucker einschalten.
-- `lsusb` zeigt eine Zeile mit `04f9:` (beim QL-800 `04f9:209b`).
+- `lsusb` zeigt eine Zeile mit `04f9:` (beim QL-800 `04f9:209b`, beim QL-570 `04f9:2028`). Der QL-570 hat keinen Editor-Lite-Modus.
 - `curl -s http://127.0.0.1:8080/v1/health` zeigt beim Drucker `"reachable":true,"ready":true`. Sonst [Fehlersuche](#fehlersuche).
 
 **Probedruck** ohne App (druckt ein Etikett „Probedruck"):

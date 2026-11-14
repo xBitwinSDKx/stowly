@@ -94,8 +94,16 @@ def _storage_errors(root: Path) -> int | None:
 
 
 def _root_mount(root: Path) -> tuple[str, set[str]] | None:
-    """Dateisystem und Optionen, mit denen ``/`` eingehängt ist (der letzte Eintrag gilt)."""
-    text = _read(root / "proc/mounts")
+    """Dateisystem und Optionen, mit denen ``/`` eingehängt ist (der letzte Eintrag gilt).
+
+    Gelesen wird die Sicht des Systems (``/proc/1/mounts``), nicht die eigene: Der Dienst läuft mit
+    ``ProtectSystem=strict``, in seinem eigenen Namensraum ist ``/`` deshalb immer nur lesbar
+    (am Pi 5 gesehen: „storage_read_only" ohne Schreibschutz). Nur wenn das nicht lesbar ist,
+    gilt die eigene Sicht.
+    """
+    text = _read(root / "proc/1/mounts")
+    if text is None:
+        text = _read(root / "proc/mounts")
     if text is None:
         return None
     found = None
