@@ -31,7 +31,7 @@ In `web/src`:
 - [`docs/integrationen.md`](docs/integrationen.md): Zeitplan, Sicherungen, Web-Push, Home Assistant mit Bring!, Sensor, Umgebungsvariablen
 - [`docs/etiketten.md`](docs/etiketten.md): QR-Inhalte, Aufbau des Etiketts, Protokoll des Druckdienstes
 - [`docs/openapi.json`](docs/openapi.json) und `web/src/contract/api.gen.ts`: dieselben Datentypen für beide Seiten, erzeugt aus den Python-Modellen in `server/stowly/contract/` und `print/stowly_print/model.py`
-- [`docs/vectors.json`](docs/vectors.json): gemeinsame Beispiele, gegen die Server und Web-App getestet werden (auch Warnstufen nach dem MHD und die automatischen Einträge der Einkaufsliste)
+- [`docs/vectors.json`](docs/vectors.json): gemeinsame Beispiele, gegen die Server und Web-App getestet werden (auch Warnstufen nach dem MHD, die Reihenfolge nach FIFO und die automatischen Einträge der Einkaufsliste)
 - `server/stowly/migrations/`: das Datenbankschema (`0001_initial.sql`) und seine Ergänzungen als nummerierte Migrationen (`0003` für Stufe 2)
 
 Die Quelle der Datentypen ist Python. Nach einer Änderung an den Modellen:

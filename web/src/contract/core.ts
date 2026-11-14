@@ -573,7 +573,8 @@ export interface StatsApi {
   /**
    * Verbraucht und entsorgt je Monat und je Zone, dazu die am häufigsten entsorgten Produkte.
    * Der Server rechnet über alle Packungen der ganzen Zeit; die App behält Entnommenes nur für
-   * die Aufbewahrungsdauer. Braucht den Server. „Versehentlich" zählt nicht.
+   * die Aufbewahrungsdauer. Braucht den Server. „Versehentlich" zählt nicht. Der Kern speichert
+   * das Ergebnis nicht: Jeder Aufruf fragt den Server.
    * @throws CoreError offline | invalid (Zeitraum: Form, start nach end, mehr als `STATS_MAX_MONTHS` Monate)
    */
   load(range?: StatsRange): Promise<Stats>;

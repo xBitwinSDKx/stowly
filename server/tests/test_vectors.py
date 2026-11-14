@@ -1,4 +1,4 @@
-"""Kennungen, QR-Inhalte, Barcodes und Zeit gegen die gemeinsamen Beispiele.
+"""Kennungen, QR-Inhalte, Barcodes, Zeit, MHD und FIFO gegen die gemeinsamen Beispiele.
 
 Dieselbe Datei (docs/vectors.json) prüft auch die Web-App: web/src/contract/vectors.test.ts.
 """
@@ -213,6 +213,13 @@ def test_entry_into_soon_and_expired(vectors):
         if expired is not None:
             assert mhd.expiry_state(best_before, warn_days, expired) == "expired", case
             assert mhd.expiry_state(best_before, warn_days, best_before) == "soon", case
+
+
+def test_fifo_order(vectors):
+    """FIFO wie compareFifo in der App: früheres MHD, ohne MHD zuletzt, dann created_at, dann ID."""
+    for case in vectors["fifo"]["order"]:
+        ordered = sorted(case["packages"], key=mhd.fifo_key)
+        assert [package["id"] for package in ordered] == case["expected"], case
 
 
 # --- Automatische Einträge (Protokoll 7.6): die Form der Fälle ------------------------------

@@ -259,7 +259,7 @@ Die Aufgabe `push_daily` des Zeitplans (1), fällig ab `notify_time` in ihrem Fe
 2. Gibt es neu bald Fälliges: `Neu bald fällig: <Liste>.`
 3. Immer: `Insgesamt <s> bald, <e> abgelaufen.` mit den Zahlen aller Packungen im Bestand in Stufe `soon` bzw. `expired`.
 
-Die `<Liste>` fasst je Produkt und MHD zusammen: `Joghurt (16.11.)`, bei mehreren Packungen `2× Joghurt (16.11.)`; sortiert nach MHD, dann Name; höchstens 3 Einträge, dann `und <n> weitere` („Joghurt (16.11.), Milch (18.11.) und 2 weitere"; bei zwei Einträgen „A und B"). Der Name ist der Anzeigename des Produkts (Name, sonst erster Barcode, sonst „Unbekanntes Produkt"), gekürzt auf 40 Zeichen mit „…". Das Datum ist `TT.MM.`.
+Die `<Liste>` fasst je Produkt und MHD zusammen: `Joghurt (16.11.)`, bei mehreren Packungen `2× Joghurt (16.11.)`; sortiert nach MHD, dann nach dem Anzeigenamen (verglichen nach `str.casefold()` in der Reihenfolge der Unicode-Zeichen), dann nach der Kennung des Produkts; höchstens 3 Einträge, dann `und <n> weitere` („Joghurt (16.11.), Milch (18.11.) und 2 weitere"; bei zwei Einträgen „A und B"). Der Name ist der Anzeigename des Produkts (Name, sonst erster Barcode, sonst „Unbekanntes Produkt"), gekürzt auf 40 Zeichen mit „…". Das Datum ist `TT.MM.`.
 
 Beispiel: `Neu bald fällig: Joghurt (16.11.). Insgesamt 3 bald, 1 abgelaufen.`
 
@@ -331,6 +331,7 @@ Ein Lauf:
    - offen gefunden: `seen_at`, `misses = 0`, `uid` übernehmen; bei fremden `status = needs_action`.
    - erledigt gefunden, zuletzt aber offen geschrieben oder gesehen: **in Bring! abgehakt.** Alle offenen Einträge, die an diesen Artikel gebunden sind, werden erledigt: `done_at` = jetzt, `closed_by = bring`, Uhr von `done` = jetzt, Ereignis `shopping_item.bring_done` (`how: completed`); bei einem automatischen Eintrag die Sperre (`sync-protokoll.md`, 7.6). `status = completed`.
    - nicht gefunden: `misses + 1`. Erst beim **zweiten Fehlen in Folge** und nur, wenn er zuletzt offen war: **in Bring! gelöscht**, Folgen wie beim Abhaken (`how: removed`), `status = removed`. Ein Neustart von HA, der die Liste kurz leer zeigt, leert so nicht die Liste von Stowly.
+   - **Fehlen zählt erst, wenn der Artikel schon einmal in der Liste stand** (`seen_at` gesetzt). Einen eigenen Artikel, den Stowly angelegt, aber noch nie gesehen hat, hält der Server nie für gelöscht. So erledigt weder ein Bring!, das neue Artikel erst nach einer Weile zeigt, noch ein Name, den HA oder Bring! beim Anlegen verändert (gekürzt, anders geschrieben), Einträge in Stowly. Steht ein eigener Artikel zehn Minuten nach dem Anlegen noch nie in der Liste, schreibt der Server einmal eine Warnung ins Log; der Eintrag bleibt gebunden und offen.
    - Das gilt für eigene **und fremde** Artikel: Hakt jemand einen gleichnamigen fremden Artikel ab, gilt der Eintrag in Stowly als eingekauft.
 4. **Hin** (aus Stowly nach Bring!):
    - **Neue Einträge** (offen, gespiegelt nach 5.2, noch ohne `bring_key`): Gibt es zu ihrem `name_key` einen Artikel, der gerade offen in der Liste steht, bindet der Server den Eintrag daran. Ist es ein Artikel, den Stowly nicht kennt, legt er dafür eine Zeile mit `own = 0` an: **Stowly legt keinen zweiten an, ändert ihn nie und hakt ihn nie ab.** Sonst `POST /api/services/todo/add_item` mit `{"entity_id", "item": <Name>, "description": <Beschreibung>}`, Zeile mit `own = 1`, `status = needs_action`, `misses = 0` (eine alte Zeile desselben Namens wird ersetzt), dann binden.
@@ -402,16 +403,16 @@ Nach einem Fehler kommt der nächste Versuch mit dem normalen Takt. Ins Log schr
 Alles gilt für „heute" in `STOWLY_TIMEZONE` und für Packungen im Bestand, gestuft mit `expiry_state` und `warn_days_for` (`mhd.py`):
 
 - `state`: Packungen in Stufe `soon` (heute eingeschlossen); `today`: davon mit MHD heute; `expired`: Stufe `expired`; `total`: alle im Bestand.
-- `next`: die Packung mit dem frühesten MHD ab heute (`days` ≥ 0); `name` ist der Anzeigename ihres Produkts, `count` die Zahl der Packungen dieses Produkts mit diesem MHD, `zone` die Zone der ersten davon nach FIFO. `null`, wenn es keine gibt.
+- `next`: unter den Packungen mit MHD ab heute (`days` ≥ 0) die nach FIFO erste (`compare_fifo`: früheres MHD, dann zuerst eingelagert, dann Kennung; in der App `compareFifo`), gleich in welcher Stufe; `name` ist der Anzeigename ihres Produkts, `count` die Zahl der Packungen dieses Produkts mit diesem MHD, `zone` die Zone der ersten davon nach FIFO. `null`, wenn es keine gibt.
 - `shopping`: offene Einträge der Einkaufsliste.
-- `soon_list`, `expired_list`: je Produkt und MHD ein Eintrag `Name (TT.MM.)`, bei mehreren Packungen `2× Name (TT.MM.)`; nach MHD, dann Name; **höchstens 5**, jeder höchstens 40 Zeichen (der Name wird mit „…" gekürzt).
+- `soon_list`, `expired_list`: je Produkt und MHD ein Eintrag `Name (TT.MM.)`, bei mehreren Packungen `2× Name (TT.MM.)`; nach MHD, dann nach dem Anzeigenamen (verglichen nach `str.casefold()` in der Reihenfolge der Unicode-Zeichen), dann nach der Kennung des Produkts; **höchstens 5**, jeder höchstens 40 Zeichen (der Name wird mit „…" gekürzt).
 - `shopping_list`: offene Einträge in der Reihenfolge der App (älteste zuerst), `Name (fehlt 2)`, `Name (2×)` oder nur `Name`; höchstens 5, je höchstens 40 Zeichen.
 - `message`: ein fertiger Satz zum Vorlesen, **höchstens 255 Zeichen**, aus diesen Teilen, mit Leerzeichen verbunden:
   1. `today` ≥ 1: `Heute läuft 1 Packung ab: <Namen>.` bzw. `Heute laufen <n> Packungen ab: <Namen>.`; sonst `state` ≥ 1: `Bald läuft 1 Packung ab: <Name> am <TT.MM.>.` bzw. `Bald laufen <n> Packungen ab, als Nächstes <Name> am <TT.MM.>.`; sonst `Nichts läuft bald ab.`
   2. `expired` ≥ 1: `1 Packung ist abgelaufen.` bzw. `<n> Packungen sind abgelaufen.`
   3. `shopping` ≥ 1: `Auf der Einkaufsliste steht 1 Eintrag.` bzw. `Auf der Einkaufsliste stehen <n> Einträge.`
 
-  `<Namen>` sind die verschiedenen Produkte der heute ablaufenden Packungen, nach Name, höchstens drei: „A", „A und B", „A, B und C", bei mehr „A, B, C und weitere". Wäre der Satz länger als 255 Zeichen, wird er am letzten Wort davor mit „…" gekürzt.
+  `<Namen>` sind die Anzeigenamen der verschiedenen Produkte der heute ablaufenden Packungen, sortiert wie die Listen, höchstens drei: „A", „A und B", „A, B und C", bei mehr „A, B, C und weitere". `<Name>` und `<TT.MM.>` in „Bald …" gehören zur nach FIFO ersten Packung in Stufe `soon`; das ist nicht immer `next`, denn `next` kann wegen einer kürzeren Vorlaufzeit eine Packung in Stufe `ok` sein. Wäre der Satz länger als 255 Zeichen, wird er am letzten Wort davor mit „…" gekürzt.
 - `updated_at`: Serverzeit der Antwort.
 
 Home Assistant begrenzt den *Zustand* einer Entität auf 255 Zeichen. Der Zustand des Sensors ist hier eine Zahl; die Grenzen der Listen und des Satzes sorgen dafür, dass auch Vorlagen-Sensoren daraus darunter bleiben.

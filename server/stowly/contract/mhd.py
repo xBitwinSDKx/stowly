@@ -2,8 +2,9 @@
 
 Gegenstück zu ``web/src/contract/mhd.ts``: ``days_until``, ``expiry_state`` und
 ``warn_days_for`` rechnen wie ``daysUntil``, ``expiryState`` und ``warnDaysFor``;
-``soon_from`` und ``expired_from`` wie ``soonFrom`` und ``expiredFrom``. Beide Seiten werden
-gegen dieselben Beispiele in ``docs/vectors.json`` (Abschnitt ``mhd``) getestet.
+``soon_from`` und ``expired_from`` wie ``soonFrom`` und ``expiredFrom``. Dazu ordnet ``fifo_key``
+wie ``compareFifo`` (``web/src/contract/fifo.ts``). Beide Seiten werden gegen dieselben Beispiele
+in ``docs/vectors.json`` getestet (Abschnitte ``mhd`` und ``fifo``).
 
 Alle Tage sind Kalendertage ``YYYY-MM-DD``. „Heute" ist in der App der Tag in der Zeitzone des
 Geräts, im Server der Tag in ``STOWLY_TIMEZONE`` (docs/integrationen.md, Abschnitt 2).
@@ -81,3 +82,14 @@ def expired_from(best_before: str | None) -> str | None:
         return (day + timedelta(days=1)).isoformat()
     except OverflowError:
         return None
+
+
+def fifo_key(package: Mapping[str, Any]) -> tuple[bool, str, str, str]:
+    """Sortierschlüssel nach FIFO: die Reihenfolge, in der Packungen verbraucht werden sollten.
+
+    Früheres MHD zuerst, Packungen ohne MHD zuletzt; bei gleichem MHD die zuerst eingelagerte
+    (``created_at``), dann nach ``id``. ``package`` braucht nur ``best_before``, ``created_at`` und
+    ``id``; eine Zeile aus ``sqlite3`` genügt. Der Sensor (docs/integrationen.md, 6.1) ordnet damit.
+    """
+    best_before = package["best_before"]
+    return (best_before is None, best_before or "", package["created_at"], package["id"])

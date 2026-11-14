@@ -630,6 +630,83 @@
       }
     ]
   },
+  "fifo": {
+    "_hinweis": "Reihenfolge, in der Packungen verbraucht werden sollten (Plan von Stufe 2, Entscheidung 5): früheres MHD zuerst, Packungen ohne MHD zuletzt; bei gleichem MHD die zuerst eingelagerte (created_at), dann nach ID. Server: fifo_key in server/stowly/contract/mhd.py; App: compareFifo in web/src/contract/fifo.ts. packages steht absichtlich durcheinander, expected ist die Reihenfolge der IDs.",
+    "order": [
+      {
+        "packages": [
+          {
+            "id": "A2B3C",
+            "best_before": "2026-11-20",
+            "created_at": "2026-11-01T10:00:00.000Z"
+          },
+          {
+            "id": "00000",
+            "best_before": null,
+            "created_at": "2026-10-01T10:00:00.000Z"
+          },
+          {
+            "id": "7K9QX",
+            "best_before": "2026-11-18",
+            "created_at": "2026-11-05T10:00:00.000Z"
+          },
+          {
+            "id": "B4C5D",
+            "best_before": "2027-01-02",
+            "created_at": "2026-09-01T00:00:00.000Z"
+          },
+          {
+            "id": "ZZZZZ",
+            "best_before": "2026-11-20",
+            "created_at": "2026-10-30T09:00:00.000Z"
+          },
+          {
+            "id": "C5D6E",
+            "best_before": null,
+            "created_at": "2026-09-15T00:00:00.000Z"
+          },
+          {
+            "id": "0123H",
+            "best_before": "2026-11-20",
+            "created_at": "2026-11-01T10:00:00.000Z"
+          }
+        ],
+        "expected": [
+          "7K9QX",
+          "ZZZZZ",
+          "0123H",
+          "A2B3C",
+          "B4C5D",
+          "C5D6E",
+          "00000"
+        ]
+      },
+      {
+        "packages": [
+          {
+            "id": "9ZZZZ",
+            "best_before": "2027-12-31",
+            "created_at": "2026-01-01T00:00:00.000Z"
+          },
+          {
+            "id": "8YYYY",
+            "best_before": "2028-01-01",
+            "created_at": "2025-01-01T00:00:00.000Z"
+          },
+          {
+            "id": "7XXXX",
+            "best_before": "2027-12-31",
+            "created_at": "2026-01-01T00:00:00.001Z"
+          }
+        ],
+        "expected": [
+          "9ZZZZ",
+          "7XXXX",
+          "8YYYY"
+        ]
+      }
+    ]
+  },
   "shopping_auto": {
     "_hinweis": "Automatische Einträge der Einkaufsliste (docs/sync-protokoll.md, 7.6). Server: server/tests (Runde 1); Nachbildung des Servers: web/src/core/testing (Runde 1). Jeder Fall beginnt mit einem leeren Datenbestand (nur die Zone „Vorrat\"). Schritte laufen in ihrer Reihenfolge. at = Sekunden nach dem Beginn des Falls, zu denen der Anwender gehandelt hat (wirksamer Zeitpunkt); received = wann der Server den Befehl bekommt (Vorgabe: at), nie früher als beim Schritt davor; device = Gerät (Vorgabe A), jedes ist eine eigene Anmeldung, und je Gerät steigt at. Kürzel: product, package, item, source, target nennen Datensätze des Falls; im Befehl werden daraus Kennungen (product -> product_id, package -> package_id, item -> item_id, changes.product -> changes.product_id). auto = der offene automatische Eintrag dieses Produkts (pick: done = der erledigte, nicht gelöschte mit dem spätesten done_at). expect = alle Einträge der Einkaufsliste nach den Schritten davor, als Menge (Reihenfolge egal), auch erledigte und gelöschte: product (Kürzel) oder text, origin, quantity, state (open, done, deleted; gelöscht geht vor erledigt). Kennungen automatischer Einträge vergibt der Server; sie werden nicht verglichen.",
     "cases": [

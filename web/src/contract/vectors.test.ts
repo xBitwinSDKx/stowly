@@ -1,5 +1,5 @@
 /**
- * Kennungen, QR-Inhalte, Barcodes, Zeit und MHD gegen die gemeinsamen Beispiele.
+ * Kennungen, QR-Inhalte, Barcodes, Zeit, MHD und FIFO gegen die gemeinsamen Beispiele.
  * Dieselbe Datei (docs/vectors.json) prüft auch den Server: server/tests/test_vectors.py.
  */
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import rawVectors from "../../../docs/vectors.json";
 import { PACKAGE_ID_ALPHABET, PACKAGE_ID_LENGTH } from "./api.gen";
 import { isStoreInternalBarcode, isValidBarcode, normalizeBarcode } from "./barcode";
+import { compareFifo } from "./fifo";
 import { isPackageId, isUuid, newUuid, normalizePackageId, randomPackageId } from "./ids";
 import { daysUntil, expiredFrom, expiryState, soonFrom, warnDaysFor, type ExpiryState } from "./mhd";
 import { classifyScan, packageQr, parseQr, zoneQr } from "./qr";
@@ -49,6 +50,9 @@ interface Vectors {
     expiry_state: { best_before: string | null; warn_days: number; today: string; state: ExpiryState }[];
     warn_days_for: { product: { warn_days: number | null } | null; settings: { warn_days: number }; warn_days: number }[];
     entry: { best_before: string | null; warn_days: number; soon_from: string | null; expired_from: string | null }[];
+  };
+  fifo: {
+    order: { packages: { id: string; best_before: string | null; created_at: string }[]; expected: string[] }[];
   };
 }
 
@@ -227,6 +231,14 @@ describe("MHD", () => {
         expect(expiryState(best_before, warn_days, expired)).toBe("expired");
         expect(expiryState(best_before, warn_days, best_before)).toBe("soon");
       }
+    }
+  });
+});
+
+describe("FIFO", () => {
+  it("ordnet wie der Server: früheres MHD, ohne MHD zuletzt, dann zuerst eingelagert, dann ID", () => {
+    for (const { packages, expected } of vectors.fifo.order) {
+      expect([...packages].sort(compareFifo).map((pkg) => pkg.id)).toEqual(expected);
     }
   });
 });
