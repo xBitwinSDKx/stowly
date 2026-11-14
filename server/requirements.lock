@@ -18,7 +18,8 @@
 #
 # Stand: 14.11.2026. Herkunft: pypi.org; Prüfsummen aus https://pypi.org/pypi/NAME/VERSION/json
 # (Feld urls[].digests.sha256). Lizenzen laut PyPI: MIT oder BSD-3-Clause, außerdem Apache-2.0
-# (opentelemetry-api), PSF-2.0 (typing-extensions) und MIT-CMU (Pillow).
+# (opentelemetry-api, tzdata), Apache-2.0 oder BSD-3-Clause (cryptography), MIT-0 (cffi),
+# PSF-2.0 (typing-extensions) und MIT-CMU (Pillow).
 #
 # Erneuern, wenn sich eine Abhängigkeit ändert (sonst schlägt tests/test_requirements_lock.py fehl):
 #
