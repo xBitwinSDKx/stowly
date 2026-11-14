@@ -515,8 +515,8 @@ export function pushTestPayload(origin: string): PushPayload {
   return {
     web_push: 8030,
     notification: {
-      title: "Stowly",
-      body: "Testnachricht von Stowly: Benachrichtigungen kommen auf diesem Gerät an.",
+      title: "Testnachricht",
+      body: "Benachrichtigungen kommen auf diesem Gerät an.",
       navigate: `${origin}${PUSH_PATHS.test}`,
       lang: "de-DE",
       dir: "ltr",

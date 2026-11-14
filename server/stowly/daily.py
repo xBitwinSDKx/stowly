@@ -40,6 +40,8 @@ TTL_S = 86400
 TOPIC = "stowly-daily"
 URGENCY = "normal"
 TAG = "stowly-daily"
+# iOS setzt unter den Titel selbst „from" und den Namen der App; „Stowly" stünde dort doppelt.
+TITLE = "MHD-Hinweis"
 # So viele Einträge hat eine Liste höchstens; der Name eines Produkts höchstens so viele Zeichen.
 LIST_MAX = 3
 NAME_MAX = 40
@@ -200,7 +202,9 @@ class PushDailyJob:
         return _Plan(at=format_timestamp(now), news=news, subscriptions=subscriptions)
 
     async def _send(self, subscription: push.Subscription, text: str) -> push.Delivery | None:
-        payload = push.notification(text, origin=subscription.origin, path=PUSH_PATHS["daily"], tag=TAG)
+        payload = push.notification(
+            TITLE, text, origin=subscription.origin, path=PUSH_PATHS["daily"], tag=TAG
+        )
         try:
             return await self._sender.deliver(subscription, payload, ttl=TTL_S, topic=TOPIC, urgency=URGENCY)
         except Exception:

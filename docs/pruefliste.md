@@ -2,7 +2,7 @@
 
 Auf dem Entwicklungsrechner laufen Server, Druckdienst und App zusammen: automatische Tests auf allen Seiten, dazu ein Durchgang im Browser mit dem Bild-Treiber. Alles, was Docker, echte Handys, einen echten Drucker oder den Raspberry Pi braucht, ließ sich dort nicht prüfen. Diese Liste führt in der Reihenfolge hindurch, in der man es tut.
 
-Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis H in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
+Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis K in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
 
 ## A. Container
 
@@ -133,3 +133,76 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - Lange Produktnamen stehen in zwei Zeilen, werden kleiner und enden notfalls mit „…".
   - ID und Einlagerdatum stehen vollständig da. **Bitte melden, falls eines davon mit „…" endet.**
   - In der Zeile darunter steht die Packungsgröße vor der Marke. Ein sehr langer Markenname endet mit „…", die Größe bleibt stehen („330 ml · COCA-COLA SERVIC…").
+
+# Stufe 2
+
+Auf dem Entwicklungsrechner geprüft:
+- alle automatischen Tests
+- im Browser gegen den echten Server: Einkaufsliste, Mindestbestand mit automatischem Eintrag, FIFO-Hinweis, Statistik und die Zustände in den Einstellungen
+- der Sensor per Aufruf
+- eine automatische Sicherung, entschlüsselt und geöffnet
+
+Am iPhone (iOS 27, Testaufbau mit eigener CA, 14.11.2026) kamen Testnachricht und Tagesnachricht an.
+
+Offen sind Docker, Android, Home Assistant mit Bring! und das echte Programm `age`.
+
+## M. Umstieg
+
+- [ ] **37.** Den Server mit den Daten aus Stufe 1 aktualisieren (Punkt 33). Im Log läuft die Migration 0003 ohne Fehler; Bestand und Einstellungen sind unverändert.
+- [ ] **38.** Ein Gerät mit der App aus Stufe 1, das noch ungesendete Änderungen hat:
+  - Es zeigt „Jetzt aktualisieren".
+  - Danach lädt es einmal alles neu und sendet seine Änderungen.
+  - Anmeldung, Gerätename, Ton und Kamera bleiben.
+- [ ] **39.** Eine neue Version kommt beim nächsten Öffnen der App an: Stowly sucht beim Start danach, nicht erst nach einer Stunde.
+
+## N. Einkaufsliste, Mindestbestand, FIFO
+
+- [ ] **40.** Mindestbestand setzen und unterschreiten:
+  - Die Bestandsliste zeigt sofort „fehlt n".
+  - Mit Verbindung steht der Eintrag binnen Sekunden auf der Einkaufsliste, ohne Netz nach dem nächsten Abgleich.
+- [ ] **41.** Eigene Einträge, mit Produkt und als freier Text, im Keller ohne Netz anlegen und abhaken, danach abgleichen. Ein Produkt mit eigenem Eintrag einlagern: Der Eintrag ist erledigt.
+- [ ] **42.** Scannen: Nach der letzten Packung eines Produkts ohne Mindestbestand bietet die Scan-Ansicht „Auf die Einkaufsliste" an, bei einem Produkt mit Mindestbestand nicht.
+- [ ] **43.** FIFO: Eine neuere Packung per Scan entnehmen, während eine ältere desselben Produkts da ist. Erwartet:
+  - „Älter: … · MHD … · Zone" neben „Rückgängig"
+  - „Rückgängig" bucht zurück, danach die ältere scannen.
+  - Mit echten Etiketten prüfen.
+
+## O. Statistik
+
+- [ ] **44.** Am Handy (375 px):
+  - kein waagrechtes Scrollen, in beiden Themen lesbar
+  - im Flugmodus der Hinweis
+  - Je eine Packung als verbraucht, entsorgt und „falsch erfasst" entnehmen: Im laufenden Monat steigen „verbraucht" und „entsorgt" um je 1, „falsch erfasst" zählt nicht.
+
+## P. Automatische Sicherung
+
+- [ ] **45.** Zwei Schlüssel mit `age-keygen` erzeugen, die öffentlichen in die `.env`, `./backups` für uid 10001 anlegen ([`betrieb.md`](betrieb.md), Abschnitt 8.1; D7–D9).
+- [ ] **46.** Nach dem Start liegt `stowly-…sqlite3.gz.age` mit den Rechten 0600 im Ordner. Die App zeigt unter „Sicherung" Uhrzeit, letzte Sicherung und die gekürzten Schlüssel.
+- [ ] **47.** Probe-Entschlüsselung mit jedem privaten Schlüssel: `age -d -i … | gunzip | head -c 15` zeigt `SQLite format 3`. Danach an einer Testkopie zurückspielen (D10–D13).
+- [ ] **48.** Den Ordner nicht beschreibbar machen: Die App meldet den Fehler und nach 48 Stunden die Warnung.
+
+## Q. Push
+
+- [x] **49.** iPhone, installierte App, iOS 27, Testaufbau: Testnachricht und Tagesnachricht kommen an. Titel „Testnachricht" bzw. „MHD-Hinweis", darunter von iOS „from" mit dem Namen der App (14.11.2026).
+- [ ] **50.** Dasselbe auf dem eigenen Server mit eurer CA (I1–I6), dazu die Tagesnachricht „nur Neues" (I8–I12).
+- [ ] **51.** Android, Chrome, im Browser und installiert:
+  - Testnachricht senden.
+  - Tippen auf die Testnachricht öffnet die Einstellungen, auf die Tagesnachricht die Warnungen, ohne die App neu zu laden.
+- [ ] **52.** iPhone: Tippen auf eine Mitteilung öffnet Stowly.
+  - **Bekannte Grenze unter iOS 27:** Stowly öffnet am Anfang, nicht in der Zielansicht ([`integrationen.md`](integrationen.md), Abschnitt 4.5).
+  - Mit dem eigenen Server und späteren iOS-Fassungen erneut versuchen; ändert sich etwas, bitte melden.
+- [ ] **53.** Benachrichtigungen im Browser blockieren und wieder erlauben: Die Zeile in den Einstellungen wechselt ohne Neuladen.
+
+## R. Home Assistant und Bring!
+
+- [ ] **54.** Home Assistant einrichten ([`betrieb.md`](betrieb.md), Abschnitt 17), dann Bring! hin und zurück (J1–J13).
+  - Dabei die offenen Fragen aus [`integrationen.md`](integrationen.md), Abschnitt 9 beantworten und melden: Sie bestimmen, ob Stowly Namen kürzen oder länger auf gelöschte Artikel warten muss.
+- [ ] **55.** Den Sensor in HA einrichten und den Satz vorlesen lassen (K1–K6).
+
+## S. Bedienung
+
+- [ ] **56.** Tastatur am Desktop:
+  - Zonen mit Enter umsortieren: Der Fokus bleibt am Knopf.
+  - In der Lösch-Historie mit Enter wiederherstellen: Der Fokus geht an die nächste Zeile.
+  - Ein Gerät umbenennen und während des Speicherns Escape drücken: Nichts schließt.
+- [ ] **57.** Zeitangaben: Was vorgestern war, heißt „vor 2 Tagen", nicht „gestern".

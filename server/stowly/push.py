@@ -65,7 +65,10 @@ TIMEOUT_S = 10.0
 JWT_LIFETIME = timedelta(hours=12)
 JWT_REUSE_MARGIN = timedelta(hours=1)
 
-TEST_BODY = "Testnachricht von Stowly: Benachrichtigungen kommen auf diesem Gerät an."
+# iOS setzt unter den Titel selbst „from" und den Namen der App: Der Titel sagt deshalb, worum es geht,
+# nicht „Stowly" (docs/integrationen.md, 4.5).
+TEST_TITLE = "Testnachricht"
+TEST_BODY = "Benachrichtigungen kommen auf diesem Gerät an."
 TEST_TAG = "stowly-test"
 
 _B64URL = re.compile(r"^[A-Za-z0-9_-]*={0,2}$")
@@ -394,12 +397,12 @@ def vapid_jwt(key: ec.EllipticCurvePrivateKey, *, aud: str, sub: str, exp: int) 
 # --- Nachricht (4.5) -------------------------------------------------------------------------
 
 
-def notification(body: str, *, origin: str, path: str, tag: str) -> bytes:
+def notification(title: str, body: str, *, origin: str, path: str, tag: str) -> bytes:
     """Die Nutzlast im Format „Declarative Web Push" (JSON, UTF-8)."""
     payload = {
         "web_push": 8030,
         "notification": {
-            "title": "Stowly",
+            "title": title,
             "body": body,
             "navigate": origin + path,
             "lang": "de-DE",
@@ -642,5 +645,7 @@ class PushService:
         if subscription is None:
             raise NoSubscription
         self._admit(device_id)
-        payload = notification(TEST_BODY, origin=subscription.origin, path=PUSH_PATHS["test"], tag=TEST_TAG)
+        payload = notification(
+            TEST_TITLE, TEST_BODY, origin=subscription.origin, path=PUSH_PATHS["test"], tag=TEST_TAG
+        )
         return await self.deliver(subscription, payload, ttl=300, topic=TEST_TAG, urgency="high")

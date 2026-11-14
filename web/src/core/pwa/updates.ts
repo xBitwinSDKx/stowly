@@ -77,7 +77,7 @@ export class AppUpdates {
   private takenOver = false;
   private reloading = false;
   private lastCheck: number;
-  /** Nach einer neuen Version suchen, sobald die Registrierung bekannt ist (`checkNow` kam zu früh). */
+  /** Nach einer neuen Version suchen, sobald die Registrierung bekannt ist: beim Start, oder `checkNow` kam zu früh. */
   private checkWanted = false;
 
   constructor(
@@ -86,6 +86,10 @@ export class AppUpdates {
   ) {
     this.controlled = Boolean(env.container.controller);
     this.lastCheck = this.now();
+    // Beim Start einmal nachsehen, sobald die Registrierung da ist. Sonst käme eine neue Version
+    // erst nach einer Stunde offener App an: Der Browser selbst sieht beim Öffnen höchstens
+    // einmal am Tag nach (am iPhone gesehen: Schließen und neu Öffnen half nicht).
+    this.checkWanted = true;
     env.container.addEventListener("controllerchange", () => this.controllerChanged());
   }
 

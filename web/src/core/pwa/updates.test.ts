@@ -240,15 +240,17 @@ describe("Aktualisierung der App", () => {
     });
   });
 
-  it("sieht gelegentlich nach einer neuen Version, wenn die App wieder sichtbar wird", () => {
+  it("sieht beim Start nach einer neuen Version und danach gelegentlich, wenn die App wieder sichtbar wird", () => {
     const page = setup({ controlled: true });
     page.updates.watch(page.registration);
+    // Beim Start: einmal, sobald die Registrierung da ist.
+    expect(page.env.updates).toBe(1);
     page.updates.visible();
-    expect(page.env.updates).toBe(0);
+    expect(page.env.updates).toBe(1);
     page.env.now = UPDATE_CHECK_INTERVAL_MS;
     page.updates.visible();
     page.updates.visible();
-    expect(page.env.updates).toBe(1);
+    expect(page.env.updates).toBe(2);
   });
 
   it("sucht sofort, wenn der Server ein neueres Protokoll spricht, auch vor der Registrierung", () => {

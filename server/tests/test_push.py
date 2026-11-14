@@ -558,8 +558,8 @@ def test_the_test_message_reaches_the_push_service_encrypted_and_signed(
     assert payload == {
         "web_push": 8030,
         "notification": {
-            "title": "Stowly",
-            "body": "Testnachricht von Stowly: Benachrichtigungen kommen auf diesem Gerät an.",
+            "title": "Testnachricht",
+            "body": "Benachrichtigungen kommen auf diesem Gerät an.",
             "navigate": "https://stowly.example/einstellungen",
             "lang": "de-DE",
             "dir": "ltr",

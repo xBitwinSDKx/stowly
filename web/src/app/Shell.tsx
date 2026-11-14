@@ -38,6 +38,7 @@ import { PageLoading } from "./Page";
 import { preloadPages } from "./pages";
 import { SearchProvider, useSearch } from "./search";
 import styles from "./Shell.module.css";
+import { useNotificationNavigation } from "./notificationNavigation";
 
 function SyncGlyph({ tone, size = 18 }: { tone: SyncSummary["tone"]; size?: number }) {
   switch (tone) {
@@ -169,6 +170,7 @@ export function Shell() {
 }
 
 function ShellFrame() {
+  useNotificationNavigation();
   const core = useCore();
   const logout = useLogout();
   const desktop = useMediaQuery(DESKTOP_QUERY);

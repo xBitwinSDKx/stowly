@@ -171,7 +171,7 @@ describe("Testnachricht und Ausschalten", () => {
     await expectCoreError(core.push.test(), "not_found");
     await core.push.enable();
     expect(await core.push.test()).toEqual({ status: "sent", http_status: 201, message: "Der Push-Dienst hat die Nachricht angenommen." });
-    expect(server.pushMessages.at(-1)?.payload.notification).toMatchObject({ title: "Stowly", tag: "stowly-test", navigate: `${ORIGIN}/einstellungen` });
+    expect(server.pushMessages.at(-1)?.payload.notification).toMatchObject({ title: "Testnachricht", tag: "stowly-test", navigate: `${ORIGIN}/einstellungen` });
     const limited = await expectCoreError(core.push.test(), "rate_limited");
     expect(limited.details.retry_after_s).toBe(PUSH_TEST_INTERVAL_S);
 

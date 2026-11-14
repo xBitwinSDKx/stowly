@@ -192,7 +192,7 @@ Die Nutzlast ist JSON im Format „Declarative Web Push" (WebKit, Push API der W
 {
   "web_push": 8030,
   "notification": {
-    "title": "Stowly",
+    "title": "MHD-Hinweis",
     "body": "Neu bald fällig: Joghurt (16.11.). Insgesamt 3 bald, 1 abgelaufen.",
     "navigate": "https://stowly.example/warnungen",
     "lang": "de-DE",
@@ -203,11 +203,31 @@ Die Nutzlast ist JSON im Format „Declarative Web Push" (WebKit, Push API der W
 }
 ```
 
+- **Titel:** Er sagt, worum es geht („MHD-Hinweis", „Testnachricht"), nie „Stowly". iOS setzt unter den Titel einer Web-App selbst eine Zeile „from" mit dem Namen der App, nicht abschaltbar und nicht übersetzt; Android nennt die App ohnehin. Ein Titel „Stowly" stünde dort doppelt (am iPhone gesehen: „Stowly from Stowly").
 - `navigate` ist absolut: der `origin` des Abos plus der Pfad aus `PUSH_PATHS` (`server/stowly/contract/api.py`, in der App `PUSH_PATHS` aus `api.gen.ts`): `/warnungen` für die Tagesnachricht, `/einstellungen` für die Testnachricht.
-- Kein `mutable` und kein `app_badge`: Wo `app_badge` hingehört, ist bei WebKit noch nicht eindeutig.
-- **Geräte ohne Declarative Web Push** bekommen dieselben Bytes als `push`-Ereignis im Service Worker. Er zeigt sie selbst an (`web/src/sw.ts`):
-  - `push`: JSON lesen; nur bei `web_push === 8030` und einem `notification.title` `registration.showNotification(title, { body, lang, dir, tag, silent, data: { navigate } })`, sonst nichts. Auch Safari mit Declarative Web Push schickt das Ereignis an einen vorhandenen Service Worker; zeigt der dieselbe Nachricht an, ist das kein Doppel.
-  - `notificationclick`: Nachricht schließen; ein offenes Fenster der App fokussieren und dorthin führen (`WindowClient.navigate`, die Seite lädt dabei neu), sonst `clients.openWindow(navigate)`. Scheitert das Hinführen (etwa bei einem Fenster, das der Service Worker nicht steuert), öffnet er ein neues. Ziele außerhalb des eigenen Ursprungs und ungültige öffnet der Service Worker nicht: Der Tipp führt dann zum Anfang der App im eigenen Ursprung.
+- Kein `mutable` und kein `app_badge`.
+- **Warum Declarative Web Push:** Safari ab iOS 18.4 zeigt solche Nachrichten selbst an, auch wenn der Service Worker einmal fehlt oder scheitert. Andere Browser geben dieselben Bytes als `push` an den Service Worker, der sie anzeigt.
+
+**Der Service Worker** (`web/src/sw.ts`, `web/src/core/push/worker.ts`):
+
+- `push`: JSON lesen; nur bei `web_push === 8030` und einem `notification.title` zeigt er `registration.showNotification(title, { body, lang, dir, tag, silent, data: { navigate } })`, sonst nichts.
+- `notificationclick`: Nachricht schließen. Das Ziel steht in `notification.navigate` (wo der Browser die Mitteilung selbst angezeigt hat), sonst in `data.navigate`, sonst gilt es nach der Kennung (`stowly-daily` → `/warnungen`, `stowly-test` → `/einstellungen`).
+  - Einem offenen Fenster der App schickt der Service Worker die Nachricht `{ type: "stowly:navigate", url }` (`NAVIGATE_MESSAGE` in `web/src/contract/routes.ts`) und holt es nach vorn; die App wechselt die Ansicht ohne Neuladen (`web/src/app/notificationNavigation.ts`).
+  - `WindowClient.navigate` nimmt er bewusst nicht: Safari kennt es nicht, und es lädt neu.
+  - Ohne Fenster, oder wenn das Fenster keine Nachricht annimmt, öffnet `clients.openWindow` das Ziel.
+  - Ziele außerhalb des eigenen Ursprungs und ungültige öffnet er nicht: Der Tipp führt dann zum Anfang der App.
+
+**Grenze unter iOS 27** (Test am iPhone, 14.11.2026, über eine eigene CA):
+
+- Die Nachrichten kommen an, im Vordergrund wie im Hintergrund.
+- Ein Tipp öffnet Stowly aber am Anfang (`/`), nicht in der Zielansicht.
+- Was dabei zu sehen war:
+  - Der Service Worker bekam für Push-Mitteilungen nie `notificationclick`, nur für Mitteilungen, die er bei offener App selbst gezeigt hatte.
+  - Was er beim Empfang einer Push-Nachricht ablegte (Cache Storage) oder abrief, kam weder in der App noch beim Server an.
+  - `WindowClient.navigate` gibt es nicht.
+  - Mit `"web_push": 8030` zeigt iOS die Nachricht selbst an und führt beim Tipp trotzdem nicht zu `navigate`.
+- Das passt zu offenen Fehlerberichten bei WebKit (etwa 263687, 259212). Ein Umweg (Ziel beim Empfang merken, beim Zurückkehren einlösen) scheiterte an der Ablage und ist wieder entfernt.
+- Erneut prüfen auf dem echten Server und mit späteren iOS-Fassungen (`docs/pruefliste.md`).
 
 ### 4.6 Kopfzeilen
 
@@ -253,7 +273,7 @@ Die Aufgabe `push_daily` des Zeitplans (1), fällig ab `notify_time` in ihrem Fe
 
 **Ist nichts neu, geht keine Nachricht hinaus.** Der Lauf zählt trotzdem.
 
-**Der Text:** Titel „Stowly", Rumpf aus diesen Teilen, mit Leerzeichen verbunden:
+**Der Text:** Titel „MHD-Hinweis", Rumpf aus diesen Teilen, mit Leerzeichen verbunden:
 
 1. Gibt es neu Abgelaufenes: `Neu abgelaufen: <Liste>.`
 2. Gibt es neu bald Fälliges: `Neu bald fällig: <Liste>.`
@@ -267,7 +287,7 @@ Beispiel: `Neu bald fällig: Joghurt (16.11.). Insgesamt 3 bald, 1 abgelaufen.`
 
 ### 4.9 Testnachricht
 
-`POST /api/push/test` (`sync-protokoll.md`, 11.3): Rumpf „Testnachricht von Stowly: Benachrichtigungen kommen auf diesem Gerät an.", `tag` `stowly-test`, `navigate` `<origin>/einstellungen`, Kopfzeilen nach 4.6. Die Antwort (`PushTestResult`) nennt das Ergebnis nach 4.7, den Status des Push-Dienstes und einen deutschen Satz, etwa „Der Push-Dienst hat die Nachricht angenommen." oder „Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?".
+`POST /api/push/test` (`sync-protokoll.md`, 11.3): Titel „Testnachricht", Rumpf „Benachrichtigungen kommen auf diesem Gerät an.", `tag` `stowly-test`, `navigate` `<origin>/einstellungen`, Kopfzeilen nach 4.6. Die Antwort (`PushTestResult`) nennt das Ergebnis nach 4.7, den Status des Push-Dienstes und einen deutschen Satz, etwa „Der Push-Dienst hat die Nachricht angenommen." oder „Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?".
 
 ### 4.10 Ende eines Abos
 

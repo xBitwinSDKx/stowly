@@ -840,7 +840,7 @@ Die eigene Prüfliste in [`../pi/README.md`](../pi/README.md#prüfliste-am-gerä
 | # | Schritt | Erwartet |
 |---|---|---|
 | I1 | `STOWLY_PUSH_CONTACT` nach Abschnitt 15 setzen, `docker compose up -d` | Start ohne Konfigurationsfehler; mit `STOWLY_PUSH_CONTACT=betrieb` (ohne `mailto:`) dagegen „Konfigurationsfehler: STOWLY_PUSH_CONTACT …" |
-| I2 | Android, Chrome, HTTPS-Adresse: „Einstellungen → Dieses Gerät" → Benachrichtigungen einschalten, erlauben, „Testnachricht senden" | Die App meldet „Der Push-Dienst hat die Nachricht angenommen."; binnen Sekunden erscheint „Testnachricht von Stowly …"; Tippen öffnet die Einstellungen |
+| I2 | Android, Chrome, HTTPS-Adresse: „Einstellungen → Dieses Gerät" → Benachrichtigungen einschalten, erlauben, „Testnachricht senden" | Die App meldet „Der Push-Dienst hat die Nachricht angenommen."; binnen Sekunden erscheint „Testnachricht" mit „Benachrichtigungen kommen auf diesem Gerät an."; Tippen öffnet die Einstellungen |
 | I3 | iPhone (ab iOS 16.4), **installierte** App: dasselbe | wie I2. In Safari ohne Installation erklärt die App, dass es erst nach der Installation geht |
 | I4 | Eine zweite Testnachricht sofort danach | „Bitte in … Sekunden erneut versuchen" (höchstens eine je 10 Sekunden) |
 | I5 | Das Gerät unter „Geräte" abmelden, dann `docker compose exec stowly python -c "import sqlite3; print(sqlite3.connect('/data/stowly.sqlite3').execute('SELECT COUNT(*) FROM push_subscriptions').fetchone())"` | Das Abo des abgemeldeten Geräts ist weg |

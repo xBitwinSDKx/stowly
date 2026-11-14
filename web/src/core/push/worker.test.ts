@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { PUSH_PATHS } from "@/contract";
+import { NAVIGATE_MESSAGE, PUSH_PATHS } from "@/contract";
 
 import { pushTestPayload } from "../testing/fake-api";
 import { handleNotificationClick, handlePush, parsePushPayload, targetUrl, type ClientsLike, type NotificationOptionsLike, type WindowClientLike } from "./worker";
@@ -47,7 +47,7 @@ function registration() {
 const DAILY = {
   web_push: 8030,
   notification: {
-    title: "Stowly",
+    title: "MHD-Hinweis",
     body: "Neu bald fällig: Joghurt (16.11.). Insgesamt 3 bald, 1 abgelaufen.",
     navigate: `${ORIGIN}/warnungen`,
     lang: "de-DE",
@@ -66,7 +66,7 @@ describe("push", () => {
     await Promise.all(work);
     expect(target.shown).toEqual([
       {
-        title: "Stowly",
+        title: "MHD-Hinweis",
         options: { body: DAILY.notification.body, lang: "de-DE", dir: "ltr", tag: "stowly-daily", silent: false, data: { navigate: `${ORIGIN}/warnungen` } },
       },
     ]);
@@ -74,7 +74,7 @@ describe("push", () => {
 
   it("versteht die Testnachricht, wie sie der Server schickt", () => {
     const shown = parsePushPayload({ json: () => pushTestPayload(ORIGIN) });
-    expect(shown).toMatchObject({ title: "Stowly", options: { tag: "stowly-test", data: { navigate: `${ORIGIN}${PUSH_PATHS.test}` } } });
+    expect(shown).toMatchObject({ title: "Testnachricht", options: { tag: "stowly-test", data: { navigate: `${ORIGIN}${PUSH_PATHS.test}` } } });
   });
 
   it("übergeht alles, was nicht von Stowly ist", () => {
@@ -105,7 +105,7 @@ describe("push", () => {
 });
 
 /** Ein Fenster der App, wie es `clients.matchAll` liefert. */
-function windowClient(url: string, extra: Partial<WindowClientLike> & { failNavigate?: boolean } = {}) {
+function windowClient(url: string, extra: Partial<WindowClientLike> & { failMessage?: boolean } = {}) {
   const calls: string[] = [];
   const client: WindowClientLike & { calls: string[] } = {
     url,
@@ -116,9 +116,11 @@ function windowClient(url: string, extra: Partial<WindowClientLike> & { failNavi
       calls.push("focus");
       return Promise.resolve(client);
     },
-    navigate: (to: string) => {
-      calls.push(`navigate ${to}`);
-      return extra.failNavigate ? Promise.reject(new TypeError("Dieser Client wird nicht gesteuert.")) : Promise.resolve(client);
+    postMessage: (message) => {
+      if (extra.failMessage) {
+        throw new TypeError("Dieses Fenster nimmt keine Nachricht an.");
+      }
+      calls.push(`${message.type} ${message.url}`);
     },
   };
   return client;
@@ -140,17 +142,17 @@ function clientsWith(windows: WindowClientLike[]) {
   return { clients, opened, queries };
 }
 
-async function click(data: unknown, clients: ClientsLike): Promise<{ closed: number }> {
+async function click(data: unknown, clients: ClientsLike, navigate?: unknown): Promise<{ closed: number }> {
   const state = { closed: 0 };
   const work: Promise<unknown>[] = [];
-  handleNotificationClick({ notification: { data, close: () => (state.closed += 1) }, waitUntil: (promise) => work.push(promise) }, clients, ORIGIN);
+  handleNotificationClick({ notification: { data, navigate, close: () => (state.closed += 1) }, waitUntil: (promise) => work.push(promise) }, clients, ORIGIN);
   expect(work).toHaveLength(1);
   await Promise.all(work);
   return state;
 }
 
 describe("notificationclick", () => {
-  it("schließt die Nachricht, holt ein offenes Fenster der App nach vorn und führt es hin", async () => {
+  it("schließt die Nachricht, holt ein offenes Fenster der App nach vorn und schickt ihm das Ziel", async () => {
     const hidden = windowClient(`${ORIGIN}/bestand`);
     const visible = windowClient(`${ORIGIN}/zonen`, { visibilityState: "visible" });
     const foreign = windowClient("https://example.org/", { focused: true });
@@ -158,7 +160,7 @@ describe("notificationclick", () => {
     const { closed } = await click({ navigate: `${ORIGIN}/warnungen` }, clients);
     expect(closed).toBe(1);
     expect(queries).toEqual([{ type: "window", includeUncontrolled: true }]);
-    expect(visible.calls).toEqual(["focus", `navigate ${ORIGIN}/warnungen`]);
+    expect(visible.calls).toEqual([`${NAVIGATE_MESSAGE} ${ORIGIN}/warnungen`, "focus"]);
     expect(hidden.calls).toEqual([]);
     expect(foreign.calls).toEqual([]);
     expect(opened).toEqual([]);
@@ -172,12 +174,12 @@ describe("notificationclick", () => {
     expect(opened).toEqual([]);
   });
 
-  it("öffnet ein neues Fenster, wenn keines offen ist oder sich das offene nicht führen lässt", async () => {
+  it("öffnet ein neues Fenster, wenn keines offen ist oder das offene keine Nachricht annimmt", async () => {
     const none = clientsWith([]);
     await click({ navigate: `${ORIGIN}/einstellungen` }, none.clients);
     expect(none.opened).toEqual([`${ORIGIN}/einstellungen`]);
 
-    const stubborn = windowClient(`${ORIGIN}/`, { failNavigate: true });
+    const stubborn = windowClient(`${ORIGIN}/`, { failMessage: true });
     const uncontrolled = clientsWith([stubborn]);
     await click({ navigate: `${ORIGIN}/warnungen` }, uncontrolled.clients);
     expect(uncontrolled.opened).toEqual([`${ORIGIN}/warnungen`]);
@@ -192,6 +194,32 @@ describe("notificationclick", () => {
     const { clients, opened } = clientsWith([]);
     await click(undefined, clients);
     expect(opened).toEqual([`${ORIGIN}/`]);
+  });
+
+  it("nimmt das Ziel einer Mitteilung, die der Browser als Declarative Web Push selbst angezeigt hat", async () => {
+    // iOS ab 18.4 zeigt die Nachricht selbst an: Das Ziel steht dann in notification.navigate, data fehlt.
+    const open = windowClient(`${ORIGIN}/`, { focused: true });
+    const running = clientsWith([open]);
+    await click(null, running.clients, `${ORIGIN}/warnungen`);
+    expect(open.calls).toEqual([`${NAVIGATE_MESSAGE} ${ORIGIN}/warnungen`, "focus"]);
+
+    const closed = clientsWith([]);
+    await click(undefined, closed.clients, `${ORIGIN}/warnungen`);
+    expect(closed.opened).toEqual([`${ORIGIN}/warnungen`]);
+
+    // Ein fremdes Ziel dort führt wie sonst nur zum Anfang der App.
+    const foreign = clientsWith([]);
+    await click({ navigate: `${ORIGIN}/einstellungen` }, foreign.clients, "https://example.org/");
+    expect(foreign.opened).toEqual([`${ORIGIN}/`]);
+  });
+
+  it("holt ein Fenster nach vorn, auch wenn es sich nicht fokussieren lässt", async () => {
+    const stubborn = windowClient(`${ORIGIN}/`);
+    stubborn.focus = () => Promise.reject(new Error("nicht erlaubt"));
+    const { clients, opened } = clientsWith([stubborn]);
+    await click({ navigate: `${ORIGIN}/warnungen` }, clients);
+    expect(stubborn.calls).toEqual([`${NAVIGATE_MESSAGE} ${ORIGIN}/warnungen`]);
+    expect(opened).toEqual([]);
   });
 
   it("nimmt relative Ziele im eigenen Ursprung", () => {

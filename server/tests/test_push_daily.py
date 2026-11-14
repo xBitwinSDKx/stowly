@@ -184,7 +184,7 @@ def test_new_soon_reaches_every_subscription_with_its_own_origin(bench):
         assert messages[endpoint] == {
             "web_push": 8030,
             "notification": {
-                "title": "Stowly",
+                "title": "MHD-Hinweis",
                 "body": "Neu bald fällig: Joghurt (28.11.). Insgesamt 2 bald, 0 abgelaufen.",
                 "navigate": f"{origin}/warnungen",
                 "lang": "de-DE",
