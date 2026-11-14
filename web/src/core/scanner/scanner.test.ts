@@ -45,6 +45,8 @@ function setup(config: { cameraId?: string | null; devices?: Record<string, Came
     plays: 0,
     /** Was der Scanner an der Kamera eingestellt hat (`applyConstraints`). */
     constraints: [] as MediaTrackConstraints[],
+    /** Zeigte das Video die Kamera schon, als `applyConstraints` kam? (iOS: danach zu kleines Bild) */
+    constrainedWhileShown: [] as boolean[],
   };
 
   const video = document.createElement("video");
@@ -113,6 +115,7 @@ function setup(config: { cameraId?: string | null; devices?: Record<string, Came
           addEventListener: () => undefined,
           applyConstraints: async (constraints: MediaTrackConstraints) => {
             state.constraints.push(constraints);
+            state.constrainedWhileShown.push(source !== null);
           },
         } as unknown as MediaStreamTrack;
         const stream = { getTracks: () => [track] } as unknown as MediaStream;
@@ -259,7 +262,11 @@ describe("Kamera", () => {
     const iphone = setup({ appleMobile: true, devices: zoomable });
     await iphone.scanner.start();
     expect(iphone.state.constraints).toEqual([{ advanced: [{ zoom: 2 }] }]);
+    // Der Zoom kommt, bevor das Video die Kamera zeigt: Änderte er das Bild danach, zeigte iOS es
+    // mitunter kleiner als seine Fläche.
+    expect(iphone.state.constrainedWhileShown).toEqual([false]);
     expect(iphone.scanner.state.get().zoom).toEqual({ min: 1, max: 10, step: 0.1, value: 2 });
+    expect(iphone.scanner.diagnostics()).toMatchObject({ apple_mobile: true, starts: 1, paused: false });
     iphone.scanner.dispose();
 
     const android = setup({ appleMobile: false, devices: zoomable });

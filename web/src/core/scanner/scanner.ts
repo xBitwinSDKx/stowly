@@ -87,6 +87,14 @@ export interface ScannerDiagnostics {
   /** Größe des Kamerabilds und des ausgewerteten Ausschnitts in Pixeln. */
   video: string | null;
   frame: number | null;
+  /** So groß zeigt die Seite das Kamerabild, in CSS-Pixeln. */
+  display: string | null;
+  /** Neue Kamerabilder je Sekunde, gezählt über die letzten zwei Sekunden; null, solange keine kamen. */
+  fps: number | null;
+  /** So oft wurde die Kamera geöffnet (Start, Umschalten, Neustart nach stehendem Bild). */
+  starts: number;
+  /** Die Auswertung ist angehalten (ein Dialog ist offen). */
+  paused: boolean;
   /** Dauer der Auswertung je Bild: letzte und Mittel der letzten Bilder, in Millisekunden. */
   detect_ms: { last: number | null; average: number | null };
 }
@@ -217,6 +225,12 @@ export class Scanner {
   private rescanAt = 0;
   /** Wie lange die letzten Auswertungen dauerten, in Millisekunden (für `diagnostics`). */
   private readonly detectTimes: number[] = [];
+  /** Wann die letzten Kamerabilder kamen (Uhr des Scanners), für die Bildrate in `diagnostics`. */
+  private readonly frameTimes: number[] = [];
+  /** So oft wurde die Kamera geöffnet, seit es diesen Scanner gibt (Umschalten, Neustart). */
+  private starts = 0;
+  /** Ändert das Video seine Größe, wird es neu gesetzt (`refreshVideoLayout`). */
+  private readonly onVideoResize = () => this.refreshVideoLayout();
   /** Wann zuletzt ein neues Kamerabild kam (Uhr des Scanners). */
   private lastFrameAt = 0;
   /** Seit dem letzten Öffnen der Kamera kam schon ein neues Bild. */
@@ -283,6 +297,7 @@ export class Scanner {
   dispose(): void {
     this.stop();
     this.disposed = true;
+    this.video.removeEventListener?.("resize", this.onVideoResize);
     if (this.listening) {
       this.listening = false;
       document.removeEventListener("visibilitychange", this.onVisibility);
@@ -315,6 +330,17 @@ export class Scanner {
       settings: track ? read(() => track.getSettings()) : null,
       video: this.video.videoWidth ? `${String(this.video.videoWidth)} × ${String(this.video.videoHeight)}` : null,
       frame: this.canvas?.width ?? null,
+      display: this.video.clientWidth ? `${String(this.video.clientWidth)} × ${String(this.video.clientHeight)}` : null,
+      fps: (() => {
+        const times = this.frameTimes;
+        if (times.length < 2) {
+          return null;
+        }
+        const span = (times.at(-1) as number) - (times[0] as number);
+        return span > 0 ? Math.round(((times.length - 1) * 1000) / span) : null;
+      })(),
+      starts: this.starts,
+      paused: this.paused,
       detect_ms: {
         last: times.length > 0 ? Math.round((times.at(-1) as number) * 10) / 10 : null,
         average: times.length > 0 ? Math.round((times.reduce((sum, value) => sum + value, 0) / times.length) * 10) / 10 : null,
@@ -386,7 +412,23 @@ export class Scanner {
     const applied = await setZoom(camera.track, value, zoom);
     if (applied !== null) {
       this.patch({ zoom: { ...zoom, value: applied } });
+      this.refreshVideoLayout();
     }
+  }
+
+  /**
+   * Setzt das Kamerabild neu in seine Fläche. iOS zeigt es nach einer Änderung seiner Größe (Zoom,
+   * andere Kamera) mitunter weiter in der alten, zu kleinen Größe an, bis die Seite neu gesetzt
+   * wird; ein kurzer Wechsel von `object-fit` erzwingt das.
+   */
+  private refreshVideoLayout(): void {
+    const video = this.video;
+    if (!video.style) {
+      return;
+    }
+    video.style.objectFit = "fill";
+    void video.offsetWidth;
+    video.style.removeProperty("object-fit");
   }
 
   // ---------------------------------------------------------------- Ablauf
@@ -408,6 +450,24 @@ export class Scanner {
         return;
       }
       this.camera = camera;
+      this.starts += 1;
+      const zoom = camera.capabilities.zoom;
+      const zoomUsable = zoom !== undefined && typeof zoom.min === "number" && typeof zoom.max === "number" && zoom.max > zoom.min;
+      let zoomValue = zoomUsable ? Math.max(1, zoom.min as number) : 1;
+      // Am iPhone beginnt der Scanner gezoomt: Dann hält man es weit genug weg, um scharf zu sehen.
+      // Der Zoom kommt, bevor das Video das Bild zeigt: Ändert er es danach, zeigte iOS das
+      // Kamerabild mitunter kleiner als die Fläche dafür.
+      const wanted = zoomUsable ? startZoom(camera.capabilities, this.deps.appleMobile()) : null;
+      if (zoomUsable && wanted !== null) {
+        const applied = await setZoom(camera.track, wanted, zoom);
+        if (!current()) {
+          // `halt()` hat die Kamera schon freigegeben.
+          return;
+        }
+        if (applied !== null) {
+          zoomValue = applied;
+        }
+      }
       await this.attach(camera);
       this.watchFrames(run);
       let detector: CodeDetector;
@@ -419,20 +479,6 @@ export class Scanner {
       if (!current()) {
         // `halt()` hat die Kamera schon freigegeben.
         return;
-      }
-      const zoom = camera.capabilities.zoom;
-      const zoomUsable = zoom !== undefined && typeof zoom.min === "number" && typeof zoom.max === "number" && zoom.max > zoom.min;
-      let zoomValue = zoomUsable ? Math.max(1, zoom.min as number) : 1;
-      // Am iPhone beginnt der Scanner gezoomt: Dann hält man es weit genug weg, um scharf zu sehen.
-      const wanted = zoomUsable ? startZoom(camera.capabilities, this.deps.appleMobile()) : null;
-      if (zoomUsable && wanted !== null) {
-        const applied = await setZoom(camera.track, wanted, zoom);
-        if (!current()) {
-          return;
-        }
-        if (applied !== null) {
-          zoomValue = applied;
-        }
       }
       this.patch({
         status: "running",
@@ -513,6 +559,10 @@ export class Scanner {
   private noteFrame(): void {
     this.framesFlowing = true;
     this.lastFrameAt = this.deps.now();
+    this.frameTimes.push(this.lastFrameAt);
+    while (this.frameTimes.length > 0 && this.lastFrameAt - (this.frameTimes[0] as number) > 2_000) {
+      this.frameTimes.shift();
+    }
   }
 
   /** Steht das Video, wird es wieder gestartet, höchstens einmal je Sekunde. */
@@ -609,6 +659,8 @@ export class Scanner {
     video.playsInline = true;
     // iOS zeigt das Bild sonst im Vollbild-Player.
     video.setAttribute("playsinline", "");
+    // Dieselbe Funktion meldet sich nur einmal an, auch beim nächsten Öffnen.
+    video.addEventListener?.("resize", this.onVideoResize);
     video.srcObject = camera.stream;
     try {
       await video.play();

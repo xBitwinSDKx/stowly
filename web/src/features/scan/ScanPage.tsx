@@ -57,9 +57,32 @@ function errorText(error: unknown): string {
   return error instanceof CoreError ? error.message : "Das hat nicht geklappt.";
 }
 
-/** Steht `?diagnose` in der Adresse? Dann zeigt die Ansicht, was der Browser über Kamera und Erkennung meldet. */
+/** Merkt sich für diesen Tab, dass die Kamera-Infos gewünscht sind (`?diagnose`, aus mit `?diagnose=0`). */
+const DIAGNOSE_KEY = "stowly-diagnose";
+
+/**
+ * Sollen die Kamera-Infos erscheinen? Einmal mit `?diagnose` geöffnet, bleiben sie in diesem Tab an,
+ * auch wenn man danach über „Jetzt scannen" kommt; `?diagnose=0` schaltet sie wieder aus.
+ */
 function wantsDiagnostics(): boolean {
-  return typeof window !== "undefined" && new URLSearchParams(window.location.search).has("diagnose");
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const value = new URLSearchParams(window.location.search).get("diagnose");
+  try {
+    if (value === "0") {
+      window.sessionStorage.removeItem(DIAGNOSE_KEY);
+      return false;
+    }
+    if (value !== null) {
+      window.sessionStorage.setItem(DIAGNOSE_KEY, "1");
+      return true;
+    }
+    return window.sessionStorage.getItem(DIAGNOSE_KEY) === "1";
+  } catch {
+    // Ohne Speicher gilt nur die Adresse.
+    return value !== null && value !== "0";
+  }
 }
 
 /** Ein Wert aus `getCapabilities()` oder `getSettings()` als kurzer Text. */
@@ -88,7 +111,8 @@ export function describeDiagnostics(info: ScannerDiagnostics, build: string = fo
     `Erkennung: ${info.engine ?? "–"} · zuletzt ${describeValue(info.detect_ms.last)} ms · Mittel ${describeValue(info.detect_ms.average)} ms`,
     `Kamera: ${info.camera ?? "–"}`,
     `Kameras: ${info.cameras.length > 0 ? info.cameras.join(" | ") : "–"}`,
-    `Bild: ${info.video ?? "–"} · Ausschnitt ${describeValue(info.frame)}`,
+    `Bild: ${info.video ?? "–"} · Ausschnitt ${describeValue(info.frame)} · angezeigt ${info.display ?? "–"}`,
+    `Bilder je Sekunde: ${describeValue(info.fps)} · Kamera geöffnet: ${String(info.starts)}× · ${info.paused ? "angehalten" : "wertet aus"}`,
     `Zoom möglich: ${describeValue(caps.zoom)}`,
     `Zoom eingestellt: ${describeValue(settings.zoom)}`,
     `Fokus möglich: ${describeValue(caps.focusMode)} · Abstand ${describeValue(caps.focusDistance)}`,
@@ -126,6 +150,10 @@ export function ScanPage() {
   const prefs = useLive(core.prefs.value, DEFAULT_DEVICE_PREFS);
   const syncStatus = useLive(core.sync.status);
   const printJobs = useLive(core.data.printJobs, NO_JOBS);
+  // Die Scan-Ansicht liegt außerhalb des Rahmens der App und sieht dessen Hinweis „Neue Version"
+  // nicht: Wer nur scannt, bekäme eine neue Version sonst nie.
+  const app = useLive(core.app.state);
+  const [updating, setUpdating] = useState(false);
 
   const [quantity, setQuantity] = useState(1);
   const [override, setOverride] = useState<ZoneOverride>(null);
@@ -497,6 +525,19 @@ export function ScanPage() {
         </Button>
         <h1 className={styles.title}>Scannen</h1>
         <div className={styles.tools}>
+          {app?.update_ready && !app.update_required ? (
+            <Button
+              variant="primary"
+              size="sm"
+              busy={updating}
+              onClick={() => {
+                setUpdating(true);
+                void core.app.applyUpdate().finally(() => setUpdating(false));
+              }}
+            >
+              Neue Version
+            </Button>
+          ) : null}
           {state.status === "running" && zoom && zoom.max >= 1.5 ? (
             <Button variant="ghost" size="sm" icon={<ZoomIn />} aria-label={`Zoom auf ${zoomTarget}-fach stellen`} onClick={() => void scanner?.setZoom(zoomTarget)}>
               {`${zoom.value > 1.5 ? "2" : "1"}×`}
