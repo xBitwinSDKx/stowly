@@ -97,6 +97,7 @@ Einmal je Handy `stowly-ca.crt` installieren (nicht `pi.crt`):
 - **Android:** Datei aufs Handy bringen (Mail, Cloud, USB). Einstellungen → Sicherheit und Datenschutz → Weitere Sicherheitseinstellungen → Verschlüsselung und Anmeldedaten → Zertifikat installieren → **CA-Zertifikat** → Datei wählen. Die Bezeichnungen weichen je nach Hersteller ab. Chrome vertraut danach dem Pi.
 - **iPhone:** Datei per AirDrop, Mail oder aus „Dateien" öffnen → „Profil geladen". Einstellungen → Allgemein → VPN und Geräteverwaltung → das Profil „Stowly Drucker-CA" → Installieren. **Danach zusätzlich:** Einstellungen → Allgemein → Info → Zertifikatsvertrauenseinstellungen → „Stowly Drucker-CA" einschalten. Ohne diesen zweiten Schritt vertraut Safari dem Pi nicht.
 - Probe (im WLAN des Pi, nach Schritt 6): `https://10.71.83.1:8443/v1/health` im Browser zeigt JSON mit `"app":"stowly-print"`, ohne Warnung.
+- **Eine Warnung nicht wegklicken.** Bietet Safari „Diese Verbindung ist nicht privat" mit „Website trotzdem besuchen" an, fehlt der Schalter unter Zertifikatsvertrauenseinstellungen. Mit der Ausnahme zeigt Safari die Seite, die App aber meldet „Der Druckdienst antwortet auf keiner Adresse". Am iPhone gesehen (14.11.2026).
 
 ## 3. Dateien auf den Pi
 

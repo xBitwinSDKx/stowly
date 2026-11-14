@@ -65,7 +65,13 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
 
 ## F. Direktdruck aus der App
 
-**Stand 14.11.2026:** Aus der App unter `http://localhost:8010` (Chrome/Edge am PC im Heimnetz) ließ sich der Pi über `http://<Adresse des Pi>:8080` als Drucker anlegen, prüfen und bedrucken. Die Punkte unten mit HTTPS, Handy und Keller-WLAN stehen noch aus.
+**Stand 14.11.2026:**
+- Aus der App unter `http://localhost:8010` (Chrome/Edge am PC im Heimnetz) ließ sich der Pi über `http://<Adresse des Pi>:8080` als Drucker anlegen, prüfen und bedrucken.
+- Danach am iPhone (iOS 27, App vom Home-Bildschirm, App über einen HTTPS-Testaufbau am PC statt `stowly.home`):
+  - Der Pi war über HTTPS mit einem Zertifikat der Stowly Drucker-CA erreichbar; „Verbindung prüfen" klappte.
+  - Ein neues Produkt einlagern: Der Name kam sofort, das Etikett kam direkt nach dem Anlegen.
+  - Stolperstein: Der Schalter unter Zertifikatsvertrauenseinstellungen war aus. Safari ließ sich mit „trotzdem besuchen" täuschen, die App meldete „antwortet auf keiner Adresse" (`pi/README.md`, Abschnitt 2).
+- Offen: alles unter `stowly.home`, im Keller-WLAN, Android, die Gegenproben.
 
 - [ ] **17.** Über die HTTPS-Adresse der App einen Drucker „Direkt (Raspberry Pi)" anlegen: `https://10.71.83.1:8443`, `http://10.71.83.1:8080`, Token (T1). Im WLAN des Pi „Verbindung prüfen": Chrome fragt einmal nach dem Zugriff auf das lokale Netzwerk, erlauben. Erwartet: „erreicht über https://…"; die Karte zeigt den Rechner des Pi und „zuletzt gesehen".
 - [ ] **18.** Gegenproben (T5):

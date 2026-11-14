@@ -97,6 +97,7 @@ Das Wurzelzertifikat muss auf jedem Handy installiert sein:
 
 - Android: Einstellungen → Sicherheit → Verschlüsselung und Anmeldedaten → Zertifikat installieren → CA-Zertifikat.
 - iPhone: Zertifikat öffnen (Mail, AirDrop, Download in Safari) → Einstellungen → „Profil geladen" → Installieren. Danach **zusätzlich** Einstellungen → Allgemein → Info → Zertifikatsvertrauenseinstellungen → volles Vertrauen für das Wurzelzertifikat einschalten.
+- Eine Warnung „Diese Verbindung ist nicht privat" in Safari nicht mit „Website trotzdem besuchen" wegklicken: Dann wirkt die Seite erreichbar, die App aber meldet „Server nicht erreichbar". Die Warnung heißt fast immer, dass der Schalter oben fehlt.
 
 ### 4.3 Proxy Host
 
