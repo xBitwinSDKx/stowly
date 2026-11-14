@@ -22,7 +22,7 @@ function alias(entry: "mock" | "real") {
   ];
 }
 
-const define = { __APP_VERSION__: JSON.stringify("0.0.0-test") };
+const define = { __APP_VERSION__: JSON.stringify("0.0.0-test"), __APP_BUILD__: JSON.stringify("2026-11-14T00:00:00.000Z") };
 
 export default defineConfig({
   test: {

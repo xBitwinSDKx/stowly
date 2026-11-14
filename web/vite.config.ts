@@ -91,6 +91,7 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? "0.0.0"),
+      __APP_BUILD__: JSON.stringify(new Date().toISOString()),
     },
     // Je Ausprägung und Port ein eigener Zwischenspeicher: Mehrere Entwicklungsserver im
     // selben Ordner kommen sich so nicht in die Quere.

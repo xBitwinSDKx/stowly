@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { ROUTES, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
+import { formatBuild, ROUTES, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
 import { useLogout } from "@/features/auth/logout";
 import { errorText, List, ListLink, ListRow, Notice, plural, Section } from "@/ui";
@@ -421,7 +421,7 @@ export function SettingsPage() {
 
       <Section title="Über" id="ueber">
         <List>
-          <ListRow label="Version" inline>
+          <ListRow label="Version" hint={formatBuild() !== "" ? `Stand vom ${formatBuild()}` : undefined} inline>
             <span className={styles.value}>
               Stowly {app?.version ?? "–"}
               {sync?.server_version ? ` · Server ${sync.server_version}` : ""}

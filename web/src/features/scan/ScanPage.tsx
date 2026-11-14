@@ -3,8 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } 
 import { useNavigate } from "react-router";
 
 import {
+  APP_VERSION,
   CoreError,
   DEFAULT_DEVICE_PREFS,
+  formatBuild,
   formatDate,
   isPlaceholder,
   productTitle,
@@ -19,7 +21,7 @@ import {
   type ScanResult,
   type Zone,
 } from "@/contract";
-import { CROP_FRACTION, playFeedback, setFeedbackActive, type FeedbackTone } from "@/core/scanner";
+import { CROP_FRACTION, playFeedback, setFeedbackActive, type FeedbackTone, type Scanner, type ScannerDiagnostics } from "@/core/scanner";
 import { Button, cx, Dialog, IconButton, Spinner, useToast } from "@/ui/base";
 
 import { ManualEntry } from "./ManualEntry";
@@ -53,6 +55,61 @@ function describePackage(pkg: Package, product: Product | undefined): string {
 
 function errorText(error: unknown): string {
   return error instanceof CoreError ? error.message : "Das hat nicht geklappt.";
+}
+
+/** Steht `?diagnose` in der Adresse? Dann zeigt die Ansicht, was der Browser über Kamera und Erkennung meldet. */
+function wantsDiagnostics(): boolean {
+  return typeof window !== "undefined" && new URLSearchParams(window.location.search).has("diagnose");
+}
+
+/** Ein Wert aus `getCapabilities()` oder `getSettings()` als kurzer Text. */
+function describeValue(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "–";
+  }
+  if (Array.isArray(value)) {
+    return value.map(describeValue).join(", ");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, part]) => `${key} ${describeValue(part)}`)
+      .join(" · ");
+  }
+  return String(value);
+}
+
+/** Die Meldungen des Scanners als Text zum Ablesen (und Abschreiben) am Gerät. */
+export function describeDiagnostics(info: ScannerDiagnostics, build: string = formatBuild()): string {
+  const caps = info.capabilities ?? {};
+  const settings = info.settings ?? {};
+  return [
+    `Stowly ${APP_VERSION}${build !== "" ? `, Stand ${build}` : ""}`,
+    `iPhone/iPad erkannt: ${info.apple_mobile ? "ja" : "nein"}`,
+    `Erkennung: ${info.engine ?? "–"} · zuletzt ${describeValue(info.detect_ms.last)} ms · Mittel ${describeValue(info.detect_ms.average)} ms`,
+    `Kamera: ${info.camera ?? "–"}`,
+    `Kameras: ${info.cameras.length > 0 ? info.cameras.join(" | ") : "–"}`,
+    `Bild: ${info.video ?? "–"} · Ausschnitt ${describeValue(info.frame)}`,
+    `Zoom möglich: ${describeValue(caps.zoom)}`,
+    `Zoom eingestellt: ${describeValue(settings.zoom)}`,
+    `Fokus möglich: ${describeValue(caps.focusMode)} · Abstand ${describeValue(caps.focusDistance)}`,
+    `Fokus eingestellt: ${describeValue(settings.focusMode)} · Abstand ${describeValue(settings.focusDistance)}`,
+  ].join("\n");
+}
+
+/** Anzeige für `?diagnose`: einmal je Sekunde neu, solange die Ansicht offen ist. */
+function Diagnostics({ scanner }: { scanner: Scanner | null }) {
+  const [text, setText] = useState("");
+  useEffect(() => {
+    const update = () => setText(scanner ? describeDiagnostics(scanner.diagnostics()) : "Der Scanner startet …");
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [scanner]);
+  return (
+    <pre className={styles.diagnostics} aria-label="Kamera-Infos">
+      {text}
+    </pre>
+  );
 }
 
 /**
@@ -425,6 +482,7 @@ export function ScanPage() {
     }
   }
 
+  const diagnose = useMemo(wantsDiagnostics, []);
   const problem = state.status === "error" && state.error ? CAMERA_PROBLEMS[state.error] : null;
   // Was aus den Etiketten des letzten Einlagerns geworden ist: Der Halbsatz folgt dem Zustellen.
   const labels = last?.kind === "stored" ? labelStatus(printJobs, last.jobIds) : null;
@@ -476,6 +534,7 @@ export function ScanPage() {
 
       <div ref={viewfinderRef} className={styles.viewfinder} onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerCancel={() => (swipe.current = null)}>
         <video ref={videoRef} className={cx(styles.video, state.status !== "running" && styles.videoHidden)} muted playsInline aria-label="Kamerabild" />
+        {diagnose ? <Diagnostics scanner={scanner} /> : null}
         {state.status === "running" ? (
           <>
             <div className={styles.frame} style={frameSize ? { ["--frame-size" as string]: `${frameSize}px` } : undefined} aria-hidden="true" />

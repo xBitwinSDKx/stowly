@@ -25,3 +25,15 @@ export * from "./time";
 
 /** Version der Web-App, beim Bauen eingesetzt. */
 export const APP_VERSION: string = __APP_VERSION__;
+
+/** Zeitpunkt des Bauens (ISO 8601): Zwei Stände derselben Version unterscheiden sich daran. */
+export const APP_BUILD: string = __APP_BUILD__;
+
+/** Der Stand zum Anzeigen, in deutscher Ortszeit: „14.11.2026, 01:15". Leer, wenn er nicht lesbar ist. */
+export function formatBuild(build: string = APP_BUILD): string {
+  const date = new Date(build);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("de-DE", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}

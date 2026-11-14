@@ -19,7 +19,7 @@ const src = fileURLToPath(new URL("./src", import.meta.url));
  * den jsdom mitbringt. IndexedDB kommt aus fake-indexeddb.
  */
 export default defineConfig({
-  define: { __APP_VERSION__: JSON.stringify("0.0.0-e2e") },
+  define: { __APP_VERSION__: JSON.stringify("0.0.0-e2e"), __APP_BUILD__: JSON.stringify("2026-11-14T00:00:00.000Z") },
   resolve: {
     alias: [
       { find: "@entry", replacement: `${src}/entry.real.ts` },

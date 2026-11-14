@@ -66,6 +66,30 @@ const PLAY_RETRY_MS = 1_000;
 export const STALL_RESTART_MS = 3_000;
 /** Neu geöffnet wird höchstens so oft: Jedes Öffnen kann am iPhone nach der Kamera fragen. */
 export const STALL_RESTART_SPACING_MS = 15_000;
+/** So viele Auswertungen fließen in den Mittelwert von `diagnostics`. */
+const DIAGNOSTIC_SAMPLES = 20;
+
+/**
+ * Was die Scan-Ansicht mit `?diagnose` in der Adresse anzeigt: Kamera, Zoom und Erkennung, so wie
+ * der Browser sie meldet. Nur zum Nachsehen am Gerät; nichts davon steuert den Scanner.
+ */
+export interface ScannerDiagnostics {
+  /** Gilt das Gerät als iPhone oder iPad (Start mit Zoom, `startZoom`)? */
+  apple_mobile: boolean;
+  engine: DetectorKind | null;
+  /** Name der laufenden Kamera, wie der Browser ihn nennt. */
+  camera: string | null;
+  /** Alle Kameras, zwischen denen sich umschalten lässt. */
+  cameras: string[];
+  /** `getCapabilities()` und `getSettings()` der laufenden Kamera, unverändert; null, wo der Browser nichts sagt. */
+  capabilities: Record<string, unknown> | null;
+  settings: Record<string, unknown> | null;
+  /** Größe des Kamerabilds und des ausgewerteten Ausschnitts in Pixeln. */
+  video: string | null;
+  frame: number | null;
+  /** Dauer der Auswertung je Bild: letzte und Mittel der letzten Bilder, in Millisekunden. */
+  detect_ms: { last: number | null; average: number | null };
+}
 
 export type ScannerStatus =
   /** Die Kamera ist aus. */
@@ -191,6 +215,8 @@ export class Scanner {
   private tooSmallAt = 0;
   /** Wann zuletzt auf einen Produkt-Barcode gezielt wurde, der seit dem Dialog im Bild ist. */
   private rescanAt = 0;
+  /** Wie lange die letzten Auswertungen dauerten, in Millisekunden (für `diagnostics`). */
+  private readonly detectTimes: number[] = [];
   /** Wann zuletzt ein neues Kamerabild kam (Uhr des Scanners). */
   private lastFrameAt = 0;
   /** Seit dem letzten Öffnen der Kamera kam schon ein neues Bild. */
@@ -265,6 +291,35 @@ export class Scanner {
     this.detectorPromise = null;
     this.detector = null;
     void pending?.then((detector) => detector.dispose()).catch(() => undefined);
+  }
+
+  /** Kamera, Zoom und Erkennung, wie der Browser sie meldet (`ScannerDiagnostics`). */
+  diagnostics(): ScannerDiagnostics {
+    const track = this.camera?.track;
+    const read = (get: () => unknown): Record<string, unknown> | null => {
+      try {
+        const value = get();
+        return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+      } catch {
+        return null;
+      }
+    };
+    const times = this.detectTimes;
+    const state = this.state.get();
+    return {
+      apple_mobile: this.deps.appleMobile(),
+      engine: state.engine,
+      camera: track?.label || null,
+      cameras: state.cameras.map((camera) => camera.label),
+      capabilities: track && typeof track.getCapabilities === "function" ? read(() => track.getCapabilities()) : null,
+      settings: track ? read(() => track.getSettings()) : null,
+      video: this.video.videoWidth ? `${String(this.video.videoWidth)} × ${String(this.video.videoHeight)}` : null,
+      frame: this.canvas?.width ?? null,
+      detect_ms: {
+        last: times.length > 0 ? Math.round((times.at(-1) as number) * 10) / 10 : null,
+        average: times.length > 0 ? Math.round((times.reduce((sum, value) => sum + value, 0) / times.length) * 10) / 10 : null,
+      },
+    };
   }
 
   /** Hält die Auswertung an, ohne die Kamera zu schließen (z. B. solange ein Dialog offen ist). */
@@ -605,9 +660,14 @@ export class Scanner {
         const detector = this.detector;
         if (frame && detector) {
           try {
+            const detectStarted = this.deps.now();
             const codes = await detector.detect(frame);
             if (run !== this.generation) {
               return;
+            }
+            this.detectTimes.push(this.deps.now() - detectStarted);
+            if (this.detectTimes.length > DIAGNOSTIC_SAMPLES) {
+              this.detectTimes.shift();
             }
             failures = 0;
             if (!this.paused) {

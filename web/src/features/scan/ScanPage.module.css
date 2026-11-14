@@ -180,6 +180,27 @@
   box-shadow: var(--shadow-sm);
 }
 
+/* `?diagnose` in der Adresse: was der Browser über Kamera und Erkennung meldet, zum Nachsehen am Gerät. */
+.diagnostics {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  right: var(--space-2);
+  z-index: 5;
+  max-height: 45%;
+  overflow: hidden;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: rgb(0 0 0 / 72%);
+  color: #fff;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  /* Nur zum Ablesen (Bildschirmfoto): Tippen geht durch auf das, was darunter liegt. */
+  pointer-events: none;
+}
+
 /* „Näher ran": ein Etikett ist erkannt, aber zu klein im Bild. Deutlicher als der übliche Hinweis, ohne zu blinken. */
 .closer {
   border-color: var(--color-warn);

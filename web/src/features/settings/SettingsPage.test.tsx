@@ -229,6 +229,8 @@ describe("Über und Abmelden", () => {
     await ready();
     const about = section("Über");
     expect(about).toHaveTextContent("Stowly 0.0.0-test · Server 0.1.0");
+    // Der Stand des Bauens unterscheidet zwei Builds derselben Version (in deutscher Ortszeit).
+    expect(about).toHaveTextContent(/Stand vom \d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}/);
     // Die Tests laufen unter http://localhost: Das ist eine lokale, für den Browser sichere Adresse.
     expect(about).toHaveTextContent("lokal (Entwicklung)");
     expect(about).toHaveTextContent("Open Food Facts (ODbL)");
