@@ -220,8 +220,18 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 ## R. Home Assistant und Bring!
 
 - [ ] **54.** Home Assistant einrichten ([`betrieb.md`](betrieb.md), Abschnitt 17), dann Bring! hin und zurück (J1–J13).
+  - **Stand 14.11.2026** (Stowly auf dem NAS, HA im Heimnetz per http, die echte Bring!-Liste statt einer Testliste):
+    - J1: Ein HA-Benutzer ohne Administratorrechte genügt. Die App zeigt „ok".
+    - J2: Ein Eintrag aus Stowly stand nach wenigen Minuten in Bring!, mit der Spezifikation „1× · Stowly".
+    - J10: HA neu gestartet, während der Artikel in Bring! stand: In Stowly blieb er offen.
+    - J7: In Bring! abgehakt, danach in Stowly erledigt.
+    - Offen: J3–J6, J8, J9, J11, J13.
   - Dabei die offenen Fragen aus [`integrationen.md`](integrationen.md), Abschnitt 9 beantworten und melden: Sie bestimmen, ob Stowly Namen kürzen oder länger auf gelöschte Artikel warten muss.
 - [ ] **55.** Den Sensor in HA einrichten und den Satz vorlesen lassen (K1–K6).
+  - **Stand 14.11.2026:**
+    - K1–K3: Mit Token kommt die Zusammenfassung; ohne Token und mit dem Sensor-Token an `/api/devices` jeweils 401.
+    - K4: In HA haben `sensor.stowly` und die drei Vorlagen-Sensoren Werte, über HTTPS zum NAS mit `verify_ssl: false` (Home Assistant OS, K6).
+    - Offen: K5, die Ansage.
 
 ## S. Bedienung
 

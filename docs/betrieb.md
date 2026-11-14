@@ -605,7 +605,7 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
 
 ### 17.2 Einrichten
 
-1. In HA die Integration **Bring!** einrichten (Einstellungen → Geräte & Dienste → Integration hinzufügen → Bring!). Jede Liste von Bring! erscheint als To-do-Liste, etwa `todo.einkaufsliste`. Zum Ausprobieren eignet sich eine eigene Testliste in Bring!.
+1. In HA die Integration **Bring!** einrichten (Einstellungen → Geräte & Dienste → Integration hinzufügen → Bring!). Jede Liste von Bring! erscheint als To-do-Liste, etwa `todo.zuhause` (Bring! nennt seine erste Liste „Zuhause"). Gleich die Liste nehmen, die ihr wirklich nutzt: Ein späterer Wechsel hakt Einträge ab (17.5). Nicht verwechseln mit der eingebauten Einkaufsliste von HA, die bei deutscher Sprache `todo.einkaufsliste` heißt.
 2. Einen **eigenen HA-Benutzer** für Stowly anlegen (Einstellungen → Personen → Benutzer). Administratorrechte sollte er nicht brauchen (Prüfliste J1). So lässt sich der Zugang später einzeln sperren, und im Verlauf von HA steht, was Stowly geändert hat.
 3. Als dieser Benutzer anmelden, dann Profil → Sicherheit → **Langlebige Zugangs-Token** → Token erstellen (Name „Stowly"). HA zeigt den Token nur einmal.
 4. Den Namen der Liste nachsehen: Entwicklerwerkzeuge → Zustände, nach `todo.` filtern.
@@ -614,11 +614,11 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
    ```
    STOWLY_HA_URL=http://192.168.1.20:8123
    STOWLY_HA_TOKEN=…
-   STOWLY_HA_TODO_ENTITY=todo.einkaufsliste
+   STOWLY_HA_TODO_ENTITY=todo.zuhause
    ```
 
    Die Adresse ist die IP von HA oder ein Name aus dem eigenen DNS (Pi-hole); Namen auf `.local` lösen im Container nicht auf. Ohne Pfad, ein `/` am Ende fällt weg. Läuft HA per https mit eigenem Zertifikat: 17.4.
-6. `docker compose logs stowly` zeigt „Einkaufsliste nach Bring! über Home Assistant, Liste todo.einkaufsliste." und kurz danach „Home Assistant: Abgleich mit todo.einkaufsliste läuft." In der App steht unter „Einstellungen → Home Assistant" der Zustand „ok".
+6. `docker compose logs stowly` zeigt „Einkaufsliste nach Bring! über Home Assistant, Liste todo.zuhause." und kurz danach „Home Assistant: Abgleich mit todo.zuhause läuft." In der App steht unter „Einstellungen → Home Assistant" der Zustand „ok".
 
 Der Token steht nur in `.env`: nie in der Datenbank, einer Sicherung, dem Log oder einer Antwort an die App. Fehlermeldungen nennen den Status und den Pfad des Aufrufs, nie den Token.
 
@@ -658,6 +658,7 @@ In `.env`: `STOWLY_HA_URL=https://ha.example:8123` (der Name, auf den das Zertif
 - **Kurz eine leere Liste:** Als in Bring! gelöscht gilt ein Artikel erst, wenn er **zweimal nacheinander** fehlt, während HA und die Liste erreichbar sind. Ein Neustart, der die Liste einen Abgleich lang leer zeigt, leert so nicht die Liste von Stowly.
 - **Fehlen zählt nur bei Artikeln, die schon einmal in der Liste standen.** Ändert HA oder Bring! beim Anlegen den Namen (etwa gekürzt), sieht Stowly den Artikel nie: Er gilt dann nie als gelöscht oder abgehakt, und nach zehn Minuten steht einmal eine Warnung im Log („… steht zehn Minuten nach dem Anlegen noch nicht in der Liste").
 - **Ohne Antwort von HA auf das Anlegen** (Zeitüberschreitung) gilt der Artikel als angelegt: lieber so als ein zweiter Artikel desselben Namens.
+- **Die Liste nicht wechseln, solange Einträge in Bring! stehen.** Stowly merkt sich die Artikel nach ihrem Namen, nicht nach der Liste. Nach einem Wechsel von `STOWLY_HA_TODO_ENTITY` sucht es die schon gespiegelten Artikel in der neuen Liste, findet sie nicht und hakt die Einträge nach zwei Abgleichen als eingekauft ab. Deshalb gleich die richtige Liste einrichten, statt erst eine Testliste zu nehmen; die Probe-Einträge aus der Prüfliste J sind nach dem Test schnell wieder entfernt.
 
 ## 18. Sensor für Home Assistant
 
@@ -902,7 +903,7 @@ Die eigene Prüfliste in [`../pi/README.md`](../pi/README.md#prüfliste-am-gerä
 
 ### J. Einkaufsliste nach Bring! über Home Assistant
 
-Zum Ausprobieren eine eigene Testliste in Bring! und deren To-do-Liste in HA (Abschnitt 17.2). Abgeglichen wird alle zwei Minuten; Bring! braucht in HA bis zu 90 Sekunden.
+Mit der Liste, die ihr wirklich nutzt (Abschnitt 17.2; ein späterer Wechsel hakt Einträge ab, 17.5). Die Probe-Einträge danach in Bring! löschen. Abgeglichen wird alle zwei Minuten; Bring! braucht in HA bis zu 90 Sekunden.
 
 | # | Schritt | Erwartet |
 |---|---|---|

@@ -201,7 +201,7 @@ def _ha_todo_entity(env: Mapping[str, str]) -> str | None:
     if entity is not None and not HA_TODO_ENTITY.fullmatch(entity):
         raise ValueError(
             f"STOWLY_HA_TODO_ENTITY: '{entity}' ist keine To-do-Liste von Home Assistant "
-            "(Muster todo.<name>, etwa todo.einkaufsliste)."
+            "(Muster todo.<name>, etwa todo.zuhause)."
         )
     return entity
 

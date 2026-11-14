@@ -305,7 +305,7 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
 |---|---|
 | `STOWLY_HA_URL` | Adresse von HA, etwa `https://192.168.1.20:8123` oder `http://192.168.1.20:8123`; ohne Pfad (ein `/` am Ende fällt weg). Namen auf `.local` lösen im Container nicht auf: IP-Adresse oder einen Namen aus dem eigenen DNS nehmen. |
 | `STOWLY_HA_TOKEN` | langlebiger Zugangs-Token aus HA (Profil, „Sicherheit"), am besten von einem eigenen HA-Benutzer nur für Stowly |
-| `STOWLY_HA_TODO_ENTITY` | die To-do-Liste, die mit Bring! verbunden ist, etwa `todo.einkaufsliste` |
+| `STOWLY_HA_TODO_ENTITY` | die To-do-Liste, die mit Bring! verbunden ist, etwa `todo.zuhause` |
 | `STOWLY_HA_CA` | freiwillig: Pfad zu einer PEM-Datei mit der eigenen Zertifizierungsstelle, wenn HA per https mit eigenem Zertifikat läuft |
 
 - Alle drei von URL, Token und Liste gesetzt: eingerichtet. Keines: aus, ohne Hinweis. Nur ein Teil: aus, der Zustand nennt den Grund (`problem`).
@@ -394,7 +394,7 @@ Was ihr selbst in Bring! eintragt, übernimmt Stowly nie in seine Liste.
 | eingerichtet, seit dem Start noch kein Lauf | `pending` | – |
 | letzter Lauf gelungen | `ok` | `null` |
 | 401 | `unauthorized` | „Home Assistant lehnt den Token ab." |
-| 404 der Liste | `not_found` | „Die Liste todo.einkaufsliste gibt es in Home Assistant nicht." |
+| 404 der Liste | `not_found` | „Die Liste todo.zuhause gibt es in Home Assistant nicht." |
 | Liste `unavailable` oder `unknown` | `unavailable` | „Die Liste ist in Home Assistant gerade nicht verfügbar." |
 | Netzfehler, Zeitüberschreitung, Zertifikat | `unreachable` | „Home Assistant ist nicht erreichbar." (beim Zertifikat: „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA.") |
 | 5xx, unerwartete Antwort | `error` | „Home Assistant antwortet mit 500." |
