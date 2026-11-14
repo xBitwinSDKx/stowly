@@ -9,9 +9,10 @@ Datensätze. Beim Blättern geht nichts verloren:
 * Eine Seite endet nie mitten in einem ``rev``, den sich mehrere Zeilen teilen (ein Befehl,
   der viele Packungen auf einmal verschiebt). Sie darf dafür größer werden als die Grenze.
 
-Nur ein vollständiger Abzug (``reset``) lässt etwas weg: lange entnommene Packungen und
-lange erledigte Etiketten. Jede andere Antwort liefert ausnahmslos alles, sonst erführe
-ein lange nicht benutztes Gerät nie, dass eine Packung inzwischen entnommen ist.
+Nur ein vollständiger Abzug (``reset``) lässt etwas weg: lange entnommene Packungen, lange
+erledigte oder gelöschte Einträge der Einkaufsliste und lange erledigte Etiketten. Jede andere
+Antwort liefert ausnahmslos alles, sonst erführe ein lange nicht benutztes Gerät nie, dass eine
+Packung inzwischen entnommen oder ein Eintrag erledigt ist.
 """
 
 import sqlite3
@@ -38,13 +39,20 @@ _TABLES: dict[str, str] = {
     "printer_status": "printer_id",
     "print_jobs": "id",
     "label_templates": "key",
+    "shopping_items": "id",
 }
 
-# Was ein vollständiger Abzug weglässt.
+# Was ein vollständiger Abzug weglässt. Einträge der Einkaufsliste nach derselben Aufbewahrung
+# wie entnommene Packungen, gemessen am späteren von done_at und deleted_at (Protokoll 6.4).
+# Das max() von SQLite ist NULL, sobald ein Wert NULL ist: deshalb coalesce.
 _OMISSIONS: dict[str, str] = {
     "packages": " AND (removed_at IS NULL OR removed_at >= :removed_cutoff)",
     "print_jobs": (
         " AND (state NOT IN ('printed', 'sent', 'failed', 'cancelled') OR updated_at >= :jobs_cutoff)"
+    ),
+    "shopping_items": (
+        " AND ((done_at IS NULL AND deleted_at IS NULL)"
+        " OR max(coalesce(done_at, ''), coalesce(deleted_at, '')) >= :removed_cutoff)"
     ),
 }
 
@@ -127,9 +135,7 @@ def collect(con: sqlite3.Connection, *, cursor: int, reset: bool, now: datetime)
         "printer_status": [records.printer_status(row) for row in rows["printer_status"]],
         "print_jobs": [records.print_job(row) for row in rows["print_jobs"]],
         "label_templates": [records.label_template(row) for row in rows["label_templates"]],
-        # Platzhalter bis Runde 1: Die Einkaufsliste kommt mit Abschnitt 6.4 des Protokolls hierher
-        # (eigene Tabelle in _TABLES, Aufbewahrung im vollständigen Abzug wie bei Packungen).
-        "shopping_items": [],
+        "shopping_items": [records.shopping_item(row) for row in rows["shopping_items"]],
         "settings": settings,
     }
     return Page(changes=changes, cursor=upto, has_more=has_more)

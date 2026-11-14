@@ -19,6 +19,7 @@ _KEYS = {
     "printer_status": "printer_id",
     "print_jobs": "id",
     "label_templates": "key",
+    "shopping_items": "id",
 }
 
 
@@ -198,6 +199,46 @@ def test_a_merge_shares_one_rev_across_a_page_boundary(make_device, con, small_p
     collected = check_pages(con, pages, start)
     assert Counter(table for table, _ in collected) == {"packages": 6, "products": 2}
     assert all(tablet.packages[package_id]["product_id"] == target for package_id, _ in stored)
+
+
+def test_the_shopping_list_arrives_in_pages_and_a_merge_moves_it_in_one_rev(make_device, con, small_pages):
+    phone, tablet = make_device("Handy"), make_device("Tablet")
+    start = tablet.cursor
+    source, create_source = phone.product("Vollmilch", min_stock=2)
+    target, create_target = phone.product("Milch", min_stock=1)
+    items = [ids.new_uuid() for _ in range(6)]
+    phone.sync(
+        [
+            create_source,
+            create_target,
+            *[
+                phone.cmd("shopping_item.create", item_id=item_id, product_id=source, quantity=number + 1)
+                for number, item_id in enumerate(items)
+            ],
+        ]
+    )
+    small_pages(3)
+    pages = tablet.sync_all()
+    collected = check_pages(con, pages, start)
+    # 6 eigene Einträge und je Produkt ein automatischer.
+    assert Counter(table for table, _ in collected) == {"products": 2, "shopping_items": 8}
+    assert set(items) <= set(tablet.shopping_items)
+
+    # Das Zusammenführen hängt alle Einträge mit einem gemeinsamen rev um: Sie kommen auf einer Seite,
+    # auch wenn die größer wird als die Grenze. Die beiden automatischen werden zu einem.
+    start = tablet.cursor
+    phone.sync([phone.cmd("product.merge", source_id=source, target_id=target)])
+    assert len({rev_of(con, "shopping_items", item_id) for item_id in items}) == 1
+    pages = tablet.sync_all()
+    check_pages(con, pages, start)
+    assert any(len(records_of(page)) > 3 for page in pages)
+    assert {item["product_id"] for item in tablet.shopping_items.values()} == {target}
+    opened = [
+        item
+        for item in tablet.shopping_items.values()
+        if item["origin"] == "min_stock" and item["deleted_at"] is None
+    ]
+    assert len(opened) == 1 and opened[0]["quantity"] == 1
 
 
 def test_exactly_full_pages(make_device, con, small_pages):

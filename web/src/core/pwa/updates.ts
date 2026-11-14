@@ -55,6 +55,14 @@ export interface UpdateEnvironment {
   setTimer?: (callback: () => void, delayMs: number) => unknown;
 }
 
+/**
+ * Meldet ein 409 `protocol_mismatch`, dass der Server ein neueres Protokoll spricht als diese App
+ * (`details.server` größer als die eigene Version)? Dann hilft nur eine neue Version der App.
+ */
+export function serverIsNewer(details: Readonly<Record<string, unknown>>, own: number): boolean {
+  return typeof details.server === "number" && details.server > own;
+}
+
 /** So lange wartet `apply` darauf, dass der neue Service Worker steuert, bevor es trotzdem neu lädt. */
 export const TAKEOVER_TIMEOUT_MS = 8_000;
 /** Nach einer neuen Version wird höchstens so oft gesucht, solange die App offen bleibt. */
@@ -69,6 +77,8 @@ export class AppUpdates {
   private takenOver = false;
   private reloading = false;
   private lastCheck: number;
+  /** Nach einer neuen Version suchen, sobald die Registrierung bekannt ist (`checkNow` kam zu früh). */
+  private checkWanted = false;
 
   constructor(
     private readonly env: UpdateEnvironment,
@@ -102,6 +112,9 @@ export class AppUpdates {
     // `updatefound` ist vorbei, ihr Ende kommt noch.
     track(registration.installing);
     registration.addEventListener("updatefound", () => track(registration.installing));
+    if (this.checkWanted) {
+      this.checkNow();
+    }
   }
 
   private offer(): void {
@@ -167,6 +180,22 @@ export class AppUpdates {
       this.lastCheck = now;
       void this.registration.update().catch(() => undefined);
     }
+  }
+
+  /**
+   * Sucht sofort nach einer neuen Version, nicht erst nach Ablauf der Stunde: Der Server spricht
+   * ein neueres Protokoll (409 `protocol_mismatch`, docs/sync-protokoll.md 6.5). Findet sich eine,
+   * wird sie wie jede andere angeboten. Ist die Registrierung noch nicht da, sucht sie danach.
+   */
+  checkNow(): void {
+    const registration = this.registration;
+    if (!registration) {
+      this.checkWanted = true;
+      return;
+    }
+    this.checkWanted = false;
+    this.lastCheck = this.now();
+    void registration.update?.().catch(() => undefined);
   }
 
   private reloadOnce(): void {

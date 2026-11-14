@@ -11,7 +11,7 @@
  *
  * Ohne DOM: Diese Datei läuft auch im Service Worker und in der nachgebauten Schnittstelle.
  */
-import type { HouseholdSettings, LabelTemplate, Package, Printer, PrinterStatus, PrintJob, Product, Zone } from "@/contract/api.gen";
+import type { HouseholdSettings, LabelTemplate, Package, Printer, PrinterStatus, PrintJob, Product, ShoppingItem, Zone } from "@/contract/api.gen";
 
 export interface TableRows {
   products: Product;
@@ -21,6 +21,8 @@ export interface TableRows {
   printer_status: PrinterStatus;
   print_jobs: PrintJob;
   label_templates: LabelTemplate;
+  /** Einkaufsliste (seit Protokoll 2, App-Datenbank v3). */
+  shopping_items: ShoppingItem;
 }
 
 export type TableName = keyof TableRows;
@@ -33,6 +35,7 @@ export const TABLE_NAMES: readonly TableName[] = [
   "printer_status",
   "print_jobs",
   "label_templates",
+  "shopping_items",
 ];
 
 export type Tables = { readonly [T in TableName]: ReadonlyMap<string, TableRows[T]> } & {
@@ -50,6 +53,7 @@ export const EMPTY_TABLES: Tables = {
   printer_status: new Map(),
   print_jobs: new Map(),
   label_templates: new Map(),
+  shopping_items: new Map(),
   settings: null,
 };
 

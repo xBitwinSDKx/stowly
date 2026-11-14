@@ -333,7 +333,7 @@ Genauer, wo die Tabelle es offen lässt:
 - **`shopping_item.create`** folgt bei `product_id` wie jeder Verweis `merged_into`; ein Produkt, das es nie gab, ist `not_found`. Ein Produkt, das gerade im Bestand ist, macht den Eintrag nicht sofort erledigt: Das tut erst ein Einlagern danach (7.6).
 - **`shopping_item.update`** prüft in dieser Reihenfolge: Eintrag unbekannt (`not_found`); gelöscht (ohne Wirkung, `applied`); `text` bei einem Eintrag mit Produkt oder `quantity` bei einem automatischen (`invalid`, der ganze Befehl gilt nicht); dann je Feld die Uhr (7.1). `done: true` auf einen erledigten Eintrag lässt `done_at`, wie es ist, stellt aber die Uhr; ebenso `done: false` auf einen offenen. Wieder öffnen setzt `done_at` auf `null`.
 - **`shopping_item.delete`** gewinnt immer: Ein gelöschter Eintrag bleibt gelöscht, gleich welchen Zeitpunkt ein späterer Befehl trägt (wie „Löschen gewinnt" bei Packungen, 7.2, aber ohne Wiederherstellen).
-- **Befehle ohne Wirkung** schreiben nichts ins Ereignisprotokoll. Die App erzeugt sie gar nicht erst, wo sie es schon lokal erkennt (derselbe Grund auf eine entnommene Packung, Wiederherstellen einer Packung im Bestand, Umsortieren ohne Änderung, `changes` ohne Felder, Abhaken eines erledigten Eintrags, Löschen eines gelöschten).
+- **Befehle ohne Wirkung** schreiben nichts ins Ereignisprotokoll. Die App erzeugt sie gar nicht erst, wo sie es schon lokal erkennt (derselbe Grund auf eine entnommene Packung, Wiederherstellen einer Packung im Bestand, Umsortieren ohne Änderung, `changes` ohne Felder, Abhaken eines erledigten Eintrags, Öffnen eines offenen, Löschen eines gelöschten).
 
 ## 7. Konfliktregeln
 
@@ -627,12 +627,12 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 
 ### 11.3 Push
 
-Alle vier Aufrufe mit Geräte-Token; das Abo gehört zum Gerät, höchstens eines je Gerät. Ohne `STOWLY_PUSH_CONTACT` antworten alle mit 503 `not_configured`. Erlaubte Push-Dienste, Prüfung der Eingabe, Verschlüsselung, Nachricht und Antworten der Push-Dienste: [`integrationen.md`](integrationen.md), Abschnitt 4.
+Alle vier Aufrufe mit Geräte-Token; das Abo gehört zum Gerät, höchstens eines je Gerät. Ohne `STOWLY_PUSH_CONTACT` antworten alle mit 503 `not_configured`; geprüft wird zuerst das Token (401), und ein Rumpf von `PUT`, der schon der Form nach nicht passt, ergibt 422 vor 503. Erlaubte Push-Dienste, Prüfung der Eingabe, Verschlüsselung, Nachricht und Antworten der Push-Dienste: [`integrationen.md`](integrationen.md), Abschnitt 4.
 
 - `GET /api/push/key`: der öffentliche VAPID-Schlüssel (`applicationServerKey`).
 - `PUT /api/push/subscription`: legt das Abo dieses Geräts an oder ersetzt es. Gehört derselbe `endpoint` einem anderen Gerät, wechselt er zu diesem (das andere verliert sein Abo). Ungültige Form, unbekannter Push-Dienst oder ungültiger Ursprung: 422 `invalid_request` mit `details.errors[].loc`, etwa `["body", "endpoint"]`.
 - `DELETE /api/push/subscription`: löscht das Abo dieses Geräts; 204 auch, wenn es keines gibt.
-- `POST /api/push/test`: schickt eine Testnachricht an das Abo dieses Geräts und antwortet erst, wenn der Push-Dienst geantwortet hat (höchstens 10 Sekunden). 404 `not_found` ohne Abo; mehr als eine Testnachricht je Gerät in 10 Sekunden (`PUSH_TEST_INTERVAL_S`): 429 `rate_limited` mit `Retry-After` und `details.retry_after_s`.
+- `POST /api/push/test`: schickt eine Testnachricht an das Abo dieses Geräts und antwortet erst, wenn der Push-Dienst geantwortet hat (höchstens 10 Sekunden). 404 `not_found` ohne Abo; mehr als eine Testnachricht je Gerät in 10 Sekunden (`PUSH_TEST_INTERVAL_S`): 429 `rate_limited` mit `Retry-After` und `details.retry_after_s`. Es zählt nur eine Testnachricht, die wirklich hinausging, gleich was der Push-Dienst antwortete; ein 404 ohne Abo zählt nicht.
 - Wird ein Gerät gesperrt oder meldet es sich ab, löscht der Server sein Abo in derselben Transaktion.
 
 ### 11.4 Zustand der Integrationen

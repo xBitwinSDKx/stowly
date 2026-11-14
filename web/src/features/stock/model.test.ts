@@ -1,20 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import { addDays, type Package, type Product, type Zone } from "@/contract";
+import { addDays, nextPackage, type Package, type Product, type Zone } from "@/contract";
 import { createSampleData, sampleBarcode, sampleUuid } from "@/mock";
 
 import {
   buildEntries,
+  countBelowMinStock,
   countWarnings,
   DEFAULT_SORT,
+  emptyGroups,
   filterEntries,
   foldText,
   groupByProduct,
+  indexStock,
   isFiltered,
   matchesSearch,
   NO_FILTER,
+  reuseGroups,
   searchTokens,
   sortGroups,
+  stockGroups,
   warningGroups,
   zoneFill,
   type StockEntry,
@@ -283,6 +288,121 @@ describe("Filter", () => {
     expect(isFiltered({ ...NO_FILTER, query: "reis" })).toBe(true);
     expect(isFiltered({ ...NO_FILTER, zone_id: CELLAR.id })).toBe(true);
     expect(isFiltered({ ...NO_FILTER, expiring: true })).toBe(true);
+    expect(isFiltered({ ...NO_FILTER, below_min: true })).toBe(true);
+  });
+});
+
+describe("Mindestbestand", () => {
+  // Reis braucht 5 (4 im Bestand), Butter 3 (2), Käse 2 (2, eine davon abgelaufen), Milch 2 (keine im Bestand).
+  const MILK = product(5, "Milch", { min_stock: 2, barcodes: [sampleBarcode(50)] });
+  const products = [{ ...RICE, min_stock: 5 }, { ...BUTTER, min_stock: 3 }, { ...CHEESE, min_stock: 2 }, PLACEHOLDER, MILK];
+  const all = entries(PACKAGES, products);
+  const index = indexStock(all);
+
+  it("zählt den Bestand je Produkt, abgelaufene Packungen eingeschlossen", () => {
+    expect(index.counts.get(RICE.id)).toBe(4);
+    expect(index.counts.get(CHEESE.id)).toBe(2);
+    expect(index.counts.get(MILK.id)).toBeUndefined();
+    expect(countBelowMinStock(products, index.counts)).toEqual({ below: 3, tracked: 4 });
+  });
+
+  it("nennt je Zeile, wie viele fehlen, gezählt über den ganzen Bestand", () => {
+    const groups = groupByProduct(all, ZONES, index);
+    expect(groups.map((group) => [group.title, group.stock, group.missing])).toEqual([
+      [sampleBarcode(40), 1, 0],
+      ["Basmati Reis", 4, 1],
+      ["Butter", 2, 1],
+      ["Käse", 2, 0],
+    ]);
+    // Mit dem Filter „Keller" zeigt die Zeile nur die Packungen dort, was fehlt, zählt aber über den ganzen Bestand.
+    const cellar = groupByProduct(filterEntries(all, { ...NO_FILTER, zone_id: CELLAR.id }), ZONES, index);
+    expect(cellar.find((group) => group.title === "Basmati Reis")).toMatchObject({ count: 3, stock: 4, missing: 1 });
+    // Ohne Angabe gilt nur, was übergeben wird.
+    expect(groupByProduct(filterEntries(all, { ...NO_FILTER, zone_id: CELLAR.id }), ZONES).find((group) => group.title === "Basmati Reis")).toMatchObject({ stock: 3, missing: 2 });
+  });
+
+  it("zeigt Produkte ohne Packung als Zeile mit Menge 0, solange ihnen etwas fehlt", () => {
+    const empty = emptyGroups(products, index.counts);
+    expect(empty.map((group) => [group.title, group.count, group.missing, group.batches.length, group.critical])).toEqual([["Milch", 0, 2, 0, null]]);
+    expect(empty[0]).toMatchObject({ zone_ids: [], state: "none", next_id: null });
+    // Ohne Mindestbestand fehlt nichts: kein Eintrag.
+    expect(emptyGroups([{ ...MILK, min_stock: null }], index.counts)).toEqual([]);
+  });
+
+  it("nimmt Zeilen ohne Packung in die Liste und in die Suche, nicht aber in Zonen- und Warnfilter", () => {
+    const titles = (filter = NO_FILTER) => stockGroups(all, products, ZONES, filter, index).map((group) => group.title);
+    expect(titles()).toContain("Milch");
+    expect(titles({ ...NO_FILTER, query: "milch" })).toEqual(["Milch"]);
+    expect(titles({ ...NO_FILTER, query: sampleBarcode(50) })).toEqual(["Milch"]);
+    expect(titles({ ...NO_FILTER, zone_id: FRIDGE.id })).not.toContain("Milch");
+    expect(titles({ ...NO_FILTER, expiring: true })).not.toContain("Milch");
+  });
+
+  it("filtert auf Produkte unter dem Mindestbestand, mit und ohne Packung", () => {
+    const below = stockGroups(all, products, ZONES, { ...NO_FILTER, below_min: true }, index);
+    expect(below.map((group) => [group.title, group.missing])).toEqual([
+      ["Basmati Reis", 1],
+      ["Butter", 1],
+      ["Milch", 2],
+    ]);
+    // Zusammen mit einer Zone: nur, was dort liegt und unter dem Mindestbestand ist.
+    expect(stockGroups(all, products, ZONES, { ...NO_FILTER, below_min: true, zone_id: CELLAR.id }, index).map((group) => group.title)).toEqual(["Basmati Reis"]);
+  });
+
+  it("baut eine Zeile neu, wenn sich der Fehlbestand ändert, auch wenn ihre Packungen gleich bleiben", () => {
+    const before = groupByProduct(all, ZONES, index);
+    const known = new Map(before.map((group) => [group.product_id, group]));
+    const same = reuseGroups(known, groupByProduct(all, ZONES, index));
+    expect(same.every((group, position) => group === before[position])).toBe(true);
+    // Eine Butter mehr, aber im Vorratsregal: Die Zeile „Kühlschrank" hat dieselben Packungen, fehlt jetzt aber nichts mehr.
+    const [extra] = entries([pkg("M1M1M", BUTTER, SHELF, 40)], products);
+    const more = extra ? [...all, extra] : all;
+    const fridge = groupByProduct(filterEntries(more, { ...NO_FILTER, zone_id: FRIDGE.id }), ZONES, indexStock(more));
+    const butter = reuseGroups(known, fridge).find((group) => group.title === "Butter");
+    expect(butter).toMatchObject({ count: 2, stock: 3, missing: 0 });
+    expect(butter).not.toBe(known.get(BUTTER.id));
+  });
+});
+
+describe("Nächste Charge (FIFO)", () => {
+  it("markiert die Charge mit dem frühesten MHD; ohne MHD kommt zuletzt", () => {
+    const rice = groupByProduct(entries(), ZONES).find((group) => group.title === "Basmati Reis");
+    // MHD +132 liegt im Vorratsregal (C1C1C) und im Keller (A2B3C, A2B3D): gleiches MHD und gleicher Zeitpunkt, dann nach ID.
+    expect(rice?.next_id).toBe("A2B3C");
+    expect(rice?.batches.map((batch) => [batch.zone?.name, batch.next])).toEqual([
+      ["Vorratsregal", false],
+      ["Keller", true],
+      ["Keller", false],
+    ]);
+    const cheese = groupByProduct(entries(), ZONES).find((group) => group.title === "Käse");
+    expect(cheese?.batches.map((batch) => [batch.best_before, batch.next])).toEqual([
+      [addDays(TODAY, -3), true],
+      [null, false],
+    ]);
+  });
+
+  it("nimmt bei gleichem MHD die zuerst eingelagerte Packung", () => {
+    const older = { ...pkg("Z1Z1Z", RICE, SHELF, 132), created_at: "2026-10-01T08:00:00.000Z" };
+    const rice = groupByProduct(entries([...PACKAGES.filter((candidate) => candidate.product_id === RICE.id), older]), ZONES)[0];
+    expect(rice?.next_id).toBe("Z1Z1Z");
+    expect(rice?.batches.find((batch) => batch.next)?.zone?.name).toBe("Vorratsregal");
+  });
+
+  it("wählt dieselbe Packung wie `nextPackage` aus dem Vertrag", () => {
+    const data = createSampleData(new Date(`${TODAY}T10:00:00`));
+    const active = data.packages.filter((candidate) => candidate.removed_at === null);
+    const index = indexStock(buildEntries(active, data.products, data.zones, data.settings, TODAY));
+    for (const sample of data.products) {
+      expect(index.next.get(sample.id) ?? null, sample.name).toBe(nextPackage(data.packages, sample.id)?.id ?? null);
+    }
+  });
+
+  it("richtet sich nach dem ganzen Bestand, auch wenn ein Filter die nächste Charge ausblendet", () => {
+    const all = entries();
+    const shelf = groupByProduct(filterEntries(all, { ...NO_FILTER, zone_id: SHELF.id }), ZONES, indexStock(all)).find((group) => group.title === "Basmati Reis");
+    // Im Vorratsregal liegt C1C1C; dran ist aber A2B3C im Keller.
+    expect(shelf?.next_id).toBe("A2B3C");
+    expect(shelf?.batches.some((batch) => batch.next)).toBe(false);
   });
 });
 

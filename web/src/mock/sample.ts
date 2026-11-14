@@ -3,6 +3,13 @@
  *
  * Alle Datumsangaben hängen an „heute", damit es immer abgelaufene, bald ablaufende und
  * lange haltbare Packungen gibt. Namen und Marken sind ausgedacht.
+ *
+ * Mindestbestand und Einkaufsliste (Stufe 2): Spaghetti, Butter, H-Milch und Passierte Tomaten
+ * haben einen Mindestbestand. H-Milch liegt darunter und steht automatisch auf der Liste
+ * („fehlt 2"); Butter liegt ebenfalls darunter, ihr automatischer Eintrag ist aber schon
+ * abgehakt (bis zum nächsten Einlagern kommt keiner nach). Dazu eigene Einträge mit Produkt und
+ * mit freiem Text, offen und erledigt, ein gelöschter und ein erledigter jenseits der
+ * Aufbewahrungsdauer (beide unsichtbar).
  */
 import {
   addDays,
@@ -18,6 +25,7 @@ import {
   type PrintJob,
   type Product,
   type RemovalReason,
+  type ShoppingItem,
   type Zone,
 } from "@/contract";
 
@@ -33,6 +41,8 @@ export interface MockData {
   printerStatus: PrinterStatus[];
   printJobs: PrintJob[];
   devices: Device[];
+  /** Alle Einträge der Einkaufsliste, auch erledigte und gelöschte. */
+  shoppingItems: ShoppingItem[];
 }
 
 const DAY_MS = 86_400_000;
@@ -85,6 +95,8 @@ interface ProductSeed {
   brand?: string;
   quantity?: string;
   warn_days?: number;
+  /** Mindestbestand in Packungen. */
+  min_stock?: number;
   barcodes?: number;
   lookup?: Product["lookup"];
   /** Das Produkt hat ein Vorschaubild (das Beispielbild der Attrappe). */
@@ -95,15 +107,17 @@ interface ProductSeed {
 
 const PRODUCTS: ProductSeed[] = [
   { name: "Basmati Reis", brand: "Kornhaus", quantity: "1 kg", stock: [["cellar", 132, 2, 20], ["cellar", 135, 1, 6], ["shelf", 400, 1, 2]] },
-  { name: "Spaghetti", brand: "Pastaria", quantity: "500 g", stock: [["shelf", 300, 3, 14], ["cellar", 520, 2, 40]] },
-  { name: "Passierte Tomaten", brand: "Sonnenhof", quantity: "500 g", stock: [["cellar", 9, 2, 200], ["cellar", 250, 4, 12]] },
+  { name: "Spaghetti", brand: "Pastaria", quantity: "500 g", min_stock: 3, stock: [["shelf", 300, 3, 14], ["cellar", 520, 2, 40]] },
+  { name: "Passierte Tomaten", brand: "Sonnenhof", quantity: "500 g", min_stock: 4, stock: [["cellar", 9, 2, 200], ["cellar", 250, 4, 12]] },
   { name: "Kidneybohnen", brand: "Sonnenhof", quantity: "400 g", stock: [["cellar", 700, 3, 30]] },
   { name: "Haferflocken", brand: "Mühlenglück", quantity: "500 g", stock: [["shelf", -3, 1, 180], ["shelf", 45, 1, 25]] },
   { name: "Weizenmehl Type 405", brand: "Mühlenglück", quantity: "1 kg", stock: [["shelf", 12, 1, 90]] },
   { name: "Erbsen (TK)", brand: "Frostgarten", quantity: "750 g", stock: [["freezer", 200, 2, 15]] },
   { name: "Lachsfilet (TK)", brand: "Nordkap", quantity: "250 g", warn_days: 30, stock: [["freezer", 20, 2, 60], ["freezer", 90, 1, 9]] },
-  { name: "Butter", brand: "Almhof", quantity: "250 g", warn_days: 5, stock: [["fridge", 4, 1, 12], ["fridge", 18, 1, 3]] },
-  { name: "H-Milch 3,5 %", brand: "Almhof", quantity: "1 l", barcodes: 2, stock: [["shelf", 60, 6, 8]] },
+  // Unter dem Mindestbestand; der automatische Eintrag ist abgehakt (Sperre bis zum nächsten Einlagern).
+  { name: "Butter", brand: "Almhof", quantity: "250 g", warn_days: 5, min_stock: 3, stock: [["fridge", 4, 1, 12], ["fridge", 18, 1, 3]] },
+  // Unter dem Mindestbestand und automatisch auf der Einkaufsliste („fehlt 2").
+  { name: "H-Milch 3,5 %", brand: "Almhof", quantity: "1 l", barcodes: 2, min_stock: 8, stock: [["shelf", 60, 6, 8]] },
   { name: "Apfelmus", brand: "Obstwiese", quantity: "700 g", image: true, stock: [["cellar", null, 2, 70]] },
   { name: "Rote Linsen", brand: "Kornhaus", quantity: "500 g", stock: [["shelf", 365, 2, 5]] },
   { name: "Thunfisch in Öl", brand: "Nordkap", quantity: "150 g", stock: [["cellar", 900, 4, 33]] },
@@ -167,7 +181,7 @@ export function createSampleData(now: Date = new Date()): MockData {
       quantity: seed.quantity ?? "",
       image: seed.image ? SAMPLE_IMAGE_ID : null,
       warn_days: seed.warn_days ?? null,
-      min_stock: null,
+      min_stock: seed.min_stock ?? null,
       lookup: seed.lookup ?? "found",
       barcodes: barcodes.sort(),
       created_at: created,
@@ -311,7 +325,41 @@ export function createSampleData(now: Date = new Date()): MockData {
     updated_at: created,
   };
 
-  return { products, packages, zones, settings, printers, printerStatus, printJobs, devices };
+  return { products, packages, zones, settings, printers, printerStatus, printJobs, devices, shoppingItems: sampleShoppingItems(now) };
+}
+
+/** Kennungen der Beispiel-Produkte mit Einträgen auf der Einkaufsliste. */
+const SHOPPING_PRODUCTS = {
+  butter: sampleUuid(2, 9),
+  milk: sampleUuid(2, 10),
+  oil: sampleUuid(2, 14),
+} as const;
+
+/** Die Einkaufsliste des Beispiel-Haushalts (siehe Kopf der Datei). */
+function sampleShoppingItems(now: Date): ShoppingItem[] {
+  const at = (daysAgo: number) => new Date(now.getTime() - daysAgo * DAY_MS).toISOString();
+  const item = (n: number, fields: Partial<ShoppingItem> & Pick<ShoppingItem, "created_at">): ShoppingItem => ({
+    id: sampleUuid(7, n),
+    product_id: null,
+    text: "",
+    quantity: null,
+    origin: "manual",
+    done_at: null,
+    deleted_at: null,
+    updated_at: fields.done_at ?? fields.deleted_at ?? fields.created_at,
+    ...fields,
+  });
+  return [
+    item(1, { product_id: SHOPPING_PRODUCTS.milk, quantity: 2, origin: "min_stock", created_at: at(2) }),
+    item(2, { product_id: SHOPPING_PRODUCTS.oil, quantity: 1, created_at: at(5) }),
+    item(3, { text: "Backpapier", created_at: at(1) }),
+    item(4, { text: "Kaffeebohnen", quantity: 2, created_at: at(0.125) }),
+    item(5, { product_id: SHOPPING_PRODUCTS.butter, quantity: 1, origin: "min_stock", created_at: at(4), done_at: at(1) }),
+    item(6, { text: "Spülmittel", created_at: at(6), done_at: at(2) }),
+    // Unsichtbar: gelöscht, und erledigt vor mehr als 30 Tagen (Aufbewahrungsdauer).
+    item(7, { text: "Alufolie", created_at: at(9), deleted_at: at(2) }),
+    item(8, { text: "Grillkohle", created_at: at(50), done_at: at(40) }),
+  ];
 }
 
 /** Frisch eingerichteter Haushalt: eine Zone, sonst nichts. */
@@ -347,6 +395,7 @@ export function createEmptyData(now: Date = new Date()): MockData {
     printerStatus: [],
     printJobs: [],
     devices: [{ id: DEVICE_IDS.current, name: "Dieses Gerät", created_at: stamp, last_seen_at: stamp, revoked_at: null, current: true }],
+    shoppingItems: [],
   };
 }
 

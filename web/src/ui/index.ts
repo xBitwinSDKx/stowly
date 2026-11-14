@@ -12,7 +12,7 @@ export { errorText } from "./errors";
 export { ExpiryLabel, type ExpiryLabelProps } from "./ExpiryLabel";
 export { FieldGroup, type FieldGroupProps } from "./Field";
 export { FilterCard, type FilterCardProps } from "./FilterCard";
-export { expiryText, packagesText, plural, relativeDays, REMOVAL_REASON_LABELS, REMOVAL_REASON_OPTIONS, timeAgo } from "./format";
+export { expiryText, formatBytes, packagesText, plural, relativeDays, REMOVAL_REASON_LABELS, REMOVAL_REASON_OPTIONS, timeAgo } from "./format";
 export {
   DESKTOP_QUERY,
   focusFirstInvalid,

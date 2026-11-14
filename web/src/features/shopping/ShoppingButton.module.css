@@ -1,0 +1,4 @@
+/* Hält Knopf oder Verweis an derselben Stelle, ohne das Layout der Leiste zu ändern. */
+.slot {
+  display: contents;
+}

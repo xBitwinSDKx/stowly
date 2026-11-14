@@ -37,7 +37,9 @@ RUN apt-get update \
 #  3. die Brother-Bibliothek (print/requirements-brother.txt; GPL-3.0, nur im Treiber-Modul
 #     geladen). packbits gibt es nur als Quellpaket; auch das baut dieses setuptools.
 # setuptools braucht nur der Bau. pip check bricht ab, wenn danach eine Abhängigkeit fehlt.
-# Installiert wird nach site-packages; die Quellen bleiben nicht im Image.
+# Installiert wird nach site-packages; die Quellen bleiben nicht im Image. Seit Stufe 2 sind darunter
+# cryptography mit cffi (Web-Push), pyrage (Sicherungen im Format age) und tzdata (Zeitzonen, denn
+# das schlanke Image bringt keine eigenen mit): alle als fertige Wheels, ohne Compiler im Image.
 COPY print/ /src/print/
 COPY server/ /src/server/
 RUN pip install --no-deps --require-hashes --only-binary=:all: -r /src/server/requirements.lock \
@@ -51,7 +53,10 @@ WORKDIR /app
 COPY --from=web /src/web/dist ./web
 
 # Eigener Benutzer ohne Rechte; Datenbank, Auftragsspeicher und Etikett-Bilder liegen im
-# Volume /data (/data/stowly.sqlite3, /data/print/).
+# Volume /data (/data/stowly.sqlite3, /data/print/). Den Ordner der automatischen Sicherungen
+# (/backups) legt das Image absichtlich nicht an: Er kommt aus docker-compose.yml (./backups).
+# Fehlt die Einbindung, meldet der Server „Der Ordner für Sicherungen fehlt." statt die
+# Sicherungen unbemerkt in den Container zu schreiben.
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin stowly \
     && mkdir -p /data \
     && chown stowly:stowly /data

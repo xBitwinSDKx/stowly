@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -29,6 +30,25 @@ def image_service(driver: ImageDriver) -> PrintService:
     )
     service.start()
     return service
+
+
+def remove_switch(directory: Path) -> None:
+    """Entfernt ``simulate.txt`` aus dem Verzeichnis des Bild-Treibers.
+
+    Unter Windows lässt sich eine Datei nicht löschen, solange ein anderer Thread sie gerade liest
+    (``WinError 32``). Das kommt hier vor: Der Dienst fragt nach jedem Auftrag den Zustand ab, und
+    ein hängender Druck prüft den Schalter alle 0,1 s. Dann kurz warten und noch einmal versuchen.
+    """
+    path = directory / SIMULATE_FILE
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            path.unlink()
+            return
+        except PermissionError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.01)
 
 
 # --- Bild-Treiber ------------------------------------------------------------------------
@@ -130,7 +150,7 @@ def test_image_driver_can_be_told_to_hang_until_the_switch_is_removed(tmp_path):
     assert worker.is_alive()
     assert driver.image_path("x") is None
     assert driver.status().ready is True  # der Zustand lässt sich trotzdem abfragen
-    (tmp_path / SIMULATE_FILE).unlink()
+    remove_switch(tmp_path)
     worker.join(timeout=5)
     assert outcome == [PrintOutcome.PRINTED]
     assert driver.image_path("x") is not None
@@ -204,7 +224,8 @@ def test_image_driver_switch_makes_jobs_fail_or_stay_unknown(tmp_path):
     assert service.image_path(aborted) is None
     assert service.image_path(failed) is None
 
-    (tmp_path / SIMULATE_FILE).unlink()
+    # Nach dem Auftrag liest der Dienst den Schalter noch einmal (Zustand des Druckers).
+    remove_switch(tmp_path)
     fine = new_id()
     service.submit(fine, package_request("geht wieder"))
     assert service.wait(fine, 5).state == JobState.PRINTED
@@ -239,7 +260,7 @@ def test_job_hanging_in_the_image_driver_is_unknown_after_a_restart(tmp_path):
     assert (job.state, job.error.code) == (JobState.UNKNOWN, "interrupted")
     assert again.image_path(job_id) is None  # kein Druck
     again.close()
-    (images / SIMULATE_FILE).unlink()  # gibt den hängenden Thread des ersten Laufs frei
+    remove_switch(images)  # gibt den hängenden Thread des ersten Laufs frei
     time.sleep(0.3)
 
 

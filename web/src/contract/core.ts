@@ -31,7 +31,7 @@
  * 7. Ein Aufruf ohne Wirkung gelingt und erzeugt keinen Befehl: derselbe Grund auf eine schon
  *    entnommene Packung, Wiederherstellen einer Packung im Bestand, `update` ohne Felder,
  *    Umsortieren ohne Änderung, ein Barcode, den das Produkt nicht hat, `merge(a, a)`, Abhaken
- *    eines erledigten Eintrags, Löschen eines gelöschten.
+ *    eines erledigten Eintrags, Öffnen eines offenen, Löschen eines gelöschten.
  * 8. Was der Server selbst schreibt (automatische Einträge der Einkaufsliste, Erledigtes aus
  *    Bring!), nimmt der Kern nicht vorweg: Es kommt mit dem nächsten Abgleich, online Sekunden
  *    nach dem auslösenden Befehl, oft schon in der Antwort auf ihn (docs/sync-protokoll.md, 7.6).
@@ -468,7 +468,10 @@ export interface SettingsApi {
 export interface NewShoppingItem {
   /** Ein Produkt; folgt einer Zusammenführung zum Ziel. */
   product_id?: string | null;
-  /** Freier Text, wenn kein Produkt; wird an den Rändern gekürzt. */
+  /**
+   * Freier Text, wenn kein Produkt; wird an den Rändern gekürzt. Neben einem Produkt zählt ein
+   * Text nur aus Leerraum als kein Text; echter Text neben einem Produkt ist "invalid".
+   */
   text?: string;
   /** Menge in Packungen, 1 bis 999; null oder fehlend = ohne Angabe. */
   quantity?: number | null;
@@ -518,18 +521,26 @@ export type PushState = "unsupported" | "ios_install" | "not_configured" | "off"
 
 export interface PushApi {
   /**
-   * Zustand auf diesem Gerät. Der Kern prüft ihn beim Start und nach jedem Aufruf. Ist Push an,
-   * vergleicht er beim Start den Schlüssel des Servers (`GET /api/push/key`) mit dem des Abos
-   * und meldet sich neu an, wenn er abweicht (eine zurückgespielte Sicherung bringt einen
-   * anderen mit); ebenso, wenn der Server das Abo nicht mehr kennt.
+   * Zustand auf diesem Gerät. Der Kern prüft ihn beim Start, nach der Anmeldung und nach jedem
+   * Aufruf, außerdem, wenn die App wieder sichtbar wird oder sich die Erlaubnis im Browser ändert:
+   * Eine dort neu erteilte Erlaubnis gilt ohne Neuladen. Ist Push an, vergleicht er beim Start den
+   * Schlüssel des Servers (`GET /api/push/key`) mit dem des Abos und meldet sich neu an, wenn er
+   * abweicht (eine zurückgespielte Sicherung bringt einen anderen mit). Ein vorhandenes Abo meldet
+   * er beim Start und nach der Anmeldung immer noch einmal an (`PUT` ist wiederholbar): So kennt
+   * der Server es auch wieder, wenn er es vergessen hatte. Bis zur ersten Antwort des Servers gilt
+   * ein vorhandenes Abo mit erteilter Erlaubnis als "on". Ist der Server nicht eingerichtet, gilt
+   * "not_configured", auch bei verweigerter Erlaubnis.
    */
   readonly state: Live<PushState>;
   /**
    * Schaltet Push für dieses Gerät ein: fragt die Erlaubnis des Browsers und meldet das Abo beim
-   * Server an (mit `location.origin`). Nur auf einen Tipp hin aufrufen: Sonst fragt der Browser
-   * nicht. Braucht den Server. Liefert den Zustand danach: "on", oder "denied", wenn der Anwender
-   * die Erlaubnis verweigert hat.
+   * Server an (mit `location.origin`). Nur auf einen Tipp hin aufrufen, und zwar unmittelbar im
+   * Klick, ohne vorher zu warten: Sonst fragt der Browser nicht (Safari). Braucht den Server.
+   * Liefert den Zustand danach: "on"; "denied", wenn der Anwender die Erlaubnis verweigert hat;
+   * "off", wenn er die Frage ohne Antwort geschlossen hat.
    * @throws CoreError offline | not_configured | not_supported (Zustand "unsupported" oder "ios_install")
+   *   | internal (der Browser legt kein Abo an) | invalid (der Server lehnt das Abo ab, 422)
+   *   | unauthorized (nicht angemeldet)
    */
   enable(): Promise<PushState>;
   /**

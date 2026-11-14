@@ -1,20 +1,20 @@
 /**
  * Die Scan-Abläufe auf der Attrappe, bedient über die Eingabe von Hand: einlagern,
- * entnehmen und rückgängig, Zonenwechsel. Eine Kamera gibt es unter jsdom nicht; die
- * Ansicht muss genau dann die Eingabe von Hand anbieten.
+ * entnehmen und rückgängig, Zonenwechsel, FIFO-Hinweis und „Auf die Einkaufsliste". Eine Kamera
+ * gibt es unter jsdom nicht; die Ansicht muss genau dann die Eingabe von Hand anbieten.
  */
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { describe, expect, it } from "vitest";
 
-import { CoreProvider, gtinCheckDigit, ROUTES, zoneQr, type Live } from "@/contract";
+import { compareFifo, CoreProvider, formatDate, gtinCheckDigit, isOpenItem, nextPackage, ROUTES, zoneQr, type Live, type Product } from "@/contract";
 import { createMockCore, sampleBarcode, ZONE_IDS, type MockCore, type MockOptions } from "@/mock";
 import { ToastProvider } from "@/ui/base";
 // Die Prüfungen toBeUnavailable() und toBeAvailable() für Schaltflächen.
 import "@/ui/base/testing";
 
-import { ScanPage } from ".";
+import { ScanPage } from "./ScanPage";
 
 const NOW = new Date("2026-11-13T10:00:00.000Z");
 /** Barcode des ersten Beispielprodukts („Basmati Reis"). */
@@ -421,5 +421,78 @@ describe("Was die Ansicht verspricht und meldet", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Einlagern" })).not.toBeInTheDocument());
     expect(toasts()).toHaveTextContent("1 × Basmati Reis");
     expect(screen.queryByText(/· Etikett/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Nach dem Entnehmen", () => {
+  function productNamed(core: MockCore, name: string): Product {
+    const product = value(core.data.products).find((candidate) => candidate.name === name);
+    if (!product) {
+      throw new Error(`Kein Produkt ${name}`);
+    }
+    return product;
+  }
+
+  function stockOf(core: MockCore, productId: string) {
+    return value(core.data.packages).filter((pkg) => pkg.product_id === productId);
+  }
+
+  it("nennt neben Rückgängig eine ältere Packung desselben Produkts; tauschen heißt zurücknehmen und die ältere scannen", async () => {
+    const { user, core } = setup();
+    const rice = productNamed(core, "Basmati Reis");
+    const packages = stockOf(core, rice.id);
+    const newest = [...packages].sort(compareFifo).at(-1);
+    const oldest = nextPackage(packages, rice.id);
+    const hint = `Älter: ${oldest?.id ?? ""} · MHD ${formatDate(oldest?.best_before ?? "").slice(0, 6)} · Keller`;
+
+    await enter(user, newest?.id ?? "");
+    // In der Meldung mit „Rückgängig" und darüber, bis die nächste Aktion ihn ersetzt.
+    await waitFor(() => expect(toasts()).toHaveTextContent(hint));
+    expect(within(toasts()).getByRole("button", { name: "Rückgängig" })).toBeInTheDocument();
+    expect(screen.getByText(hint)).toBeInTheDocument();
+
+    await user.click(within(toasts()).getByRole("button", { name: "Rückgängig" }));
+    await waitFor(() => expect(stockOf(core, rice.id).some((pkg) => pkg.id === newest?.id)).toBe(true));
+    await enter(user, oldest?.id ?? "");
+    await waitFor(() => expect(stockOf(core, rice.id).some((pkg) => pkg.id === oldest?.id)).toBe(false));
+    // Die übrigen Packungen sind nicht älter (gleiches MHD zählt nicht): kein Hinweis.
+    expect(screen.queryByText(/^Älter:/)).not.toBeInTheDocument();
+  });
+
+  it("nennt die Zone nur bei mehr als einer und schweigt nach dem Entsorgen", async () => {
+    const { user, core } = setup({ scenarios: ["single-zone"] });
+    const rice = productNamed(core, "Basmati Reis");
+    const packages = stockOf(core, rice.id);
+    const newest = [...packages].sort(compareFifo).at(-1);
+    const oldest = nextPackage(packages, rice.id);
+    await enter(user, newest?.id ?? "");
+    const hint = `Älter: ${oldest?.id ?? ""} · MHD ${formatDate(oldest?.best_before ?? "").slice(0, 6)}`;
+    expect(await screen.findByText(hint)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Entsorgt" }));
+    await waitFor(() => expect(screen.queryByText(hint)).not.toBeInTheDocument());
+  });
+
+  it("bietet nach der letzten Packung die Einkaufsliste an und sagt, wenn das Produkt schon darauf steht", async () => {
+    const { user, core } = setup();
+    const flour = productNamed(core, "Weizenmehl Type 405");
+    const [only] = stockOf(core, flour.id);
+    await enter(user, only?.id ?? "");
+    await user.click(await screen.findByRole("button", { name: "Auf die Einkaufsliste" }));
+    expect(await screen.findByText("Steht jetzt auf der Einkaufsliste.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
+    expect(value(core.data.shoppingItems).filter((item) => item.product_id === flour.id && isOpenItem(item))).toMatchObject([{ origin: "manual", quantity: null }]);
+
+    // Olivenöl steht schon auf der Liste (eigener Eintrag der Beispieldaten).
+    const oil = productNamed(core, "Olivenöl");
+    await enter(user, stockOf(core, oil.id)[0]?.id ?? "");
+    expect(await screen.findByText("Steht schon auf der Einkaufsliste.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
+
+    // Ist noch etwas da, gibt es nichts anzubieten.
+    const pasta = productNamed(core, "Spaghetti");
+    await enter(user, stockOf(core, pasta.id)[0]?.id ?? "");
+    await waitFor(() => expect(toasts()).toHaveTextContent("Spaghetti"));
+    expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Einkaufsliste\./)).not.toBeInTheDocument();
   });
 });

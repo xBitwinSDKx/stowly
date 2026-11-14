@@ -1,7 +1,8 @@
 import { formatDate } from "@/contract";
 import { useHasPrinter } from "@/features/printers/usePrinting";
-import { ExpiryLabel, PackageIds, ZoneLabel } from "@/ui";
-import { Button, cx, IconButton } from "@/ui/base";
+import { ShoppingButton } from "@/features/shopping/ShoppingButton";
+import { ExpiryLabel, PackageIds, packagesText, ZoneLabel } from "@/ui";
+import { Badge, Button, cx, IconButton } from "@/ui/base";
 import { ChevronUpIcon, PackagePlusIcon, PrinterIcon } from "@/ui/icons";
 import table from "@/ui/Table.module.css";
 
@@ -31,12 +32,39 @@ function batchLabel(batch: Batch, multiZone: boolean): string {
 }
 
 /**
+ * Die Charge, die als Nächstes dran ist (FIFO: früheres MHD, dann zuerst eingelagert).
+ * Unaufdringlich: nur, wenn es überhaupt eine Wahl gibt, also bei mehr als einer Charge.
+ */
+function NextBadge() {
+  return (
+    <Badge tone="accent" className={styles.next} title="Als Nächstes verbrauchen: früheres MHD, sonst zuerst eingelagert">
+      als Nächstes<span className="sr-only"> verbrauchen</span>
+    </Badge>
+  );
+}
+
+/** Mindestbestand, Bestand und was fehlt, als eine Zeile. */
+function minStockText(group: ProductGroup): string | null {
+  const minimum = group.product?.min_stock ?? null;
+  if (minimum === null) {
+    return null;
+  }
+  const missing = group.missing > 0 ? `, es ${group.missing === 1 ? "fehlt" : "fehlen"} ${packagesText(group.missing)}` : "";
+  return `Mindestbestand ${packagesText(minimum)}, im Bestand ${String(group.stock)}${missing}.`;
+}
+
+/**
  * Die aufgeklappte Chargen-Ansicht unter einer Zeile der Bestandsliste:
  * eine Zeile je Kombination aus MHD und Zone, mit Menge und Packungs-IDs.
+ * Die Charge, die als Nächstes dran ist, trägt eine Marke; „Auf die Einkaufsliste" setzt das Produkt
+ * auf die Liste oder sagt, dass es dort schon steht.
  */
 export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: BatchPanelProps) {
   // Ohne Drucker fordert Stowly keine Etiketten an: Dann gibt es auch keinen Nachdruck.
   const hasPrinter = useHasPrinter();
+  // Die nächste Charge zu markieren lohnt sich nur, wenn es mehr als eine gibt.
+  const markNext = group.batches.length > 1;
+  const minStock = minStockText(group);
 
   /** @param narrow am Handy: „Etikett" nur als Symbol, damit „Bearbeiten" und „Entnehmen" ihren Platz behalten */
   function actions(batch: Batch, narrow = false) {
@@ -84,6 +112,7 @@ export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: 
           Bestand im Detail: <span className={styles.name}>{group.title}</span>
         </h3>
         <div className={styles.headActions}>
+          <ShoppingButton product={group.product} />
           <Button
             size="sm"
             variant="ghost"
@@ -91,15 +120,18 @@ export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: 
             disabled={!group.product}
             onClick={() => dialogs.open({ kind: "store", product_id: group.product_id, zone_id: group.zone_ids.length === 1 ? group.zone_ids[0] : null })}
           >
-            Weitere einlagern
+            {group.count === 0 ? "Einlagern" : "Weitere einlagern"}
           </Button>
           <Button size="sm" variant="ghost" iconRight={<ChevronUpIcon />} onClick={onCollapse}>
             Einklappen
           </Button>
         </div>
       </header>
+      {minStock ? <p className={styles.note}>{minStock}</p> : null}
 
-      {wide ? (
+      {group.batches.length === 0 ? (
+        <p className={styles.note}>Nichts im Bestand.</p>
+      ) : wide ? (
         <table className={cx(table.table, styles.table)}>
           <thead>
             <tr>
@@ -116,7 +148,10 @@ export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: 
             {group.batches.map((batch) => (
               <tr key={batch.key}>
                 <td className={cx(table.td, table.narrow)}>
-                  <ExpiryLabel date={batch.best_before} state={batch.state} days={batch.days} detail emptyText="ohne MHD" />
+                  <span className={styles.when}>
+                    <ExpiryLabel date={batch.best_before} state={batch.state} days={batch.days} detail emptyText="ohne MHD" />
+                    {markNext && batch.next ? <NextBadge /> : null}
+                  </span>
                 </td>
                 <td className={cx(table.td, table.num, table.narrow)}>{batch.count}</td>
                 {multiZone ? (
@@ -139,7 +174,10 @@ export function BatchPanel({ id, group, multiZone, wide, dialogs, onCollapse }: 
           {group.batches.map((batch) => (
             <li key={batch.key} className={styles.item}>
               <div className={styles.itemHead}>
-                <ExpiryLabel date={batch.best_before} state={batch.state} days={batch.days} detail emptyText="ohne MHD" />
+                <span className={styles.when}>
+                  <ExpiryLabel date={batch.best_before} state={batch.state} days={batch.days} detail emptyText="ohne MHD" />
+                  {markNext && batch.next ? <NextBadge /> : null}
+                </span>
                 <span className={styles.amount}>
                   <span className="tabular">{batch.count}</span> ×
                 </span>

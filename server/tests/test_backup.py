@@ -1,13 +1,15 @@
 """Manuelle Sicherung und ihr Wiedereinspielen (docs/sync-protokoll.md, Abschnitt 11)."""
 
+import dataclasses
 import os
 import re
 import shutil
 import sqlite3
 import tempfile
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,9 +40,26 @@ def test_the_backup_is_a_download_named_after_the_day(make_device):
     assert response.headers["cache-control"] == "no-store"
     disposition = response.headers["content-disposition"]
     assert re.fullmatch(r'attachment; filename="stowly-\d{4}-\d{2}-\d{2}\.sqlite3"', disposition)
-    assert f"stowly-{datetime.now().astimezone():%Y-%m-%d}.sqlite3" in disposition
+    # Der Tag in der Zeitzone des Servers (Vorgabe Europe/Berlin), nicht in der des Rechners.
+    assert f"stowly-{datetime.now(ZoneInfo('Europe/Berlin')):%Y-%m-%d}.sqlite3" in disposition
     assert int(response.headers["content-length"]) == len(response.content)
     assert response.content.startswith(b"SQLite format 3\x00")
+
+
+def test_the_download_takes_the_day_in_the_timezone_of_the_server(settings, clock, monkeypatch):
+    """STOWLY_TIMEZONE zählt, nicht die Zeitzone des Rechners oder des Containers (TZ)."""
+
+    class Noon(datetime):
+        @classmethod
+        def now(cls, tz=None):  # 12:00 UTC ist auf Kiritimati (UTC+14) schon der nächste Tag
+            return datetime(2026, 11, 14, 12, 0, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr("stowly.api.backup.datetime", Noon)
+    far_east = dataclasses.replace(settings, timezone="Pacific/Kiritimati")
+    with TestClient(create_app(far_east)) as client:
+        device = Device(client, "Handy", clock=clock)
+        response = client.get("/api/backup", headers=device.headers)
+    assert response.headers["content-disposition"] == 'attachment; filename="stowly-2026-11-15.sqlite3"'
 
 
 def test_the_backup_is_a_valid_database_with_the_data_and_a_new_dataset_id(make_device, con, tmp_path):

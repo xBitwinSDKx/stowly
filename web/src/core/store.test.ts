@@ -5,7 +5,7 @@
 import Dexie from "dexie";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { CoreError, PROTOCOL_VERSION, type Changes, type HouseholdSettings, type Package, type Product, type SyncResponse, type Zone } from "@/contract";
+import { CoreError, PROTOCOL_VERSION, type Changes, type HouseholdSettings, type Package, type Product, type ShoppingItem, type SyncResponse, type Zone } from "@/contract";
 
 import type { StoredSession } from "./db";
 import { Store } from "./store";
@@ -232,6 +232,33 @@ describe("Antwort anwenden", () => {
     // 31 Tage nach Serverzeit: jenseits der Aufbewahrung, obwohl es nach der Geräteuhr erst 29 wären.
     expect(store.snapshot.base.packages.has("AAAA1")).toBe(false);
     expect(await store.db.packages.count()).toBe(0);
+  });
+
+  it("verwirft Einträge der Einkaufsliste nach dem späteren von erledigt und gelöscht", async () => {
+    const store = await signedIn();
+    const item = (n: number, changes: Partial<ShoppingItem>): ShoppingItem => ({
+      id: `70000000-0000-4000-8000-00000000000${n}`,
+      product_id: null,
+      text: `Eintrag ${n}`,
+      quantity: null,
+      origin: "manual",
+      done_at: null,
+      deleted_at: null,
+      created_at: "2026-09-01T10:00:00.000Z",
+      updated_at: AT,
+      ...changes,
+    });
+    const items = [
+      item(1, {}),
+      item(2, { done_at: "2026-10-01T10:00:00.000Z" }),
+      item(3, { deleted_at: "2026-10-01T10:00:00.000Z" }),
+      // Lange erledigt, aber erst vor Kurzem gelöscht: Es zählt das Spätere.
+      item(4, { done_at: "2026-09-02T10:00:00.000Z", deleted_at: "2026-11-10T10:00:00.000Z" }),
+      item(5, { done_at: "2026-11-10T10:00:00.000Z" }),
+    ];
+    await store.applySync({ basedOn: { dataset_id: DATASET, cursor: 10 }, token: "token-1", full: false, pages: [response({ shopping_items: items }, { cursor: 11 })], receivedAt: new Date(AT) });
+    expect([...store.snapshot.base.shopping_items.keys()].sort()).toEqual([items[0]?.id, items[3]?.id, items[4]?.id].sort());
+    expect((await store.db.shopping_items.toArray()).map((entry) => entry.id).sort()).toEqual([items[0]?.id, items[3]?.id, items[4]?.id].sort());
   });
 });
 

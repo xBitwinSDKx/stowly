@@ -1,17 +1,19 @@
 /**
  * Einstellungen auf der Attrappe: Darstellung, dieses Gerät, Haushalt, Geräte, Sicherung, Über, Abmelden.
  */
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ROUTES, type Device, type Live } from "@/contract";
+import { CoreError, formatTimestamp, PUSH_TEST_INTERVAL_S, ROUTES, type Device, type Live } from "@/contract";
 import { renderApp } from "@/app/render.test-setup";
 import { DEVICE_IDS } from "@/mock";
 import { resetThemeForTests, THEME_STORAGE_KEY } from "@/ui/theme";
 
 import { describeConnection, describeLookup } from ".";
+import { backupTimeText, backupWarningText } from "./BackupSection";
 import { sortDevices } from "./DevicesSection";
+import { describePush, testMessage } from "./PushSetting";
 
 function value<T>(live: Live<T>): T {
   const current = live.get();
@@ -354,6 +356,229 @@ describe("Zeilen „Verbindung“ und „Produktdaten“", () => {
     expect(section("Über")).not.toHaveTextContent("Open Food Facts");
     core.control.setLookupEnabled(true);
     await waitFor(() => expect(section("Über")).toHaveTextContent("Open Food Facts (ODbL)"));
+  });
+});
+
+/** Die Zeile „Benachrichtigungen" unter „Dieses Gerät". */
+function pushRow(): HTMLElement {
+  // Beschriftung -> Textspalte -> Zeile
+  const row = within(section("Dieses Gerät")).getByText("Benachrichtigungen").parentElement?.parentElement;
+  if (!row) {
+    throw new Error("Zeile Benachrichtigungen fehlt");
+  }
+  return row;
+}
+
+describe("Benachrichtigungen (Push)", () => {
+  it("fragt die Erlaubnis unmittelbar im Klick und zeigt danach Testnachricht und Ausschalten", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    const enable = vi.spyOn(core.push, "enable");
+    await ready();
+    expect(pushRow()).toHaveTextContent("Höchstens eine Nachricht am Tag, und nur, wenn seit der letzten etwas neu bald abläuft oder abgelaufen ist.");
+    const button = within(pushRow()).getByRole("button", { name: "Einschalten" });
+
+    // Synchron im Klick, ohne vorher zu warten: Sonst fragt der Browser nicht.
+    fireEvent.click(button);
+    expect(enable).toHaveBeenCalledTimes(1);
+
+    expect(await screen.findByText("Benachrichtigungen sind auf diesem Gerät eingeschaltet.")).toBeInTheDocument();
+    expect(value(core.push.state)).toBe("on");
+    const test = within(pushRow()).getByRole("button", { name: "Testnachricht senden" });
+    await waitFor(() => expect(test).toHaveFocus());
+    expect(within(pushRow()).getByRole("button", { name: "Ausschalten" })).toBeInTheDocument();
+  });
+
+  it("sagt, wenn die Erlaubnis verweigert wird, und wie man sie wieder erteilt", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    core.control.setPushPermission("denied");
+    await ready();
+    await userEvent.click(within(pushRow()).getByRole("button", { name: "Einschalten" }));
+    expect(await within(pushRow()).findByText("Keine Erlaubnis")).toBeInTheDocument();
+    expect(value(core.push.state)).toBe("denied");
+    expect(pushRow()).toHaveTextContent("Die Erlaubnis für Benachrichtigungen ist in diesem Browser verweigert.");
+    expect(pushRow()).toHaveTextContent("auf dem iPhone unter Einstellungen › Mitteilungen › Stowly");
+    expect(within(pushRow()).queryByRole("button", { name: "Einschalten" })).not.toBeInTheDocument();
+  });
+
+  it("sagt, wenn die Frage des Browsers ohne Antwort geschlossen wurde", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    core.control.setPushPermission("default");
+    await ready();
+    await userEvent.click(within(pushRow()).getByRole("button", { name: "Einschalten" }));
+    expect(await within(pushRow()).findByText(/Die Frage des Browsers wurde ohne Antwort geschlossen/)).toBeInTheDocument();
+    expect(within(pushRow()).getByRole("button", { name: "Einschalten" })).toBeInTheDocument();
+  });
+
+  it("schickt eine Testnachricht, nennt das Ergebnis und lässt den Knopf ruhen", async () => {
+    const core = renderApp({ scenarios: ["push-on"] }, ROUTES.settings);
+    const test = vi.spyOn(core.push, "test");
+    await ready();
+    // Was der Server weiß: die letzte Tagesnachricht (vor 41 Stunden)
+    expect(await within(pushRow()).findByText(/Letzte Tagesnachricht: gestern/)).toBeInTheDocument();
+
+    const button = within(pushRow()).getByRole("button", { name: "Testnachricht senden" });
+    await userEvent.click(button);
+    expect(await within(pushRow()).findByText("Testnachricht verschickt")).toBeInTheDocument();
+    expect(pushRow()).toHaveTextContent("Der Push-Dienst hat sie angenommen");
+    expect(pushRow()).toHaveTextContent(`Nächste Testnachricht in ${String(PUSH_TEST_INTERVAL_S)} s`);
+    // Der Knopf ruht, behält aber den Fokus.
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(button);
+    expect(test).toHaveBeenCalledTimes(1);
+  });
+
+  it("nennt abgelehnte und erloschene Abos beim Namen", async () => {
+    const core = renderApp({ scenarios: ["push-on"] }, ROUTES.settings);
+    core.control.setPushTestResult("rejected");
+    await ready();
+    await userEvent.click(within(pushRow()).getByRole("button", { name: "Testnachricht senden" }));
+    expect(await within(pushRow()).findByText("Vom Push-Dienst abgelehnt")).toBeInTheDocument();
+    expect(pushRow()).toHaveTextContent("Der Push-Dienst hat die Nachricht abgelehnt (403). Meldung des Servers: Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?");
+  });
+
+  it("schaltet nach einem erloschenen Abo auf „aus“ und bietet Einschalten an", async () => {
+    const core = renderApp({ scenarios: ["push-on"] }, ROUTES.settings);
+    core.control.setPushTestResult("gone");
+    await ready();
+    await userEvent.click(within(pushRow()).getByRole("button", { name: "Testnachricht senden" }));
+    expect(await within(pushRow()).findByText("Das Abo ist erloschen")).toBeInTheDocument();
+    const enable = within(pushRow()).getByRole("button", { name: "Einschalten" });
+    await waitFor(() => expect(enable).toHaveFocus());
+    expect(value(core.push.state)).toBe("off");
+  });
+
+  it("wartet nach „zu viele Testnachrichten“ so lange, wie der Server sagt", async () => {
+    const core = renderApp({ scenarios: ["push-on"] }, ROUTES.settings);
+    vi.spyOn(core.push, "test").mockRejectedValue(new CoreError("rate_limited", "Zu viele Testnachrichten.", { retry_after_s: 7 }));
+    await ready();
+    await userEvent.click(within(pushRow()).getByRole("button", { name: "Testnachricht senden" }));
+    expect(await within(pushRow()).findByText("Gerade erst geschickt")).toBeInTheDocument();
+    expect(pushRow()).toHaveTextContent("Nächste Testnachricht in 7 s");
+  });
+
+  it("schaltet aus, auch ohne Server", async () => {
+    const core = renderApp({ scenarios: ["push-on", "offline"] }, ROUTES.settings);
+    await ready();
+    expect(pushRow()).toHaveTextContent("Gerade ist der Server nicht erreichbar: Einschalten und Testnachricht gehen erst wieder mit ihm.");
+    expect(within(pushRow()).getByRole("button", { name: "Testnachricht senden" })).toBeUnavailable();
+
+    await userEvent.click(within(pushRow()).getByRole("button", { name: "Ausschalten" }));
+    expect(await screen.findByText("Benachrichtigungen sind auf diesem Gerät aus.")).toBeInTheDocument();
+    expect(value(core.push.state)).toBe("off");
+    // Einschalten braucht den Server.
+    expect(within(pushRow()).getByRole("button", { name: "Einschalten" })).toBeUnavailable();
+  });
+
+  it("sagt, wenn der Server beim Einschalten nicht erreichbar ist", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    vi.spyOn(core.push, "enable").mockRejectedValue(new CoreError("offline"));
+    await ready();
+    await userEvent.click(within(pushRow()).getByRole("button", { name: "Einschalten" }));
+    expect(await within(pushRow()).findByText("Zum Einschalten braucht es den Server, und der ist gerade nicht erreichbar.")).toBeInTheDocument();
+  });
+
+  it("erklärt auf dem iPhone im Browser, dass es erst installiert sein muss, statt einen Knopf zu zeigen", async () => {
+    renderApp({ scenarios: ["ios"] }, ROUTES.settings);
+    await ready();
+    expect(pushRow()).toHaveTextContent("Auf iPhone und iPad kommen Benachrichtigungen nur zu Stowly auf dem Home-Bildschirm (ab iOS 16.4).");
+    expect(within(pushRow()).queryByRole("button", { name: "Einschalten" })).not.toBeInTheDocument();
+    expect(within(pushRow()).getByRole("link", { name: "Anleitung unter „Diese App“" })).toHaveAttribute("href", `${ROUTES.settings}#app`);
+  });
+
+  it("nennt den Grund, wenn es nicht geht: kein Push im Browser, keine HTTPS-Adresse, Server nicht eingerichtet, blockiert", async () => {
+    const cases: [Parameters<typeof renderApp>[0], string, string][] = [
+      [{ scenarios: ["push-unsupported"] }, "nicht möglich", "Dieser Browser kann hier keine Benachrichtigungen empfangen."],
+      [{ scenarios: ["insecure"] }, "nicht möglich", "Über eine http-Adresse lässt der Browser keine Benachrichtigungen zu."],
+      [{ scenarios: ["push-not-configured"] }, "nicht eingerichtet", "Wer ihn betreibt, setzt dafür STOWLY_PUSH_CONTACT"],
+      [{ scenarios: ["push-denied"] }, "blockiert", "Die Erlaubnis für Benachrichtigungen ist in diesem Browser verweigert."],
+    ];
+    for (const [options, short, hint] of cases) {
+      renderApp(options, ROUTES.settings);
+      await ready();
+      expect(pushRow(), short).toHaveTextContent(short);
+      expect(pushRow(), short).toHaveTextContent(hint);
+      expect(within(pushRow()).queryByRole("button")).not.toBeInTheDocument();
+      cleanup();
+    }
+  });
+
+  it("beschreibt jeden Zustand und jedes Ergebnis der Testnachricht in einem Satz", () => {
+    for (const state of ["unsupported", "ios_install", "not_configured", "off", "on", "denied", undefined] as const) {
+      const text = describePush(state, true);
+      expect(text.value, String(state)).not.toBe("");
+      expect(text.hint, String(state)).toMatch(/\.$/);
+    }
+    expect(testMessage({ status: "failed", http_status: null, message: "Zeitüberschreitung." }).text).toBe(
+      "Der Push-Dienst war nicht erreichbar oder überlastet. Später noch einmal versuchen. Meldung des Servers: Zeitüberschreitung.",
+    );
+    expect(testMessage({ status: "sent", http_status: 201, message: "" }).tone).toBe("success");
+  });
+});
+
+describe("Zustand der automatischen Sicherung", () => {
+  it("zeigt Uhrzeit, letzte gelungene Sicherung mit Größe, nächsten Versuch und die gekürzten Schlüssel", async () => {
+    // Die Beispiele der Attrappe folgen der Uhr: heute um 03:30 in Berlin gelungen (02:30 UTC).
+    // Nur `Date` steht still, die Zeitgeber laufen wie sonst.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-14T09:30:00.000Z") });
+    try {
+      renderApp({}, ROUTES.settings);
+      await ready();
+      const backup = section("Sicherung");
+      expect(await within(backup).findByText(/täglich um 03:30/)).toBeInTheDocument();
+      expect(backup).toHaveTextContent(/Letzte gelungene.*vor 7 Stunden · 52 kB · stowly-2026-11-14-0330\.sqlite3\.gz\.age/);
+      expect(backup).toHaveTextContent("Nächster Versuch");
+      const keys = within(backup).getByRole("list", { name: "Öffentliche Schlüssel" });
+      expect(within(keys).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["age1ql3z…ac8p", "age1x7m2…9kqd"]);
+      expect(within(backup).queryByRole("alert")).not.toBeInTheDocument();
+      // Daneben die Kopie zum Herunterladen
+      expect(within(backup).getByRole("button", { name: "Herunterladen" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("warnt nach 48 Stunden ohne gelungene Sicherung und nennt den letzten Fehler", async () => {
+    renderApp({ scenarios: ["backup-warning"] }, ROUTES.settings);
+    await ready();
+    const backup = section("Sicherung");
+    const alert = await within(backup).findByRole("alert");
+    expect(alert).toHaveTextContent("Seit mehr als 48 Stunden keine Sicherung");
+    expect(backup).toHaveTextContent("Letzter Fehler");
+    expect(backup).toHaveTextContent("Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).");
+    expect(backup).toHaveTextContent("vor 3 Tagen");
+  });
+
+  it("sagt, wenn die Sicherung nur halb eingerichtet ist", async () => {
+    renderApp({ scenarios: ["backup-problem"] }, ROUTES.settings);
+    await ready();
+    const backup = section("Sicherung");
+    expect(await within(backup).findByText("Die automatische Sicherung ist aus")).toBeInTheDocument();
+    expect(backup).toHaveTextContent("STOWLY_BACKUP_RECIPIENTS fehlt.");
+    expect(backup).toHaveTextContent("Nicht eingerichtet. Wer den Server betreibt, richtet sie mit STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS ein");
+  });
+
+  it("sagt offline, dass der Zustand fehlt, und lädt ihn, sobald der Server wieder da ist", async () => {
+    const core = renderApp({ scenarios: ["offline"] }, ROUTES.settings);
+    await ready();
+    const backup = section("Sicherung");
+    expect(await within(backup).findByText("Den Zustand kennt nur der Server, und der ist gerade nicht erreichbar.")).toBeInTheDocument();
+    expect(within(backup).getByRole("button", { name: "Erneut versuchen" })).toBeInTheDocument();
+    core.control.setOnline(true);
+    expect(await within(backup).findByText(/täglich um 03:30/)).toBeInTheDocument();
+  });
+
+  it("zeigt die Zeitzone des Servers, wenn sie von der des Geräts abweicht", () => {
+    expect(backupTimeText("03:30", "Europe/Berlin", "Europe/Berlin")).toBe("täglich um 03:30");
+    expect(backupTimeText("03:30", "Europe/Berlin", "America/New_York")).toBe("täglich um 03:30 (Zeit des Servers, Europe/Berlin)");
+    expect(backupTimeText("03:30", "Europe/Berlin", "")).toBe("täglich um 03:30");
+    expect(backupWarningText({ last_ok_at: null }).title).toBe("Noch keine Sicherung gelungen");
+  });
+
+  it("zeigt Zeiten in der Zeitzone des Geräts", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    const status = await core.integrations.load();
+    await ready();
+    expect(await within(section("Sicherung")).findByText(formatTimestamp(status.backup.last_ok_at ?? ""))).toBeInTheDocument();
   });
 });
 

@@ -249,7 +249,14 @@ def test_two_devices_scan_the_same_unknown_barcode_offline(make_device, clock):
     assert product_events(tablet, phone_product)[1:] == [
         (
             "product.merged",
-            {"source_id": tablet_product, "reason": "barcode", "packages": 0, "barcodes": [], "filled": []},
+            {
+                "source_id": tablet_product,
+                "reason": "barcode",
+                "packages": 0,
+                "barcodes": [],
+                "filled": [],
+                "shopping_items": 0,
+            },
         ),
         ("product.updated", {"changes": {"name": {"old": "", "new": "Basmati Reis"}}, "superseded": {}}),
     ]
@@ -288,6 +295,7 @@ def test_create_with_a_taken_barcode_fills_empty_fields_and_keeps_third_party_ba
             "packages": 0,
             "barcodes": [EAN_C],
             "filled": ["brand", "name", "quantity", "warn_days"],
+            "shopping_items": 0,
         },
     )
 
@@ -331,6 +339,7 @@ def test_add_barcode_with_a_taken_barcode_merges_the_owner_into_the_named_produc
             "packages": 2,
             "barcodes": sorted([EAN_A, EAN_B]),
             "filled": ["brand"],
+            "shopping_items": 0,
         },
     )
 
@@ -391,6 +400,7 @@ def test_merging_by_hand(make_device, con, clock):
             "packages": 2,
             "barcodes": [EAN_A],
             "filled": ["brand", "image", "min_stock", "warn_days"],
+            "shopping_items": 1,
         },
     )
     # Die Packungen eines Zusammenführens teilen sich einen rev und kommen gemeinsam.

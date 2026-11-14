@@ -100,6 +100,21 @@ def package(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def shopping_item(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Ein Eintrag der Einkaufsliste; ``closed_by`` und ``bring_key`` stehen nicht im Sync."""
+    return {
+        "id": row["id"],
+        "product_id": row["product_id"],
+        "text": row["text"],
+        "quantity": row["quantity"],
+        "origin": row["origin"],
+        "done_at": row["done_at"],
+        "deleted_at": row["deleted_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
 def settings_values(con: sqlite3.Connection) -> dict[str, Any]:
     """Die Einstellungen des Haushalts als ``{schlüssel: wert}``, ohne ``updated_at``."""
     return {row["key"]: json.loads(row["value"]) for row in con.execute("SELECT key, value FROM settings")}

@@ -12,7 +12,7 @@ import type { ScannerOptions, ScannerState } from "@/core/scanner";
 import { createMockCore, sampleBarcode } from "@/mock";
 import { ToastProvider } from "@/ui/base";
 
-import { ScanPage } from ".";
+import { ScanPage } from "./ScanPage";
 
 const NOW = new Date("2026-11-13T10:00:00.000Z");
 

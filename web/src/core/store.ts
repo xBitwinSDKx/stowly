@@ -36,7 +36,7 @@ import {
   type SyncMeta,
 } from "./db";
 import { Signal } from "./live";
-import { purge } from "./sync/retention";
+import { nothingPurged, purge, type PurgeResult } from "./sync/retention";
 import { deepEqual, Draft, EMPTY_TABLES, keyOf, reconcile, TABLE_NAMES, tableFrom, type MutableTables, type TableName, type TableRows, type Tables } from "./tables";
 
 const NO_DELIVERIES: ReadonlyMap<string, DeliveryEntry> = new Map();
@@ -369,7 +369,7 @@ export class Store {
 
   private async readAll(): Promise<StoreState> {
     const db = this.db;
-    const [products, packages, zones, printers, printerStatus, printJobs, labelTemplates, outbox, pool, problems, deliveries, kv] = await Promise.all([
+    const [products, packages, zones, printers, printerStatus, printJobs, labelTemplates, shoppingItems, outbox, pool, problems, deliveries, kv] = await Promise.all([
       db.products.toArray(),
       db.packages.toArray(),
       db.zones.toArray(),
@@ -377,6 +377,7 @@ export class Store {
       db.printer_status.toArray(),
       db.print_jobs.toArray(),
       db.label_templates.toArray(),
+      db.shopping_items.toArray(),
       db.outbox.toArray(),
       db.id_pool.toArray(),
       db.problems.toArray(),
@@ -394,6 +395,7 @@ export class Store {
       printer_status: tableFrom("printer_status", printerStatus),
       print_jobs: tableFrom("print_jobs", printJobs),
       label_templates: tableFrom("label_templates", labelTemplates),
+      shopping_items: tableFrom("shopping_items", shoppingItems),
       settings: (values.get("settings") as Tables["settings"] | undefined) ?? null,
     });
     outbox.sort((a, b) => a.seq - b.seq);
@@ -714,7 +716,11 @@ export class Store {
           await this.db.kv.delete("settings");
           await this.db.id_pool.clear();
         }
-        const dropped: Record<string, Set<string>> = { packages: new Set(purged.packages), print_jobs: new Set(purged.print_jobs) };
+        const dropped: Record<string, Set<string>> = {
+          packages: new Set(purged.packages),
+          print_jobs: new Set(purged.print_jobs),
+          shopping_items: new Set(purged.shopping_items),
+        };
         for (const table of TABLE_NAMES) {
           const rows = [...merged.touched[table].values()].filter((row) => !dropped[table]?.has(keyOf(table, row as never)));
           if (rows.length > 0) {
@@ -722,12 +728,7 @@ export class Store {
           }
         }
         if (!first.reset) {
-          if (purged.packages.length > 0) {
-            await this.db.packages.bulkDelete(purged.packages);
-          }
-          if (purged.print_jobs.length > 0) {
-            await this.db.print_jobs.bulkDelete(purged.print_jobs);
-          }
+          await this.deletePurged(purged);
         }
         if (merged.settingsTouched && base.settings) {
           await this.db.writeKv("settings", base.settings);
@@ -907,19 +908,27 @@ export class Store {
     return problems.filter((problem) => !gone.has(problem.id));
   }
 
+  /** Löscht aus der Datenbank, was `purge` verworfen hat. */
+  private async deletePurged(purged: PurgeResult): Promise<void> {
+    if (purged.packages.length > 0) {
+      await this.db.packages.bulkDelete(purged.packages);
+    }
+    if (purged.print_jobs.length > 0) {
+      await this.db.print_jobs.bulkDelete(purged.print_jobs);
+    }
+    if (purged.shopping_items.length > 0) {
+      await this.db.shopping_items.bulkDelete(purged.shopping_items);
+    }
+  }
+
   /** Verwirft beim Start, was inzwischen jenseits der Aufbewahrung liegt. */
   purgeExpired(): Promise<void> {
     return this.write<void>(async (current) => {
       const purged = purge(current.base, this.now().getTime() + current.meta.clock_offset_ms);
-      if (purged.packages.length === 0 && purged.print_jobs.length === 0) {
+      if (nothingPurged(purged)) {
         return { next: null, value: undefined };
       }
-      if (purged.packages.length > 0) {
-        await this.db.packages.bulkDelete(purged.packages);
-      }
-      if (purged.print_jobs.length > 0) {
-        await this.db.print_jobs.bulkDelete(purged.print_jobs);
-      }
+      await this.deletePurged(purged);
       const view = this.project(current.view, purged.tables, current.outbox, current.session, current.meta);
       const deliveryChanges = new Map<string, DeliveryEntry | null>();
       for (const jobId of current.deliveries.keys()) {
@@ -1089,6 +1098,7 @@ function mergePages(start: Tables, pages: readonly SyncResponse[]): MergedPages 
     printer_status: new Map(),
     print_jobs: new Map(),
     label_templates: new Map(),
+    shopping_items: new Map(),
   };
   let settings = start.settings;
   let settingsTouched = false;

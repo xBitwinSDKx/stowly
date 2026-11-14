@@ -1,0 +1,254 @@
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.error {
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+/* ---------------------------------------------------------------- Neuer Eintrag */
+.add {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+/* Was, Menge, Hinzufügen: am Handy der Text über die ganze Breite, darunter Menge und Knopf */
+.addRow {
+  display: grid;
+  align-items: start;
+  gap: var(--space-3);
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "what what"
+    "quantity button";
+}
+
+/* Das Feld samt Vorschlägen darunter */
+.what {
+  grid-area: what;
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.quantity {
+  grid-area: quantity;
+  width: 7rem;
+}
+
+.quantity :global(input) {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Der Knopf sitzt auf der Höhe der Felder, nicht ihrer Beschriftung. */
+.addButton {
+  grid-area: button;
+  align-self: start;
+  margin-top: calc(var(--text-sm) * var(--leading-normal) + var(--space-1));
+}
+
+/* Das gewählte Produkt anstelle des Suchfelds */
+.chosen {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--control-md);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-accent-border);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+}
+
+.chosenText {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  min-width: 0;
+}
+
+.chosenTitle {
+  font-weight: var(--weight-bold);
+  overflow-wrap: anywhere;
+}
+
+/* Vorschläge beim Eintippen */
+.suggestions {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-sunken);
+  overflow: hidden;
+}
+
+.suggestions > li + li {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-3);
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.suggestion:hover {
+  background: var(--color-hover);
+}
+
+.suggestion:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.suggestionTitle {
+  font-weight: var(--weight-medium);
+}
+
+/* ---------------------------------------------------------------- Liste */
+.list {
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.list > li + li {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-4);
+}
+
+/* Die ganze Zeile links ist antippbar: Name, Menge und Angaben gehören zum Ankreuzfeld. */
+.check {
+  flex: 1;
+  align-items: flex-start;
+  padding: var(--space-2) 0;
+}
+
+.check :global(input) {
+  margin-top: 0.1rem;
+}
+
+.itemText {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itemHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.itemTitle {
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.amount {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* „fehlt 2": wie die Marke im Bestand */
+.amountAuto {
+  color: var(--color-info);
+  font-weight: var(--weight-medium);
+}
+
+.itemFacts {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.itemActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Erledigt: durchgestrichen und gedämpft, aber lesbar */
+.itemDone .itemTitle {
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--color-text-faint);
+}
+
+.itemDone .amount,
+.itemDone .amountAuto {
+  color: var(--color-text-faint);
+}
+
+/* ---------------------------------------------------------------- Erklärung am Ende */
+.foot {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 44rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.foot strong {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+/* ---------------------------------------------------------------- Dialog „Eintrag ändern" */
+.dialogForm {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.dialogSubject {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse) {
+  .chosen {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (min-width: 40rem) {
+  .addRow {
+    grid-template-columns: minmax(0, 1fr) 7rem auto;
+    grid-template-areas: "what quantity button";
+  }
+
+  .quantity {
+    width: auto;
+  }
+}
+
+@media (min-width: 48rem) {
+  .item {
+    padding-left: var(--space-5);
+  }
+}

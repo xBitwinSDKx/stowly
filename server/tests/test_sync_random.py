@@ -1,8 +1,9 @@
 """Zufällige Befehlsfolgen von mehreren Geräten gegen die Zusagen der Änderungsfolge.
 
 Kein Ersatz für die gezielten Tests der Konfliktregeln, sondern ein Netz darunter. Drei
-Geräte schicken bunt gemischt alle 19 Befehle, auch unsinnige (unbekannte Kennungen,
-gelöschte Zonen, zusammengeführte Produkte). Nach jedem Schritt muss gelten:
+Geräte schicken bunt gemischt alle 22 Befehle, auch unsinnige (unbekannte Kennungen,
+gelöschte Zonen, zusammengeführte Produkte, automatische Einträge der Einkaufsliste).
+Nach jedem Schritt muss gelten:
 
 * Kein Aufruf scheitert, kein Befehl endet mit ``internal``.
 * Ein Beobachter, der nur schrittweise abgleicht (in kleinen Seiten), hat denselben Stand
@@ -38,6 +39,7 @@ class World:
         self.packages: list[str] = []
         self.printers: list[str] = []
         self.jobs: list[str] = []
+        self.items: list[str] = []
 
     def pick(self, known: list[str], fresh=ids.new_uuid) -> str:
         """Meist eine bekannte Kennung, manchmal eine, die es nicht gibt."""
@@ -74,6 +76,10 @@ class World:
                 "printer.report",
                 "print.request",
                 "print.report",
+                "shopping_item.create",
+                "shopping_item.update",
+                "shopping_item.update",
+                "shopping_item.delete",
             ]
         )
         if kind == "product.create":
@@ -85,14 +91,16 @@ class World:
                 product_id=product_id,
                 name=rng.choice(["", "Reis", "Nudeln"]),
                 barcodes=rng.sample(BARCODES, rng.choice([0, 0, 1, 2])),
+                min_stock=rng.choice([None, None, 1, 2, 3]),
             )
         if kind == "product.update":
             fields = {
                 "name": rng.choice(["", "Mehl", "Zucker"]),
                 "brand": "Marke",
                 "warn_days": rng.choice([None, 7]),
+                "min_stock": rng.choice([None, 1, 2, 3]),
             }
-            chosen = rng.sample(sorted(fields), rng.randint(0, 3))
+            chosen = rng.sample(sorted(fields), rng.randint(0, 4))
             return device.cmd(
                 kind,
                 age=age,
@@ -199,6 +207,26 @@ class World:
                     [None, {"reachable": True, "ready": None, "media_detected": None, "errors": []}]
                 ),
             )
+        if kind == "shopping_item.create":
+            item_id = ids.new_uuid() if rng.random() < 0.95 else self.pick(self.items)
+            self.items.append(item_id)
+            if rng.random() < 0.6:
+                return device.cmd(
+                    kind,
+                    age=age,
+                    item_id=item_id,
+                    product_id=self.pick(self.products),
+                    quantity=rng.choice([None, 2]),
+                )
+            return device.cmd(kind, age=age, item_id=item_id, text=rng.choice(["Kaffee", "Grillkohle"]))
+        if kind in ("shopping_item.update", "shopping_item.delete"):
+            # Auch automatische Einträge: Ihre Kennungen kennt das Gerät aus dem Abgleich.
+            item_id = self.pick([*self.items, *device.shopping_items])
+            if kind == "shopping_item.delete":
+                return device.cmd(kind, age=age, item_id=item_id)
+            fields = {"text": "Tee", "quantity": rng.choice([None, 3]), "done": rng.random() < 0.6}
+            chosen = rng.sample(sorted(fields), rng.choice([1, 1, 1, 2, 3]))
+            return device.cmd(kind, age=age, item_id=item_id, changes={key: fields[key] for key in chosen})
         if kind == "print.request":
             job_id = ids.new_uuid()
             self.jobs.append(job_id)
@@ -232,6 +260,7 @@ def snapshot(device: Device) -> dict:
         "printer_status": device.printer_status,
         "print_jobs": device.print_jobs,
         "label_templates": device.label_templates,
+        "shopping_items": device.shopping_items,
         "settings": device.settings,
     }
 

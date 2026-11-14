@@ -14,10 +14,12 @@ export interface CheckboxProps {
   indeterminate?: boolean;
   disabled?: boolean;
   className?: string;
+  /** Das Eingabefeld selbst, etwa um ihm später den Fokus zu geben. */
+  inputRef?: (element: HTMLInputElement | null) => void;
 }
 
 /** Ankreuzfeld mit einer Zeile in Mindest-Tipphöhe. */
-export function Checkbox({ checked, onChange, children, label, indeterminate = false, disabled, className }: CheckboxProps) {
+export function Checkbox({ checked, onChange, children, label, indeterminate = false, disabled, className, inputRef }: CheckboxProps) {
   return (
     <label className={cx(styles.check, className)}>
       <input
@@ -30,6 +32,7 @@ export function Checkbox({ checked, onChange, children, label, indeterminate = f
           if (element) {
             element.indeterminate = indeterminate;
           }
+          inputRef?.(element);
         }}
         onChange={(event) => onChange(event.target.checked)}
       />

@@ -1,4 +1,4 @@
-/* Kennzahl-Karten: am Handy im Raster 2 × 2, am Desktop zwei breite Karten nebeneinander */
+/* Kennzahl-Karten: am Handy im Raster 2 × 2, am Desktop breite Karten in einer Reihe */
 .stats {
   display: grid;
   gap: var(--space-3);
@@ -7,6 +7,7 @@
 
 .statsWide {
   gap: var(--space-4);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .head {

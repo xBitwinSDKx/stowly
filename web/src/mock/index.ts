@@ -13,6 +13,7 @@ export {
   type MockControl,
   type MockCore,
   type MockOptions,
+  type MockPushPermission,
   type MockScenario,
 } from "./core";
 export { derived, LiveValue } from "./live";

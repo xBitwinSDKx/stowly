@@ -14,11 +14,17 @@
  * (web/e2e) gegen den echten Server. Weil sich Nachbildung und Kern `applyCommand` teilen,
  * bemerkt hier kein Test einen Lesefehler im Protokoll: Er steckte auf beiden Seiten.
  *
+ * Was der Server an der Einkaufsliste selbst schreibt (7.6: automatische Einträge, Sperre,
+ * Erledigen durch Einlagern, Zusammenlegen), steht eigens in fake-shopping.ts und läuft im
+ * Sicherungspunkt des auslösenden Befehls. Es besteht dieselben Fälle wie der Server
+ * (docs/vectors.json, `shopping_auto`; fake-shopping.test.ts). `closed_by` führt sie nur intern.
+ *
  * Wo die Nachbildung vom echten Server (server/stowly/sync) abweicht:
  * - Keine Uhren je Feld (7.1) und keine Uhr für Entnehmen/Wiederherstellen (7.2): Es gewinnt,
  *   was zuletzt eintrifft, nicht was zuletzt geschah. Nur die Meldungen zu Druckern und
- *   Etiketten vergleichen ihren Zeitpunkt. Konflikte zwischen Geräten lassen sich hier also
- *   nicht prüfen.
+ *   Etiketten vergleichen ihren Zeitpunkt, und für 7.6 die Sperre und das Feld `done` eines
+ *   Eintrags der Einkaufsliste. Konflikte zwischen Geräten lassen sich hier sonst nicht prüfen;
+ *   auch „Mindestbestand angewendet und geändert" (7.6) heißt hier nur „geändert".
  * - Ein Schritt der Änderungsfolge je Befehl: Alles, was er anfasst, teilt sich einen `rev`.
  *   Der echte Server gibt jedem Datensatz seinen eigenen; nur Packungen, die ein Befehl
  *   gemeinsam verschiebt, teilen sich einen. Ein Befehl ohne Wirkung liefert hier nichts
@@ -42,6 +48,13 @@
  *   nicht kann). Was er am Etikett und am Zustand des Druckers fortschreibt, überschreibt hier
  *   einfach; der echte Server lässt die jüngste Meldung gewinnen.
  * - Längen von Texten zählen hier in UTF-16-Einheiten, im Server in Zeichen.
+ * - Push (`/api/push/…`): Der öffentliche Schlüssel ist eine feste Zeichenfolge in der richtigen
+ *   Form, aber kein Punkt auf der Kurve; beim Anlegen eines Abos prüft die Nachbildung Form und
+ *   Längen, nicht, ob `keys.p256dh` auf der Kurve liegt. Eine Testnachricht geht nirgends hin: Die
+ *   Nachbildung merkt sich die Nutzlast (`pushMessages`) und antwortet, was `pushTestStatus` sagt.
+ *   Die Tagesnachricht gibt es nicht.
+ * - `GET /api/integrations`: Sicherung und Home Assistant sind nie eingerichtet; Push zählt die
+ *   Abos der Nachbildung.
  *
  * Ohne DOM und ohne Node: Die Datei läuft in den Tests (jsdom) und im Entwicklungsserver.
  */
@@ -52,6 +65,8 @@ import {
   MAX_CHANGES_PER_SYNC,
   MAX_COMMANDS_PER_SYNC,
   PROTOCOL_VERSION,
+  PUSH_PATHS,
+  PUSH_TEST_INTERVAL_S,
   type Changes,
   type Command,
   type CommandResult,
@@ -59,11 +74,16 @@ import {
   type ErrorBody,
   type ErrorCode,
   type HouseholdSettings,
+  type IntegrationStatus,
   type LabelTemplate,
   type Package,
   type Product,
+  type PushSubscriptionInput,
+  type PushTestResult,
+  type PushTestStatus,
   type RejectCode,
   type ServerHealth,
+  type ShoppingItem,
   type SyncResponse,
   type Zone,
 } from "@/contract/api.gen";
@@ -73,8 +93,9 @@ import { progressAfterOutcome } from "@/contract/labels";
 import { isDate, isTimeOfDay, isTimestamp } from "@/contract/time";
 
 import { applyCommand } from "../commands/apply";
-import { DAY_MS, isExpiredJob, isExpiredPackage, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
+import { DAY_MS, isExpiredJob, isExpiredPackage, isExpiredShoppingItem, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
 import { FakePrintService } from "./fake-print";
+import { ShoppingRules } from "./fake-shopping";
 import { Draft, EMPTY_TABLES, keyOf, TABLE_NAMES, type MutableTables, type TableName, type TableRows, type Tables } from "../tables";
 
 export const FAKE_PASSWORD = "stowly";
@@ -305,8 +326,6 @@ const COMMAND_FIELDS: Record<(typeof COMMAND_TYPES)[number], Record<string, Fiel
     boot_id: opt(nullable(text(0, 80))),
     error: opt(nullable(text(0, 200))),
   },
-  // Die Wirkung der Befehle der Einkaufsliste kommt in Runde 1 (Protokoll 6.6 und 7.6); bis dahin
-  // lehnt `applyCommand` sie ab.
   "shopping_item.create": {
     item_id: req(uuid),
     product_id: opt(nullable(uuid)),
@@ -400,6 +419,113 @@ function toIsoDate(moment: Date): string {
   return moment.toISOString().slice(0, 10);
 }
 
+// ------------------------------------------------------------------------------------------
+// Push (docs/integrationen.md, Abschnitt 4)
+// ------------------------------------------------------------------------------------------
+
+/** Push-Dienste, an die der Server schickt (4.2): der Host ist eine davon oder liegt darunter. */
+const PUSH_DOMAINS = ["fcm.googleapis.com", "push.apple.com", "push.services.mozilla.com", "notify.windows.com"];
+
+function toBase64url(bytes: readonly number[]): string {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** Die Bytes eines base64url-Texts (Füllzeichen erlaubt); null, wenn er keiner ist. */
+function fromBase64url(text: unknown): number[] | null {
+  if (typeof text !== "string" || !/^[A-Za-z0-9_-]*={0,2}$/.test(text)) {
+    return null;
+  }
+  const plain = text.replace(/=+$/, "").replace(/-/g, "+").replace(/_/g, "/");
+  try {
+    return Array.from(atob(plain + "=".repeat((4 - (plain.length % 4)) % 4)), (char) => char.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+/** Ein öffentlicher Schlüssel in der Form von P-256 (unkomprimiert, 65 Byte), aber erfunden. */
+function fakePushKey(seed: number): string {
+  return toBase64url([4, ...Array.from({ length: 64 }, (_, n) => (seed * 31 + n * 7) % 256)]);
+}
+
+/** Prüft ein Abo nach 4.2 und liefert die Stelle des ersten Fehlers, oder null. */
+export function checkPushSubscription(body: unknown): { loc: string[]; msg: string } | null {
+  if (!isRecord(body) || Object.keys(body).some((key) => !["endpoint", "keys", "origin"].includes(key))) {
+    return { loc: ["body"], msg: "Das Abo hat nicht die erwartete Form." };
+  }
+  const endpoint = body.endpoint;
+  let host: string | null = null;
+  if (typeof endpoint === "string" && endpoint.length <= LIMITS.push_endpoint) {
+    try {
+      const url = new URL(endpoint);
+      if (url.protocol === "https:" && url.username === "" && url.password === "" && (url.port === "" || url.port === "443")) {
+        host = url.hostname.toLowerCase();
+      }
+    } catch {
+      host = null;
+    }
+  }
+  if (host === null || !PUSH_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`))) {
+    return { loc: ["body", "endpoint"], msg: "Kein bekannter Push-Dienst." };
+  }
+  const keys = body.keys;
+  if (!isRecord(keys) || Object.keys(keys).some((key) => key !== "p256dh" && key !== "auth")) {
+    return { loc: ["body", "keys"], msg: "Die Schlüssel fehlen." };
+  }
+  const p256dh = fromBase64url(keys.p256dh);
+  if (p256dh === null || p256dh.length !== 65 || p256dh[0] !== 4) {
+    return { loc: ["body", "keys", "p256dh"], msg: "Kein öffentlicher Schlüssel auf P-256." };
+  }
+  if (fromBase64url(keys.auth)?.length !== 16) {
+    return { loc: ["body", "keys", "auth"], msg: "Das Geheimnis hat nicht 16 Byte." };
+  }
+  const origin = body.origin;
+  let originOk = false;
+  if (typeof origin === "string" && origin.length <= LIMITS.push_origin) {
+    try {
+      const url = new URL(origin);
+      const local = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+      originOk = (url.protocol === "https:" || local) && url.origin === origin && url.username === "";
+    } catch {
+      originOk = false;
+    }
+  }
+  return originOk ? null : { loc: ["body", "origin"], msg: "Kein gültiger Ursprung." };
+}
+
+/** Die Nutzlast einer Push-Nachricht im Format „Declarative Web Push" (4.5). */
+export interface PushPayload {
+  web_push: 8030;
+  notification: { title: string; body: string; navigate: string; lang: string; dir: "ltr"; tag: string; silent: boolean };
+}
+
+/** Die Testnachricht für ein Abo mit diesem Ursprung (4.9). */
+export function pushTestPayload(origin: string): PushPayload {
+  return {
+    web_push: 8030,
+    notification: {
+      title: "Stowly",
+      body: "Testnachricht von Stowly: Benachrichtigungen kommen auf diesem Gerät an.",
+      navigate: `${origin}${PUSH_PATHS.test}`,
+      lang: "de-DE",
+      dir: "ltr",
+      tag: "stowly-test",
+      silent: false,
+    },
+  };
+}
+
+/** Was die Nachbildung auf eine Testnachricht antwortet, je nach Antwort des Push-Dienstes (4.7). */
+const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
+  sent: { status: "sent", http_status: 201, message: "Der Push-Dienst hat die Nachricht angenommen." },
+  gone: { status: "gone", http_status: 410, message: "Der Push-Dienst kennt das Abo nicht mehr; es ist gelöscht." },
+  rejected: { status: "rejected", http_status: 403, message: "Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?" },
+  failed: { status: "failed", http_status: 503, message: "Der Push-Dienst ist gerade nicht erreichbar (503)." },
+};
+
 export class FakeServer {
   /** Kennung des Datenbestands. */
   datasetId = newUuid();
@@ -413,8 +539,20 @@ export class FakeServer {
   readonly syncRequests: Record<string, unknown>[] = [];
   /** Der Druckdienst des Servers unter `/print` (src/core/testing/fake-print.ts). */
   readonly print: FakePrintService;
+  /** false = STOWLY_PUSH_CONTACT ist nicht gesetzt: Alles unter `/api/push` antwortet mit 503. */
+  pushConfigured = true;
+  /** Was der Push-Dienst auf die nächsten Testnachrichten antwortet. */
+  pushTestStatus: PushTestStatus = "sent";
+  /** Die Testnachrichten, die der Server verschickt hätte, in ihrer Reihenfolge. */
+  readonly pushMessages: { device_id: string; endpoint: string; payload: PushPayload }[] = [];
 
   private tables: Tables = EMPTY_TABLES;
+  /** Was der Server an der Einkaufsliste selbst schreibt (7.6), samt Sperren und Uhren. */
+  private shopping = new ShoppingRules();
+  private pushKeySeed = 1;
+  private readonly pushSubscriptions = new Map<string, PushSubscriptionInput>();
+  /** Zeitpunkt der letzten Testnachricht je Gerät in Millisekunden. */
+  private readonly pushTests = new Map<string, number>();
   private readonly revs = new Map<string, number>();
   private settingsRev = 0;
   private readonly results = new Map<string, CommandResult>();
@@ -479,6 +617,31 @@ export class FakeServer {
     return [...this.devices.values()];
   }
 
+  /** Die Regeln der Einkaufsliste mit Sperren, Uhren und `closed_by`. */
+  get shoppingRules(): ShoppingRules {
+    return this.shopping;
+  }
+
+  /** Der öffentliche VAPID-Schlüssel (`GET /api/push/key`). */
+  get pushKey(): string {
+    return fakePushKey(this.pushKeySeed);
+  }
+
+  /** Ein anderer VAPID-Schlüssel, wie nach dem Einspielen einer Sicherung einer anderen Datenbank. */
+  rotatePushKey(): void {
+    this.pushKeySeed += 1;
+  }
+
+  /** Das Push-Abo eines Geräts, wie es der Server kennt. */
+  pushSubscriptionOf(deviceId: string): PushSubscriptionInput | undefined {
+    return this.pushSubscriptions.get(deviceId);
+  }
+
+  /** Vergisst alle Push-Abos, wie nach dem Einspielen einer älteren Sicherung. */
+  forgetPushSubscriptions(): void {
+    this.pushSubscriptions.clear();
+  }
+
   /** Schreibt einen Datensatz direkt, als hätte ihn ein anderes Gerät geändert. */
   put<T extends TableName>(table: T, row: TableRows[T]): void {
     const next: MutableTables = { ...this.tables };
@@ -514,6 +677,7 @@ export class FakeServer {
     const templates = [...this.tables.label_templates.values()];
     this.tables = { ...EMPTY_TABLES, settings: this.tables.settings };
     this.revs.clear();
+    this.shopping = new ShoppingRules();
     for (const table of TABLE_NAMES) {
       const rows = table === "label_templates" ? (data.label_templates ?? templates) : (data[table] ?? []);
       for (const row of rows as readonly TableRows[TableName][]) {
@@ -527,11 +691,12 @@ export class FakeServer {
     }
   }
 
-  /** Sperrt alle Tokens (oder das eines Geräts). */
+  /** Sperrt alle Tokens (oder das eines Geräts). Mit dem Token endet das Push-Abo des Geräts. */
   revoke(deviceId?: string): void {
     for (const device of this.devices.values()) {
       if (deviceId === undefined || device.id === deviceId) {
         device.revoked_at ??= this.stamp();
+        this.pushSubscriptions.delete(device.id);
       }
     }
   }
@@ -659,19 +824,29 @@ export class FakeServer {
     if (problem !== null) {
       result = { id, status: "rejected", code: "invalid", message: problem, duplicate: false };
     } else {
+      // Ein Sicherungspunkt (6.3): Was der Befehl tut und was der Server daraus ableitet (7.6),
+      // gilt zusammen oder gar nicht.
       const draft = new Draft(this.tables);
+      const rollback = this.shopping.savepoint();
       let outcome: ReturnType<typeof applyCommand>;
       try {
-        outcome = applyCommand(draft, command as Command, {
+        // Die Uhr von `done` eines Eintrags kann den Befehl um dieses Feld kürzen (7.1).
+        const prepared = this.shopping.prepare(command as Command, effectiveAt);
+        const before = this.shopping.observe(draft, prepared);
+        outcome = applyCommand(draft, prepared, {
           at: effectiveAt,
           device_id: device?.id ?? null,
           authoritative: true,
           lookup_enabled: this.lookupEnabled,
         });
+        if (outcome.status !== "rejected") {
+          this.shopping.apply(draft, prepared, before, effectiveAt);
+        }
       } catch {
         outcome = { status: "rejected", code: "internal" };
       }
       if (outcome.status === "rejected") {
+        rollback();
         result = { id, status: "rejected", code: outcome.code, message: REJECT_MESSAGES[outcome.code], duplicate: false };
       } else {
         this.commit(draft, command as Command);
@@ -855,6 +1030,9 @@ export class FakeServer {
         if (full && table === "print_jobs" && isExpiredJob(row as TableRows["print_jobs"], jobLimit)) {
           continue;
         }
+        if (full && table === "shopping_items" && isExpiredShoppingItem(row as ShoppingItem, packageLimit)) {
+          continue;
+        }
         pending.push({ rev, table, row });
       }
     }
@@ -869,7 +1047,6 @@ export class FakeServer {
     }
     const included = pending.slice(0, count);
     const hasMore = count < pending.length;
-    // shopping_items: bis Runde 1 immer leer (die Einkaufsliste der Nachbildung baut der Kern-Worker).
     const changes: Changes = {
       products: [],
       zones: [],
@@ -945,6 +1122,78 @@ export class FakeServer {
     return json(200, { token, device: this.describe(device, device) });
   }
 
+  // ---------------------------------------------------------------- Push und Integrationen
+
+  /** `/api/push/…` (docs/sync-protokoll.md 11.3, docs/integrationen.md 4). */
+  private push(method: string, path: string, device: FakeDevice, body: unknown): FakeResponseData {
+    const known = ["GET /api/push/key", "PUT /api/push/subscription", "DELETE /api/push/subscription", "POST /api/push/test"];
+    if (!known.includes(`${method} ${path}`)) {
+      return failure(404, "not_found", "Diesen Aufruf gibt es nicht.");
+    }
+    if (!this.pushConfigured) {
+      return failure(503, "not_configured", "Push ist auf dem Server nicht eingerichtet (STOWLY_PUSH_CONTACT).");
+    }
+    if (path === "/api/push/key") {
+      return json(200, { public_key: this.pushKey });
+    }
+    if (path === "/api/push/subscription" && method === "DELETE") {
+      this.pushSubscriptions.delete(device.id);
+      return { status: 204, headers: {}, body: null };
+    }
+    if (path === "/api/push/subscription") {
+      const error = checkPushSubscription(body);
+      if (error) {
+        return failure(422, "invalid_request", error.msg, { errors: [{ loc: error.loc, msg: error.msg, type: "value_error" }] });
+      }
+      const subscription = body as PushSubscriptionInput;
+      // Gehört derselbe Endpunkt einem anderen Gerät, wechselt er zu diesem.
+      for (const [owner, existing] of [...this.pushSubscriptions]) {
+        if (existing.endpoint === subscription.endpoint) {
+          this.pushSubscriptions.delete(owner);
+        }
+      }
+      this.pushSubscriptions.set(device.id, { endpoint: subscription.endpoint, keys: { ...subscription.keys }, origin: subscription.origin });
+      return { status: 204, headers: {}, body: null };
+    }
+    // POST /api/push/test
+    const subscription = this.pushSubscriptions.get(device.id);
+    if (!subscription) {
+      return failure(404, "not_found", "Dieses Gerät hat kein Push-Abo.");
+    }
+    const nowMs = this.now().getTime();
+    const last = this.pushTests.get(device.id);
+    if (last !== undefined && nowMs - last < PUSH_TEST_INTERVAL_S * 1000) {
+      const wait = Math.max(1, Math.ceil((last + PUSH_TEST_INTERVAL_S * 1000 - nowMs) / 1000));
+      return failure(429, "rate_limited", "Höchstens eine Testnachricht in zehn Sekunden.", { retry_after_s: wait }, { "retry-after": String(wait) });
+    }
+    this.pushTests.set(device.id, nowMs);
+    this.pushMessages.push({ device_id: device.id, endpoint: subscription.endpoint, payload: pushTestPayload(subscription.origin) });
+    const result = PUSH_TEST_RESULTS[this.pushTestStatus];
+    if (result.status === "gone") {
+      // 404 oder 410 vom Push-Dienst: Das Abo ist erloschen, der Server löscht es (4.7).
+      this.pushSubscriptions.delete(device.id);
+    }
+    return json(200, result);
+  }
+
+  /** `GET /api/integrations`: Sicherung und Home Assistant sind hier nie eingerichtet. */
+  private integrations(device: FakeDevice): IntegrationStatus {
+    return {
+      timezone: "Europe/Berlin",
+      backup: { configured: false, problem: null, time: null, recipients: [], last_ok_at: null, last_file: null, last_size: null, last_error: null, last_error_at: null, next_at: null, warning: false },
+      ha: { configured: false, problem: null, entity: null, state: "off", last_ok_at: null, last_error: null, last_error_at: null, linked: 0, sensor: false },
+      push: {
+        configured: this.pushConfigured,
+        problem: null,
+        subscriptions: this.pushSubscriptions.size,
+        this_device: this.pushSubscriptions.has(device.id),
+        last_run_at: null,
+        last_sent_at: null,
+        last_error: null,
+      },
+    };
+  }
+
   // ---------------------------------------------------------------- Die Schnittstelle
 
   /**
@@ -990,7 +1239,15 @@ export class FakeServer {
     }
     if (method === "POST" && path === "/api/auth/logout") {
       device.revoked_at = this.stamp();
+      // Mit dem Token endet das Push-Abo des Geräts (docs/integrationen.md, 4.10).
+      this.pushSubscriptions.delete(device.id);
       return { status: 204, headers: {}, body: null };
+    }
+    if (path.startsWith("/api/push/")) {
+      return this.push(method, path, device, body);
+    }
+    if (method === "GET" && path === "/api/integrations") {
+      return json(200, this.integrations(device));
     }
     if (method === "POST" && path === "/api/sync") {
       return this.sync(device, body);
@@ -1013,6 +1270,7 @@ export class FakeServer {
       }
       if (method === "DELETE") {
         target.revoked_at ??= this.stamp();
+        this.pushSubscriptions.delete(target.id);
         return { status: 204, headers: {}, body: null };
       }
     }

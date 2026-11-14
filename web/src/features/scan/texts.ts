@@ -79,6 +79,16 @@ export const STORE_HINTS = {
   source: "Von Open Food Facts (ODbL)",
 } as const;
 
+/** Nach dem Entnehmen der letzten Packung eines Produkts (Plan von Stufe 2, Entscheidung 1). */
+export const SHOPPING_TEXTS = {
+  /** Der Knopf. */
+  add: "Auf die Einkaufsliste",
+  /** Das Produkt stand schon offen auf der Liste (eigener oder automatischer Eintrag). */
+  already: "Steht schon auf der Einkaufsliste.",
+  /** Eben über den Knopf dazugekommen. */
+  added: "Steht jetzt auf der Einkaufsliste.",
+} as const;
+
 /** Halbsätze zum Stand der Etiketten nach dem Einlagern; Einzahl und Mehrzahl. */
 export const LABEL_STATUS_TEXTS = {
   pending: ["Etikett steht aus", "Etiketten stehen aus"],

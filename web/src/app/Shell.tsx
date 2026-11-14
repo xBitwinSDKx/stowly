@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, ScrollRestoration, useLocation, useNavigate } from "react-router";
 
-import { ROUTES, useCore, useLive } from "@/contract";
+import { isOpenItem, ROUTES, useCore, useLive } from "@/contract";
 import { useLogout } from "@/features/auth/logout";
 import { UnknownLabelsBanner } from "@/features/printers/UnknownLabels";
 import { useOpenLabels } from "@/features/printers/usePrinting";
@@ -176,6 +176,7 @@ function ShellFrame() {
   const sync = summarizeSync(useLive(core.sync.status));
   const { warnings, multiZone } = useStock();
   const labels = useOpenLabels();
+  const shopping = useLive(core.data.shoppingItems)?.filter(isOpenItem).length ?? 0;
   const [menuOpen, setMenuOpen] = useState(false);
   const [updating, setUpdating] = useState(false);
 
@@ -240,12 +241,26 @@ function ShellFrame() {
             <Logo />
           </Link>
           <nav aria-label="Hauptnavigation" className={styles.nav}>
-            {primary.map((item) => (
-              <NavLink key={item.to} to={item.to} end={item.to === ROUTES.stock} className={({ isActive }) => cx(styles.link, isActive && styles.active)}>
-                <item.icon size={20} aria-hidden="true" />
-                <span>{item.label}</span>
-              </NavLink>
-            ))}
+            {primary.map((item) => {
+              const count = item.to === ROUTES.shopping ? shopping : 0;
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to === ROUTES.stock}
+                  className={({ isActive }) => cx(styles.link, isActive && styles.active)}
+                  aria-label={count > 0 ? `${item.label}: ${String(count)} offen` : undefined}
+                >
+                  <item.icon size={20} aria-hidden="true" />
+                  <span>{item.label}</span>
+                  {count > 0 ? (
+                    <Badge tone="accent" className={styles.linkCount} aria-hidden="true">
+                      {count}
+                    </Badge>
+                  ) : null}
+                </NavLink>
+              );
+            })}
           </nav>
           <div className={styles.sidebarEnd}>
             <Button block icon={<LogOutIcon />} onClick={logout}>
@@ -361,6 +376,7 @@ function ShellFrame() {
           primary={primary}
           deviceName={deviceName}
           warnings={warnings.total}
+          shopping={shopping}
           labels={labels}
           sync={sync}
           onLogout={() => {

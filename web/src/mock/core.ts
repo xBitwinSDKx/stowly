@@ -18,6 +18,25 @@
  * Etikett mit Ausgang, `print.flush` erfüllt sich nach dem Einreichen, nicht erst mit dem
  * Ergebnis, und eine neue Meldung zum Zustand eines direkten Druckers ersetzt eine ältere, noch
  * ungesendete: Ohne Server zählt sie in `sync.status.pending` nur einmal.
+ *
+ * Die Einkaufsliste (Stufe 2) gilt sofort wie jede Änderung. Was der Server selbst schreibt
+ * (docs/sync-protokoll.md, 7.6), spielt die Attrappe beim nachgespielten Abgleich nach, also
+ * mit seiner Verzögerung und ohne Server erst, wenn er wieder da ist: automatische Einträge nach
+ * Entnehmen, Wiederherstellen, Einlagern, Ändern des Mindestbestands und Zusammenführen, die
+ * Sperre nach Abhaken oder Löschen eines automatischen Eintrags, und eigene Einträge eines
+ * Produkts, die das Einlagern erledigt. Gerechnet wird beim Abgleich mit dem Bestand von dann,
+ * nicht mit dem zum Zeitpunkt jedes einzelnen Befehls; Konflikte zwischen Geräten gibt es nicht.
+ * Sperren leitet die Attrappe beim Start aus den Daten ab: Ein Produkt, dessen automatischer
+ * Eintrag nach dem letzten Einlagern abgehakt wurde und das keinen offenen hat, gilt als gesperrt.
+ *
+ * Push (Stufe 2): Die Ausgangslagen "push-…" bestimmen den Zustand; ohne sie ist er "off", auf
+ * dem iPhone im Browser ("ios") "ios_install", ohne HTTPS ("insecure") "unsupported".
+ * `push.enable` fragt eine nachgespielte Erlaubnis (`stowlyMock.setPushPermission`), `push.test`
+ * liefert, was `stowlyMock.setPushTestResult` vorgibt (Vorgabe "sent"), und lässt wie der Server
+ * höchstens eine Testnachricht je `PUSH_TEST_INTERVAL_S` Sekunden zu (nach der Uhr der Attrappe).
+ * `integrations.load` liefert Beispiele (Sicherung eingerichtet und gelungen, Home Assistant aus);
+ * "backup-warning" und "backup-problem" zeigen die anderen Fälle der Sicherung, und
+ * `stowlyMock.setIntegrations` ersetzt Teile davon.
  */
 import {
   addDays,
@@ -32,32 +51,43 @@ import {
   checkNotifyTime,
   checkRetentionDays,
   checkServerConfig,
+  checkShoppingQuantity,
+  checkShoppingText,
   checkStoreCount,
   checkWarnDays,
   checkZoneColor,
   checkZoneIcon,
   cleanText,
+  compareShoppingItems,
   DEFAULT_DEVICE_PREFS,
+  invalidInput,
+  isOpenItem,
   isStoreInternalBarcode,
   isValidBarcode,
   LIMITS,
   MAX_HANDOFF_JOBS,
   MAX_SYNC_PROBLEMS,
+  missingStock,
   newUuid,
   optionalText,
   printerIdForJob,
   progressAfterOutcome,
+  PUSH_TEST_INTERVAL_S,
   randomPackageId,
   requiredText,
+  stockCount,
   toLocalDate,
   willLookUp,
   type AppState,
+  type BackupStatus,
   type Core,
   type Device,
   type DevicePrefs,
   type DisplacedChange,
+  type IntegrationStatus,
   type NewPrinter,
   type NewProduct,
+  type NewShoppingItem,
   type NewZone,
   type Package,
   type PackageChanges,
@@ -73,11 +103,14 @@ import {
   type ProductLookup,
   type ProductRef,
   type PushState,
+  type PushTestResult,
+  type PushTestStatus,
   type RemovalReason,
   type ServiceHealth,
   type SessionState,
   type SettingsChanges,
   type ShoppingItem,
+  type ShoppingItemChanges,
   type StoreInput,
   type StoreResult,
   type SyncProblem,
@@ -110,6 +143,10 @@ import { createEmptyData, createLargeData, createSampleData, createSingleZoneDat
  * - "at-pi":       dieses Gerät ist im WLAN des Pi: Der direkte Drucker ist erreichbar.
  *                  Zusammen mit "offline" ist das die Lage im Keller.
  * - "printer-trouble": beide Drucker melden Störungen (Etiketten leer, Pi heiß, SD-Karte)
+ * - "push-off", "push-on", "push-denied", "push-not-configured", "push-unsupported":
+ *                  Push auf diesem Gerät im genannten Zustand (`PushState`); ohne eine davon "off"
+ * - "backup-warning": die letzte gelungene Sicherung liegt drei Tage zurück, seither scheitert sie
+ * - "backup-problem": die automatische Sicherung ist nur halb eingerichtet (ein Schlüssel fehlt)
  */
 export type MockScenario =
   | "empty"
@@ -126,7 +163,14 @@ export type MockScenario =
   | "no-lookup"
   | "large"
   | "at-pi"
-  | "printer-trouble";
+  | "printer-trouble"
+  | "push-off"
+  | "push-on"
+  | "push-denied"
+  | "push-not-configured"
+  | "push-unsupported"
+  | "backup-warning"
+  | "backup-problem";
 
 export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "empty",
@@ -144,15 +188,59 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "large",
   "at-pi",
   "printer-trouble",
+  "push-off",
+  "push-on",
+  "push-denied",
+  "push-not-configured",
+  "push-unsupported",
+  "backup-warning",
+  "backup-problem",
 ];
 
 /** Wie ein nachgespielter Druck ausgeht. */
 export type MockPrintOutcome = "printed" | "failed" | "unknown";
 
+/** Was der nachgespielte Browser auf die Frage nach der Erlaubnis für Benachrichtigungen antwortet. */
+export type MockPushPermission = "granted" | "denied" | "default";
+
 export const MOCK_PASSWORD = "stowly";
 
-/** Platzhalter bis Runde 1 für Einkaufsliste, Push, Statistik und Integrationen. */
+/** Platzhalter bis Runde 2: die Statistik. */
 const STAGE_2_LATER = "In der Attrappe noch nicht umgesetzt.";
+
+/** Ausgangslagen zu Push und der Zustand, den sie ergeben. */
+const PUSH_SCENARIOS: readonly [MockScenario, PushState][] = [
+  ["push-off", "off"],
+  ["push-on", "on"],
+  ["push-denied", "denied"],
+  ["push-not-configured", "not_configured"],
+  ["push-unsupported", "unsupported"],
+];
+
+/** Was der nachgespielte Push-Dienst auf eine Testnachricht antwortet (docs/integrationen.md, 4.7 und 4.9). */
+const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
+  sent: { status: "sent", http_status: 201, message: "Der Push-Dienst hat die Nachricht angenommen." },
+  gone: { status: "gone", http_status: 410, message: "Der Push-Dienst kennt das Abo nicht mehr; der Server hat es gelöscht." },
+  rejected: { status: "rejected", http_status: 403, message: "Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?" },
+  failed: { status: "failed", http_status: 503, message: "Der Push-Dienst ist gerade nicht erreichbar (503). Später noch einmal versuchen." },
+};
+
+/**
+ * Was der Server bei einem Befehl selbst tut (docs/sync-protokoll.md, 7.6). Die Attrappe merkt es
+ * sich beim Befehl vor und spielt es beim nächsten nachgespielten Abgleich nach. `at` ist der
+ * Zeitpunkt des Befehls: Er steht in den Einträgen und entscheidet über die Sperre.
+ */
+type ServerEffect =
+  /** Abgleich eines Produkts: Entnehmen, Wiederherstellen, Produkt einer Packung geändert, neues Produkt mit Mindestbestand. */
+  | { kind: "reconcile"; product_id: string; at: string }
+  /** Einlagern: Sperre aufheben, eigene Einträge erledigen, Abgleich. */
+  | { kind: "stored"; product_id: string; at: string }
+  /** Mindestbestand geändert, oder ein automatischer Eintrag wieder geöffnet: Sperre aufheben, Abgleich. */
+  | { kind: "unlock"; product_id: string; at: string }
+  /** Ein offener automatischer Eintrag ist abgehakt oder gelöscht: Sperre. */
+  | { kind: "lock"; product_id: string; at: string }
+  /** Zusammengeführt: Die Sperre wandert zum Ziel, dann Abgleich des Ziels. */
+  | { kind: "merged"; source_id: string; target_id: string; at: string };
 
 export interface MockOptions {
   scenarios?: readonly MockScenario[];
@@ -186,6 +274,17 @@ export interface MockControl {
   setPrintOutcome(outcome: MockPrintOutcome): void;
   /** Der Server schlägt Barcodes nach oder nicht (`sync.status.lookup_enabled`). */
   setLookupEnabled(enabled: boolean): void;
+  /** Setzt den Zustand von Push auf diesem Gerät, wie ihn der Kern beim Start erkennen würde. */
+  setPushState(state: PushState): void;
+  /** Was der Browser beim nächsten `push.enable` auf die Frage nach der Erlaubnis antwortet (Vorgabe "granted"). */
+  setPushPermission(permission: MockPushPermission): void;
+  /** Was der Push-Dienst auf die nächsten Testnachrichten antwortet (Vorgabe "sent"). */
+  setPushTestResult(status: PushTestStatus): void;
+  /**
+   * Ersetzt Teile des Zustands der Integrationen (`integrations.load`): `backup`, `ha`, `push` oder
+   * `timezone`, jeweils als Ganzes. null kehrt zu den Beispielen der Ausgangslage zurück.
+   */
+  setIntegrations(changes: Partial<IntegrationStatus> | null): void;
   /** Aktueller Datenbestand der Attrappe. */
   snapshot(): MockData;
 }
@@ -196,6 +295,48 @@ export interface MockCore extends Core {
 
 function sortZones(zones: Zone[]): Zone[] {
   return [...zones].sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "de"));
+}
+
+// Uhr des Servers der Attrappe (`IntegrationStatus.timezone`), für die Beispiele der Sicherung.
+const HALF_HOUR_MS = 1_800_000;
+const SERVER_CLOCK = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Berlin",
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+function serverPart(ms: number, type: Intl.DateTimeFormatPartTypes): string {
+  return SERVER_CLOCK.formatToParts(new Date(ms)).find((part) => part.type === type)?.value ?? "";
+}
+
+/** Kalendertag eines Zeitpunkts in der Zeitzone des Servers, "YYYY-MM-DD". */
+function serverDay(ms: number): string {
+  return `${serverPart(ms, "year")}-${serverPart(ms, "month")}-${serverPart(ms, "day")}`;
+}
+
+/** Uhrzeit eines Zeitpunkts in der Zeitzone des Servers, "HH:MM". */
+function serverTime(ms: number): string {
+  return `${serverPart(ms, "hour")}:${serverPart(ms, "minute")}`;
+}
+
+/**
+ * Der Lauf der Sicherung um 03:30 (Zeit des Servers) an oder vor `ms` (`direction` −1) oder an
+ * oder nach `ms` (1). Europe/Berlin weicht in ganzen Stunden von UTC ab, auch über die
+ * Zeitumstellung: Es genügt, die halben Stunden abzusuchen.
+ */
+function backupRun(ms: number, direction: -1 | 1): number {
+  const round = direction < 0 ? Math.floor : Math.ceil;
+  let candidate = round(ms / HALF_HOUR_MS) * HALF_HOUR_MS;
+  for (let step = 0; step < 100; step += 1, candidate += direction * HALF_HOUR_MS) {
+    if (serverTime(candidate) === "03:30") {
+      return candidate;
+    }
+  }
+  return ms;
 }
 
 export function createMockCore(options: MockOptions = {}): MockCore {
@@ -251,9 +392,24 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     storage_persistent: null,
   });
 
-  // Platzhalter bis Runde 1: Einkaufsliste und Push der Attrappe baut der Kern-Worker.
-  const shoppingItems = new LiveValue<ShoppingItem[]>([]);
-  const pushState = new LiveValue<PushState>("unsupported");
+  // Push auf diesem Gerät (siehe Kopf der Datei).
+  const pushScenario = PUSH_SCENARIOS.find(([scenario]) => scenarios.has(scenario))?.[1];
+  const pushState = new LiveValue<PushState>(pushScenario ?? (scenarios.has("ios") ? "ios_install" : scenarios.has("insecure") ? "unsupported" : "off"));
+  let pushPermission: MockPushPermission = "granted";
+  let pushTestStatus: PushTestStatus = "sent";
+  /** Zeitpunkt der letzten Testnachricht in Millisekunden (Uhr der Attrappe) oder null. */
+  let lastPushTest: number | null = null;
+  let integrationChanges: Partial<IntegrationStatus> = {};
+
+  // Einkaufsliste: was der Server selbst tut (siehe Kopf der Datei und `ServerEffect`).
+  const serverEffects: ServerEffect[] = [];
+  /** Sperre der automatischen Einträge je Produkt: wirksamer Zeitpunkt (Protokoll 7.6). */
+  const shoppingLocks = new Map<string, string>();
+  /** Wann ein Eintrag zuletzt abgehakt oder wieder geöffnet wurde (Uhr von `done`); fehlt: seit dem Anlegen. */
+  const doneClocks = new Map<string, string>();
+  for (const [productId, lock] of initialLocks(state.get())) {
+    shoppingLocks.set(productId, lock);
+  }
 
   // Nachgespielter Druck (siehe Kopf der Datei).
   let piReachable = scenarios.has("at-pi");
@@ -289,6 +445,8 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     syncScheduled = false;
     if (syncStatus.get().online && session.get().status === "signed_in") {
       unsentPrinterReports.clear();
+      // Der Server hat die Befehle verarbeitet: Was er dabei selbst schreibt, kommt jetzt (7.6).
+      runServerEffects();
       syncStatus.update((status) => ({ ...status, phase: "idle", pending: 0, last_synced_at: stamp(), last_error: null }));
     }
   }
@@ -312,7 +470,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     }
   }
 
-  function mutate(change: (data: MockData) => MockData, commands = 1): void {
+  /**
+   * Eine Änderung des Anwenders: gilt sofort und zählt als `commands` ungesendete Befehle. `effects`
+   * ist, was der Server bei diesen Befehlen selbst tun wird (7.6); es folgt beim nächsten Abgleich.
+   */
+  function mutate(change: (data: MockData) => MockData, commands = 1, effects: readonly ServerEffect[] = []): void {
+    serverEffects.push(...effects);
     state.update(change);
     changed(commands);
   }
@@ -667,6 +830,214 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     return new Blob([bytes], { type: "image/png" });
   }
 
+  // ---------------------------------------------------------------- Einkaufsliste
+
+  function findItem(id: string): ShoppingItem {
+    const item = state.get().shoppingItems.find((candidate) => candidate.id === id);
+    if (!item) {
+      throw new CoreError("not_found", "Den Eintrag gibt es nicht.");
+    }
+    return item;
+  }
+
+  /** Das Produkt nach einer Zusammenführung; undefined, wenn es keins (mehr) gibt. */
+  function resolvedProduct(data: MockData, id: string): Product | undefined {
+    let product = data.products.find((candidate) => candidate.id === id);
+    for (let hops = 0; product?.merged_into && hops < 10; hops += 1) {
+      const target = product.merged_into;
+      product = data.products.find((candidate) => candidate.id === target);
+    }
+    return product && product.deleted_at === null ? product : undefined;
+  }
+
+  /** Hebt die Sperre eines Produkts auf, wenn sie nicht nach `at` liegt (7.6). */
+  function unlock(productId: string, at: string): void {
+    const lock = shoppingLocks.get(productId);
+    if (lock !== undefined && lock <= at) {
+      shoppingLocks.delete(productId);
+    }
+  }
+
+  /** Der spätere zweier Zeitstempel. */
+  function laterOf(a: string, b: string): string {
+    return a > b ? a : b;
+  }
+
+  /**
+   * Spielt nach, was der Server zu den vorgemerkten Befehlen selbst schreibt (7.6), in ihrer
+   * Reihenfolge und auf dem Bestand von jetzt.
+   */
+  function runServerEffects(): void {
+    if (serverEffects.length === 0) {
+      return;
+    }
+    const queue = serverEffects.splice(0);
+    state.update((data) => {
+      const items = new Map(data.shoppingItems.map((item) => [item.id, item]));
+      let touched = false;
+      const put = (item: ShoppingItem) => {
+        items.set(item.id, item);
+        touched = true;
+      };
+
+      /** Abgleich eines Produkts zum Zeitpunkt `at` (7.6, Schritte 1 bis 3). */
+      const reconcile = (productId: string, at: string) => {
+        const product = resolvedProduct(data, productId);
+        if (!product) {
+          return;
+        }
+        const open = [...items.values()]
+          .filter((item) => item.product_id === product.id && item.origin === "min_stock" && isOpenItem(item))
+          .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+        const [kept, ...extra] = open;
+        for (const item of extra) {
+          put({ ...item, deleted_at: at, updated_at: laterOf(item.updated_at, at) });
+        }
+        const missing = missingStock(product, stockCount(data.packages, product.id));
+        if (missing > 0 && kept) {
+          if (kept.quantity !== missing) {
+            put({ ...kept, quantity: missing, updated_at: laterOf(kept.updated_at, at) });
+          }
+        } else if (missing > 0 && !shoppingLocks.has(product.id)) {
+          put({ id: newUuid(), product_id: product.id, text: "", quantity: missing, origin: "min_stock", done_at: null, deleted_at: null, created_at: at, updated_at: at });
+        } else if (missing === 0 && kept) {
+          put({ ...kept, deleted_at: at, updated_at: laterOf(kept.updated_at, at) });
+        }
+      };
+
+      for (const effect of queue) {
+        if (effect.kind === "merged") {
+          const target = resolvedProduct(data, effect.target_id);
+          if (!target) {
+            continue;
+          }
+          const locks = [shoppingLocks.get(effect.source_id), shoppingLocks.get(target.id)].filter((lock): lock is string => lock !== undefined);
+          shoppingLocks.delete(effect.source_id);
+          if (locks.length > 0) {
+            shoppingLocks.set(target.id, locks.reduce(laterOf));
+          }
+          reconcile(target.id, effect.at);
+          continue;
+        }
+        const product = resolvedProduct(data, effect.product_id);
+        if (!product) {
+          continue;
+        }
+        if (effect.kind === "lock") {
+          shoppingLocks.set(product.id, laterOf(shoppingLocks.get(product.id) ?? effect.at, effect.at));
+        } else if (effect.kind === "unlock") {
+          unlock(product.id, effect.at);
+          reconcile(product.id, effect.at);
+        } else if (effect.kind === "stored") {
+          unlock(product.id, effect.at);
+          // Eigene Einträge des Produkts, die seit dem Einlagern oder früher offen sind, sind erledigt.
+          for (const item of [...items.values()]) {
+            const openSince = doneClocks.get(item.id) ?? item.created_at;
+            if (item.product_id === product.id && item.origin === "manual" && isOpenItem(item) && openSince <= effect.at) {
+              put({ ...item, done_at: effect.at, updated_at: laterOf(item.updated_at, effect.at) });
+              doneClocks.set(item.id, effect.at);
+            }
+          }
+          reconcile(product.id, effect.at);
+        } else {
+          reconcile(product.id, effect.at);
+        }
+      }
+      // Ohne neue Fassung bleibt alles, wie es ist: Die Live-Werte behalten ihre Referenz.
+      return touched ? { ...data, shoppingItems: [...items.values()] } : data;
+    });
+  }
+
+  /** Der Abgleich je betroffenem Produkt, jedes nur einmal. */
+  function reconcileAll(productIds: Iterable<string>, at: string): ServerEffect[] {
+    return [...new Set(productIds)].map((product_id) => ({ kind: "reconcile", product_id, at }));
+  }
+
+  // ---------------------------------------------------------------- Integrationen
+
+  function integrationStatus(): IntegrationStatus {
+    const nowMs = clock().getTime();
+    const at = (hoursAgo: number) => new Date(nowMs - hoursAgo * 3_600_000).toISOString();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    // Wie beim Server: Tag und Uhrzeit des Laufs in seiner Zeitzone (docs/integrationen.md, 3.3).
+    const fileOf = (ms: number) => `stowly-${serverDay(ms)}-${serverTime(ms).replace(":", "")}.sqlite3.gz.age`;
+    /** Der Lauf um 03:30 (Zeit des Servers), der zuletzt war, `daysBack` Läufe zurück. */
+    const pastRun = (daysBack: number) => {
+      let run = backupRun(nowMs, -1);
+      for (let day = 0; day < daysBack; day += 1) {
+        run = backupRun(run - HALF_HOUR_MS, -1);
+      }
+      return run;
+    };
+    const recipients = ["age1ql3z…ac8p", "age1x7m2…9kqd"];
+    let backup: BackupStatus;
+    if (scenarios.has("backup-problem")) {
+      backup = {
+        configured: false,
+        problem: "STOWLY_BACKUP_RECIPIENTS fehlt.",
+        time: "03:30",
+        recipients: [],
+        last_ok_at: null,
+        last_file: null,
+        last_size: null,
+        last_error: null,
+        last_error_at: null,
+        next_at: null,
+        warning: false,
+      };
+    } else if (scenarios.has("backup-warning")) {
+      // Vor drei Tagen gelungen, seither scheitert jeder Versuch; nach einem Fehler folgt der nächste eine Stunde später.
+      const lastOk = pastRun(3);
+      backup = {
+        configured: true,
+        problem: null,
+        time: "03:30",
+        recipients,
+        last_ok_at: iso(lastOk),
+        last_file: fileOf(lastOk),
+        last_size: 48_213,
+        last_error: "Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).",
+        last_error_at: at(1),
+        next_at: at(0),
+        warning: true,
+      };
+    } else {
+      // Heute um 03:30 gelungen (oder gestern, wenn es noch früher ist); die nächste morgen um 03:30.
+      const lastOk = pastRun(0);
+      backup = {
+        configured: true,
+        problem: null,
+        time: "03:30",
+        recipients,
+        last_ok_at: iso(lastOk),
+        last_file: fileOf(lastOk),
+        last_size: 51_874,
+        last_error: null,
+        last_error_at: null,
+        next_at: iso(backupRun(lastOk + HALF_HOUR_MS, 1)),
+        warning: false,
+      };
+    }
+    const push = pushState.get();
+    const configured = push !== "not_configured";
+    return {
+      timezone: "Europe/Berlin",
+      backup,
+      ha: { configured: false, problem: null, entity: null, state: "off", last_ok_at: null, last_error: null, last_error_at: null, linked: 0, sensor: false },
+      push: {
+        configured,
+        problem: null,
+        // Ein anderes Gerät des Haushalts hat schon ein Abo.
+        subscriptions: configured ? 1 + (push === "on" ? 1 : 0) : 0,
+        this_device: push === "on",
+        last_run_at: configured ? at(17) : null,
+        last_sent_at: configured ? at(41) : null,
+        last_error: null,
+      },
+      ...integrationChanges,
+    };
+  }
+
   // ---------------------------------------------------------------- Die Schnittstelle
 
   const core: MockCore = {
@@ -693,7 +1064,13 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         }
         syncStatus.update((status) => ({ ...status, pending: 0 }));
         unsentPrinterReports.clear();
+        // Verworfene Befehle erreichen den Server nie: Er schreibt dazu auch nichts.
+        serverEffects.length = 0;
         problems.set([]);
+        // Mit dem Abmelden endet auch Push auf diesem Gerät.
+        if (pushState.get() === "on") {
+          pushState.set("off");
+        }
         // Der Name bleibt als Vorschlag für die nächste Anmeldung.
         session.set({ status: "signed_out", reason: "logout", last_device_name: currentName() });
       },
@@ -766,7 +1143,15 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         (data) => [data.printJobs],
         (data) => [...data.printJobs].sort((a, b) => b.created_at.localeCompare(a.created_at)),
       ),
-      shoppingItems,
+      shoppingItems: derived(
+        state,
+        (data) => [data.shoppingItems, data.settings.trash_retention_days],
+        (data) => {
+          // Erledigtes nur innerhalb der Aufbewahrungsdauer, wie entnommene Packungen.
+          const limit = new Date(clock().getTime() - data.settings.trash_retention_days * 86_400_000).toISOString();
+          return data.shoppingItems.filter((item) => item.deleted_at === null && (item.done_at === null || item.done_at >= limit)).sort(compareShoppingItems);
+        },
+      ),
       async findPackage(id) {
         return state.get().packages.find((pkg) => pkg.id === id);
       },
@@ -814,6 +1199,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         // Etiketten gibt es nur, wenn der Haushalt einen Drucker hat.
         const labels = (input.labels ?? prefs.get().print_labels) && hasPrinter();
         const jobs = labels ? packages.map((pkg) => buildJob({ package_id: pkg.id }, null)) : [];
+        // Beim Server: ein neues Produkt mit Mindestbestand beginnt seine Einkaufsliste, das Einlagern
+        // hebt die Sperre auf und erledigt eigene Einträge (7.6).
+        const effects: ServerEffect[] = [
+          ...(created && product.min_stock !== null ? reconcileAll([product.id], now) : []),
+          { kind: "stored", product_id: product.id, at: now },
+        ];
         mutate(
           (data) => ({
             ...data,
@@ -822,6 +1213,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             printJobs: [...data.printJobs, ...jobs],
           }),
           (created ? 1 : 0) + packages.length + jobs.length,
+          effects,
         );
         const firstBarcode = product.barcodes[0];
         if (created && product.lookup === "pending" && firstBarcode) {
@@ -834,8 +1226,10 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
 
       async remove(packageIds: string[], reason: RemovalReason) {
-        existingPackages(packageIds);
+        const targets = existingPackages(packageIds);
         const now = stamp();
+        // Nur was eben noch im Bestand war, ändert den Fehlbestand.
+        const stocked = targets.filter((pkg) => pkg.removed_at === null).map((pkg) => pkg.product_id);
         mutate(
           (data) => ({
             ...data,
@@ -852,12 +1246,20 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             ),
           }),
           packageIds.length,
+          reconcileAll(stocked, now),
         );
       },
 
       async restore(packageIds: string[], restoreOptions) {
-        existingPackages(packageIds);
+        const targets = existingPackages(packageIds);
         const now = stamp();
+        // Wiederhergestellt wird nur Entnommenes; übernimmt es ein anderes Produkt, zählt es bei beiden.
+        const affected = targets
+          .filter((pkg) => pkg.removed_at !== null)
+          .flatMap((pkg) => {
+            const moved = restoreOptions?.apply_displaced ? pkg.displaced?.changes.find((change) => change.field === "product_id")?.value : null;
+            return moved ? [pkg.product_id, moved] : [pkg.product_id];
+          });
         mutate(
           (data) => ({
             ...data,
@@ -879,6 +1281,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             }),
           }),
           packageIds.length,
+          reconcileAll(affected, now),
         );
       },
 
@@ -903,6 +1306,8 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           return; // ohne Felder: ohne Wirkung
         }
         const now = stamp();
+        // Wechselt eine Packung im Bestand das Produkt, zählt das bei beiden (7.6).
+        const moved = productId === undefined ? [] : targets.filter((pkg) => pkg.removed_at === null && pkg.product_id !== productId).flatMap((pkg) => [pkg.product_id, productId]);
         mutate(
           (data) => ({
             ...data,
@@ -924,6 +1329,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
             }),
           }),
           packageIds.length,
+          reconcileAll(moved, now),
         );
         // Der echte Kern erfährt es erst beim Abgleich; die Attrappe trägt das Sync-Problem sofort ein.
         const displaced: SyncProblem[] = targets
@@ -945,7 +1351,8 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     products: {
       async create(input: NewProduct) {
         const { product } = resolveProduct({ kind: "new", ...input });
-        mutate((data) => ({ ...data, products: [...data.products, product] }));
+        // Mit Mindestbestand beginnt beim Server die Einkaufsliste des Produkts (7.6).
+        mutate((data) => ({ ...data, products: [...data.products, product] }), 1, product.min_stock === null ? [] : reconcileAll([product.id], stamp()));
         return product;
       },
       async lookup(barcode: string): Promise<ProductLookup> {
@@ -986,22 +1393,29 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         const quantity = changes.quantity === undefined ? undefined : optionalText(changes.quantity, LIMITS.quantity, "Die Packungsgröße");
         checkWarnDays(changes.warn_days);
         checkMinStock(changes.min_stock);
-        mutate((data) => ({
-          ...data,
-          products: data.products.map((candidate) =>
-            candidate.id === product.id
-              ? {
-                  ...candidate,
-                  name: name ?? candidate.name,
-                  brand: brand ?? candidate.brand,
-                  quantity: quantity ?? candidate.quantity,
-                  warn_days: "warn_days" in changes ? (changes.warn_days ?? null) : candidate.warn_days,
-                  min_stock: "min_stock" in changes ? (changes.min_stock ?? null) : candidate.min_stock,
-                  updated_at: stamp(),
-                }
-              : candidate,
-          ),
-        }));
+        const now = stamp();
+        // Ein geänderter Mindestbestand hebt beim Server die Sperre auf; dieselbe Zahl nicht (7.6).
+        const minStockChanged = "min_stock" in changes && (changes.min_stock ?? null) !== product.min_stock;
+        mutate(
+          (data) => ({
+            ...data,
+            products: data.products.map((candidate) =>
+              candidate.id === product.id
+                ? {
+                    ...candidate,
+                    name: name ?? candidate.name,
+                    brand: brand ?? candidate.brand,
+                    quantity: quantity ?? candidate.quantity,
+                    warn_days: "warn_days" in changes ? (changes.warn_days ?? null) : candidate.warn_days,
+                    min_stock: "min_stock" in changes ? (changes.min_stock ?? null) : candidate.min_stock,
+                    updated_at: now,
+                  }
+                : candidate,
+            ),
+          }),
+          1,
+          minStockChanged ? [{ kind: "unlock", product_id: product.id, at: now }] : [],
+        );
       },
       async addBarcode(id: string, barcode: string) {
         const product = activeProduct(id);
@@ -1041,25 +1455,31 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           return;
         }
         const now = stamp();
-        mutate((data) => ({
-          ...data,
-          products: data.products.map((candidate) => {
-            if (candidate.id === source.id) {
-              return { ...candidate, barcodes: [], deleted_at: now, merged_into: target.id, updated_at: now };
-            }
-            if (candidate.id === target.id) {
-              return {
-                ...candidate,
-                barcodes: [...new Set([...candidate.barcodes, ...source.barcodes])].sort(),
-                // Wie im Server (Protokoll 7.3): Ein leerer Mindestbestand des Ziels übernimmt den der Quelle.
-                min_stock: candidate.min_stock ?? source.min_stock,
-                updated_at: now,
-              };
-            }
-            return candidate;
+        mutate(
+          (data) => ({
+            ...data,
+            products: data.products.map((candidate) => {
+              if (candidate.id === source.id) {
+                return { ...candidate, barcodes: [], deleted_at: now, merged_into: target.id, updated_at: now };
+              }
+              if (candidate.id === target.id) {
+                return {
+                  ...candidate,
+                  barcodes: [...new Set([...candidate.barcodes, ...source.barcodes])].sort(),
+                  // Wie im Server (Protokoll 7.3): Ein leerer Mindestbestand des Ziels übernimmt den der Quelle.
+                  min_stock: candidate.min_stock ?? source.min_stock,
+                  updated_at: now,
+                };
+              }
+              return candidate;
+            }),
+            packages: data.packages.map((pkg) => (pkg.product_id === source.id ? { ...pkg, product_id: target.id, updated_at: now } : pkg)),
+            // Die Einträge der Einkaufsliste wandern mit, auch erledigte und gelöschte (7.3, Schritt 5).
+            shoppingItems: data.shoppingItems.map((item) => (item.product_id === source.id ? { ...item, product_id: target.id, updated_at: now } : item)),
           }),
-          packages: data.packages.map((pkg) => (pkg.product_id === source.id ? { ...pkg, product_id: target.id, updated_at: now } : pkg)),
-        }));
+          1,
+          [{ kind: "merged", source_id: source.id, target_id: target.id, at: now }],
+        );
       },
     },
 
@@ -1458,30 +1878,170 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
     },
 
-    // Platzhalter bis Runde 1 (docs/sync-protokoll.md 3.6 und 7.6, docs/integrationen.md): Die
-    // Attrappe der Einkaufsliste, von Push, Statistik und Integrationen baut der Kern-Worker.
+    // Einkaufsliste (docs/sync-protokoll.md 3.6, 6.6 und 7.6): dieselben Prüfungen wie im Kern.
     shopping: {
-      async create() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+      async create(input: NewShoppingItem) {
+        if (input === null || typeof input !== "object") {
+          throw invalidInput("Es fehlt die Angabe, was auf die Liste soll.");
+        }
+        const productId = input.product_id ?? null;
+        const text = cleanText(input.text);
+        if (productId !== null && text !== "") {
+          throw invalidInput("Ein Eintrag hat ein Produkt oder einen Text, nicht beides.");
+        }
+        checkShoppingQuantity(input.quantity);
+        const product = productId === null ? null : activeProduct(productId);
+        const now = stamp();
+        const item: ShoppingItem = {
+          id: newUuid(),
+          product_id: product?.id ?? null,
+          text: product ? "" : checkShoppingText(input.text),
+          quantity: input.quantity ?? null,
+          origin: "manual",
+          done_at: null,
+          deleted_at: null,
+          created_at: now,
+          updated_at: now,
+        };
+        mutate((data) => ({ ...data, shoppingItems: [...data.shoppingItems, item] }));
+        return item;
       },
-      async update() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+
+      async update(id: string, changes: ShoppingItemChanges) {
+        const item = findItem(id);
+        if (item.deleted_at !== null) {
+          throw new CoreError("not_found", "Der Eintrag ist gelöscht.");
+        }
+        if (changes === null || typeof changes !== "object") {
+          throw invalidInput("Es fehlt die Angabe, was geändert werden soll.");
+        }
+        const wanted: ShoppingItemChanges = {};
+        if (changes.text !== undefined) {
+          if (item.product_id !== null) {
+            throw invalidInput("Ein Eintrag mit Produkt trägt dessen Namen, keinen eigenen Text.");
+          }
+          wanted.text = checkShoppingText(changes.text);
+        }
+        if ("quantity" in changes) {
+          if (item.origin === "min_stock") {
+            throw invalidInput("Die Menge eines automatischen Eintrags führt der Server.");
+          }
+          checkShoppingQuantity(changes.quantity);
+          wanted.quantity = changes.quantity ?? null;
+        }
+        if (changes.done !== undefined) {
+          if (typeof changes.done !== "boolean") {
+            throw invalidInput("Abhaken geht nur mit ja oder nein.");
+          }
+          // Abhaken eines erledigten Eintrags (oder Öffnen eines offenen) bleibt ohne Wirkung (Regel 7).
+          if (changes.done !== (item.done_at !== null)) {
+            wanted.done = changes.done;
+          }
+        }
+        if (Object.keys(wanted).length === 0) {
+          return;
+        }
+        const now = stamp();
+        const effects: ServerEffect[] = [];
+        if (wanted.done !== undefined) {
+          doneClocks.set(item.id, now);
+          if (item.origin === "min_stock" && item.product_id !== null) {
+            // Abhaken sperrt das Produkt, Wiederöffnen hebt die Sperre auf (7.6).
+            effects.push({ kind: wanted.done ? "lock" : "unlock", product_id: item.product_id, at: now });
+          }
+        }
+        mutate(
+          (data) => ({
+            ...data,
+            shoppingItems: data.shoppingItems.map((candidate) =>
+              candidate.id === item.id
+                ? {
+                    ...candidate,
+                    text: wanted.text ?? candidate.text,
+                    quantity: "quantity" in wanted ? (wanted.quantity ?? null) : candidate.quantity,
+                    done_at: wanted.done === undefined ? candidate.done_at : wanted.done ? now : null,
+                    updated_at: now,
+                  }
+                : candidate,
+            ),
+          }),
+          1,
+          effects,
+        );
       },
-      async remove() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+
+      async remove(id: string) {
+        const item = findItem(id);
+        if (item.deleted_at !== null) {
+          return; // Löschen eines gelöschten bleibt ohne Wirkung (Regel 7).
+        }
+        const now = stamp();
+        // Ein offener automatischer Eintrag sperrt wie das Abhaken; ein erledigter nicht mehr (7.6).
+        const locks: ServerEffect[] = item.origin === "min_stock" && isOpenItem(item) && item.product_id !== null ? [{ kind: "lock", product_id: item.product_id, at: now }] : [];
+        mutate(
+          (data) => ({
+            ...data,
+            shoppingItems: data.shoppingItems.map((candidate) => (candidate.id === item.id ? { ...candidate, deleted_at: now, updated_at: now } : candidate)),
+          }),
+          1,
+          locks,
+        );
       },
     },
 
+    // Push auf diesem Gerät (docs/integrationen.md, Abschnitt 4), nachgespielt.
     push: {
       state: pushState,
       async enable() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+        const current = pushState.get();
+        if (current === "unsupported" || current === "ios_install") {
+          throw new CoreError("not_supported", current === "ios_install" ? "Push geht auf dem iPhone erst, wenn Stowly auf dem Home-Bildschirm liegt." : "Dieser Browser kann hier kein Push.");
+        }
+        if (current === "not_configured") {
+          throw new CoreError("not_configured", "Der Server ist nicht für Push eingerichtet.");
+        }
+        // Wie im Browser: Ist die Erlaubnis einmal verweigert, fragt er nicht mehr.
+        const answer = current === "denied" ? "denied" : pushPermission;
+        if (answer === "denied") {
+          pushState.set("denied");
+          return "denied";
+        }
+        if (answer === "default") {
+          return pushState.get();
+        }
+        await wait();
+        requireOnline();
+        pushState.set("on");
+        return "on";
       },
       async disable() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+        // Gelingt auch ohne Server: Der erfährt es beim nächsten Kontakt.
+        if (pushState.get() === "on") {
+          pushState.set("off");
+        }
       },
       async test() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+        await wait();
+        requireOnline();
+        const current = pushState.get();
+        if (current === "not_configured") {
+          throw new CoreError("not_configured", "Der Server ist nicht für Push eingerichtet.");
+        }
+        if (current !== "on") {
+          throw new CoreError("not_found", "Der Server kennt kein Abo dieses Geräts.");
+        }
+        const nowMs = clock().getTime();
+        if (lastPushTest !== null && nowMs - lastPushTest < PUSH_TEST_INTERVAL_S * 1000) {
+          const retryAfter = Math.max(1, Math.ceil((lastPushTest + PUSH_TEST_INTERVAL_S * 1000 - nowMs) / 1000));
+          throw new CoreError("rate_limited", "Zu viele Testnachrichten.", { retry_after_s: retryAfter });
+        }
+        lastPushTest = nowMs;
+        const result = PUSH_TEST_RESULTS[pushTestStatus];
+        if (result.status === "gone") {
+          // Der Server hat das Abo gelöscht.
+          pushState.set("off");
+        }
+        return { ...result };
       },
     },
 
@@ -1493,7 +2053,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
 
     integrations: {
       async load() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+        await wait(0.5);
+        requireOnline();
+        return integrationStatus();
       },
     },
 
@@ -1540,6 +2102,18 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       setLookupEnabled(enabled: boolean) {
         syncStatus.update((status) => ({ ...status, lookup_enabled: enabled }));
       },
+      setPushState(next: PushState) {
+        pushState.set(next);
+      },
+      setPushPermission(permission: MockPushPermission) {
+        pushPermission = permission;
+      },
+      setPushTestResult(status: PushTestStatus) {
+        pushTestStatus = status;
+      },
+      setIntegrations(changes: Partial<IntegrationStatus> | null) {
+        integrationChanges = changes === null ? {} : { ...integrationChanges, ...changes };
+      },
       snapshot() {
         return state.get();
       },
@@ -1577,6 +2151,36 @@ function sampleHealth(printer: Printer, status: PrinterStatus): ServiceHealth {
       },
     ],
   };
+}
+
+/**
+ * Sperren der automatischen Einträge, abgeleitet aus den Daten (siehe Kopf der Datei): Ein Produkt,
+ * dessen zuletzt abgehakter automatischer Eintrag nach dem letzten Einlagern abgehakt wurde und das
+ * keinen offenen hat, ist gesperrt, und zwar seit diesem Abhaken. Gelöschte Einträge zählen nicht:
+ * Ob sie offen oder erledigt gelöscht wurden, steht nicht in ihnen.
+ */
+function initialLocks(data: MockData): Map<string, string> {
+  const locks = new Map<string, string>();
+  for (const product of data.products) {
+    const autos = data.shoppingItems.filter((item) => item.product_id === product.id && item.origin === "min_stock" && item.deleted_at === null);
+    if (product.deleted_at !== null || autos.some((item) => item.done_at === null)) {
+      continue;
+    }
+    const lastDone = autos
+      .map((item) => item.done_at)
+      .filter((at): at is string => at !== null)
+      .sort()
+      .at(-1);
+    const lastStored = data.packages
+      .filter((pkg) => pkg.product_id === product.id)
+      .map((pkg) => pkg.created_at)
+      .sort()
+      .at(-1);
+    if (lastDone !== undefined && (lastStored === undefined || lastStored <= lastDone)) {
+      locks.set(product.id, lastDone);
+    }
+  }
+  return locks;
 }
 
 function sampleProblems(data: MockData, at: string): SyncProblem[] {

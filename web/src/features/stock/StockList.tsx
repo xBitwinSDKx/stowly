@@ -42,6 +42,21 @@ export interface StockTableProps extends StockListProps {
   compact: boolean;
 }
 
+/**
+ * „fehlt 2": Das Produkt liegt unter seinem Mindestbestand. Die App rechnet das selbst, sofort
+ * und auch offline; den Eintrag der Einkaufsliste legt der Server an.
+ */
+export function MissingBadge({ missing }: { missing: number }) {
+  if (missing <= 0) {
+    return null;
+  }
+  return (
+    <Badge tone="info" title="Unter dem Mindestbestand">
+      <span className="sr-only">Unter dem Mindestbestand, </span>fehlt {missing}
+    </Badge>
+  );
+}
+
 /** Kleines Kennzeichen an Produkten, die noch keinen Namen haben. */
 function PlaceholderBadge({ product }: { product: Product | undefined }) {
   if (!product) {
@@ -72,6 +87,14 @@ function Thumb({ url }: { url: string | null }) {
 }
 
 function Zones({ group, max }: { group: ProductGroup; max: number }) {
+  if (group.zone_ids.length === 0) {
+    // Nichts im Bestand (Produkt unter dem Mindestbestand): Es liegt nirgends.
+    return (
+      <span className={styles.none}>
+        –<span className="sr-only">nirgends</span>
+      </span>
+    );
+  }
   // Jede Charge kennt ihre Zone; je Zone genügt die erste.
   const zones = group.zone_ids.map((zoneId) => group.batches.find((batch) => batch.zone_id === zoneId)?.zone);
   const shown = zones.slice(0, max);
@@ -128,6 +151,8 @@ function rowActions(group: ProductGroup, open: boolean, panelId: string, onToggl
         size="sm"
         variant="danger"
         aria-label={`Löschen: ${group.title}`}
+        // Ohne Packung im Bestand (Zeile wegen des Mindestbestands) gibt es nichts zu entnehmen.
+        disabled={group.count === 0}
         onClick={() =>
           dialogs.open({
             kind: "remove",
@@ -182,6 +207,7 @@ const TableGroup = memo(function TableGroup({ group, open, marked, panelId, mult
               <div className={styles.productTitle}>
                 <span className={table.primary}>{group.title}</span>
                 <PlaceholderBadge product={group.product} />
+                <MissingBadge missing={group.missing} />
               </div>
               {group.subtitle !== "" ? <div className={table.secondary}>{group.subtitle}</div> : null}
             </div>
@@ -195,7 +221,7 @@ const TableGroup = memo(function TableGroup({ group, open, marked, panelId, mult
         <div role="cell" className={styles.td}>
           <ExpiryLabel date={group.critical} state={group.state} days={group.days} />
         </div>
-        <div role="cell" className={cx(styles.td, styles.num)}>
+        <div role="cell" className={cx(styles.td, styles.num, group.count === 0 && styles.none)}>
           {group.count}
         </div>
         <div role="cell" className={cx(styles.td, styles.actions)}>
@@ -303,6 +329,7 @@ const CardGroup = memo(function CardGroup({ group, open, marked, panelId, multiZ
             <div className={styles.productTitle}>
               <h3 className={styles.cardTitle}>{group.title}</h3>
               <PlaceholderBadge product={group.product} />
+              <MissingBadge missing={group.missing} />
             </div>
             {group.subtitle !== "" ? <div className={table.secondary}>{group.subtitle}</div> : null}
           </div>

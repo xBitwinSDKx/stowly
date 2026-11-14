@@ -19,6 +19,7 @@ import {
   type PrintJob,
   type Product,
   type ScanResult,
+  type ShoppingItem,
   type Zone,
 } from "@/contract";
 import { CROP_FRACTION, playFeedback, setFeedbackActive, type FeedbackTone, type Scanner, type ScannerDiagnostics } from "@/core/scanner";
@@ -27,16 +28,18 @@ import { Button, cx, Dialog, IconButton, Spinner, useToast } from "@/ui/base";
 import { ManualEntry } from "./ManualEntry";
 import { QuantityStepper } from "./QuantityStepper";
 import { labelStatus, labelStatusText } from "./label-status";
-import { evaluateScan } from "./scan-flow";
+import { evaluateScan, fifoHint, isOnShoppingList, wasLastPackage } from "./scan-flow";
 import styles from "./ScanPage.module.css";
 import { StoreSheet, type StoreDecision, type StoreLookup, type StoreRequest } from "./StoreSheet";
-import { CAMERA_PROBLEMS, CLOSER_HINT, MANUAL_HINT, RESCAN_HINT } from "./texts";
+import { CAMERA_PROBLEMS, CLOSER_HINT, MANUAL_HINT, RESCAN_HINT, SHOPPING_TEXTS } from "./texts";
 import { useScanner } from "./useScanner";
 import { ZoneBar } from "./ZoneBar";
 import { afterStore, chooseZone, currentZoneId, isTemporary, neighbourZoneId, primaryZoneId, showsZones, type ZoneContext, type ZoneOverride } from "./zone-logic";
 
 const NO_ZONES: Zone[] = [];
 const NO_JOBS: PrintJob[] = [];
+const NO_PACKAGES: Package[] = [];
+const NO_ITEMS: ShoppingItem[] = [];
 /** Bis die Einstellungen geladen sind: die Vorgaben des Protokolls. */
 const DEFAULT_ZONE_SETTINGS: Pick<HouseholdSettings, "zone_mode" | "primary_zone_id"> = { zone_mode: "primary", primary_zone_id: null };
 
@@ -47,7 +50,19 @@ const TOAST_NOTE = "scan-note";
 /** Was zuletzt geschah; steht über den Bedienelementen, bis die nächste Aktion es ersetzt. */
 type LastAction =
   | { kind: "stored"; text: string; ids: string[]; jobIds: string[] }
-  | { kind: "removed"; text: string; id: string; reason: "consumed" | "discarded" };
+  | {
+      kind: "removed";
+      text: string;
+      id: string;
+      reason: "consumed" | "discarded";
+      product_id: string;
+      /** FIFO-Hinweis auf eine ältere Packung desselben Produkts; nur nach „verbraucht". */
+      fifo: string | null;
+      /** Es war die letzte Packung des Produkts: Die Ansicht bietet die Einkaufsliste an. */
+      empty: boolean;
+      /** Eben über „Auf die Einkaufsliste" dazugekommen. */
+      listed: boolean;
+    };
 
 function describePackage(pkg: Package, product: Product | undefined): string {
   return `${productTitle(product)} (${pkg.id}${pkg.best_before ? `, MHD ${formatDate(pkg.best_before)}` : ""})`;
@@ -150,6 +165,7 @@ export function ScanPage() {
   const prefs = useLive(core.prefs.value, DEFAULT_DEVICE_PREFS);
   const syncStatus = useLive(core.sync.status);
   const printJobs = useLive(core.data.printJobs, NO_JOBS);
+  const shoppingItems = useLive(core.data.shoppingItems, NO_ITEMS);
   // Die Scan-Ansicht liegt außerhalb des Rahmens der App und sieht dessen Hinweis „Neue Version"
   // nicht: Wer nur scannt, bekäme eine neue Version sonst nie.
   const app = useLive(core.app.state);
@@ -162,6 +178,7 @@ export function ScanPage() {
   const [manualOpen, setManualOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<LastAction | null>(null);
+  const [listing, setListing] = useState(false);
   /** Schützt davor, dass zwei Scans gleichzeitig ausgewertet werden. */
   const working = useRef(false);
   /** Ein Scan, der während der Auswertung des vorigen eintraf: Er kommt danach dran. */
@@ -225,19 +242,41 @@ export function ScanPage() {
 
   const removePackage = useCallback(
     async (pkg: Package, product: Product | undefined, reason: "consumed" | "discarded") => {
+      // Der Bestand von eben, frisch gelesen: Er entscheidet über den FIFO-Hinweis und darüber,
+      // ob das die letzte Packung war. Beides rein lokal, auch ohne Verbindung.
+      const before = core.data.packages.get() ?? NO_PACKAGES;
       await core.stock.remove([pkg.id], reason);
       signal("success");
       const text = `${describePackage(pkg, product)} ${reason === "discarded" ? "als entsorgt gemeldet" : "entnommen"}`;
-      setLast({ kind: "removed", text, id: pkg.id, reason });
+      const fifo = reason === "consumed" ? fifoHint(pkg, before, zones) : null;
+      setLast({ kind: "removed", text, id: pkg.id, reason, product_id: pkg.product_id, fifo, empty: wasLastPackage(pkg, before), listed: false });
+      // Der Hinweis steht neben „Rückgängig": Wer tauschen will, nimmt zurück und scannt die ältere.
       toast.show({
         id: TOAST_ACTION,
-        message: text,
+        message: fifo ? `${text}. ${fifo}` : text,
         tone: "success",
+        ...(fifo ? { duration: 10_000 } : {}),
         action: { label: "Rückgängig", onAction: () => void undoRemoval(pkg, product) },
       });
     },
-    [core, signal, toast, undoRemoval],
+    [core, signal, toast, undoRemoval, zones],
   );
+
+  /** „Auf die Einkaufsliste" nach der letzten Packung eines Produkts. */
+  const addToShoppingList = useCallback(async () => {
+    if (last?.kind !== "removed" || listing) {
+      return;
+    }
+    setListing(true);
+    try {
+      await core.shopping.create({ product_id: last.product_id });
+      setLast((current) => (current?.kind === "removed" && current.id === last.id ? { ...current, listed: true } : current));
+    } catch (error) {
+      fail(error);
+    } finally {
+      setListing(false);
+    }
+  }, [core, fail, last, listing]);
 
   /** Stattdessen „entsorgt" melden: für die zuletzt entnommene Packung. */
   const markDiscarded = useCallback(async () => {
@@ -514,6 +553,10 @@ export function ScanPage() {
   const problem = state.status === "error" && state.error ? CAMERA_PROBLEMS[state.error] : null;
   // Was aus den Etiketten des letzten Einlagerns geworden ist: Der Halbsatz folgt dem Zustellen.
   const labels = last?.kind === "stored" ? labelStatus(printJobs, last.jobIds) : null;
+  // Nach der letzten Packung eines Produkts: anbieten oder sagen, dass es schon auf der Liste steht.
+  // Ein automatischer Eintrag des Servers kommt mit dem Abgleich und ersetzt das Angebot von selbst.
+  const removed = last?.kind === "removed" ? last : null;
+  const listed = removed !== null && removed.empty && isOnShoppingList(removed.product_id, shoppingItems);
   const zoom = state.zoom;
   const zoomTarget = zoom ? (zoom.value > 1.5 ? Math.max(1, zoom.min) : Math.min(2, zoom.max)) : 1;
 
@@ -617,19 +660,32 @@ export function ScanPage() {
       <footer ref={bottomRef} className={styles.bottom}>
         {last ? (
           <div className={styles.last} aria-live="polite">
-            <p className={styles.lastText}>
-              {last.text}
-              {last.kind === "stored" ? (
-                <>
-                  : <span className={styles.lastIds}>{last.ids.join(", ")}</span>
-                  {labels ? <span className={styles.lastLabels}> · {labelStatusText(labels, last.jobIds.length)}</span> : null}
-                </>
-              ) : null}
-            </p>
-            {last.kind === "removed" && last.reason === "consumed" ? (
-              <Button size="sm" onClick={() => void markDiscarded()}>
-                Entsorgt
-              </Button>
+            <div className={styles.lastBody}>
+              <p className={styles.lastText}>
+                {last.text}
+                {last.kind === "stored" ? (
+                  <>
+                    : <span className={styles.lastIds}>{last.ids.join(", ")}</span>
+                    {labels ? <span className={styles.lastLabels}> · {labelStatusText(labels, last.jobIds.length)}</span> : null}
+                  </>
+                ) : null}
+              </p>
+              {removed?.fifo ? <p className={styles.fifo}>{removed.fifo}</p> : null}
+              {listed ? <p className={styles.lastNote}>{removed.listed || listing ? SHOPPING_TEXTS.added : SHOPPING_TEXTS.already}</p> : null}
+            </div>
+            {removed && ((removed.empty && !listed) || removed.reason === "consumed") ? (
+              <div className={styles.lastActions}>
+                {removed.empty && !listed ? (
+                  <Button size="sm" busy={listing} onClick={() => void addToShoppingList()}>
+                    {SHOPPING_TEXTS.add}
+                  </Button>
+                ) : null}
+                {removed.reason === "consumed" ? (
+                  <Button size="sm" onClick={() => void markDiscarded()}>
+                    Entsorgt
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}

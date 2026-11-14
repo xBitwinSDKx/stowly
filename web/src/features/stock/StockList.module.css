@@ -204,6 +204,11 @@
   font-size: var(--text-sm);
 }
 
+/* Nichts im Bestand (Produkt unter dem Mindestbestand): Zone und Menge treten zurück. */
+.none {
+  color: var(--color-text-faint);
+}
+
 /* Wenig Platz (schmales Fenster, Tablet): Die Zellen der Liste rücken zusammen. */
 .compact {
   --cols: minmax(9rem, 1fr) fit-content(11rem) max-content max-content max-content;

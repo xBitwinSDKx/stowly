@@ -105,6 +105,31 @@ describe("describeProblem", () => {
     });
   });
 
+  it("nennt Einträge der Einkaufsliste beim Namen und sagt, ob es ums Abhaken ging", () => {
+    const withList: ProblemLookup = { ...lookup, shoppingItems: data.shoppingItems };
+    const milk = data.shoppingItems.find((item) => item.origin === "min_stock" && item.done_at === null);
+    const paper = data.shoppingItems.find((item) => item.text === "Backpapier");
+    expect(describeProblem(problem({ type: "shopping_item.update", item_id: milk?.id, changes: { done: true } }, "not_found"), withList).text).toBe(
+      "Das Abhaken von „H-Milch 3,5 %“ auf der Einkaufsliste wurde nicht übernommen, weil es den Eintrag auf dem Server nicht gibt.",
+    );
+    expect(describeProblem(problem({ type: "shopping_item.update", item_id: paper?.id, changes: { done: false } }, "internal"), withList).text).toBe(
+      "Das Wiederöffnen von „Backpapier“ auf der Einkaufsliste wurde nicht übernommen, weil im Server ein Fehler aufgetreten ist.",
+    );
+    expect(describeProblem(problem({ type: "shopping_item.update", item_id: milk?.id, changes: { quantity: 3 } }, "invalid"), withList).text).toBe(
+      "Die Änderung an „H-Milch 3,5 %“ auf der Einkaufsliste wurde nicht übernommen, weil der Server die Angaben für ungültig hält.",
+    );
+    expect(describeProblem(problem({ type: "shopping_item.delete", item_id: paper?.id }, "not_found"), withList).text).toBe(
+      "Der Eintrag „Backpapier“ wurde nicht von der Einkaufsliste gelöscht, weil es den Eintrag auf dem Server nicht gibt.",
+    );
+    expect(describeProblem(problem({ type: "shopping_item.create", item_id: sampleUuid(5, 51), text: "Brot" }, "id_conflict"), withList).text).toBe(
+      "Der Eintrag „Brot“ wurde nicht auf die Einkaufsliste gesetzt, weil es diese Kennung auf dem Server schon gibt.",
+    );
+    // Unbekannt: ein allgemeiner Ausdruck
+    expect(describeProblem(problem({ type: "shopping_item.update", item_id: sampleUuid(5, 52), changes: { done: true } }, "not_found"), withList).text).toBe(
+      "Das Abhaken eines Eintrags der Einkaufsliste wurde nicht übernommen, weil es den Eintrag auf dem Server nicht gibt.",
+    );
+  });
+
   it("verweist bei verdrängten Bearbeitungen auf die Lösch-Historie", () => {
     const removed = data.packages.find((pkg) => pkg.removed_at !== null && pkg.product_id === rice?.id);
     const text = describeProblem(problem({ type: "package.update", package_id: removed?.id, changes: { best_before: "2027-01-01" } }, null, "displaced"), lookup);

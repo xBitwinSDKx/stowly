@@ -16,9 +16,10 @@ web/.vite/
 web/coverage/
 *.tsbuildinfo
 
-# Laufzeitdaten (Datenbank, Bilder, Druck-Ausgaben)
+# Laufzeitdaten (Datenbank, Bilder, Druck-Ausgaben, Sicherungen)
 /data/
 /data-*/
+/backups/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm

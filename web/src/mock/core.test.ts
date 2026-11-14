@@ -2,11 +2,28 @@
  * Die Attrappe muss sich so verhalten, wie src/contract/core.ts es beschreibt.
  * Diese Tests sind zugleich ein ausführbares Beispiel für die Schnittstelle des Kerns.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { addDays, CoreError, expiryState, isPackageId, isUuid, isValidBarcode, LIMITS, todayLocal, warnDaysFor, type Live } from "@/contract";
+import {
+  addDays,
+  CoreError,
+  expiryState,
+  isPackageId,
+  isUuid,
+  isValidBarcode,
+  LIMITS,
+  missingStock,
+  shoppingItemTitle,
+  stockCount,
+  todayLocal,
+  warnDaysFor,
+  type Live,
+  type Product,
+  type PushState,
+  type ShoppingItem,
+} from "@/contract";
 
-import { createMockCore, createSampleData, DEVICE_IDS, MOCK_PASSWORD, PRINTER_IDS, sampleBarcode, ZONE_IDS } from ".";
+import { createMockCore, createSampleData, DEVICE_IDS, MOCK_PASSWORD, PRINTER_IDS, sampleBarcode, sampleUuid, ZONE_IDS, type MockCore, type MockScenario } from ".";
 
 const NOW = new Date("2026-11-13T10:00:00.000Z");
 
@@ -757,5 +774,350 @@ describe("Ausgangslagen", () => {
     const core = mock({ data: { packages: data.packages.slice(0, 2).map((pkg) => ({ ...pkg, best_before: addDays(today, 1) })) } });
     expect(value(core.data.packages)).toHaveLength(2);
     expect(value(core.data.products).length).toBe(data.products.length);
+  });
+
+  it("startet Push in jedem Zustand, den der Kern kennt", () => {
+    const cases: [MockScenario[], PushState][] = [
+      [[], "off"],
+      [["push-off"], "off"],
+      [["push-on"], "on"],
+      [["push-denied"], "denied"],
+      [["push-not-configured"], "not_configured"],
+      [["push-unsupported"], "unsupported"],
+      // iPhone im Browser: erst installieren. Ohne HTTPS gibt es keinen Service Worker.
+      [["ios"], "ios_install"],
+      [["insecure"], "unsupported"],
+      [["ios", "push-on"], "on"],
+    ];
+    for (const [scenarios, state] of cases) {
+      expect(value(mock({ scenarios }).push.state), scenarios.join(",")).toBe(state);
+    }
+  });
+});
+
+// ------------------------------------------------------------------------------------------
+// Stufe 2
+// ------------------------------------------------------------------------------------------
+
+function productNamed(core: MockCore, name: string): Product {
+  const product = value(core.data.products).find((candidate) => candidate.name === name);
+  if (!product) {
+    throw new Error(`Kein Produkt ${name}`);
+  }
+  return product;
+}
+
+function stockOf(core: MockCore, productId: string): string[] {
+  return value(core.data.packages)
+    .filter((pkg) => pkg.product_id === productId)
+    .map((pkg) => pkg.id);
+}
+
+/** Alle Einträge der Einkaufsliste, auch erledigte und gelöschte. */
+function allItems(core: MockCore): ShoppingItem[] {
+  return core.control.snapshot().shoppingItems;
+}
+
+type ItemState = "open" | "done" | "deleted";
+
+/** Die automatischen Einträge eines Produkts, wie sie stehen: offen, erledigt oder gelöscht. */
+function autosOf(core: MockCore, productId: string): { quantity: number | null; state: ItemState }[] {
+  return allItems(core)
+    .filter((item) => item.product_id === productId && item.origin === "min_stock")
+    .map((item): { quantity: number | null; state: ItemState } => ({ quantity: item.quantity, state: item.deleted_at !== null ? "deleted" : item.done_at !== null ? "done" : "open" }))
+    .sort((a, b) => a.state.localeCompare(b.state) || (a.quantity ?? 0) - (b.quantity ?? 0));
+}
+
+describe("Einkaufsliste", () => {
+  it("zeigt offene Einträge zuerst, die ältesten vorn, dann erledigte; Gelöschtes und Altes nicht", () => {
+    const core = mock();
+    const products = value(core.data.products);
+    const title = (item: ShoppingItem) => shoppingItemTitle(item, products.find((product) => product.id === item.product_id));
+    const items = value(core.data.shoppingItems);
+    expect(items.map(title)).toEqual(["Olivenöl", "H-Milch 3,5 %", "Backpapier", "Kaffeebohnen", "Butter", "Spülmittel"]);
+    expect(items.map((item) => item.done_at === null)).toEqual([true, true, true, true, false, false]);
+    expect(items.filter((item) => item.origin === "min_stock").map(title)).toEqual(["H-Milch 3,5 %", "Butter"]);
+    // In den Daten stehen auch der gelöschte und der alte erledigte Eintrag.
+    expect(allItems(core)).toHaveLength(8);
+  });
+
+  it("hat Produkte unter dem Mindestbestand, eines davon mit automatischem Eintrag", () => {
+    const data = createSampleData(NOW);
+    const below = data.products
+      .filter((product) => missingStock(product, stockCount(data.packages, product.id)) > 0)
+      .map((product) => [product.name, missingStock(product, stockCount(data.packages, product.id))]);
+    expect(below).toEqual([
+      ["Butter", 1],
+      ["H-Milch 3,5 %", 2],
+    ]);
+    expect(data.products.filter((product) => product.min_stock !== null)).toHaveLength(4);
+  });
+
+  it("legt eigene Einträge an, mit Produkt oder freiem Text, geprüft wie im Kern", async () => {
+    const core = mock();
+    const rice = productNamed(core, "Basmati Reis");
+    const byProduct = await core.shopping.create({ product_id: rice.id, quantity: 2 });
+    expect(byProduct).toMatchObject({ product_id: rice.id, text: "", quantity: 2, origin: "manual", done_at: null, deleted_at: null, created_at: NOW.toISOString() });
+    const byText = await core.shopping.create({ text: "  Backpulver  " });
+    expect(byText).toMatchObject({ product_id: null, text: "Backpulver", quantity: null });
+    expect(value(core.data.shoppingItems).map((item) => item.id)).toEqual(expect.arrayContaining([byProduct.id, byText.id]));
+
+    const message = async (action: Promise<unknown>) => (await expectCoreError(action, "invalid")).message;
+    expect(await message(core.shopping.create({}))).toBe("Der Eintrag braucht einen Text.");
+    expect(await message(core.shopping.create({ text: "   " }))).toBe("Der Eintrag braucht einen Text.");
+    expect(await message(core.shopping.create({ product_id: rice.id, text: "Reis" }))).toBe("Ein Eintrag hat ein Produkt oder einen Text, nicht beides.");
+    expect(await message(core.shopping.create({ text: "x".repeat(LIMITS.shopping_text + 1) }))).toBe("Der Text ist zu lang (höchstens 120 Zeichen).");
+    expect(await message(core.shopping.create({ text: "Mehl", quantity: 0 }))).toBe("Die Menge muss zwischen 1 und 999 liegen.");
+    await expectCoreError(core.shopping.create({ product_id: sampleUuid(2, 999) }), "not_found");
+
+    // Ein zusammengeführtes Produkt: Der Eintrag gehört dem Ziel.
+    const lentils = productNamed(core, "Rote Linsen");
+    await core.products.merge(lentils.id, rice.id);
+    expect((await core.shopping.create({ product_id: lentils.id })).product_id).toBe(rice.id);
+  });
+
+  it("hakt ab, öffnet wieder, ändert und löscht; ohne Wirkung entsteht kein Befehl", async () => {
+    const core = mock({ scenarios: ["offline"] });
+    const pending = () => value(core.sync.status).pending;
+    const start = pending();
+    const item = await core.shopping.create({ text: "Hefe" });
+    await core.shopping.update(item.id, { done: true });
+    expect(allItems(core).find((candidate) => candidate.id === item.id)?.done_at).toBe(NOW.toISOString());
+    // Abhaken eines erledigten Eintrags und ein Aufruf ohne Felder bleiben ohne Wirkung.
+    await core.shopping.update(item.id, { done: true });
+    await core.shopping.update(item.id, {});
+    await core.shopping.update(item.id, { done: false, text: " Trockenhefe ", quantity: 3 });
+    expect(allItems(core).find((candidate) => candidate.id === item.id)).toMatchObject({ done_at: null, text: "Trockenhefe", quantity: 3 });
+    await core.shopping.remove(item.id);
+    await core.shopping.remove(item.id);
+    expect(pending()).toBe(start + 4);
+    expect(value(core.data.shoppingItems).some((candidate) => candidate.id === item.id)).toBe(false);
+    await expectCoreError(core.shopping.update(item.id, { done: true }), "not_found");
+    await expectCoreError(core.shopping.remove(sampleUuid(7, 999)), "not_found");
+  });
+
+  it("ändert Text nur ohne Produkt und die Menge nur bei eigenen Einträgen", async () => {
+    const core = mock();
+    const items = value(core.data.shoppingItems);
+    const auto = items.find((item) => item.origin === "min_stock" && item.done_at === null);
+    const oil = items.find((item) => item.origin === "manual" && item.product_id !== null);
+    const text = items.find((item) => item.product_id === null && item.done_at === null);
+    const message = async (action: Promise<unknown>) => (await expectCoreError(action, "invalid")).message;
+    expect(await message(core.shopping.update(auto?.id ?? "", { quantity: 5 }))).toBe("Die Menge eines automatischen Eintrags führt der Server.");
+    expect(await message(core.shopping.update(auto?.id ?? "", { text: "Milch" }))).toBe("Ein Eintrag mit Produkt trägt dessen Namen, keinen eigenen Text.");
+    expect(await message(core.shopping.update(oil?.id ?? "", { text: "Öl" }))).toBe("Ein Eintrag mit Produkt trägt dessen Namen, keinen eigenen Text.");
+    expect(await message(core.shopping.update(text?.id ?? "", { text: " " }))).toBe("Der Eintrag braucht einen Text.");
+    await core.shopping.update(oil?.id ?? "", { quantity: null });
+    expect(allItems(core).find((item) => item.id === oil?.id)?.quantity).toBeNull();
+  });
+
+  it("zeigt Erledigtes nur innerhalb der Aufbewahrungsdauer", async () => {
+    const core = mock();
+    const done = () => value(core.data.shoppingItems).filter((item) => item.done_at !== null).length;
+    expect(done()).toBe(2);
+    await core.settings.update({ trash_retention_days: 1 });
+    expect(done()).toBe(1);
+    await core.settings.update({ trash_retention_days: 60 });
+    expect(done()).toBe(3);
+  });
+});
+
+describe("Automatische Einträge (wie der Server, Protokoll 7.6)", () => {
+  it("entstehen beim Entnehmen unter den Mindestbestand, zählen mit und verschwinden, wenn der Bestand reicht", async () => {
+    const core = mock();
+    const pasta = productNamed(core, "Spaghetti");
+    const [a, b, c, d] = stockOf(core, pasta.id);
+    await core.stock.remove([a ?? "", b ?? ""], "consumed");
+    expect(autosOf(core, pasta.id)).toEqual([]);
+    await core.stock.remove([c ?? ""], "consumed");
+    expect(autosOf(core, pasta.id)).toEqual([{ quantity: 1, state: "open" }]);
+    await core.stock.remove([d ?? ""], "discarded");
+    expect(autosOf(core, pasta.id)).toEqual([{ quantity: 2, state: "open" }]);
+    // Rückgängig zählt wieder mit, Einlagern auch.
+    await core.stock.restore([d ?? ""]);
+    expect(autosOf(core, pasta.id)).toEqual([{ quantity: 1, state: "open" }]);
+    await core.stock.store({ product: { kind: "existing", product_id: pasta.id }, zone_id: ZONE_IDS.shelf, best_before: null, count: 1, labels: false });
+    expect(autosOf(core, pasta.id)).toEqual([{ quantity: 1, state: "deleted" }]);
+    expect(value(core.data.shoppingItems).some((item) => item.product_id === pasta.id)).toBe(false);
+  });
+
+  it("kommen ohne Server erst mit dem nächsten Abgleich", async () => {
+    const core = mock({ scenarios: ["offline"] });
+    const pasta = productNamed(core, "Spaghetti");
+    await core.stock.remove(stockOf(core, pasta.id).slice(0, 3), "consumed");
+    expect(autosOf(core, pasta.id)).toEqual([]);
+    core.control.setOnline(true);
+    expect(autosOf(core, pasta.id)).toEqual([{ quantity: 1, state: "open" }]);
+  });
+
+  it("kommen mit der Verzögerung der Attrappe", async () => {
+    const core = createMockCore({ latency: 5, now: () => NOW });
+    const pasta = productNamed(core, "Spaghetti");
+    await core.stock.remove(stockOf(core, pasta.id).slice(0, 3), "consumed");
+    expect(autosOf(core, pasta.id)).toEqual([]);
+    await vi.waitFor(() => expect(autosOf(core, pasta.id)).toEqual([{ quantity: 1, state: "open" }]));
+  });
+
+  it("bleiben nach dem Abhaken weg, bis das Produkt eingelagert wird; Wiederöffnen hebt die Sperre auf", async () => {
+    const core = mock();
+    const butter = productNamed(core, "Butter");
+    // Beispieldaten: Der automatische Eintrag ist abgehakt, Butter ist gesperrt.
+    expect(autosOf(core, butter.id)).toEqual([{ quantity: 1, state: "done" }]);
+    await core.stock.remove(stockOf(core, butter.id).slice(0, 1), "consumed");
+    expect(autosOf(core, butter.id)).toEqual([{ quantity: 1, state: "done" }]);
+    await core.stock.store({ product: { kind: "existing", product_id: butter.id }, zone_id: ZONE_IDS.fridge, best_before: null, count: 1, labels: false });
+    expect(autosOf(core, butter.id)).toEqual([
+      { quantity: 1, state: "done" },
+      { quantity: 1, state: "open" },
+    ]);
+    const fresh = allItems(core).find((item) => item.product_id === butter.id && item.origin === "min_stock" && item.done_at === null);
+    await core.shopping.update(fresh?.id ?? "", { done: true });
+    await core.stock.remove(stockOf(core, butter.id).slice(0, 1), "consumed");
+    expect(autosOf(core, butter.id).map((auto) => auto.state)).toEqual(["done", "done"]);
+    // Wieder geöffnet folgt er dem Bestand: 3 minus 1.
+    await core.shopping.update(fresh?.id ?? "", { done: false });
+    expect(allItems(core).find((item) => item.id === fresh?.id)).toMatchObject({ done_at: null, quantity: 2 });
+  });
+
+  it("bleiben nach dem Löschen weg; ein anderer Mindestbestand hebt die Sperre auf, derselbe nicht", async () => {
+    const core = mock();
+    const milk = productNamed(core, "H-Milch 3,5 %");
+    const auto = allItems(core).find((item) => item.product_id === milk.id && item.origin === "min_stock");
+    await core.shopping.remove(auto?.id ?? "");
+    await core.stock.remove(stockOf(core, milk.id).slice(0, 1), "consumed");
+    expect(autosOf(core, milk.id)).toEqual([{ quantity: 2, state: "deleted" }]);
+    await core.products.update(milk.id, { min_stock: 8 });
+    expect(autosOf(core, milk.id)).toEqual([{ quantity: 2, state: "deleted" }]);
+    await core.products.update(milk.id, { min_stock: 10 });
+    expect(autosOf(core, milk.id)).toEqual([
+      { quantity: 2, state: "deleted" },
+      { quantity: 5, state: "open" },
+    ]);
+    // Ohne Mindestbestand verschwindet er.
+    await core.products.update(milk.id, { min_stock: null });
+    expect(autosOf(core, milk.id)).toEqual([
+      { quantity: 2, state: "deleted" },
+      { quantity: 5, state: "deleted" },
+    ]);
+  });
+
+  it("erledigen eigene Einträge eines Produkts beim Einlagern, freie Texte nicht", async () => {
+    const core = mock();
+    const oil = productNamed(core, "Olivenöl");
+    await core.stock.store({ product: { kind: "existing", product_id: oil.id }, zone_id: ZONE_IDS.shelf, best_before: null, count: 1, labels: false });
+    const items = allItems(core);
+    expect(items.find((item) => item.product_id === oil.id)).toMatchObject({ done_at: NOW.toISOString() });
+    expect(items.filter((item) => item.product_id === null && item.done_at === null && item.deleted_at === null).map((item) => item.text)).toEqual(["Backpapier", "Kaffeebohnen"]);
+  });
+
+  it("wandern beim Zusammenführen mit; zwei offene automatische werden einer", async () => {
+    let now = NOW;
+    const core = mock({ now: () => now });
+    const quark = await core.products.create({ name: "Quark", min_stock: 2 });
+    // Eine Sekunde später: Der ältere automatische Eintrag (der von Quark) bleibt.
+    now = new Date(NOW.getTime() + 1000);
+    const skyr = await core.products.create({ name: "Skyr", min_stock: 1 });
+    expect(autosOf(core, quark.id)).toEqual([{ quantity: 2, state: "open" }]);
+    expect(autosOf(core, skyr.id)).toEqual([{ quantity: 1, state: "open" }]);
+    const own = await core.shopping.create({ product_id: skyr.id });
+    await core.products.merge(skyr.id, quark.id);
+    expect(autosOf(core, quark.id)).toEqual([
+      { quantity: 1, state: "deleted" },
+      { quantity: 2, state: "open" },
+    ]);
+    expect(allItems(core).find((item) => item.id === own.id)?.product_id).toBe(quark.id);
+    expect(allItems(core).some((item) => item.product_id === skyr.id)).toBe(false);
+  });
+});
+
+describe("Push", () => {
+  it("schaltet ein, schickt Testnachrichten und schaltet aus", async () => {
+    let now = NOW;
+    const core = mock({ now: () => now });
+    expect(await core.push.enable()).toBe("on");
+    expect(value(core.push.state)).toBe("on");
+    expect(await core.push.test()).toEqual({ status: "sent", http_status: 201, message: "Der Push-Dienst hat die Nachricht angenommen." });
+    // Wie der Server: höchstens eine Testnachricht je 10 Sekunden.
+    expect((await expectCoreError(core.push.test(), "rate_limited")).details.retry_after_s).toBe(10);
+
+    now = new Date(now.getTime() + 10_000);
+    core.control.setPushTestResult("rejected");
+    expect(await core.push.test()).toMatchObject({ status: "rejected", http_status: 403 });
+    expect(value(core.push.state)).toBe("on");
+    now = new Date(now.getTime() + 10_000);
+    core.control.setPushTestResult("gone");
+    expect((await core.push.test()).status).toBe("gone");
+    expect(value(core.push.state)).toBe("off");
+    now = new Date(now.getTime() + 10_000);
+    await expectCoreError(core.push.test(), "not_found");
+
+    expect(await core.push.enable()).toBe("on");
+    await core.push.disable();
+    expect(value(core.push.state)).toBe("off");
+    await core.push.disable();
+    expect(value(core.push.state)).toBe("off");
+  });
+
+  it("meldet eine verweigerte Erlaubnis, einen Server ohne Push und einen Browser ohne Push", async () => {
+    expect(await mock({ scenarios: ["push-denied"] }).push.enable()).toBe("denied");
+    const asked = mock();
+    asked.control.setPushPermission("default");
+    expect(await asked.push.enable()).toBe("off");
+    asked.control.setPushPermission("denied");
+    expect(await asked.push.enable()).toBe("denied");
+    expect(value(asked.push.state)).toBe("denied");
+
+    const notConfigured = mock({ scenarios: ["push-not-configured"] });
+    await expectCoreError(notConfigured.push.enable(), "not_configured");
+    await expectCoreError(notConfigured.push.test(), "not_configured");
+    await expectCoreError(mock({ scenarios: ["push-unsupported"] }).push.enable(), "not_supported");
+    await expectCoreError(mock({ scenarios: ["ios"] }).push.enable(), "not_supported");
+  });
+
+  it("braucht zum Einschalten und Testen den Server, zum Ausschalten nicht", async () => {
+    const core = mock({ scenarios: ["offline"] });
+    await expectCoreError(core.push.enable(), "offline");
+    expect(value(core.push.state)).toBe("off");
+    const on = mock({ scenarios: ["offline", "push-on"] });
+    await expectCoreError(on.push.test(), "offline");
+    await on.push.disable();
+    expect(value(on.push.state)).toBe("off");
+  });
+
+  it("endet mit dem Abmelden", async () => {
+    const core = mock({ scenarios: ["push-on"] });
+    await core.session.logout();
+    expect(value(core.push.state)).toBe("off");
+  });
+});
+
+describe("Integrationen", () => {
+  it("zeigen eine gelungene Sicherung, Home Assistant aus und Push", async () => {
+    const status = await mock({ scenarios: ["push-on"] }).integrations.load();
+    expect(status.timezone).toBe("Europe/Berlin");
+    expect(status.backup).toMatchObject({ configured: true, problem: null, time: "03:30", last_error: null, warning: false });
+    expect(status.backup.recipients.every((key) => /^age1.{4}….{4}$/.test(key))).toBe(true);
+    // Heute um 03:30 in Berlin (02:30 UTC), der Dateiname nach derselben Uhr; die nächste morgen.
+    expect(status.backup).toMatchObject({ last_ok_at: "2026-11-13T02:30:00.000Z", last_file: "stowly-2026-11-13-0330.sqlite3.gz.age", next_at: "2026-11-14T02:30:00.000Z" });
+    expect(status.ha).toMatchObject({ configured: false, state: "off", linked: 0, sensor: false });
+    expect(status.push).toMatchObject({ configured: true, this_device: true, subscriptions: 2, last_error: null });
+    expect((await mock({ scenarios: ["push-not-configured"] }).integrations.load()).push).toMatchObject({ configured: false, subscriptions: 0 });
+  });
+
+  it("kennen eine Warnung und eine halb eingerichtete Sicherung", async () => {
+    const warning = (await mock({ scenarios: ["backup-warning"] }).integrations.load()).backup;
+    expect(warning).toMatchObject({ configured: true, warning: true, last_error: expect.any(String) });
+    expect(warning).toMatchObject({ last_ok_at: "2026-11-10T02:30:00.000Z", last_file: "stowly-2026-11-10-0330.sqlite3.gz.age" });
+    const problem = (await mock({ scenarios: ["backup-problem"] }).integrations.load()).backup;
+    expect(problem).toMatchObject({ configured: false, problem: "STOWLY_BACKUP_RECIPIENTS fehlt.", last_ok_at: null, warning: false });
+  });
+
+  it("brauchen den Server und lassen sich umstellen", async () => {
+    await expectCoreError(mock({ scenarios: ["offline"] }).integrations.load(), "offline");
+    const core = mock();
+    core.control.setIntegrations({ timezone: "Europe/Vienna" });
+    expect((await core.integrations.load()).timezone).toBe("Europe/Vienna");
+    core.control.setIntegrations(null);
+    expect((await core.integrations.load()).timezone).toBe("Europe/Berlin");
   });
 });

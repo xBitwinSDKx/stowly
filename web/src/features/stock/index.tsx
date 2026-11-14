@@ -1,20 +1,35 @@
 import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
 
-import { normalizePackageId, ROUTES, useCore, useLive, type Product } from "@/contract";
+import { isOpenItem, normalizePackageId, ROUTES, useCore, useLive, type Product } from "@/contract";
 import { PageBody, PageLoading, usePageTitle } from "@/app/Page";
 import { useSearch } from "@/app/search";
 import { EmptyState, FilterCard, Notice, packagesText, plural, ROOMY_QUERY, StatCard, useMediaQuery, useProgressiveCount, useUiFlag, WIDE_QUERY } from "@/ui";
 import { Button, ButtonLink, cx, IconButton, zoneColor, ZoneIcon } from "@/ui/base";
-import { CloseIcon, HistoryIcon, PackageIcon, PackageOpenIcon, PackagePlusIcon, ScanIcon, SearchIcon, StockIcon, WarningIcon, ZonesIcon } from "@/ui/icons";
+import {
+  CloseIcon,
+  HistoryIcon,
+  PackageIcon,
+  PackageMinusIcon,
+  PackageOpenIcon,
+  PackagePlusIcon,
+  ScanIcon,
+  SearchIcon,
+  ShoppingIcon,
+  StockIcon,
+  WarningIcon,
+  ZonesIcon,
+} from "@/ui/icons";
 
 import { useStockDialogs } from "./dialogs";
 import {
+  countBelowMinStock,
   DEFAULT_SORT,
-  filterEntries,
-  groupByProduct,
+  indexStock,
   isFiltered,
+  NO_FILTER,
   reuseGroups,
   sortGroups,
+  stockGroups,
   zoneFill,
   type ProductGroup,
   type SortKey,
@@ -32,6 +47,9 @@ const NO_ROWS: ReadonlyMap<string, boolean> = new Map();
  * Übersicht und Bestand nach dem Entwurf: Kennzahl-Karten, Überschrift mit „Jetzt scannen",
  * Zonen-Karten als Filter, darunter die nach Produkt gruppierte Bestandsliste mit
  * aufklappbarer Chargen-Ansicht (am Handy als Karten).
+ *
+ * Seit Stufe 2: Produkte unter dem Mindestbestand tragen „fehlt n", auch ohne Packung im
+ * Bestand (dann mit Menge 0), und lassen sich herausfiltern. Eine Kennzahl führt zur Einkaufsliste.
  */
 export function StockPage() {
   usePageTitle("Bestand");
@@ -40,6 +58,7 @@ export function StockPage() {
   const dialogs = useStockDialogs(stock);
   const app = useLive(core.app.state);
   const removed = useLive(core.data.removedPackages);
+  const shopping = useLive(core.data.shoppingItems);
   const wide = useMediaQuery(WIDE_QUERY);
   const roomy = useMediaQuery(ROOMY_QUERY);
   const { query, setQuery } = useSearch();
@@ -47,34 +66,43 @@ export function StockPage() {
 
   const [zoneFilter, setZoneFilter] = useState<string | null>(null);
   const [expiring, setExpiring] = useState(false);
+  const [belowMin, setBelowMin] = useState(false);
   const [sort, setSort] = useState<SortOrder>(DEFAULT_SORT);
   // „Details" im Tabellenkopf zeigt alle Chargen-Ansichten; `chosen` hält fest, was der Anwender
   // an einzelnen Zeilen selbst auf- oder zugeklappt hat. Das geht der Vorgabe vor.
   const [detailsAll, setDetailsAll] = useUiFlag("stock.details", false);
   const [chosen, setChosen] = useState<ReadonlyMap<string, boolean>>(NO_ROWS);
 
-  const { entries, zones, multiZone, warnings } = stock;
+  const { entries, products, zones, multiZone, warnings } = stock;
+  // Bestand je Produkt und die nächste Packung, immer über den ganzen Bestand: Ein Filter zeigt nur einen Teil.
+  const index = useMemo(() => indexStock(entries), [entries]);
+  const minStock = useMemo(() => countBelowMinStock(products, index.counts), [products, index]);
+  // Den Filter gibt es nur, solange ein Produkt überhaupt einen Mindestbestand hat.
+  const belowMinShown = belowMin && minStock.tracked > 0;
   // Ein Zonen-Filter gilt nur, solange es die Zone gibt und Zonen überhaupt sichtbar sind.
   const zoneId = multiZone && zones.some((zone) => zone.id === zoneFilter) ? zoneFilter : null;
-  const filter: StockFilter = useMemo(() => ({ query: deferredQuery, zone_id: zoneId, expiring }), [deferredQuery, zoneId, expiring]);
+  const filter: StockFilter = useMemo(
+    () => ({ query: deferredQuery, zone_id: zoneId, expiring, below_min: belowMinShown }),
+    [deferredQuery, zoneId, expiring, belowMinShown],
+  );
 
   // Der ungefilterte Bestand wird nur neu gebaut, wenn sich Daten oder Reihenfolge ändern: So
   // kostet das Leeren der Suche bei Hunderten Produkten nichts mehr, die Gruppen liegen schon da.
-  const allGroups = useMemo(() => sortGroups(groupByProduct(entries, zones), sort), [entries, zones, sort]);
+  const allGroups = useMemo(() => sortGroups(stockGroups(entries, products, zones, NO_FILTER, index), sort), [entries, products, zones, index, sort]);
   // Unveränderte Produkte behalten ihr Objekt: Ihre Zeilen werden dann nicht neu gezeichnet.
   const known = useRef<ReadonlyMap<string, ProductGroup>>(new Map());
   const groups = useMemo(() => {
-    const fresh = isFiltered(filter) ? sortGroups(groupByProduct(filterEntries(entries, filter), zones), sort) : allGroups;
+    const fresh = isFiltered(filter) ? sortGroups(stockGroups(entries, products, zones, filter, index), sort) : allGroups;
     const next = reuseGroups(known.current, fresh);
     known.current = new Map(next.map((group) => [group.product_id, group]));
     return next;
-  }, [entries, filter, zones, sort, allGroups]);
+  }, [entries, products, filter, zones, index, sort, allGroups]);
   // Lange Listen in Abschnitten: Wechselt das Aussehen aller Zeilen, die Reihenfolge oder die Auswahl
   // (Suche, Zone, „Läuft bald ab"), beginnt die Liste wieder vorn. So steht nach dem Leeren der Suche
   // gleich der Anfang da, und der Rest folgt, statt dass alle Zeilen auf einmal gezeichnet werden.
   const shownCount = useProgressiveCount(
     groups.length,
-    `${String(detailsAll)}|${sort.key}|${String(sort.descending)}|${filter.query}|${filter.zone_id ?? ""}|${String(filter.expiring)}`,
+    `${String(detailsAll)}|${sort.key}|${String(sort.descending)}|${filter.query}|${filter.zone_id ?? ""}|${String(filter.expiring)}|${String(filter.below_min)}`,
   );
   const shownGroups = useMemo(() => (shownCount >= groups.length ? groups : groups.slice(0, shownCount)), [groups, shownCount]);
   // Die Liste braucht von den Dialogen nur das Öffnen; so bleibt die Eigenschaft über das Zeichnen hinweg dieselbe.
@@ -114,6 +142,7 @@ export function StockPage() {
     setQuery("");
     setZoneFilter(null);
     setExpiring(false);
+    setBelowMin(false);
   }
 
   if (!stock.ready) {
@@ -133,6 +162,19 @@ export function StockPage() {
   // Sucht jemand eine Packungs-ID, die nicht mehr im Bestand ist, hilft ein Verweis auf die Lösch-Historie.
   const searchedId = normalizePackageId(filter.query);
   const removedHit = searchedId !== null && groups.length === 0 ? removed?.find((pkg) => pkg.id === searchedId) : undefined;
+  const openItems = shopping?.filter(isOpenItem).length ?? 0;
+  // Leer heißt: keine Packung und auch kein Produkt, das unter seinem Mindestbestand fehlt.
+  const empty = entries.length === 0 && allGroups.length === 0;
+  const shoppingCard = (
+    <StatCard
+      label="Einkaufsliste"
+      tone={openItems > 0 ? "accent" : "default"}
+      value={openItems}
+      note={openItems > 0 ? "offen" : undefined}
+      icon={<ShoppingIcon size={22} />}
+      to={ROUTES.shopping}
+    />
+  );
 
   return (
     <PageBody>
@@ -147,12 +189,20 @@ export function StockPage() {
             icon={<WarningIcon size={22} />}
             to={ROUTES.warnings}
           />
-          {!wide && multiZone ? (
+          {/* Am Handy im Raster 2 × 2: Die Einkaufsliste ist von hier aus einen Tipp entfernt. */}
+          {wide ? (
+            shoppingCard
+          ) : multiZone ? (
             <>
               <StatCard label="Aktive Zonen" tone="info" value={zones.length} icon={<ZonesIcon size={22} />} to={ROUTES.zones} />
+              {shoppingCard}
+            </>
+          ) : (
+            <>
+              {shoppingCard}
               <StatCard label="Produkte" value={productCount} icon={<StockIcon size={22} />} />
             </>
-          ) : null}
+          )}
         </div>
       ) : null}
 
@@ -207,7 +257,7 @@ export function StockPage() {
         </div>
       ) : null}
 
-      {entries.length === 0 ? (
+      {empty ? (
         <EmptyState
           icon={<PackageOpenIcon size={26} />}
           title="Noch nichts eingelagert"
@@ -230,7 +280,8 @@ export function StockPage() {
         </EmptyState>
       ) : (
         <>
-          {filtered || !wide || (!multiZone && warnings.total > 0) ? (
+          {/* „Unter Mindestbestand" steht als Umschalter über der Liste, auch mit Zonen: Die Reihe der Zonen-Karten bleibt wie im Entwurf. */}
+          {filtered || !wide || minStock.below > 0 || (!multiZone && warnings.total > 0) ? (
             <div className={styles.toolbar}>
               <span className={styles.summary} role="status">
                 {plural(groups.length, "Produkt", "Produkte")} · {packagesText(shownPackages)}
@@ -240,6 +291,19 @@ export function StockPage() {
                   <WarningIcon size={15} aria-hidden="true" />
                   Läuft bald ab
                   <span className="tabular">{warnings.total}</span>
+                </button>
+              ) : null}
+              {minStock.below > 0 || belowMinShown ? (
+                <button
+                  type="button"
+                  className={cx(styles.chip, styles.toggle, belowMinShown && styles.chipOn)}
+                  aria-pressed={belowMinShown}
+                  title="Nur Produkte, von denen weniger da ist als ihr Mindestbestand"
+                  onClick={() => setBelowMin(!belowMinShown)}
+                >
+                  <PackageMinusIcon size={15} aria-hidden="true" />
+                  Unter Mindestbestand
+                  <span className="tabular">{minStock.below}</span>
                 </button>
               ) : null}
               {filter.query.trim() !== "" ? (
@@ -290,8 +354,10 @@ export function StockPage() {
               }
             >
               {filter.query.trim() !== ""
-                ? `Zu „${filter.query.trim()}“ ist nichts im Bestand${activeZone || expiring ? " (mit den gewählten Filtern)" : ""}. Gesucht wird in Produktname, Marke, Barcode und Packungs-ID.`
-                : "Mit diesen Filtern ist nichts im Bestand."}
+                ? `Zu „${filter.query.trim()}“ ist nichts im Bestand${activeZone || expiring || belowMinShown ? " (mit den gewählten Filtern)" : ""}. Gesucht wird in Produktname, Marke, Barcode und Packungs-ID.`
+                : belowMinShown && !activeZone && !expiring
+                  ? "Kein Produkt liegt unter seinem Mindestbestand."
+                  : "Mit diesen Filtern ist nichts im Bestand."}
             </EmptyState>
           ) : wide ? (
             <StockTable

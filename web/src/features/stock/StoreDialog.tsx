@@ -21,7 +21,11 @@ import { CheckIcon, CircleCheckIcon, PlusIcon, SearchIcon, UndoIcon } from "@/ui
 
 import styles from "./dialogs.module.css";
 import { foldText } from "./model";
+import { readMinStock } from "./ProductDialog";
 import type { StockData } from "./useStock";
+
+/** Kurz, weil der Dialog ohnehin lang ist; ausführlich steht es im Dialog des Produkts. */
+const MIN_STOCK_HINT = "Leer = keiner. Liegen weniger Packungen im Bestand, setzt der Server das Produkt auf die Einkaufsliste.";
 
 export interface StoreDialogProps {
   stock: StockData;
@@ -61,6 +65,7 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
   const [brand, setBrand] = useState("");
   const [quantity, setQuantity] = useState("");
   const [barcode, setBarcode] = useState("");
+  const [minStock, setMinStock] = useState("");
   const [count, setCount] = useState(1);
   const [bestBefore, setBestBefore] = useState("");
   const [zone, setZone] = useState<string>(() => defaultZone());
@@ -97,6 +102,8 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
   const barcodeError =
     mode === "new" && barcode.trim() !== "" && code === null ? "Kein gültiger Barcode. Erwartet werden 8, 12 oder 13 Ziffern mit stimmender Prüfziffer." : null;
   const productError = mode === "existing" && !selected ? "Bitte ein Produkt auswählen." : null;
+  const parsedMin = readMinStock(minStock);
+  const minStockError = mode === "new" ? parsedMin.error : null;
 
   function chooseExisting(product: Product) {
     setMode("existing");
@@ -108,14 +115,14 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTried(true);
-    if (nameError || barcodeError || productError || input.kind === "invalid" || zone === "" || (mode === "new" && barcodeOwner)) {
+    if (nameError || barcodeError || productError || minStockError || input.kind === "invalid" || zone === "" || (mode === "new" && barcodeOwner)) {
       focusFirstInvalid(formId);
       return;
     }
     const product: ProductRef =
       mode === "existing" && selected
         ? { kind: "existing", product_id: selected.id }
-        : { kind: "new", name: name.trim(), brand: brand.trim(), quantity: quantity.trim(), barcodes: code ? [code] : [] };
+        : { kind: "new", name: name.trim(), brand: brand.trim(), quantity: quantity.trim(), min_stock: parsedMin.value, barcodes: code ? [code] : [] };
     setBusy(true);
     setError(null);
     try {
@@ -344,6 +351,18 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
               maxLength={14}
               hint="Mit Barcode erkennt der Scanner das Produkt beim nächsten Mal."
               error={tried || code !== null ? barcodeError : null}
+            />
+            <TextField
+              label="Mindestbestand (freiwillig)"
+              value={minStock}
+              onChange={(event) => setMinStock(event.target.value)}
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={3}
+              placeholder="keiner"
+              trailing={<span className={styles.unit}>Packungen</span>}
+              hint={MIN_STOCK_HINT}
+              error={tried ? minStockError : null}
             />
             {barcodeOwner ? (
               <Notice

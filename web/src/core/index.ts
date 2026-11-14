@@ -18,9 +18,11 @@
  *   sync/              Abgleich (engine), Anlässe, Wartezeiten und die Prüfung nebenbei
  *                      (scheduler), Kontakt zum Server über Tabs hinweg (contact), Sperre,
  *                      Aufbewahrung
- *   api/               die Teile der Schnittstelle `Core`
+ *   api/               die Teile der Schnittstelle `Core` (auch die Einkaufsliste, shopping.ts)
  *   images.ts          Produktbilder vorab laden
  *   background.ts      Abgleich im Service Worker
+ *   push/              Push auf diesem Gerät (device.ts) und Nachrichten im Service Worker (worker.ts)
+ *   pwa/               Installation, Service Worker anmelden, neue Versionen
  *   scanner/           Kamera, Erkennung, Ton und Vibration
  */
 import {
@@ -29,12 +31,12 @@ import {
   isStoreInternalBarcode,
   isValidBarcode,
   PRODUCT_LOOKUP_WAIT_S,
+  PROTOCOL_VERSION,
   type AppState,
   type Core,
   type CoreErrorCode,
   type Device,
   type ProductLookup,
-  type PushState,
   type SessionState,
   type SyncProblem,
   type SyncStatus,
@@ -44,6 +46,7 @@ import { createProductsApi, createPrefsUpdate, createSettingsApi, createZonesApi
 import { createDataApi } from "./api/data";
 import { createPrintApi, createPrintersApi } from "./api/printing";
 import { SYNC_FIRST_MAX_WAIT_MS, toCoreError, type CoreRuntime, type PrintRuntime } from "./api/runtime";
+import { createShoppingApi } from "./api/shopping";
 import { createStockApi } from "./api/stock";
 import { checkDeviceName, invalid, LIMITS } from "./api/validate";
 import { BACKGROUND_SYNC_TAG } from "./background";
@@ -55,9 +58,11 @@ import { readPermission, watchPermissions, type PermissionReader, type Permissio
 import { PrintServiceClient } from "./print/client";
 import { DeliveryEngine, PRINT_LOCK_NAME } from "./print/engine";
 import { DeliveryScheduler } from "./print/scheduler";
+import { PushController, type PushEnvironment } from "./push/device";
+import { browserPushEnvironment, NO_PUSH, watchNotificationPermission } from "./push/environment";
 import { InstallPrompt, isAppleMobile } from "./pwa/install";
 import { registerServiceWorker } from "./pwa/register";
-import type { AppUpdates } from "./pwa/updates";
+import { serverIsNewer, type AppUpdates } from "./pwa/updates";
 import { Store, type StoreState } from "./store";
 import { ContactChannel } from "./sync/contact";
 import { SyncEngine, type SyncOutcome, type SyncRunOptions } from "./sync/engine";
@@ -97,13 +102,23 @@ export interface CoreOptions {
    * freigibt, bevor der Kern ohne sie weitermacht. Vorgabe 8 Sekunden. Für Tests.
    */
   blockedTimeoutMs?: number;
+  /**
+   * Sucht sofort nach einer neuen Version der App, weil der Server ein neueres Protokoll spricht.
+   * Vorgabe: über den Service Worker (`AppUpdates.checkNow`). Für Tests.
+   */
+  checkForUpdate?: () => void;
+  /**
+   * Der Browser, soweit es Push angeht (src/core/push). Vorgabe: der echte. Mit eigener Umgebung
+   * gleicht der Kern Push auch ohne `autoSync` beim Start und nach der Anmeldung ab. Für Tests.
+   */
+  push?: PushEnvironment;
 }
 
 /** Wie lange ein blockiertes Öffnen der Datenbank den Start aufhält. */
 const BLOCKED_TIMEOUT_MS = 8_000;
 
 const SUPERSEDED_MESSAGE = "Ein anderer Tab läuft schon mit einer neueren Version von Stowly. Diese Seite muss neu geladen werden.";
-/** Platzhalter bis Runde 1 (Einkaufsliste, Push) und Runde 2 (Statistik, Integrationen). */
+/** Platzhalter bis Runde 2: die Statistik. */
 const STAGE_2_LATER = "In diesem Kern noch nicht umgesetzt.";
 const BLOCKED_MESSAGE = "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest. Schließe ihn, dann geht es hier weiter.";
 const NO_STORAGE_MESSAGE = "Die lokale Datenbank ist nicht verfügbar.";
@@ -201,9 +216,6 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     storage_persistent: null,
   });
 
-  /** Platzhalter bis Runde 1: Push auf diesem Gerät (docs/integrationen.md, Abschnitt 4). */
-  const pushState = new Signal<PushState>("unsupported");
-
   function patchApp(changes: Partial<AppState>): void {
     app.update((current) => {
       const next = { ...current, ...changes };
@@ -271,6 +283,20 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     },
   });
 
+  /**
+   * 409 `protocol_mismatch` mit einer höheren Version des Servers: Nur eine neue Version der App
+   * kann wieder abgleichen, also gleich danach suchen statt erst nach der Stunde (6.5).
+   */
+  function checkProtocol(error: CoreError): void {
+    if (error.code === "protocol_mismatch" && serverIsNewer(error.details, PROTOCOL_VERSION)) {
+      if (options.checkForUpdate) {
+        options.checkForUpdate();
+      } else {
+        updates?.checkNow();
+      }
+    }
+  }
+
   /** Ein gescheiterter Versuch in `sync.status` (9.2). Nur "offline" heißt: Der Server ist nicht erreichbar. */
   function showFailure(code: CoreErrorCode, message: string): void {
     patchStatus({
@@ -307,9 +333,12 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         void cacheImages();
         // Was eben abgeglichen wurde, kann jetzt zum Drucker am Server; was dort gedruckt hat, ist jetzt bekannt.
         deliveries.kick("sync");
+        // Was Push ohne Server liegen lassen musste, holt es jetzt nach.
+        push.afterContact();
       }
     } else {
       showFailure(outcome.error.code, outcome.error.message);
+      checkProtocol(outcome.error);
     }
     return outcome;
   }
@@ -519,6 +548,10 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       void scheduler.request();
       deliveries.kick("start");
     }
+    // Push: Zustand erkennen, Schlüssel des Servers vergleichen, Abo bei Bedarf neu anmelden.
+    if (autoSync || options.push) {
+      void push.refresh();
+    }
   }
 
   const ready: Promise<void> = (async () => {
@@ -677,6 +710,43 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     },
   };
 
+  // ---------------------------------------------------------------- Push auf diesem Gerät
+
+  const push = new PushController(
+    options.push ??
+      (hasWindow
+        ? browserPushEnvironment({
+            secureContext: app.get().secure_context,
+            installed: () => app.get().installed,
+            // Nur die gebaute App meldet einen Service Worker an (src/core/pwa/register.ts).
+            serviceWorker: updates !== null,
+          })
+        : NO_PUSH),
+    {
+      key: () => runtime.server((token) => api.pushKey(token)),
+      subscribe: (subscription) => runtime.server((token) => api.putPushSubscription(token, subscription)),
+      unsubscribe: () => runtime.server((token) => api.deletePushSubscription(token)),
+      test: () => runtime.server((token) => api.pushTest(token)),
+    },
+    { signedIn: () => !disposed && storageAvailable && store.snapshot.session?.status === "signed_in" },
+  );
+
+  // Die Erlaubnis für Benachrichtigungen lässt sich in den Einstellungen des Browsers ändern:
+  // während die App ruht (danach kommt `visibilitychange`) oder während sie sichtbar bleibt (dann
+  // meldet es die Permissions API). Der Kern liest den Zustand dann neu; eine neu erteilte
+  // Erlaubnis gilt so ohne Neuladen.
+  if (hasWindow && (autoSync || options.push)) {
+    const redetect = () => void push.detect().catch(() => undefined);
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden") {
+        redetect();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    cleanups.push(() => document.removeEventListener("visibilitychange", onVisibility));
+    cleanups.push(watchNotificationPermission(redetect));
+  }
+
   /**
    * `products.lookup`: Open Food Facts über den Server, gleich beim Scannen (docs/sync-protokoll.md,
    * Abschnitt 10). Fragt nur, wenn es etwas zu fragen gibt und der Server nicht als unerreichbar
@@ -741,6 +811,10 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     // Der Zeitplan geht weiter wie nach einem eigenen Abgleich; ab jetzt prüft er auch nebenbei.
     scheduler.notifySynced(outcome);
     void checkPersistence(true);
+    // Hat der Browser noch ein Abo (etwa nach einer Sperre), kennt es der Server wieder.
+    if (autoSync || options.push) {
+      void push.refresh();
+    }
   }
 
   // ---------------------------------------------------------------- Die Schnittstelle
@@ -779,6 +853,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         void clearImages();
         // Gelingt auch offline: Das Token wird gesperrt, sobald der Server erreichbar ist.
         void flushRevocations();
+        // Mit dem Gerät endet sein Push: im Browser jetzt, beim Server mit dem Sperren des Tokens.
+        await push.endSession().catch(() => undefined);
       },
     },
 
@@ -887,31 +963,14 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       },
     },
 
-    // Platzhalter: Einkaufsliste und Push baut der Kern-Worker in Runde 1, Statistik und
-    // Integrationen in Runde 2 (docs/sync-protokoll.md 3.6, 7.6 und 11; docs/integrationen.md).
-    shopping: {
-      async create() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
-      },
-      async update() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
-      },
-      async remove() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
-      },
-    },
+    shopping: createShoppingApi(runtime),
 
     push: {
-      state: pushState,
-      async enable() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
-      },
-      async disable() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
-      },
-      async test() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
-      },
+      state: push.state,
+      // Kein `async` und kein Warten davor: Die Frage nach der Erlaubnis muss im Tipp geschehen.
+      enable: () => push.enable(),
+      disable: () => push.disable(),
+      test: () => push.test(),
     },
 
     stats: {
@@ -921,8 +980,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     },
 
     integrations: {
-      async load() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+      load() {
+        return runtime.server((token) => api.integrations(token));
       },
     },
 

@@ -5,14 +5,15 @@
  * Filter und Sortierung stehen in src/contract/core.ts. Jeder Wert hängt nur an „seiner"
  * Tabelle: Eine Änderung an den Zonen lässt die Packungen in Ruhe.
  */
-import type { HouseholdSettings, ShoppingItem } from "@/contract/api.gen";
+import type { HouseholdSettings } from "@/contract/api.gen";
 import type { DataApi } from "@/contract/core";
+import { compareShoppingItems } from "@/contract/shopping";
 
 import { barcodeOwner, resolveProduct } from "../commands/apply";
 import { imageUrl } from "../images";
 import { derived } from "../live";
 import type { Store } from "../store";
-import { isExpiredJob, isExpiredPackage, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
+import { isExpiredJob, isExpiredPackage, isExpiredShoppingItem, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
 import { Draft } from "../tables";
 
 /** Rückfall, falls der Server je keine Einstellungen geliefert hat: die Vorgaben des Protokolls (3.4). */
@@ -25,9 +26,6 @@ const DEFAULT_SETTINGS: HouseholdSettings = {
   notify_time: "17:00",
   updated_at: "1970-01-01T00:00:00.000Z",
 };
-
-/** Platzhalter bis Runde 1: Die Einkaufsliste kommt mit der App-Datenbank v3 (docs/sync-protokoll.md, 3.6). */
-const NO_SHOPPING_ITEMS: ShoppingItem[] = [];
 
 export function createDataApi(store: Store, ready: Promise<void>): DataApi {
   const state = store.state;
@@ -95,8 +93,15 @@ export function createDataApi(store: Store, ready: Promise<void>): DataApi {
     ),
     shoppingItems: derived(
       state,
-      (s) => [s.loaded],
-      (s) => (s.loaded ? NO_SHOPPING_ITEMS : undefined),
+      (s) => [s.loaded, s.view.shopping_items, s.view.settings?.trash_retention_days],
+      (s) => {
+        if (!s.loaded) {
+          return undefined;
+        }
+        // Gelöschte nie, Erledigte nur innerhalb der Aufbewahrungsdauer (wie entnommene Packungen).
+        const limit = retentionLimit(store.serverNowMs(), (s.view.settings ?? DEFAULT_SETTINGS).trash_retention_days);
+        return [...s.view.shopping_items.values()].filter((item) => item.deleted_at === null && !isExpiredShoppingItem(item, limit)).sort(compareShoppingItems);
+      },
     ),
 
     async findPackage(id) {

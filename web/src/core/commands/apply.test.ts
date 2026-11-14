@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { COMMAND_TYPES, type Command, type HouseholdSettings, type Package, type Printer, type Product, type Zone } from "@/contract";
+import { COMMAND_TYPES, type Command, type HouseholdSettings, type Package, type Printer, type Product, type ShoppingItem, type Zone } from "@/contract";
 
 import { Draft, EMPTY_TABLES, tableFrom, type Tables } from "../tables";
 import { applyCommand, replay, resolveProduct, resolveZone, type ApplyOutcome } from "./apply";
@@ -335,6 +335,103 @@ describe("Drucker und Etiketten", () => {
       { type: "print.report", job_id: uuid(4, 1), state: "printed", printer_id: uuid(3, 1), boot_id: "boot-1" },
     );
     expect(state.print_jobs.get(uuid(4, 1))).toMatchObject({ state: "printed", error: null });
+  });
+});
+
+describe("Einkaufsliste", () => {
+  function item(n: number, changes: Partial<ShoppingItem> = {}): ShoppingItem {
+    return { id: uuid(7, n), product_id: null, text: `Eintrag ${n}`, quantity: null, origin: "manual", done_at: null, deleted_at: null, created_at: T0, updated_at: T0, ...changes };
+  }
+
+  it("legt eigene Einträge an: genau eines von Produkt und Text, ein Produkt folgt der Zusammenführung", () => {
+    const start = tables({ products: [product(1), product(2, { deleted_at: T0, merged_into: uuid(2, 1) })] });
+    const { state, outcomes } = run(
+      start,
+      { type: "shopping_item.create", item_id: uuid(7, 1), product_id: uuid(2, 2), quantity: 2 },
+      { type: "shopping_item.create", item_id: uuid(7, 2), text: "Kerzen" },
+      { type: "shopping_item.create", item_id: uuid(7, 3) },
+      { type: "shopping_item.create", item_id: uuid(7, 4), product_id: uuid(2, 1), text: "Reis" },
+      { type: "shopping_item.create", item_id: uuid(7, 5), product_id: uuid(2, 9) },
+      { type: "shopping_item.create", item_id: uuid(7, 2), text: "Noch einmal" },
+    );
+    expect(statuses(outcomes)).toEqual(["applied", "applied", "invalid", "invalid", "not_found", "id_conflict"]);
+    expect(state.shopping_items.get(uuid(7, 1))).toEqual({
+      id: uuid(7, 1),
+      product_id: uuid(2, 1),
+      text: "",
+      quantity: 2,
+      origin: "manual",
+      done_at: null,
+      deleted_at: null,
+      created_at: T1,
+      updated_at: T1,
+    });
+    expect(state.shopping_items.get(uuid(7, 2))).toMatchObject({ product_id: null, text: "Kerzen", quantity: null });
+  });
+
+  it("hakt ab, öffnet wieder und ändert; Text nur ohne Produkt, Menge nur bei eigenen", () => {
+    const start = { ...tables(), shopping_items: tableFrom("shopping_items", [item(1), item(2, { product_id: uuid(2, 1), text: "" }), item(3, { product_id: uuid(2, 1), text: "", origin: "min_stock", quantity: 2 }), item(4, { done_at: T0 })]) };
+    const { state, outcomes } = run(
+      start,
+      { type: "shopping_item.update", item_id: uuid(7, 1), changes: { done: true, text: "Hefe", quantity: 3 } },
+      { type: "shopping_item.update", item_id: uuid(7, 2), changes: { text: "Reis" } },
+      { type: "shopping_item.update", item_id: uuid(7, 3), changes: { quantity: 1 } },
+      { type: "shopping_item.update", item_id: uuid(7, 3), changes: { done: true } },
+      // Abhaken eines erledigten lässt `done_at`, wie es ist; Öffnen setzt es zurück.
+      { type: "shopping_item.update", item_id: uuid(7, 4), changes: { done: true } },
+      { type: "shopping_item.update", item_id: uuid(7, 9), changes: { done: true } },
+    );
+    expect(statuses(outcomes)).toEqual(["applied", "invalid", "invalid", "applied", "applied", "not_found"]);
+    expect(state.shopping_items.get(uuid(7, 1))).toMatchObject({ text: "Hefe", quantity: 3, done_at: T1, updated_at: T1 });
+    expect(state.shopping_items.get(uuid(7, 2))).toMatchObject({ text: "", updated_at: T0 });
+    expect(state.shopping_items.get(uuid(7, 3))).toMatchObject({ quantity: 2, done_at: T1 });
+    expect(state.shopping_items.get(uuid(7, 4))?.done_at).toBe(T0);
+    const reopened = run(state, { type: "shopping_item.update", item_id: uuid(7, 4), changes: { done: false } }).state;
+    expect(reopened.shopping_items.get(uuid(7, 4))?.done_at).toBeNull();
+  });
+
+  it("löscht endgültig: danach ändert kein Befehl mehr etwas", () => {
+    const start = { ...tables(), shopping_items: tableFrom("shopping_items", [item(1)]) };
+    const { state, outcomes } = run(
+      start,
+      { type: "shopping_item.delete", item_id: uuid(7, 1) },
+      { type: "shopping_item.delete", item_id: uuid(7, 1) },
+      { type: "shopping_item.update", item_id: uuid(7, 1), changes: { done: true, text: "Anders" } },
+      { type: "shopping_item.delete", item_id: uuid(7, 9) },
+    );
+    expect(statuses(outcomes)).toEqual(["applied", "applied", "applied", "not_found"]);
+    expect(state.shopping_items.get(uuid(7, 1))).toMatchObject({ deleted_at: T1, done_at: null, text: "Eintrag 1" });
+  });
+
+  it("hängt beim Zusammenführen alle Einträge der Quelle um, auch erledigte und gelöschte", () => {
+    const start = {
+      ...tables(),
+      shopping_items: tableFrom("shopping_items", [
+        item(1, { product_id: uuid(2, 2), text: "" }),
+        item(2, { product_id: uuid(2, 2), text: "", done_at: T0 }),
+        item(3, { product_id: uuid(2, 2), text: "", origin: "min_stock", quantity: 1, deleted_at: T0 }),
+        item(4),
+      ]),
+    };
+    const { state } = run(start, { type: "product.merge", source_id: uuid(2, 2), target_id: uuid(2, 1) });
+    expect([...state.shopping_items.values()].map((entry) => [entry.product_id, entry.updated_at])).toEqual([
+      [uuid(2, 1), T1],
+      [uuid(2, 1), T1],
+      [uuid(2, 1), T1],
+      [null, T0],
+    ]);
+  });
+
+  it("schreibt nichts, was der Server selbst ableitet (Regel 8)", () => {
+    const start = tables({ products: [product(1, { min_stock: 2 })], packages: [pkg("AAAAA")] });
+    const { state } = run(
+      start,
+      { type: "package.remove", package_id: "AAAAA", reason: "consumed" },
+      { type: "shopping_item.create", item_id: uuid(7, 1), product_id: uuid(2, 1) },
+      { type: "package.create", package_id: "BBBBB", product_id: uuid(2, 1), zone_id: uuid(1, 1) },
+    );
+    // Kein automatischer Eintrag, und der eigene ist durch das Einlagern nicht erledigt.
+    expect([...state.shopping_items.values()].map((entry) => [entry.origin, entry.done_at])).toEqual([["manual", null]]);
   });
 });
 

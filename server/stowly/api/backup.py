@@ -1,12 +1,12 @@
 """Manuelle Sicherung: vollständige Kopie der Datenbank als Download."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request, Response
 from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
 
-from stowly import backup
+from stowly import backup, localtime
 from stowly.api.deps import CurrentDevice, get_settings
 
 router = APIRouter(tags=["backup"])
@@ -23,9 +23,10 @@ def download_backup(request: Request, _device: CurrentDevice) -> Response:
     Die Kopie bekommt eine neue ``dataset_id``: Wird sie später eingespielt, holen
     alle Geräte den Bestand vollständig neu, statt mit einem veralteten Cursor zu arbeiten.
     """
-    path = backup.create(get_settings(request).database_path)
-    # Tag in der Zeitzone des Servers (im Container UTC, sofern TZ nicht gesetzt ist).
-    filename = f"stowly-{datetime.now().astimezone():%Y-%m-%d}.sqlite3"
+    settings = get_settings(request)
+    path = backup.create(settings.database_path)
+    # Der Tag in der Zeitzone des Servers (STOWLY_TIMEZONE), nicht in der des Containers (TZ).
+    filename = f"stowly-{localtime.today(datetime.now(UTC), settings.tz).isoformat()}.sqlite3"
     return FileResponse(
         path,
         media_type=MEDIA_TYPE,

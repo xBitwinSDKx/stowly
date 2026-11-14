@@ -25,12 +25,20 @@ export function SyncPage() {
   const packages = useLive(core.data.packages);
   const removed = useLive(core.data.removedPackages);
   const printJobs = useLive(core.data.printJobs);
+  const shoppingItems = useLive(core.data.shoppingItems);
   const now = useNow();
   const [busy, setBusy] = useState(false);
 
   const lookup: ProblemLookup = useMemo(
-    () => ({ products: products ?? [], zones: zones ?? [], printers: printers ?? [], packages: [...(packages ?? []), ...(removed ?? [])], printJobs: printJobs ?? [] }),
-    [products, zones, printers, packages, removed, printJobs],
+    () => ({
+      products: products ?? [],
+      zones: zones ?? [],
+      printers: printers ?? [],
+      packages: [...(packages ?? []), ...(removed ?? [])],
+      printJobs: printJobs ?? [],
+      shoppingItems: shoppingItems ?? [],
+    }),
+    [products, zones, printers, packages, removed, printJobs, shoppingItems],
   );
 
   if (!status) {

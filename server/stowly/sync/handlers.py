@@ -20,6 +20,9 @@ Regeln, die für alle Handler gelten:
   ob seine lokale Vorwegnahme noch stimmt.
 * **Verweise** auf ein zusammengeführtes Produkt folgen ``merged_into``, Verweise auf eine
   gelöschte Zone ``moved_to``, jeweils über mehrere Schritte.
+* **Einkaufsliste** (Abschnitt 7.6): Was ein Befehl dort auslöst (automatische Einträge, Sperre,
+  Erledigen durch Einlagern), schreibt ``stowly.shopping`` im selben Sicherungspunkt; die
+  Auslöser stehen bei den Befehlen.
 """
 
 import json
@@ -27,7 +30,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from stowly import db, events, off, records
+from stowly import db, events, off, records, shopping
 from stowly.contract import commands as c
 from stowly.contract.ids import is_store_internal_barcode, is_valid_barcode
 from stowly.contract.sync import CommandStatus, RejectCode
@@ -245,6 +248,12 @@ class CommandRunner:
             f"UPDATE {table} SET {', '.join(assignments)} WHERE id = ?", (*parameters, entity_id)
         )
 
+    def _cause(self) -> shopping.Cause:
+        """Was der Server zu diesem Befehl selbst schreibt (Einkaufsliste, Abschnitt 7.6)."""
+        return shopping.Cause(
+            con=self.con, at=self.at, recorded_at=self.recorded_at, command_id=self.command_id
+        )
+
     def _touch_settings(self) -> None:
         self.con.execute("UPDATE counters SET value = ? WHERE name = 'settings_rev'", (self._rev(),))
 
@@ -379,6 +388,9 @@ class CommandRunner:
             changed=True,
         )
         self._refresh_lookup(target_id)
+        # 5. Alle Einträge der Einkaufsliste, auch erledigte und gelöschte, gehören zum Ziel.
+        cause = self._cause()
+        items = shopping.move_items(cause, source_id, target_id)
         self._event(
             "product.merged",
             "product",
@@ -389,8 +401,13 @@ class CommandRunner:
                 "packages": moved,
                 "barcodes": barcodes,
                 "filled": sorted(filled),
+                "shopping_items": items,
             },
         )
+        # Die Sperre wandert mit, dann der Abgleich des Ziels (7.6): Zwei offene automatische
+        # Einträge werden dabei zu einem. Im Protokoll steht die Ursache vor der Wirkung.
+        shopping.carry_lock(cause, source_id, target_id)
+        shopping.reconcile(cause, target_id)
 
     def _product_create(self, cmd: c.CmdProductCreate) -> CommandStatus:
         con = self.con
@@ -445,7 +462,11 @@ class CommandRunner:
         )
         if target_id is None:
             self._refresh_lookup(cmd.product_id)
+            if cmd.min_stock is not None:
+                # Mit Mindestbestand beginnt die Einkaufsliste des Produkts (7.6).
+                shopping.reconcile(self._cause(), cmd.product_id)
         else:
+            # Das Zusammenführen gleicht das Ziel ab, die Quelle nicht: Sie hat danach keine Einträge.
             self._merge(cmd.product_id, target_id, "barcode")
         return APPLIED
 
@@ -460,6 +481,13 @@ class CommandRunner:
             changed=bool(applied),
         )
         self._field_event("product.updated", "product", row["id"], applied, superseded)
+        old_min, new_min = applied.get("min_stock", (None, None))
+        if old_min != new_min:
+            # Ein geänderter Mindestbestand hebt die Sperre auf, wenn sie nicht nach ihm liegt (7.6).
+            # Dieselbe Zahl noch einmal ist keine Änderung.
+            cause = self._cause()
+            shopping.unlock(cause, row["id"])
+            shopping.reconcile(cause, row["id"])
         return APPLIED
 
     def _product_add_barcode(self, cmd: c.CmdProductAddBarcode) -> CommandStatus:
@@ -534,6 +562,12 @@ class CommandRunner:
             cmd.package_id,
             {"product_id": product["id"], "zone_id": zone["id"], "best_before": cmd.best_before},
         )
+        # Einkaufsliste (7.6): Das Einlagern hebt die Sperre auf, wenn sie nicht danach liegt,
+        # erledigt die eigenen Einträge des Produkts und gleicht es ab.
+        cause = self._cause()
+        shopping.unlock(cause, product["id"])
+        shopping.store_done(cause, product["id"], cmd.package_id)
+        shopping.reconcile(cause, product["id"])
         return APPLIED
 
     def _package_changes(self, changes: c.PackageChanges) -> dict[str, Any]:
@@ -566,7 +600,16 @@ class CommandRunner:
             changed=bool(applied),
         )
         self._field_event("package.updated", "package", row["id"], applied, superseded)
+        self._product_changed(applied)
         return APPLIED
+
+    def _product_changed(self, applied: Mapping[str, tuple[Any, Any]]) -> None:
+        """Eine Packung im Bestand hat ihr Produkt gewechselt: Sie zählt bei beiden (7.6)."""
+        old, new = applied.get("product_id", (None, None))
+        if old != new:
+            cause = self._cause()
+            shopping.reconcile(cause, old)
+            shopping.reconcile(cause, new)
 
     def _displace(self, row: sqlite3.Row, wanted: Mapping[str, Any]) -> CommandStatus:
         """Löschen gewinnt gegen Bearbeiten (Abschnitt 7.2).
@@ -632,6 +675,8 @@ class CommandRunner:
                     "best_before": row["best_before"],
                 },
             )
+            # Die Packung war im Bestand: Ihr Produkt kann jetzt unter den Mindestbestand fallen.
+            shopping.reconcile(self._cause(), row["product_id"])
         elif row["removal_reason"] != reason:
             # Schon entnommen: Es ändert sich nur der Grund, removed_at bleibt.
             self._update("packages", row["id"], {"removal_reason": reason}, changed=True)
@@ -661,6 +706,8 @@ class CommandRunner:
         apply = bool(cmd.apply_displaced and displaced and displaced["changes"])
         self._event("package.restored", "package", row["id"], {"applied_displaced": apply})
         if not apply:
+            # Die Packung war entnommen und ist wieder im Bestand (7.6).
+            shopping.reconcile(self._cause(), row["product_id"])
             return APPLIED
 
         # Die verdrängten Werte gelten mit dem Zeitpunkt des Wiederherstellens. Verweise
@@ -686,6 +733,12 @@ class CommandRunner:
             changed=bool(applied),
         )
         self._field_event("package.updated", "package", row["id"], applied, superseded)
+        # Wieder im Bestand, und zwar beim neuen Produkt, wenn die verdrängte Bearbeitung es geändert
+        # hat: dann für beide (7.6). Das vorige zuerst.
+        shopping.reconcile(self._cause(), row["product_id"])
+        old, new = applied.get("product_id", (None, None))
+        if old != new:
+            shopping.reconcile(self._cause(), new)
         return APPLIED
 
     # ------------------------------------------------------------------ Zonen und Einstellungen
@@ -997,9 +1050,108 @@ class CommandRunner:
 
     # ------------------------------------------------------------------ Einkaufsliste
 
-    def _shopping_not_yet(self, _cmd: Any) -> CommandStatus:
-        """Platzhalter bis Runde 1: Die Einkaufsliste (Protokoll 6.6 und 7.6) baut der Server-Worker."""
-        raise Reject(RejectCode.INTERNAL, "Die Einkaufsliste ist in diesem Server noch nicht umgesetzt.")
+    def _shopping_item(self, item_id: str) -> sqlite3.Row:
+        row = self.con.execute("SELECT * FROM shopping_items WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise Reject(RejectCode.NOT_FOUND, "Den Eintrag gibt es nicht.")
+        return row
+
+    def _shopping_item_create(self, cmd: c.CmdShoppingItemCreate) -> CommandStatus:
+        """Ein eigener Eintrag (``origin = manual``): ein Produkt oder freier Text, nie beides.
+
+        Das Produkt folgt ``merged_into``. Ist es gerade im Bestand, bleibt der Eintrag trotzdem
+        offen: Erledigt wird er erst durch ein Einlagern danach (7.6).
+        """
+        con = self.con
+        if con.execute("SELECT 1 FROM shopping_items WHERE id = ?", (cmd.item_id,)).fetchone() is not None:
+            raise Reject(RejectCode.ID_CONFLICT, "Diese Kennung eines Eintrags ist schon vergeben.")
+        product_id = None if cmd.product_id is None else self._product(cmd.product_id)["id"]
+        con.execute(
+            "INSERT INTO shopping_items (id, product_id, text, quantity, origin, created_at, updated_at, rev) "
+            "VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)",
+            (cmd.item_id, product_id, cmd.text, cmd.quantity, self.at, self.at, self._rev()),
+        )
+        self._event(
+            "shopping_item.created",
+            shopping.ENTITY,
+            cmd.item_id,
+            {"product_id": product_id, "text": cmd.text, "quantity": cmd.quantity},
+        )
+        return APPLIED
+
+    def _shopping_item_update(self, cmd: c.CmdShoppingItemUpdate) -> CommandStatus:
+        """Feldänderungen mit Uhren für ``text``, ``quantity`` und ``done`` (6.6, „Genauer").
+
+        Geprüft wird in dieser Reihenfolge: unbekannt (``not_found``), gelöscht (ohne Wirkung),
+        ``text`` bei einem Eintrag mit Produkt oder ``quantity`` bei einem automatischen
+        (``invalid``, der ganze Befehl gilt nicht), dann je Feld die Uhr.
+        """
+        row = self._shopping_item(cmd.item_id)
+        if row["deleted_at"] is not None:
+            # Gelöscht ist endgültig. Echo ohne Wirkung, keine Uhr.
+            self._update("shopping_items", row["id"], {}, changed=False)
+            return APPLIED
+        fields = cmd.changes.model_fields_set
+        if "text" in fields and row["product_id"] is not None:
+            raise _invalid("Ein Eintrag mit Produkt hat keinen eigenen Text.")
+        if "quantity" in fields and row["origin"] == shopping.AUTO:
+            raise _invalid("Die Menge eines automatischen Eintrags führt der Server.")
+
+        current = {"text": row["text"], "quantity": row["quantity"], "done": row["done_at"] is not None}
+        wanted = {field: getattr(cmd.changes, field) for field in sorted(fields)}
+        applied, superseded = self._decide(shopping.ENTITY, row["id"], current, wanted)
+        values: dict[str, Any] = {}
+        for field in ("text", "quantity"):
+            if field in applied:
+                values[field] = applied[field][1]
+        # Abhaken eines erledigten oder Öffnen eines offenen Eintrags stellt nur die Uhr: done_at
+        # bleibt, wie es ist.
+        was_done, done = applied.get("done", (current["done"], current["done"]))
+        if done and not was_done:
+            # Abhaken: done_at ist der wirksame Zeitpunkt.
+            values.update(done_at=self.at, closed_by=shopping.CLOSED_BY_DEVICE)
+        elif was_done and not done:
+            # Wieder öffnen.
+            values.update(done_at=None, closed_by=None)
+        self._update("shopping_items", row["id"], values, changed=bool(applied))
+        self._field_event("shopping_item.updated", shopping.ENTITY, row["id"], applied, superseded)
+
+        if row["origin"] == shopping.AUTO and was_done != done:
+            cause = self._cause()
+            if done:
+                # Abgewählt: Bis zum nächsten Einlagern entsteht kein neuer automatischer Eintrag.
+                shopping.lock(cause, row["product_id"])
+            else:
+                # Wieder geöffnet: Die Sperre endet, und der Eintrag folgt wieder dem Bestand.
+                shopping.unlock(cause, row["product_id"])
+                shopping.reconcile(cause, row["product_id"])
+        return APPLIED
+
+    def _shopping_item_delete(self, cmd: c.CmdShoppingItemDelete) -> CommandStatus:
+        """Löscht endgültig; Löschen gewinnt immer, gleich welchen Zeitpunkt ein späterer Befehl trägt.
+
+        Trifft es einen offenen automatischen Eintrag, sperrt es das Produkt. Ein erledigter, der
+        danach gelöscht wird, sperrt nicht noch einmal: Das ist Aufräumen, kein Abwählen. Bei ihm
+        bleibt auch ``closed_by``, wie es war: Geschlossen wurde er durch das Erledigen.
+        """
+        row = self._shopping_item(cmd.item_id)
+        if row["deleted_at"] is not None:
+            self._update("shopping_items", row["id"], {}, changed=False)
+            return APPLIED
+        was_open = row["done_at"] is None
+        values: dict[str, Any] = {"deleted_at": self.at}
+        if was_open:
+            values["closed_by"] = shopping.CLOSED_BY_DEVICE
+        self._update("shopping_items", row["id"], values, changed=True)
+        self._event(
+            "shopping_item.deleted",
+            shopping.ENTITY,
+            row["id"],
+            {"origin": row["origin"], "product_id": row["product_id"]},
+        )
+        if was_open and row["origin"] == shopping.AUTO:
+            shopping.lock(self._cause(), row["product_id"])
+        return APPLIED
 
 
 _HANDLERS: dict[str, Callable[[CommandRunner, Any], CommandStatus]] = {
@@ -1022,9 +1174,9 @@ _HANDLERS: dict[str, Callable[[CommandRunner, Any], CommandStatus]] = {
     "printer.report": CommandRunner._printer_report,
     "print.request": CommandRunner._print_request,
     "print.report": CommandRunner._print_report,
-    "shopping_item.create": CommandRunner._shopping_not_yet,
-    "shopping_item.update": CommandRunner._shopping_not_yet,
-    "shopping_item.delete": CommandRunner._shopping_not_yet,
+    "shopping_item.create": CommandRunner._shopping_item_create,
+    "shopping_item.update": CommandRunner._shopping_item_update,
+    "shopping_item.delete": CommandRunner._shopping_item_delete,
 }
 
 

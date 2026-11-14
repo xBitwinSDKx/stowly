@@ -3,9 +3,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { zoneQr, type Package, type Product, type Zone } from "@/contract";
+import { zoneQr, type Package, type Product, type ShoppingItem, type Zone } from "@/contract";
 
-import { evaluateScan, parseManualInput, type ScanLookups } from "./scan-flow";
+import { evaluateScan, fifoHint, isOnShoppingList, parseManualInput, shortDate, wasLastPackage, type ScanLookups } from "./scan-flow";
 
 const AT = "2026-11-13T10:00:00.000Z";
 const ZONE_A: Zone = { id: "10000000-0000-4000-8000-000000000001", name: "Vorrat", icon: "box", color: null, sort: 0, printer_id: null, created_at: AT, updated_at: AT, deleted_at: null, moved_to: null };
@@ -77,5 +77,44 @@ describe("Eingabe von Hand", () => {
     expect(parseManualInput("A2B3U")).toEqual({ ok: false, reason: "unknown" });
     expect(parseManualInput("1234567")).toEqual({ ok: false, reason: "unknown" });
     expect(parseManualInput("Basmati Reis")).toEqual({ ok: false, reason: "unknown" });
+  });
+});
+
+describe("Nach dem Entnehmen", () => {
+  const pkg = (id: string, changes: Partial<Package> = {}): Package => ({ ...IN_STOCK, id, ...changes });
+
+  it("nennt die ältere Packung: ID, MHD und die Zone, wenn es mehr als eine gibt", () => {
+    const taken = pkg("TAKEN", { best_before: "2026-12-20" });
+    const stock = [
+      taken,
+      pkg("LATER", { best_before: "2027-01-01" }),
+      pkg("XYZ12", { best_before: "2026-12-03", zone_id: ZONE_B.id }),
+      pkg("NEWER", { best_before: "2026-12-10" }),
+    ];
+    expect(fifoHint(taken, stock, [ZONE_A, ZONE_B])).toBe("Älter: XYZ12 · MHD 03.12. · Keller");
+    expect(fifoHint(taken, stock, [ZONE_B])).toBe("Älter: XYZ12 · MHD 03.12.");
+  });
+
+  it("schweigt ohne ältere Packung: gleiches MHD, ohne MHD, anderes Produkt, entnommen", () => {
+    const taken = pkg("TAKEN", { best_before: "2026-12-03" });
+    expect(fifoHint(taken, [taken, pkg("SAME0", { best_before: "2026-12-03" }), pkg("NOMHD", { best_before: null })], [ZONE_A, ZONE_B])).toBeNull();
+    expect(fifoHint(taken, [pkg("OTHER", { best_before: "2026-01-01", product_id: "20000000-0000-4000-8000-000000000002" })], [ZONE_A])).toBeNull();
+    expect(fifoHint(taken, [pkg("GONE0", { best_before: "2026-01-01", removed_at: AT })], [ZONE_A])).toBeNull();
+    // Eine Packung ohne MHD hat jede Packung mit MHD vor sich.
+    const undated = pkg("UNDAT", { best_before: null });
+    expect(fifoHint(undated, [undated, pkg("DATED", { best_before: "2027-05-01" })], [ZONE_A, ZONE_B])).toBe("Älter: DATED · MHD 01.05. · Vorrat");
+  });
+
+  it("schreibt das MHD kurz und erkennt die letzte Packung und einen offenen Eintrag", () => {
+    expect(shortDate("2026-03-01")).toBe("01.03.");
+    expect(shortDate("kein Datum")).toBe("kein Datum");
+    const taken = pkg("TAKEN");
+    expect(wasLastPackage(taken, [taken])).toBe(true);
+    expect(wasLastPackage(taken, [taken, pkg("OTHER")])).toBe(false);
+    const item = (changes: Partial<ShoppingItem>): ShoppingItem => ({ id: "70000000-0000-4000-8000-000000000001", product_id: RICE.id, text: "", quantity: null, origin: "manual", done_at: null, deleted_at: null, created_at: AT, updated_at: AT, ...changes });
+    expect(isOnShoppingList(RICE.id, [item({})])).toBe(true);
+    expect(isOnShoppingList(RICE.id, [item({ origin: "min_stock", quantity: 1 })])).toBe(true);
+    expect(isOnShoppingList(RICE.id, [item({ done_at: AT }), item({ deleted_at: AT })])).toBe(false);
+    expect(isOnShoppingList(RICE.id, [item({ product_id: null, text: "Reis" })])).toBe(false);
   });
 });

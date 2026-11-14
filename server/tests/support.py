@@ -74,6 +74,7 @@ class Device:
         self.printer_status: dict[str, dict] = {}
         self.print_jobs: dict[str, dict] = {}
         self.label_templates: dict[str, dict] = {}
+        self.shopping_items: dict[str, dict] = {}
         self.settings: dict | None = None
 
     # ------------------------------------------------------------------ Zeit
@@ -141,11 +142,14 @@ class Device:
                 self.printer_status,
                 self.print_jobs,
                 self.label_templates,
+                self.shopping_items,
             ):
                 store.clear()
             self.settings = None
             self.pool.clear()
         changes = data["changes"]
+        for item in changes["shopping_items"]:
+            self.shopping_items[item["id"]] = item
         for zone in changes["zones"]:
             self.zones[zone["id"]] = zone
         for product in changes["products"]:

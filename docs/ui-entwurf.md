@@ -60,3 +60,10 @@ Der Entwurf mischt Englisch und Deutsch. **Die Oberfläche wird durchgehend deut
 - **Zonen** verschwinden vollständig aus der Oberfläche, wenn nur eine existiert (Karten, Spalte, Zonenleiste).
 - **Scannen** ist im Entwurf nicht ausgearbeitet. Vorgabe aus der Spezifikation: Kamera-Vollbild, oben eine Zonenleiste zum Antippen oder Wischen, Mengen-Vorwahl (Standard 1), schnelle MHD-Eingabe, Rückmeldung per Ton und Vibration, Bedienung mit einer Hand.
 - **Zusätzliche Ansichten** ohne Vorlage im Entwurf: Warnungen, Lösch-Historie, Druckerverwaltung mit ausstehenden Etiketten, Sync-Status, Anmeldung. Sie folgen derselben Formensprache.
+
+## Ergänzungen in Stufe 2
+
+- **Einkaufsliste** (`/einkaufsliste`, ohne Vorlage im Entwurf): ein Hauptziel gleich hinter „Bestand", in der Seitenleiste und im Menü am Handy mit der Zahl offener Einträge. Offene Einträge oben, erledigte darunter (einklappbar). Neuer Eintrag mit Produkt (Vorschläge beim Tippen) oder freiem Text, Menge freiwillig. Abhaken über ein Ankreuzfeld, mit „Rückgängig". Automatische Einträge tragen „automatisch" und „fehlt n" und lassen sich nur abhaken oder löschen.
+- **Kennzahl-Karte „Einkaufsliste"** auf dem Bestand: am Desktop die dritte Karte der Reihe; am Handy steht sie im Raster 2 × 2 an der Stelle von „Produkte". Mit nur einer Zone fehlt „Aktive Zonen", dann stehen beide da.
+- **Mindestbestand:** In der Bestandsliste trägt ein Produkt darunter die Marke „fehlt n" in Blau (Bernstein heißt „läuft bald ab"). Produkte mit Mindestbestand ohne Packung bleiben als Zeile mit Menge 0 stehen. Ein Umschalter „Unter Mindestbestand" über der Liste filtert, statt einer sechsten Zonen-Karte.
+- **Chargen-Ansicht:** im Kopf „Auf die Einkaufsliste" oder der Verweis „Steht auf der Einkaufsliste", dazu die Marke „als Nächstes" an der Charge, die nach FIFO zuerst dran ist.

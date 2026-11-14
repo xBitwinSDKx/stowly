@@ -1,5 +1,5 @@
 import { ROUTES } from "@/contract";
-import { BellIcon, HistoryIcon, PrinterIcon, RefreshIcon, SettingsIcon, StockIcon, ZonesIcon, type IconType } from "@/ui/icons";
+import { BellIcon, HistoryIcon, PrinterIcon, RefreshIcon, SettingsIcon, ShoppingIcon, StockIcon, ZonesIcon, type IconType } from "@/ui/icons";
 
 /** Ein Ziel der Navigation. */
 export interface Destination {
@@ -9,15 +9,17 @@ export interface Destination {
 }
 
 const STOCK: Destination = { to: ROUTES.stock, label: "Bestand", icon: StockIcon };
+const SHOPPING: Destination = { to: ROUTES.shopping, label: "Einkaufsliste", icon: ShoppingIcon };
 const ZONES: Destination = { to: ROUTES.zones, label: "Zonen", icon: ZonesIcon };
 const SETTINGS: Destination = { to: ROUTES.settings, label: "Einstellungen", icon: SettingsIcon };
 
 /**
- * Die Navigation des Entwurfs. „Zonen" gibt es nur mit mehr als einer Zone; die
+ * Die Navigation des Entwurfs. Die Einkaufsliste steht gleich hinter dem Bestand: Am Handy ist
+ * sie im Laden die wichtigste Ansicht. „Zonen" gibt es nur mit mehr als einer Zone; die
  * Zonenverwaltung bleibt dann über die Einstellungen erreichbar.
  */
 export function primaryDestinations(multiZone: boolean): Destination[] {
-  return multiZone ? [STOCK, ZONES, SETTINGS] : [STOCK, SETTINGS];
+  return multiZone ? [STOCK, SHOPPING, ZONES, SETTINGS] : [STOCK, SHOPPING, SETTINGS];
 }
 
 /** Die weiteren Bereiche: kleine Symbole in der Seitenleiste, Einträge in den Menüs. */

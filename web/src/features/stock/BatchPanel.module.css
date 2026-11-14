@@ -33,6 +33,25 @@
   margin-left: auto;
 }
 
+/* Mindestbestand und „Nichts im Bestand": eine ruhige Zeile unter der Überschrift */
+.note {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* MHD und die Marke der Charge, die als Nächstes dran ist */
+.when {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.next {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* Die kleine Tabelle der Chargen: eine eigene Karte in der aufgeklappten Fläche */
 .table {
   border: var(--border-width) solid var(--color-border);

@@ -99,7 +99,11 @@ def rename_device(con: sqlite3.Connection, device_id: str, name: str, *, by: str
 
 
 def revoke_device(con: sqlite3.Connection, device_id: str, *, by: str) -> bool:
-    """Sperrt das Token eines Geräts. Wiederholbar; ``False``, wenn es das Gerät nicht gibt."""
+    """Sperrt das Token eines Geräts. Wiederholbar; ``False``, wenn es das Gerät nicht gibt.
+
+    Sein Push-Abo endet in derselben Transaktion (docs/integrationen.md, 4.10): Ein gesperrtes
+    Gerät bekommt keine Nachricht mehr.
+    """
     with db.transaction(con):
         device = con.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
         if device is None:
@@ -107,6 +111,7 @@ def revoke_device(con: sqlite3.Connection, device_id: str, *, by: str) -> bool:
         if device["revoked_at"] is None:
             con.execute("UPDATE devices SET revoked_at = ? WHERE id = ?", (timeutil.now(), device_id))
             _device_event(con, "device.revoked", device, by, {"name": device["name"]})
+        con.execute("DELETE FROM push_subscriptions WHERE device_id = ?", (device_id,))
         return True
 
 

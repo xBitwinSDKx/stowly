@@ -4,7 +4,17 @@
 import { describe, expect, it } from "vitest";
 
 import { InstallPrompt, isAppleMobile } from "./install";
-import { AppUpdates, isSkipWaitingMessage, SKIP_WAITING_MESSAGE, TAKEOVER_TIMEOUT_MS, UPDATE_CHECK_INTERVAL_MS, type ContainerLike, type RegistrationLike, type WorkerLike } from "./updates";
+import {
+  AppUpdates,
+  isSkipWaitingMessage,
+  serverIsNewer,
+  SKIP_WAITING_MESSAGE,
+  TAKEOVER_TIMEOUT_MS,
+  UPDATE_CHECK_INTERVAL_MS,
+  type ContainerLike,
+  type RegistrationLike,
+  type WorkerLike,
+} from "./updates";
 
 class FakeWorker implements WorkerLike {
   state = "installing";
@@ -239,6 +249,32 @@ describe("Aktualisierung der App", () => {
     page.updates.visible();
     page.updates.visible();
     expect(page.env.updates).toBe(1);
+  });
+
+  it("sucht sofort, wenn der Server ein neueres Protokoll spricht, auch vor der Registrierung", () => {
+    const page = setup({ controlled: true });
+    // Die Registrierung ist noch nicht da: gesucht wird, sobald sie ankommt.
+    page.updates.checkNow();
+    expect(page.env.updates).toBe(0);
+    page.updates.watch(page.registration);
+    expect(page.env.updates).toBe(1);
+    page.updates.checkNow();
+    expect(page.env.updates).toBe(2);
+    // Das zählt als Nachsehen: Die nächste Stunde beginnt jetzt.
+    page.env.now = UPDATE_CHECK_INTERVAL_MS - 1;
+    page.updates.visible();
+    expect(page.env.updates).toBe(2);
+    // Eine gefundene Version wird wie jede andere angeboten.
+    page.install();
+    expect(page.env.ready).toEqual([true]);
+  });
+
+  it("erkennt am 409, ob der Server neuer ist", () => {
+    expect(serverIsNewer({ server: 3, client: 2 }, 2)).toBe(true);
+    expect(serverIsNewer({ server: 2, client: 3 }, 3)).toBe(false);
+    expect(serverIsNewer({ server: 2, client: 2 }, 2)).toBe(false);
+    expect(serverIsNewer({ status: 409 }, 2)).toBe(false);
+    expect(serverIsNewer({ server: "3" }, 2)).toBe(false);
   });
 });
 

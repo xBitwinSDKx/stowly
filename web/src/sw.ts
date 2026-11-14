@@ -18,6 +18,8 @@
  * - Eine neue Version übernimmt nicht von selbst. Sie wartet, bis die Seite es verlangt
  *   (Nachricht `SKIP_WAITING`, src/core/pwa/updates.ts), damit kein Tab mitten in der Arbeit
  *   die Dateien unter den Füßen verliert. Nur der allererste Service Worker übernimmt sofort.
+ * - Push (docs/integrationen.md, 4.5): `push` zeigt eine Nachricht im Format „Declarative Web
+ *   Push" an, `notificationclick` führt in die App (src/core/push/worker.ts).
  *
  * Geprüft wird diese Datei mit eigenen Typen: npm run typecheck:sw (kein DOM). Was sie
  * importiert, muss deshalb ohne window und document auskommen.
@@ -30,6 +32,7 @@ import { CacheFirst } from "workbox-strategies";
 
 import { BACKGROUND_SYNC_TAG, runBackgroundSync } from "@/core/background";
 import { IMAGE_CACHE, IMAGE_PATH_PREFIX } from "@/core/images";
+import { handleNotificationClick, handlePush } from "@/core/push/worker";
 import { isSkipWaitingMessage } from "@/core/pwa/updates";
 
 declare const self: ServiceWorkerGlobalScope;
@@ -75,4 +78,12 @@ self.addEventListener("sync", (event) => {
   if (sync.tag === BACKGROUND_SYNC_TAG) {
     sync.waitUntil(runBackgroundSync());
   }
+});
+
+// Push: anzeigen, und ein Tipp führt in die App (nur in den eigenen Ursprung).
+self.addEventListener("push", (event) => {
+  handlePush(event, self.registration);
+});
+self.addEventListener("notificationclick", (event) => {
+  handleNotificationClick(event, self.clients, self.location.origin);
 });

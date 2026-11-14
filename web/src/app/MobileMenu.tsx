@@ -11,11 +11,13 @@ import styles from "./MobileMenu.module.css";
 export interface MobileMenuProps {
   open: boolean;
   onClose: () => void;
-  /** Die Navigation des Entwurfs (Bestand, Zonen, Einstellungen). */
+  /** Die Navigation des Entwurfs (Bestand, Einkaufsliste, Zonen, Einstellungen). */
   primary: readonly Destination[];
   deviceName: string;
   /** Zahl der Packungen mit MHD-Warnung. */
   warnings: number;
+  /** Offene Einträge der Einkaufsliste. */
+  shopping: number;
   /** Offene Etiketten. */
   labels: OpenLabels;
   sync: SyncSummary;
@@ -26,8 +28,11 @@ export interface MobileMenuProps {
  * Das Menü am Handy: schiebt sich von unten ein, damit jeder Eintrag mit dem Daumen
  * erreichbar ist. Enthält alles, was am Desktop Seitenleiste und Geräte-Menü zeigen.
  */
-export function MobileMenu({ open, onClose, primary, deviceName, warnings, labels, sync, onLogout }: MobileMenuProps) {
+export function MobileMenu({ open, onClose, primary, deviceName, warnings, shopping, labels, sync, onLogout }: MobileMenuProps) {
   function value(item: Destination) {
+    if (item.to === ROUTES.shopping) {
+      return shopping > 0 ? <Badge tone="accent">{shopping} offen</Badge> : undefined;
+    }
     if (item.to === ROUTES.warnings) {
       return warnings > 0 ? (
         <Badge tone="warn" solid>
@@ -53,7 +58,7 @@ export function MobileMenu({ open, onClose, primary, deviceName, warnings, label
       <nav aria-label="Hauptnavigation" className={styles.menu}>
         <List>
           {primary.map((item) => (
-            <ListLink key={item.to} to={item.to} label={item.label} icon={<item.icon size={20} />} onClick={onClose} />
+            <ListLink key={item.to} to={item.to} label={item.label} icon={<item.icon size={20} />} value={value(item)} onClick={onClose} />
           ))}
         </List>
         <List>

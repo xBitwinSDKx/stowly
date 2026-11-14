@@ -65,6 +65,7 @@ describe("App", () => {
       [ROUTES.settings]: "Einstellungen",
       [ROUTES.sync]: "Sync-Status",
       [ROUTES.scan]: "Scannen",
+      [ROUTES.shopping]: "Einkaufsliste",
     };
     for (const [path, title] of Object.entries(titles)) {
       renderApp({}, path);
@@ -302,6 +303,7 @@ describe("Rahmen am Handy", () => {
     const menu = screen.getByRole("dialog", { name: "Menü" });
     expect(within(menu).getAllByRole("link").map((link) => link.textContent?.replace(/\d+$/, ""))).toEqual([
       "Bestand",
+      "Einkaufsliste4 offen",
       "Zonen",
       "Einstellungen",
       "Warnungen",

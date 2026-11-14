@@ -81,6 +81,38 @@
   gap: var(--space-1) var(--space-2);
 }
 
+/* Öffentliche Schlüssel der Sicherung: gekürzt, in gleich breiter Schrift */
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.key {
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* Push: Erklärung, Schaltflächen und das Ergebnis der Testnachricht untereinander */
+.push {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.pushActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pause {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Anleitung in Schritten (Installation auf dem iPhone) */
 .steps {
   display: grid;

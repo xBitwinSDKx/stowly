@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from stowly import __version__, db, label_templates, off
+from stowly import __version__, autobackup, db, label_templates, off, push, scheduler
 from stowly.api import router as api_router
 from stowly.auth import LoginGuard
 from stowly.config import MAX_REQUEST_BYTES, Settings
@@ -59,16 +59,41 @@ class BodyLimit:
         await self.app(scope, receive, send)
 
 
+def report_configuration(settings: Settings) -> None:
+    """Schreibt beim Start ins Log, was eingerichtet ist und was nur halb (nie einen Token)."""
+    log.info("Zeitzone des Servers: %s", settings.timezone)
+    if settings.backup_configured:
+        assert settings.backup_dir is not None
+        log.info(
+            "Automatische Sicherung täglich um %s nach %s an %d Schlüssel.",
+            settings.backup_time,
+            settings.backup_dir,
+            len(settings.backup_recipients),
+        )
+        if not settings.backup_dir.is_dir():
+            log.warning("Sicherung: %s", autobackup.MISSING_DIR)
+    elif settings.backup_problem is not None:
+        log.warning("Keine automatische Sicherung: %s", settings.backup_problem)
+    if settings.ha_problem is not None:
+        log.warning("Kein Abgleich mit Home Assistant: %s", settings.ha_problem)
+    if not settings.push_configured:
+        log.info("Push ist aus (STOWLY_PUSH_CONTACT ist nicht gesetzt).")
+
+
 def build_app(
     settings: Settings,
     *,
     off_transport: httpx2.AsyncBaseTransport | None = None,
     off_clock: off.Clock | None = None,
+    push_transport: httpx2.AsyncBaseTransport | None = None,
+    push_clock: off.Clock | None = None,
+    job_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Baut die Anwendung, ohne Dateien oder die Datenbank anzufassen.
 
     ``off_transport`` und ``off_clock`` ersetzen in Tests die Verbindung zu Open Food Facts
-    und die Uhr des Hintergrund-Ablaufs.
+    und die Uhr des Hintergrund-Ablaufs, ``push_transport`` und ``push_clock`` die Verbindung zu
+    den Push-Diensten und deren Uhr, ``job_clock`` die Uhr des Zeitplans.
     """
 
     gateway = PrintGateway()
@@ -76,6 +101,32 @@ def build_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Läuft erst, wenn die App wirklich bedient wird; der Vertrags-Export kommt nie hierher.
+        report_configuration(settings)
+        sender = push.PushService(settings, transport=push_transport, clock=push_clock)
+        app.state.push = sender
+        # Aufgaben des Zeitplans (docs/integrationen.md, 1.1): die Sicherung, wenn sie eingerichtet
+        # ist; die Tagesnachricht (push_daily) kommt in Runde 2 dazu.
+        tasks: list[scheduler.Job] = []
+        if settings.backup_configured:
+            tasks.append(autobackup.BackupJob(settings))
+        jobs = scheduler.Scheduler(settings.database_path, tasks, clock=job_clock)
+        app.state.scheduler = jobs
+        schedule = asyncio.create_task(jobs.run(), name="stowly-scheduler")
+        try:
+            async with _serving(app):
+                yield
+        finally:
+            # Nicht abbrechen: Ein Takt, der gerade die Datenbank liest, wird fertig; ein laufender
+            # Lauf bekommt ein paar Sekunden (Scheduler.aclose).
+            jobs.stop()
+            await asyncio.gather(schedule, return_exceptions=True)
+            await jobs.aclose()
+            app.state.scheduler = None
+            app.state.push = None
+            await sender.aclose()
+
+    @contextlib.asynccontextmanager
+    async def _serving(app: FastAPI) -> AsyncIterator[None]:
         printing: ServerPrinting | None = None
         try:
             printing = await run_in_threadpool(ServerPrinting.open, settings)
@@ -134,6 +185,9 @@ def build_app(
     app.state.off_worker = None
     # Druckdienst (stowly/printing.py); läuft ebenfalls nur, solange die App bedient wird.
     app.state.printing = None
+    # Versand an die Push-Dienste und der Zeitplan (Sicherung); ebenso nur, solange die App läuft.
+    app.state.push = None
+    app.state.scheduler = None
 
     install_error_handlers(app)
     app.add_middleware(BodyLimit)
@@ -171,6 +225,7 @@ def prepare_database(settings: Settings) -> None:
     * Grundausstattung (erste Zone, Einstellungen, ``dataset_id``)
     * Etikett-Vorlagen aus ``stowly_print`` (kommen über den Sync auf die Geräte)
     * ``lookup`` der Produkte passend zu ``STOWLY_OFF_ENABLED``
+    * das VAPID-Schlüsselpaar für Push, auch ohne ``STOWLY_PUSH_CONTACT`` (docs/integrationen.md, 4.1)
     """
     db.initialise(settings.database_path)
     con = db.connect(settings.database_path)
@@ -179,6 +234,7 @@ def prepare_database(settings: Settings) -> None:
         if changed:
             log.info("Etikett-Vorlagen übernommen: %s", ", ".join(changed))
         off.reconcile(con, enabled=settings.off_enabled)
+        push.ensure_vapid_keys(con)
     finally:
         con.close()
 
@@ -188,8 +244,18 @@ def create_app(
     *,
     off_transport: httpx2.AsyncBaseTransport | None = None,
     off_clock: off.Clock | None = None,
+    push_transport: httpx2.AsyncBaseTransport | None = None,
+    push_clock: off.Clock | None = None,
+    job_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Anwendung für den Betrieb: legt die Datenbank an und migriert sie."""
     settings = settings or Settings.from_env()
     prepare_database(settings)
-    return build_app(settings, off_transport=off_transport, off_clock=off_clock)
+    return build_app(
+        settings,
+        off_transport=off_transport,
+        off_clock=off_clock,
+        push_transport=push_transport,
+        push_clock=push_clock,
+        job_clock=job_clock,
+    )

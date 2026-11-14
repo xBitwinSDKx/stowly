@@ -6,10 +6,26 @@
  *   Etikett einer Zone  -> Zone wechseln
  *   alles andere        -> als unbekannt melden
  *
- * Dazu die Eingabe von Hand, die dieselben Ergebnisse liefert wie die Kamera. Ohne React
+ * Dazu die Eingabe von Hand, die dieselben Ergebnisse liefert wie die Kamera, und was nach dem
+ * Entnehmen dazukommt: der FIFO-Hinweis auf eine ältere Packung (Plan von Stufe 2,
+ * Entscheidung 5) und das Angebot „Auf die Einkaufsliste" nach der letzten Packung. Ohne React
  * und ohne den Kern selbst: Nachgeschlagen wird über das, was hereingereicht wird.
  */
-import { normalizeBarcode, normalizePackageId, parseQr, type Package, type Product, type ScanResult, type Zone } from "@/contract";
+import {
+  formatDate,
+  isDate,
+  isOpenItem,
+  normalizeBarcode,
+  normalizePackageId,
+  olderPackage,
+  parseQr,
+  stockCount,
+  type Package,
+  type Product,
+  type ScanResult,
+  type ShoppingItem,
+  type Zone,
+} from "@/contract";
 
 export type ScanAction =
   /** Produkt-Barcode: einlagern. `product` fehlt, wenn die lokale Kopie den Barcode noch nicht kennt. */
@@ -96,4 +112,48 @@ export function parseManualInput(text: string): ManualInput {
     return { ok: true, result: { kind: "package", package_id: packageId } };
   }
   return { ok: false, reason: "unknown" };
+}
+
+// ------------------------------------------------------------------------------------------
+// Nach dem Entnehmen
+// ------------------------------------------------------------------------------------------
+
+/** Ein MHD kurz, wie auf dem Etikett: "2026-12-03" -> "03.12.". */
+export function shortDate(date: string): string {
+  return isDate(date) ? formatDate(date).slice(0, 6) : date;
+}
+
+/**
+ * Der FIFO-Hinweis nach dem Entnehmen als „verbraucht": Liegt eine Packung desselben Produkts
+ * mit früherem MHD im Bestand (`olderPackage`), heißt er „Älter: XYZ12 · MHD 03.12. · Keller";
+ * die Zone nur, wenn es mehr als eine gibt. null, wenn es keine ältere gibt. Rein lokal.
+ * `stock` sind die Packungen im Bestand; die entnommene darf noch darin stehen.
+ */
+export function fifoHint(removed: Pick<Package, "id" | "product_id" | "best_before">, stock: readonly Package[], zones: readonly Zone[]): string | null {
+  const older = olderPackage(removed, stock);
+  if (!older || older.best_before === null) {
+    return null;
+  }
+  const parts = [`Älter: ${older.id}`, `MHD ${shortDate(older.best_before)}`];
+  const zone = zones.find((candidate) => candidate.id === older.zone_id);
+  if (zones.length > 1 && zone) {
+    parts.push(zone.name);
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * Nach dem Entnehmen: Ist das die letzte Packung des Produkts gewesen (Bestand jetzt 0)?
+ * `stock` ist der Bestand danach; die entnommene zählt nie mit.
+ */
+export function wasLastPackage(removed: Pick<Package, "id" | "product_id">, stock: readonly Package[]): boolean {
+  return stockCount(
+    stock.filter((pkg) => pkg.id !== removed.id),
+    removed.product_id,
+  ) === 0;
+}
+
+/** Steht das Produkt offen auf der Einkaufsliste (eigener oder automatischer Eintrag)? */
+export function isOnShoppingList(productId: string, items: readonly ShoppingItem[]): boolean {
+  return items.some((item) => item.product_id === productId && isOpenItem(item));
 }

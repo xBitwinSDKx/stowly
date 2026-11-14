@@ -10,6 +10,12 @@
  * Wirkung; das Ergebnis sagt, warum. Regeln, die nicht vom Zeitpunkt abhängen, gelten auch
  * lokal: Ein Zwischenstand eines Etiketts ändert keinen Ausgang (`progressAfterOutcome`).
  *
+ * Die Einkaufsliste (6.6): Hier steht nur, was ihre drei Befehle selbst tun, dazu das Umhängen
+ * der Einträge beim Zusammenführen (7.3, Schritt 5). Was der Server daraus ableitet (automatische
+ * Einträge, Sperre, Erledigen durch Einlagern, 7.6), steht nicht hier: Der Kern nimmt es nicht
+ * vorweg (Regel 8 in src/contract/core.ts), und die Nachbildung des Servers spielt es eigens nach
+ * (src/core/testing/fake-server.ts).
+ *
  * Ohne DOM: Diese Datei läuft auch im Service Worker.
  */
 import type {
@@ -29,6 +35,9 @@ import type {
   CmdProductRemoveBarcode,
   CmdProductUpdate,
   CmdSettingsUpdate,
+  CmdShoppingItemCreate,
+  CmdShoppingItemDelete,
+  CmdShoppingItemUpdate,
   CmdZoneCreate,
   CmdZoneDelete,
   CmdZoneUpdate,
@@ -37,6 +46,7 @@ import type {
   Package,
   Product,
   RejectCode,
+  ShoppingItem,
   Zone,
 } from "@/contract/api.gen";
 import { willLookUp } from "@/contract/barcode";
@@ -117,6 +127,12 @@ function mergeProducts(ws: Draft, source: Product, target: Product, at: string):
   for (const pkg of ws.rows("packages")) {
     if (pkg.product_id === source.id) {
       ws.put("packages", { ...pkg, product_id: target.id, updated_at: at });
+    }
+  }
+  // Die Einträge der Einkaufsliste wandern mit, auch erledigte und gelöschte (Schritt 5).
+  for (const item of ws.rows("shopping_items")) {
+    if (item.product_id === source.id) {
+      ws.put("shopping_items", { ...item, product_id: target.id, updated_at: at });
     }
   }
   ws.put("products", {
@@ -574,6 +590,76 @@ function printReport(ws: Draft, cmd: CmdPrintReport, ctx: ApplyContext): ApplyOu
   return APPLIED;
 }
 
+// ---------------------------------------------------------------------------------- Einkaufsliste
+
+function shoppingItemCreate(ws: Draft, cmd: CmdShoppingItemCreate, ctx: ApplyContext): ApplyOutcome {
+  if (ws.get("shopping_items", cmd.item_id)) {
+    return rejected("id_conflict");
+  }
+  const productId = cmd.product_id ?? null;
+  const text = cmd.text ?? "";
+  // Genau eines von Produkt und Text.
+  if ((productId === null) === (text === "")) {
+    return rejected("invalid");
+  }
+  // Ein Verweis folgt einer Zusammenführung zum Ziel; ein Produkt, das es nie gab, ist `not_found`.
+  const product = productId === null ? undefined : resolveProduct(ws, productId);
+  if (productId !== null && !product) {
+    return rejected("not_found");
+  }
+  ws.put("shopping_items", {
+    id: cmd.item_id,
+    product_id: product?.id ?? null,
+    text,
+    quantity: cmd.quantity ?? null,
+    origin: "manual",
+    done_at: null,
+    deleted_at: null,
+    created_at: ctx.at,
+    updated_at: ctx.at,
+  });
+  return APPLIED;
+}
+
+function shoppingItemUpdate(ws: Draft, cmd: CmdShoppingItemUpdate, ctx: ApplyContext): ApplyOutcome {
+  const item = ws.get("shopping_items", cmd.item_id);
+  if (!item) {
+    return rejected("not_found");
+  }
+  if (item.deleted_at !== null) {
+    // Gelöscht ist endgültig: ohne Wirkung.
+    return APPLIED;
+  }
+  const changes = cmd.changes;
+  if ((changes.text !== undefined && item.product_id !== null) || (changes.quantity !== undefined && item.origin === "min_stock")) {
+    return rejected("invalid");
+  }
+  if (changes.text === undefined && changes.quantity === undefined && changes.done === undefined) {
+    return APPLIED;
+  }
+  const next: ShoppingItem = {
+    ...item,
+    text: changes.text === undefined ? item.text : changes.text,
+    quantity: changes.quantity === undefined ? item.quantity : changes.quantity,
+    // Abhaken lässt ein schon gesetztes `done_at`, wie es ist; Öffnen setzt es zurück.
+    done_at: changes.done === undefined ? item.done_at : changes.done ? (item.done_at ?? ctx.at) : null,
+    updated_at: ctx.at,
+  };
+  ws.put("shopping_items", next);
+  return APPLIED;
+}
+
+function shoppingItemDelete(ws: Draft, cmd: CmdShoppingItemDelete, ctx: ApplyContext): ApplyOutcome {
+  const item = ws.get("shopping_items", cmd.item_id);
+  if (!item) {
+    return rejected("not_found");
+  }
+  if (item.deleted_at === null) {
+    ws.put("shopping_items", { ...item, deleted_at: ctx.at, updated_at: ctx.at });
+  }
+  return APPLIED;
+}
+
 /** Wendet einen Befehl auf den Entwurf an und sagt, was der Server dazu melden würde. */
 export function applyCommand(ws: Draft, command: Command, ctx: ApplyContext): ApplyOutcome {
   switch (command.type) {
@@ -615,9 +701,14 @@ export function applyCommand(ws: Draft, command: Command, ctx: ApplyContext): Ap
       return printRequest(ws, command, ctx);
     case "print.report":
       return printReport(ws, command, ctx);
+    case "shopping_item.create":
+      return shoppingItemCreate(ws, command, ctx);
+    case "shopping_item.update":
+      return shoppingItemUpdate(ws, command, ctx);
+    case "shopping_item.delete":
+      return shoppingItemDelete(ws, command, ctx);
     default:
       // Eine Befehlsart, die diese Version nicht kennt (neuerer Befehl in einer alten Outbox).
-      // Bis Runde 1 gehören die Befehle der Einkaufsliste dazu (shopping_item.*, Protokoll 6.6).
       return rejected("invalid");
   }
 }

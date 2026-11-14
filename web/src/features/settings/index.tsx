@@ -3,12 +3,15 @@ import { useEffect, useState } from "react";
 import { formatBuild, ROUTES, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
 import { useLogout } from "@/features/auth/logout";
-import { errorText, List, ListLink, ListRow, Notice, plural, Section } from "@/ui";
+import { errorText, List, ListLink, ListRow, plural, Section } from "@/ui";
 import { Button, cx, SegmentedControl, Switch, TextField, useToast } from "@/ui/base";
-import { DownloadIcon, InstallIcon, LogOutIcon, PrinterIcon, ShareIcon, ZonesIcon } from "@/ui/icons";
+import { InstallIcon, LogOutIcon, PrinterIcon, ShareIcon, ZonesIcon } from "@/ui/icons";
 import { ACCENTS, setAccent, setTheme, useTheme, type AccentKey, type ThemeChoice } from "@/ui/theme";
 
+import { BackupSection } from "./BackupSection";
 import { DevicesSection } from "./DevicesSection";
+import { useIntegrations } from "./integrations";
+import { PushSetting } from "./PushSetting";
 import styles from "./SettingsPage.module.css";
 
 interface NumberSettingProps {
@@ -149,22 +152,11 @@ export function describeLookup(enabled: boolean | null | undefined): RowText {
   return { value: "noch unbekannt", hint: "Ob der Server Produktdaten nachschlägt, steht nach dem nächsten Abgleich fest." };
 }
 
-/** Speichert eine Datei, die der Kern als Blob liefert. */
-function saveBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  // Der Download hat die Adresse zu diesem Zeitpunkt sicher übernommen.
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
-
 /**
  * Einstellungen nach dem Entwurf: eine Liste aus Zeilen mit dem Bedienelement rechts,
- * gegliedert in Darstellung, dieses Gerät, Haushalt, Geräte, Sicherung, diese App und Über.
+ * gegliedert in Darstellung, dieses Gerät (samt Benachrichtigungen), Haushalt, Geräte,
+ * Sicherung, diese App und Über. Solange die Ansicht offen ist, lädt sie den Zustand der
+ * Integrationen vom Server (Sicherung, Push).
  */
 export function SettingsPage() {
   const core = useCore();
@@ -178,8 +170,7 @@ export function SettingsPage() {
   const sync = useLive(core.sync.status);
   const session = useLive(core.session.state);
   const { theme, accent } = useTheme();
-  const [backupBusy, setBackupBusy] = useState(false);
-  const [backupError, setBackupError] = useState<string | null>(null);
+  const integrations = useIntegrations();
   const [installing, setInstalling] = useState(false);
   const [persisting, setPersisting] = useState(false);
 
@@ -204,20 +195,6 @@ export function SettingsPage() {
       .update(changes)
       .then(() => toast.show({ id: "settings-saved", message: "Einstellung gespeichert", tone: "success", duration: 2500 }))
       .catch(report);
-  }
-
-  async function downloadBackup() {
-    setBackupBusy(true);
-    setBackupError(null);
-    try {
-      const { blob, filename } = await core.backup.download();
-      saveBlob(blob, filename);
-      toast.show({ message: `Sicherung heruntergeladen: ${filename}`, tone: "success" });
-    } catch (caught) {
-      setBackupError(errorText(caught, { offline: "Die Sicherung kommt vom Server, und der ist gerade nicht erreichbar." }));
-    } finally {
-      setBackupBusy(false);
-    }
   }
 
   async function install() {
@@ -296,6 +273,7 @@ export function SettingsPage() {
               onChange={(scan_vibration) => updatePrefs({ scan_vibration })}
             />
           </div>
+          <PushSetting integrations={integrations.state} />
         </List>
       </Section>
 
@@ -342,20 +320,7 @@ export function SettingsPage() {
 
       <DevicesSection />
 
-      <Section title="Sicherung" description="Eine vollständige Kopie der Datenbank des Servers als Datei. Braucht den Server.">
-        <List>
-          <ListRow label="Kopie der Datenbank" hint="Enthält den gesamten Bestand, alle Einstellungen und das Ereignisprotokoll.">
-            <Button icon={<DownloadIcon />} busy={backupBusy} onClick={() => void downloadBackup()}>
-              Herunterladen
-            </Button>
-          </ListRow>
-        </List>
-        {backupError ? (
-          <Notice tone="warn" role="alert">
-            {backupError}
-          </Notice>
-        ) : null}
-      </Section>
+      <BackupSection integrations={integrations.state} onReload={integrations.reload} />
 
       <Section title="Diese App" id="app" description="Installation und Speicher auf diesem Gerät.">
         <List>

@@ -34,7 +34,7 @@ Eine Aufgabe ist **fällig**, wenn
 2. sie heute noch nicht lief (`last_date` ist `null` oder vor heute) und
 3. ihre eigene Bedingung gilt: die Sicherung wartet nach einem Fehler eine Stunde (3.2), die Tagesnachricht läuft nur in ihrem Fenster (1.4).
 
-Nach einem abgeschlossenen Lauf: `last_date` = heute, `last_at` = jetzt. „Heute" ist der Tag beim Start des Laufs.
+Nach einem abgeschlossenen Lauf: `last_date` = heute, `last_at` = der Beginn des Laufs. „Heute" ist der Tag beim Start des Laufs. Was während des Laufs eintrifft, zählt so beim nächsten (4.8).
 
 ### 1.3 Sommer- und Winterzeit
 
@@ -79,7 +79,7 @@ Täglich eine verschlüsselte Kopie der Datenbank in einen Ordner auf dem Server
 
 ### 3.2 Ablauf
 
-1. **Kopie:** ein in sich stimmiger Schnappschuss wie bei `GET /api/backup` (`sqlite3.Connection.backup`), aber in eine Datenbank im Arbeitsspeicher (`:memory:`). Die Kopie bekommt eine neue `dataset_id` (`sync-protokoll.md`, 6.4), `PRAGMA integrity_check` muss `ok` liefern, dann `serialize()`. Unverschlüsselt berührt die Kopie nie die Platte.
+1. **Kopie:** ein in sich stimmiger Schnappschuss wie bei `GET /api/backup` (`sqlite3.Connection.backup`), aber in eine Datenbank im Arbeitsspeicher (`:memory:`). Die Kopie bekommt eine neue `dataset_id` (`sync-protokoll.md`, 6.4), `PRAGMA integrity_check` muss `ok` liefern, dann `serialize()`. Unverschlüsselt berührt die Kopie nie die Platte. Wie der Download ist sie eine einzelne Datei ohne WAL (`journal_mode` `delete`): Nach dem Entschlüsseln genügt diese eine Datei; der Server stellt beim Öffnen selbst wieder auf WAL.
 2. **Packen:** gzip (`gzip.compress(…, mtime=0)`).
 3. **Verschlüsseln:** age, an alle Empfänger aus `STOWLY_BACKUP_RECIPIENTS` zugleich, mit `pyrage` (`pyrage.encrypt` mit `pyrage.x25519.Recipient`), im binären Format von age (nicht ASCII-Armor). Jeder der privaten Schlüssel kann die Datei allein entschlüsseln.
 4. **Schreiben:** in eine Zwischendatei im Ordner, `.stowly-backup-<16 Hex-Zeichen>.tmp`, angelegt mit `O_CREAT | O_EXCL` und Rechten `0600`; schreiben, `flush`, `os.fsync`, schließen. In ihr steht von Anfang an nur Verschlüsseltes.
@@ -114,7 +114,7 @@ So bleiben auch nach einem langen Ausfall die letzten Sicherungen erhalten: Gez�
 ### 3.5 Ordner und Rechte
 
 - Der Container läuft als Benutzer mit uid 10001 (Dockerfile). Der Ordner muss ihm gehören oder für ihn beschreibbar sein: `sudo chown 10001:10001 ./backups`. Die Dateien bekommen `0600`.
-- Fehlt der Ordner, legt der Server ihn **nicht** an (er läge sonst womöglich im Container statt auf dem eingebundenen Laufwerk); der Zustand meldet „Der Ordner für Sicherungen fehlt." Ist er nicht beschreibbar: „Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)."
+- Fehlt der Ordner, legt der Server ihn **nicht** an (er läge sonst womöglich im Container statt auf dem eingebundenen Laufwerk); der Zustand meldet „Der Ordner für Sicherungen fehlt." Ist er nicht beschreibbar: „Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)." Beides steht als `last_error` des Versuchs im Zustand, nicht als `problem` (eingerichtet ist die Sicherung ja), und beim Start zusätzlich als Warnung im Log.
 - Ein Ordner auf derselben Platte ersetzt keine Kopie außer Haus; `docs/betrieb.md` sagt das.
 
 ### 3.6 Zustand für die App
@@ -124,7 +124,7 @@ So bleiben auch nach einem langen Ausfall die letzten Sicherungen erhalten: Gez�
 - `recipients`: die öffentlichen Schlüssel gekürzt auf die ersten 8 Zeichen, „…" und die letzten 4, etwa `age1ql3z…ac8p`.
 - `last_ok_at`, `last_file`, `last_size`: aus `job_runs.state` der letzten gelungenen Sicherung.
 - `last_error`, `last_error_at`: der letzte Fehlschlag, `null` nach einem Erfolg.
-- `next_at`: der nächste geplante Versuch in UTC: heute zur Uhrzeit, wenn sie noch kommt und heute noch nichts lief; nach einem Fehler `last_error_at` plus eine Stunde; sonst morgen zur Uhrzeit (über die Zeitumstellung richtig umgerechnet). `null`, wenn nicht eingerichtet.
+- `next_at`: der nächste geplante Versuch in UTC: heute zur Uhrzeit, wenn sie noch kommt und heute noch nichts lief; nach einem Fehler `last_error_at` plus eine Stunde; sonst morgen zur Uhrzeit (über die Zeitumstellung richtig umgerechnet). `null`, wenn nicht eingerichtet. Maßgeblich ist die Regel „fällig" (1.2): Ist ein Versuch schon jetzt fällig (etwa nach einem Ausfall), ist `next_at` jetzt; ein Fehler kurz vor Mitternacht ergibt die Uhrzeit des nächsten Tages, nicht „eine Stunde später". Liegt `last_error_at` in der Zukunft (Uhr zurückgestellt), wartet die Sicherung nicht darauf.
 - **`warning`** (die App warnt): eingerichtet, und entweder liegt die letzte gelungene Sicherung mehr als **48 Stunden** zurück, oder es gab noch keine und der letzte Versuch ist gescheitert.
 
 ### 3.7 Zurückspielen
@@ -141,7 +141,8 @@ Benachrichtigungen per Web-Push direkt aus Stowly, ohne fremde Bibliothek: Versc
 
 - **`STOWLY_PUSH_CONTACT`**: Absender für VAPID (`sub`), `mailto:` mit einer Adresse oder eine `https:`-Adresse. Apple lehnt Nachrichten ohne gültigen Absender ab. Ungültige Form: Konfigurationsfehler beim Start. Nicht gesetzt: kein Push; alle Aufrufe unter `/api/push` antworten mit 503 `not_configured`, die Tagesnachricht läuft nicht.
 - **VAPID-Schlüssel:** ein Schlüsselpaar auf P-256, in der Tabelle `meta`: `vapid_private_key` (der private Wert d, 32 Byte, base64url ohne Füllzeichen) und `vapid_public_key` (der öffentliche Punkt unkomprimiert, 65 Byte, base64url). Fehlt es, legt der Server es beim Start an, auch ohne `STOWLY_PUSH_CONTACT`. Es kommt mit jeder Sicherung und wird nie neu erzeugt, solange es da ist. Der private Wert steht nie im Log und nie in einer Antwort.
-- **Die App** vergleicht beim Start den öffentlichen Schlüssel (`GET /api/push/key`) mit dem `applicationServerKey` ihres Abos. Weicht er ab (zurückgespielte Sicherung, neue Datenbank), meldet sie sich neu an: Abo im Browser beenden, neu anlegen, beim Server ersetzen.
+- **Die App** vergleicht beim Start den öffentlichen Schlüssel (`GET /api/push/key`) mit dem `applicationServerKey` ihres Abos. Weicht er ab (zurückgespielte Sicherung, neue Datenbank), meldet sie sich neu an: Abo im Browser beenden, neu anlegen, beim Server ersetzen. Sonst meldet sie ein vorhandenes Abo beim Start und nach der Anmeldung trotzdem noch einmal an (`PUT` ist wiederholbar): So kennt der Server es auch wieder, wenn er es vergessen hatte. Ohne Server holt sie das nach dem nächsten Kontakt nach.
+- **Sperrt ein anderes Gerät dieses hier,** löscht der Server das Abo (4.10); der Browser behält seines. Meldet sich das Gerät wieder an, meldet die App das vorhandene Abo neu an: Push ist dann wieder an. Nur das Abmelden auf dem Gerät selbst und „Ausschalten" beenden das Abo auch im Browser.
 
 ### 4.2 Erlaubte Push-Dienste
 
@@ -162,7 +163,7 @@ Sonst: 422 `invalid_request`, `details.errors[0].loc = ["body", "endpoint"]`. We
 Weiter geprüft beim Anlegen:
 
 - `keys.p256dh`: base64url (Füllzeichen erlaubt) eines unkomprimierten Punkts auf P-256, 65 Byte, beginnend mit `0x04`, gültig auf der Kurve. `keys.auth`: base64url von genau 16 Byte. Sonst 422 mit `loc` `["body", "keys", "p256dh"]` bzw. `["body", "keys", "auth"]`.
-- `origin`: genau ein Ursprung, `https://host` oder `https://host:port`, für die Entwicklung auch `http://localhost`, `http://127.0.0.1` oder `http://[::1]` (mit Port); ohne Pfad, Abfrage, Fragment und Benutzerangabe, höchstens 200 Zeichen. Sonst 422 mit `loc` `["body", "origin"]`.
+- `origin`: genau ein Ursprung, `https://host` oder `https://host:port`, für die Entwicklung auch `http://localhost`, `http://127.0.0.1` oder `http://[::1]` (mit Port); ohne Pfad (auch ohne `/` am Ende, die App schickt `location.origin`), Abfrage, Fragment und Benutzerangabe, höchstens 200 Zeichen. Sonst 422 mit `loc` `["body", "origin"]`.
 
 ### 4.3 Verschlüsselung (RFC 8291, `aes128gcm`)
 
@@ -206,7 +207,7 @@ Die Nutzlast ist JSON im Format „Declarative Web Push" (WebKit, Push API der W
 - Kein `mutable` und kein `app_badge`: Wo `app_badge` hingehört, ist bei WebKit noch nicht eindeutig.
 - **Geräte ohne Declarative Web Push** bekommen dieselben Bytes als `push`-Ereignis im Service Worker. Er zeigt sie selbst an (`web/src/sw.ts`):
   - `push`: JSON lesen; nur bei `web_push === 8030` und einem `notification.title` `registration.showNotification(title, { body, lang, dir, tag, silent, data: { navigate } })`, sonst nichts. Auch Safari mit Declarative Web Push schickt das Ereignis an einen vorhandenen Service Worker; zeigt der dieselbe Nachricht an, ist das kein Doppel.
-  - `notificationclick`: Nachricht schließen; ein offenes Fenster der App fokussieren und dorthin führen, sonst `clients.openWindow(navigate)`. Ziele außerhalb des eigenen Ursprungs öffnet der Service Worker nicht.
+  - `notificationclick`: Nachricht schließen; ein offenes Fenster der App fokussieren und dorthin führen (`WindowClient.navigate`, die Seite lädt dabei neu), sonst `clients.openWindow(navigate)`. Scheitert das Hinführen (etwa bei einem Fenster, das der Service Worker nicht steuert), öffnet er ein neues. Ziele außerhalb des eigenen Ursprungs und ungültige öffnet der Service Worker nicht: Der Tipp führt dann zum Anfang der App im eigenen Ursprung.
 
 ### 4.6 Kopfzeilen
 
@@ -231,6 +232,7 @@ Die Nutzlast ist JSON im Format „Declarative Web Push" (WebKit, Push API der W
 | 429 | überlastet: vermerken, Abo bleibt, kein sofortiger neuer Versuch | `failed` |
 | 400, 401, 403 und andere 4xx | abgelehnt (Absender, VAPID, Schlüssel): vermerken, Warnung im Log, Abo bleibt | `rejected` |
 | 5xx, Netzfehler, Zeitüberschreitung | vorübergehend: vermerken, Abo bleibt | `failed` |
+| 3xx | unerwartet (Weiterleitungen folgt der Server nicht, 4.2): vermerken, Abo bleibt | `failed` |
 
 Vermerkt wird am Abo (`last_error` als kurzer Text mit dem Status, `last_error_at`). Eine Nachricht wird nicht wiederholt; die nächste Tagesnachricht kommt ohnehin.
 
@@ -281,13 +283,13 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
 
 | Variable | Bedeutung |
 |---|---|
-| `STOWLY_HA_URL` | Adresse von HA, etwa `https://192.168.1.20:8123` oder `http://192.168.1.20:8123`; ohne Pfad und ohne `/` am Ende. Namen auf `.local` lösen im Container nicht auf: IP-Adresse oder einen Namen aus dem eigenen DNS nehmen. |
+| `STOWLY_HA_URL` | Adresse von HA, etwa `https://192.168.1.20:8123` oder `http://192.168.1.20:8123`; ohne Pfad (ein `/` am Ende fällt weg). Namen auf `.local` lösen im Container nicht auf: IP-Adresse oder einen Namen aus dem eigenen DNS nehmen. |
 | `STOWLY_HA_TOKEN` | langlebiger Zugangs-Token aus HA (Profil, „Sicherheit"), am besten von einem eigenen HA-Benutzer nur für Stowly |
 | `STOWLY_HA_TODO_ENTITY` | die To-do-Liste, die mit Bring! verbunden ist, etwa `todo.einkaufsliste` |
 | `STOWLY_HA_CA` | freiwillig: Pfad zu einer PEM-Datei mit der eigenen Zertifizierungsstelle, wenn HA per https mit eigenem Zertifikat läuft |
 
 - Alle drei von URL, Token und Liste gesetzt: eingerichtet. Keines: aus, ohne Hinweis. Nur ein Teil: aus, der Zustand nennt den Grund (`problem`).
-- Beim Start geprüft: URL absolut mit `http` oder `https`, ohne Pfad, Abfrage und Benutzerangabe; Liste nach dem Muster `^todo\.[a-z0-9_]+$`; die CA-Datei ist lesbar. Sonst Konfigurationsfehler.
+- Beim Start geprüft: URL absolut mit `http` oder `https`, ohne Pfad, Abfrage und Benutzerangabe; Liste nach dem Muster `^todo\.[a-z0-9_]+$`; die CA-Datei ist lesbar und lässt sich als PEM laden. Sonst Konfigurationsfehler.
 - **Der Token** steht nur in der `.env`: nie in der Datenbank, einer Sicherung, dem Log, dem Ereignisprotokoll oder einer Antwort. Fehlermeldungen nennen Status und Pfad, nie Kopfzeilen.
 
 ### 5.2 Abbildung
@@ -337,6 +339,7 @@ Ein Lauf:
      - `bring`: nichts; in Bring! ist es schon erledigt.
      - `stock` oder `merge` (der Bestand reicht wieder, kein Mindestbestand mehr, zusammengelegt): `POST /api/services/todo/remove_item` mit `{"entity_id", "item": <uid oder Name>}`, `status = removed`. So entsteht kein „gekauft", das niemand getan hat.
      - `device` oder `store` (abgehakt, gelöscht, durch Einlagern erledigt): `update_item` mit `"status": "completed"`, `status = completed`. In Bring! wandert er zu „zuletzt gekauft".
+     - `closed_by` nennt, was den Eintrag geschlossen hat. Wird ein erledigter Eintrag danach gelöscht, bleibt es dabei: Das ist Aufräumen, wie bei der Sperre (`sync-protokoll.md`, 7.6).
    - **Fremde Artikel** schreibt Stowly nie.
    - **Wieder geöffnet:** Ein Eintrag, dessen Artikel `completed` oder `removed` ist, verliert beim Wiederöffnen seine Bindung (`bring_key = null`) und geht beim nächsten Lauf neu nach Bring!. Steht der Name dort unter „zuletzt gekauft", holt `todo.add_item` ihn erwartungsgemäß zurück auf die Liste, statt einen zweiten anzulegen (klärt die Probe mit dem Anwender).
 5. Zustand `ok`, `last_ok_at` = jetzt.
@@ -504,16 +507,18 @@ Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/
 | `STOWLY_OFF_ENABLED` | Wahrheitswert | `1` | Wahrheitswert | an |
 | `STOWLY_OFF_URL` | URL | `https://world.openfoodfacts.org` | – | Vorgabe |
 | `STOWLY_OFF_CONTACT` | Text | – | – | kein Kontakt im User-Agent |
-| `STOWLY_TIMEZONE` | IANA-Name | `Europe/Berlin` | `zoneinfo` kennt sie (aus `tzdata`) | Vorgabe |
+| `STOWLY_TIMEZONE` | IANA-Name | `Europe/Berlin` | `zoneinfo` kennt sie (aus `tzdata`), genau so geschrieben wie dort (unter Windows fände `zoneinfo` sonst auch „europe/berlin", unter Linux nicht) | Vorgabe |
 | `STOWLY_BACKUP_DIR` | absoluter Pfad | – | absolut | keine automatische Sicherung (mit Empfängern: Hinweis, 3.1) |
-| `STOWLY_BACKUP_RECIPIENTS` | `age1…`, getrennt durch Komma oder Leerraum | – | jeder ein öffentlicher age-Schlüssel (X25519) | keine automatische Sicherung (mit Ordner: Hinweis) |
+| `STOWLY_BACKUP_RECIPIENTS` | `age1…`, getrennt durch Komma oder Leerraum | – | jeder ein öffentlicher age-Schlüssel (X25519); ein privater (`AGE-SECRET-KEY-…`) beendet den Start mit eigener Meldung, die ihn nicht zitiert | keine automatische Sicherung (mit Ordner: Hinweis) |
 | `STOWLY_BACKUP_TIME` | `HH:MM` | `03:30` | Form `HH:MM` | Vorgabe |
-| `STOWLY_HA_URL` | `http(s)://Host[:Port]` | – | absolut, ohne Pfad | kein Bring! (mit Token oder Liste: Hinweis) |
+| `STOWLY_HA_URL` | `http(s)://Host[:Port]` | – | absolut, ohne Pfad; ein `/` am Ende fällt weg | kein Bring! (mit Token oder Liste: Hinweis) |
 | `STOWLY_HA_TOKEN` | Text | – | – | kein Bring! (Hinweis wie oben) |
 | `STOWLY_HA_TODO_ENTITY` | `todo.<name>` | – | Muster `^todo\.[a-z0-9_]+$` | kein Bring! (Hinweis wie oben) |
-| `STOWLY_HA_CA` | Pfad zu einer PEM-Datei | – | Datei lesbar | Vertrauen des Systems |
-| `STOWLY_HA_SUMMARY_TOKEN` | Text, mindestens 32 Zeichen | – | Länge | kein Sensor (503 `not_configured`) |
-| `STOWLY_PUSH_CONTACT` | `mailto:<Adresse>` oder `https://…` | – | Form | kein Push (503 `not_configured`) |
+| `STOWLY_HA_CA` | Pfad zu einer PEM-Datei | – | Datei lesbar und als PEM ladbar | Vertrauen des Systems |
+| `STOWLY_HA_SUMMARY_TOKEN` | Text, mindestens 32 Zeichen | – | Länge; nur druckbares ASCII ohne Leerraum | kein Sensor (503 `not_configured`) |
+| `STOWLY_PUSH_CONTACT` | `mailto:<Adresse>` oder `https://<Host>` | – | Form: `mailto:` mit einer Adresse samt Domäne oder `https://` mit Host, das Schema klein geschrieben, ohne Benutzerangabe | kein Push (503 `not_configured`) |
+
+Ist von Home Assistant nur `STOWLY_HA_CA` gesetzt, gilt das als halbe Einrichtung: `problem` nennt die drei fehlenden Variablen. `STOWLY_HA_SUMMARY_TOKEN` allein gehört nicht dazu: Der Sensor braucht den Abgleich nicht.
 
 Nur für Docker Compose, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB_GID`, `FORWARDED_ALLOW_IPS`, `TZ` (die Zeitzone für Stowly ist `STOWLY_TIMEZONE`). `.env.example` nennt jede Variable mit einem kurzen Satz; Beispiele nur mit Platzhaltern (`stowly.example`, `ha.example`, Token als `…`).
 
@@ -524,7 +529,7 @@ Nur für Docker Compose, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB
 - **`timezone`:** `STOWLY_TIMEZONE`.
 - **`backup`** (`BackupStatus`): wie in 3.6. `configured` und `problem` nach 3.1, `time` aus `STOWLY_BACKUP_TIME`, auch wenn die Sicherung aus ist; `null` nur, wenn sie gar nicht eingerichtet ist.
 - **`ha`** (`HaStatus`): `configured` und `problem` nach 5.1; `entity` aus `STOWLY_HA_TODO_ENTITY`; `state`, `last_ok_at`, `last_error`, `last_error_at` nach 5.6; `linked` = offene Einträge mit `bring_key`; `sensor` = `STOWLY_HA_SUMMARY_TOKEN` gesetzt.
-- **`push`** (`PushStatus`): `configured` nach 4.1; `subscriptions` = Abos im Haushalt; `this_device` = das fragende Gerät hat eines; `last_run_at` = `job_runs.push_daily.last_at`; `last_sent_at` = `state.sent_at`; `last_error` = `job_runs.push_daily.last_error`.
+- **`push`** (`PushStatus`): `configured` nach 4.1; `problem` ist derzeit immer `null` (ein ungültiger `STOWLY_PUSH_CONTACT` beendet schon den Start); `subscriptions` = Abos im Haushalt; `this_device` = das fragende Gerät hat eines; `last_run_at` = `job_runs.push_daily.last_at`; `last_sent_at` = `state.sent_at`; `last_error` = `job_runs.push_daily.last_error`.
 - **Nie** darin: ein Token, ein privater Schlüssel, die Adresse von HA, `STOWLY_PUSH_CONTACT`. Öffentliche age-Schlüssel nur gekürzt.
 
 Die App lädt den Zustand, wenn die Einstellungen offen sind (`core.integrations.load`); offline sagt sie, dass er fehlt.

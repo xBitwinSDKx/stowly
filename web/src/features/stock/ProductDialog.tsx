@@ -1,21 +1,62 @@
 import { useId, useState, type FormEvent } from "react";
 
 import {
+  checkMinStock,
   isCoreError,
   isPlaceholder,
   isStoreInternalBarcode,
+  LIMITS,
   normalizeBarcode,
   productTitle,
   useCore,
   type Product,
   type ProductChanges,
 } from "@/contract";
-import { ConfirmDialog, errorText, FieldGroup, Notice, packagesText } from "@/ui";
+import { ConfirmDialog, errorText, FieldGroup, focusFirstInvalid, Notice, packagesText } from "@/ui";
 import { Button, Dialog, dialogFocus, IconButton, Spinner, TextField, useToast } from "@/ui/base";
 import { BarcodeIcon, CloseIcon, InfoIcon, MergeIcon, PlusIcon } from "@/ui/icons";
 
 import styles from "./dialogs.module.css";
 import type { StockData } from "./useStock";
+
+/** Der Mindestbestand als Text eines Eingabefelds: leer = keiner. */
+export function minStockInput(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+/**
+ * Liest das Feld „Mindestbestand": leer heißt keiner (null). Sonst eine ganze Zahl in den Grenzen
+ * des Vertrags (`checkMinStock`); was nicht passt, liefert den Satz für die Anzeige.
+ */
+export function readMinStock(text: string): { value: number | null; error: string | null } {
+  const trimmed = text.trim();
+  if (trimmed === "") {
+    return { value: null, error: null };
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return { value: null, error: `Bitte eine ganze Zahl von 1 bis ${String(LIMITS.min_stock)} eingeben oder das Feld leer lassen.` };
+  }
+  const value = Number(trimmed);
+  try {
+    checkMinStock(value);
+  } catch (caught) {
+    return { value: null, error: errorText(caught) };
+  }
+  return { value, error: null };
+}
+
+/**
+ * Was der Mindestbestand bewirkt, als Hinweis am Feld. Er gilt je Produkt; wer „3 Milch, egal
+ * welche Marke" will, führt die Produkte zusammen (Plan von Stufe 2, Entscheidung 1).
+ * @param stock Packungen im Bestand; ohne Angabe fehlt der Satz dazu (neues Produkt)
+ */
+export function minStockHint(stock?: number): string {
+  const current = stock === undefined ? "" : ` Im Bestand: ${packagesText(stock)}.`;
+  return (
+    `Leer = keiner. Liegen weniger Packungen im Bestand (abgelaufene zählen mit), setzt der Server das Produkt auf die Einkaufsliste.${current}` +
+    " Der Wert gilt für dieses Produkt: Wer „3 Milch, egal welche Marke“ will, führt die Produkte zusammen; ein Produkt kann mehrere Barcodes haben."
+  );
+}
 
 export interface ProductDialogProps {
   stock: StockData;
@@ -46,7 +87,8 @@ interface MergeOffer {
 }
 
 /**
- * Produkt bearbeiten: Name, Marke, Packungsgröße, eigene Vorlaufzeit der MHD-Warnung, Barcodes.
+ * Produkt bearbeiten: Name, Marke, Packungsgröße, eigene Vorlaufzeit der MHD-Warnung,
+ * Mindestbestand, Barcodes.
  *
  * Felder und Barcodes werden mit „Speichern" übernommen. Gehört ein Barcode schon zu einem
  * anderen Produkt, bietet der Dialog das Zusammenführen an; das geschieht nach einer
@@ -62,6 +104,7 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
   const [brand, setBrand] = useState(product?.brand ?? "");
   const [quantity, setQuantity] = useState(product?.quantity ?? "");
   const [warnDays, setWarnDays] = useState(product?.warn_days === null || product?.warn_days === undefined ? "" : String(product.warn_days));
+  const [minStock, setMinStock] = useState(minStockInput(product?.min_stock));
   const [barcodes, setBarcodes] = useState<string[]>(product?.barcodes ?? []);
   const [newBarcode, setNewBarcode] = useState("");
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
@@ -88,6 +131,8 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
   const parsedDays = warnDays.trim() === "" ? null : Number(warnDays);
   const daysError =
     parsedDays !== null && (!/^\d+$/.test(warnDays.trim()) || parsedDays > 3650) ? "Bitte eine ganze Zahl von 0 bis 3650 eingeben oder das Feld leer lassen." : null;
+  const parsedMin = readMinStock(minStock);
+  const inStock = stock.entries.filter((entry) => entry.pkg.product_id === current.id).length;
 
   function ownerOf(barcode: string): Product | undefined {
     return stock.products.find((candidate) => candidate.id !== current.id && candidate.barcodes.includes(barcode));
@@ -130,7 +175,8 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTried(true);
-    if (nameError || daysError) {
+    if (nameError || daysError || parsedMin.error) {
+      focusFirstInvalid(formId);
       return;
     }
     setBusy(true);
@@ -148,6 +194,10 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
       }
       if (parsedDays !== current.warn_days) {
         changes.warn_days = parsedDays;
+      }
+      if (parsedMin.value !== current.min_stock) {
+        // null entfernt den Mindestbestand.
+        changes.min_stock = parsedMin.value;
       }
       if (Object.keys(changes).length > 0) {
         await core.products.update(current.id, changes);
@@ -241,6 +291,18 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
             trailing={<span className={styles.unit}>Tage</span>}
             hint={`Leer = Wert des Haushalts${householdDays === undefined ? "" : ` (${String(householdDays)} Tage)`}. So viele Tage vor dem MHD gilt eine Packung als „läuft bald ab“.`}
             error={tried ? daysError : null}
+          />
+          <TextField
+            label="Mindestbestand"
+            value={minStock}
+            onChange={(event) => setMinStock(event.target.value)}
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={3}
+            placeholder="keiner"
+            trailing={<span className={styles.unit}>Packungen</span>}
+            hint={minStockHint(inStock)}
+            error={tried ? parsedMin.error : null}
           />
 
           <FieldGroup label="Barcodes" hint="Ein Produkt kann mehrere Barcodes haben, etwa für verschiedene Marken derselben Zutat.">

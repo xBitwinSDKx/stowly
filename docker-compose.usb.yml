@@ -19,6 +19,8 @@
 services:
   stowly:
     volumes:
+      # Compose führt die Liste mit der aus docker-compose.yml zusammen: Daten (/data) und
+      # Sicherungen (./backups) bleiben eingebunden.
       # Den ganzen USB-Baum, keinen festen Gerätepfad: Die Nummer ändert sich bei jedem Einstecken.
       - /dev/bus/usb:/dev/bus/usb
     device_cgroup_rules:

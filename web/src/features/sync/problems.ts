@@ -3,7 +3,19 @@
  * Abgeleitet aus der Art des Befehls (`command.type`) und dem Grund (`code`).
  * Reine Logik ohne React.
  */
-import { productTitle, type Command, type Package, type Printer, type PrintJob, type Product, type RejectCode, type SyncProblem, type Zone } from "@/contract";
+import {
+  productTitle,
+  shoppingItemTitle,
+  type Command,
+  type Package,
+  type Printer,
+  type PrintJob,
+  type Product,
+  type RejectCode,
+  type ShoppingItem,
+  type SyncProblem,
+  type Zone,
+} from "@/contract";
 
 /** Was die Sätze nachschlagen dürfen. Fehlt etwas, steht ein allgemeiner Ausdruck im Satz. */
 export interface ProblemLookup {
@@ -14,6 +26,8 @@ export interface ProblemLookup {
   packages: readonly Package[];
   /** Die Etiketten, um bei „Stand nicht gemeldet" sagen zu können, um welches es ging. */
   printJobs?: readonly PrintJob[];
+  /** Die Einkaufsliste, um einen Eintrag beim Namen nennen zu können. */
+  shoppingItems?: readonly ShoppingItem[];
 }
 
 export interface ProblemText {
@@ -65,6 +79,15 @@ function subject(command: Command, lookup: ProblemLookup): string {
     const found = owner === undefined ? undefined : lookup.products.find((candidate) => candidate.id === owner);
     const suffix = found ? ` (${productTitle(found)})` : "";
     return { nom: `die Packung ${id}${suffix}`, dat: `der Packung ${id}${suffix}` };
+  };
+  /** Der Name eines Eintrags der Einkaufsliste in Anführungszeichen, oder null, wenn er nicht bekannt ist. */
+  const entry = (id: string): string | null => {
+    const found = lookup.shoppingItems?.find((candidate) => candidate.id === id);
+    if (!found) {
+      return null;
+    }
+    const product = found.product_id === null ? undefined : lookup.products.find((candidate) => candidate.id === found.product_id);
+    return quoted(shoppingItemTitle(found, product));
   };
 
   switch (command.type) {
@@ -121,10 +144,20 @@ function subject(command: Command, lookup: ProblemLookup): string {
       const name = command.text?.trim() || (found ? productTitle(found) : "");
       return `${name ? `Der Eintrag ${quoted(name)}` : "Ein Eintrag"} wurde nicht auf die Einkaufsliste gesetzt`;
     }
-    case "shopping_item.update":
-      return "Die Änderung an einem Eintrag der Einkaufsliste wurde nicht übernommen";
-    case "shopping_item.delete":
-      return "Ein Eintrag der Einkaufsliste wurde nicht gelöscht";
+    case "shopping_item.update": {
+      const name = entry(command.item_id);
+      const what = name ? `${name} auf der Einkaufsliste` : "eines Eintrags der Einkaufsliste";
+      // Nur Abhaken oder Wiederöffnen: das beim Namen nennen; sonst ist es eine Änderung an Text oder Menge.
+      const onlyDone = command.changes.done !== undefined && command.changes.text === undefined && command.changes.quantity === undefined;
+      if (onlyDone) {
+        return `${command.changes.done ? "Das Abhaken" : "Das Wiederöffnen"} ${name ? `von ${what}` : what} wurde nicht übernommen`;
+      }
+      return `Die Änderung an ${name ? what : "einem Eintrag der Einkaufsliste"} wurde nicht übernommen`;
+    }
+    case "shopping_item.delete": {
+      const name = entry(command.item_id);
+      return name ? `Der Eintrag ${name} wurde nicht von der Einkaufsliste gelöscht` : "Ein Eintrag der Einkaufsliste wurde nicht gelöscht";
+    }
   }
 }
 

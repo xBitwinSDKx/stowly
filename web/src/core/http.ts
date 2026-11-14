@@ -14,9 +14,13 @@ import {
   type Device,
   type DeviceList,
   type ErrorCode,
+  type IntegrationStatus,
   type LoginResponse,
   type LookupResult,
   type LookupResultState,
+  type PushSubscriptionInput,
+  type PushTestResult,
+  type PushTestStatus,
   type ServerHealth,
   type SyncRequest,
   type SyncResponse,
@@ -34,6 +38,7 @@ export const REQUEST_TIMEOUT_MS = 15_000;
 export const LOOKUP_TIMEOUT_MS = 6_000;
 
 const LOOKUP_STATES: ReadonlySet<string> = new Set<LookupResultState>(["found", "not_found", "pending", "skipped", "disabled"]);
+const PUSH_TEST_STATES: ReadonlySet<string> = new Set<PushTestStatus>(["sent", "gone", "rejected", "failed"]);
 
 const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
 
@@ -215,6 +220,51 @@ export class ApiClient {
     return answer;
   }
 
+  // ---------------------------------------------------------------- Push (Protokoll 11.3)
+
+  /** Der öffentliche VAPID-Schlüssel des Servers (`GET /api/push/key`). 503 = nicht eingerichtet. */
+  async pushKey(token: string): Promise<string> {
+    const answer = await this.json<{ public_key?: unknown }>(ENDPOINTS.get_push_key, ENDPOINTS.get_push_key.path, { token, timeoutMs: REQUEST_TIMEOUT_MS });
+    if (!isRecord(answer) || typeof answer.public_key !== "string" || answer.public_key === "") {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return answer.public_key;
+  }
+
+  /** Legt das Abo dieses Geräts beim Server an oder ersetzt es (`PUT /api/push/subscription`). */
+  async putPushSubscription(token: string, subscription: PushSubscriptionInput): Promise<void> {
+    await this.call(ENDPOINTS.put_push_subscription, ENDPOINTS.put_push_subscription.path, { token, body: subscription, timeoutMs: REQUEST_TIMEOUT_MS }, async () => undefined);
+  }
+
+  /** Löscht das Abo dieses Geräts beim Server; auch ohne Abo ein Erfolg. */
+  async deletePushSubscription(token: string): Promise<void> {
+    await this.call(ENDPOINTS.delete_push_subscription, ENDPOINTS.delete_push_subscription.path, { token, timeoutMs: REQUEST_TIMEOUT_MS }, async () => undefined);
+  }
+
+  /** Schickt eine Testnachricht an dieses Gerät; der Server antwortet, wenn der Push-Dienst geantwortet hat. */
+  async pushTest(token: string): Promise<PushTestResult> {
+    const answer = await this.json<PushTestResult>(ENDPOINTS.send_push_test, ENDPOINTS.send_push_test.path, { token, timeoutMs: REQUEST_TIMEOUT_MS });
+    if (
+      !isRecord(answer) ||
+      typeof answer.status !== "string" ||
+      !PUSH_TEST_STATES.has(answer.status) ||
+      !(answer.http_status === null || typeof answer.http_status === "number") ||
+      typeof answer.message !== "string"
+    ) {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return { status: answer.status, http_status: answer.http_status, message: answer.message };
+  }
+
+  /** Der Zustand von Sicherung, Home Assistant und Push (`GET /api/integrations`). */
+  async integrations(token: string): Promise<IntegrationStatus> {
+    const answer = await this.json<IntegrationStatus>(ENDPOINTS.get_integrations, ENDPOINTS.get_integrations.path, { token, timeoutMs: REQUEST_TIMEOUT_MS });
+    if (!isRecord(answer) || typeof answer.timezone !== "string" || !isRecord(answer.backup) || !isRecord(answer.ha) || !isRecord(answer.push)) {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return answer;
+  }
+
   /** Lädt die Kopie der Datenbank. Der Name steht in `Content-Disposition`. */
   async backup(token: string): Promise<{ blob: Blob; filename: string | null }> {
     return this.call(ENDPOINTS.download_backup, ENDPOINTS.download_backup.path, { token, timeoutMs: 8 * REQUEST_TIMEOUT_MS }, async (response) => {
@@ -232,7 +282,7 @@ function isSyncResponse(value: unknown): value is SyncResponse {
     return false;
   }
   const changes = value.changes;
-  const lists = ["products", "zones", "packages", "printers", "printer_status", "print_jobs", "label_templates"];
+  const lists = ["products", "zones", "packages", "printers", "printer_status", "print_jobs", "label_templates", "shopping_items"];
   return (
     typeof value.dataset_id === "string" &&
     typeof value.cursor === "number" &&

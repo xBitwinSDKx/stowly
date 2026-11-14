@@ -20,6 +20,7 @@ import {
   ExpiryLabel,
   expiryText,
   FilterCard,
+  formatBytes,
   LIST_FIRST,
   LIST_STEP,
   Menu,
@@ -93,6 +94,18 @@ describe("Texte", () => {
     // Die Uhr des anderen Geräts geht vor: kein „in der Zukunft"
     expect(timeAgo("2026-11-13T12:05:00.000Z", now)).toBe("gerade eben");
     expect(timeAgo("kein Zeitstempel", now)).toBe("");
+  });
+
+  it("nennt Dateigrößen mit Dezimalpräfix und Komma", () => {
+    expect(formatBytes(0)).toBe("0 Byte");
+    expect(formatBytes(812)).toBe("812 Byte");
+    expect(formatBytes(1000)).toBe("1 kB");
+    expect(formatBytes(1460)).toBe("1,5 kB");
+    expect(formatBytes(51_874)).toBe("52 kB");
+    expect(formatBytes(1_400_000)).toBe("1,4 MB");
+    expect(formatBytes(230_000_000)).toBe("230 MB");
+    expect(formatBytes(5_000_000_000_000_000)).toBe("5.000 TB");
+    expect(formatBytes(Number.NaN)).toBe("0 Byte");
   });
 
   it("übersetzt Fehler des Kerns nach ihrem Code", () => {

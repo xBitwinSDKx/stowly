@@ -24,6 +24,7 @@ import {
   type PrinterStatus,
   type PrintJob,
   type Product,
+  type ShoppingItem,
   type SyncRequest,
   type SyncResponse,
   type Zone,
@@ -40,6 +41,8 @@ export interface Snapshot {
   printer_status: PrinterStatus[];
   print_jobs: PrintJob[];
   label_templates: LabelTemplate[];
+  /** Die Einkaufsliste, auch erledigte und gelöschte Einträge (innerhalb der Aufbewahrungsdauer). */
+  shopping_items: ShoppingItem[];
   settings: HouseholdSettings | null;
   /** Die Antworten, aus denen der Abzug besteht. */
   pages: SyncResponse[];
@@ -50,7 +53,7 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 /** Ein Befehl ohne Kennung und Zeitpunkt; beides ergänzt `RawClient.send`. */
 export type RawCommand = DistributiveOmit<Command, "id" | "at"> & { id?: string; at?: string };
 
-const LISTS = ["products", "zones", "packages", "printers", "printer_status", "print_jobs", "label_templates"] as const;
+const LISTS = ["products", "zones", "packages", "printers", "printer_status", "print_jobs", "label_templates", "shopping_items"] as const;
 
 function keyOf(table: (typeof LISTS)[number], row: object): string {
   const record = row as Record<string, unknown>;
@@ -174,6 +177,7 @@ export class RawClient {
       printer_status: list<PrinterStatus>("printer_status"),
       print_jobs: list<PrintJob>("print_jobs"),
       label_templates: list<LabelTemplate>("label_templates"),
+      shopping_items: list<ShoppingItem>("shopping_items"),
       settings,
       pages,
     };
@@ -221,5 +225,7 @@ export async function expectSameAsServer(device: Device, raw: RawClient): Promis
     [...value(data.printerStatus)].sort((a, b) => a.printer_id.localeCompare(b.printer_id)),
     `${device.name}: Zustand der Drucker`,
   ).toEqual([...server.printer_status].sort((a, b) => a.printer_id.localeCompare(b.printer_id)));
+  // Die Einkaufsliste zeigt keine gelöschten Einträge; der Abzug enthält sie als Grabstein.
+  expect(byId(value(data.shoppingItems)), `${device.name}: Einkaufsliste`).toEqual(byId(server.shopping_items.filter((item) => item.deleted_at === null)));
   return server;
 }

@@ -5,7 +5,8 @@
  *
  *   products, packages, zones, printers,      der Stand des Servers, so wie ihn die Antworten
  *   printer_status, print_jobs,               geliefert haben, nie mit eigenen, unbestätigten
- *   label_templates, kv["settings"]           Änderungen vermischt
+ *   label_templates, shopping_items,          Änderungen vermischt (shopping_items seit Version 3)
+ *   kv["settings"]
  *   outbox                                    die wartenden Befehle in der Reihenfolge ihrer Entstehung
  *   id_pool                                   der Vorrat an Packungs-IDs in der Reihenfolge der Zuteilung
  *   problems                                  abgelehnte und verdrängte Befehle
@@ -20,9 +21,9 @@
  *
  * Ohne DOM: Diese Datei läuft auch im Service Worker.
  */
-import Dexie, { type Table } from "dexie";
+import Dexie, { type Table, type Transaction } from "dexie";
 
-import type { Command, HouseholdSettings, LabelTemplate, Package, Printer, PrinterStatus, PrintJob, Product, Zone } from "@/contract/api.gen";
+import type { Command, HouseholdSettings, LabelTemplate, Package, Printer, PrinterStatus, PrintJob, Product, ShoppingItem, Zone } from "@/contract/api.gen";
 import type { DevicePrefs, SessionDevice, SyncProblem } from "@/contract/core";
 
 export const DEFAULT_DB_NAME = "stowly";
@@ -31,8 +32,16 @@ export const DEFAULT_DB_NAME = "stowly";
  * Version des Aufbaus der lokalen Datenbank. Öffnet ein Tab mit einer neueren App die Datenbank
  * in einer höheren Version, müssen ältere Tabs ihre Verbindung schließen (`versionchange`,
  * siehe src/core/store.ts).
+ *
+ * - 1: Stufe 1
+ * - 2: die Buchführung des Zustellens (`deliveries`)
+ * - 3: Protokoll 2 (Stufe 2): die Einkaufsliste (`shopping_items`). Der Umstieg holt den Bestand
+ *      einmal vollständig neu (`upgradeToV3`).
  */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
+
+/** Die Uhrzeit der Tagesnachricht, die der Server für einen schon bestehenden Haushalt annimmt (Migration 0003). */
+const DEFAULT_NOTIFY_TIME = "17:00";
 
 export interface OutboxEntry {
   /** Laufende Nummer: die Reihenfolge, in der der Anwender gehandelt hat. */
@@ -169,6 +178,38 @@ export interface KvEntry<K extends keyof KvValues = keyof KvValues> {
   value: KvValues[K];
 }
 
+/**
+ * Der Umstieg von Version 2 auf 3 (Protokoll 2, docs/sync-protokoll.md 6.5): Die gespeicherten
+ * Datensätze aus Protokoll 1 kennen `min_stock`, `notify_time` und die Einkaufsliste noch nicht.
+ *
+ * - Der nächste Abgleich holt den Bestand einmal vollständig neu (`full_resync`: Die Anfrage geht
+ *   mit `dataset_id: null` und `cursor: 0` hinaus, der Server antwortet mit `reset`).
+ * - Bis dahin bekommen die alten Datensätze die neuen Felder mit den Vorgaben des Protokolls
+ *   (`min_stock: null`, `notify_time: "17:00"`): Ein Gerät, das die neue App im Keller ohne Netz
+ *   bekommt, arbeitet so weiter, und die Oberfläche sieht nie ein fehlendes Feld.
+ * - Outbox, ID-Vorrat, Sync-Probleme, Geräte-Einstellungen und Anmeldung bleiben, wie sie sind.
+ *   Befehle aus Protokoll 1 nimmt der Server weiter an.
+ */
+export async function upgradeToV3(tx: Transaction): Promise<void> {
+  const kv = tx.table<KvEntry, string>("kv");
+  const sync = (await kv.get("sync"))?.value as Partial<SyncMeta> | undefined;
+  if (sync !== undefined) {
+    await kv.put({ key: "sync", value: { ...INITIAL_SYNC_META, ...sync, full_resync: true } });
+  }
+  const settings = (await kv.get("settings"))?.value as (Partial<HouseholdSettings> & Omit<HouseholdSettings, "notify_time">) | undefined;
+  if (settings !== undefined && typeof settings.notify_time !== "string") {
+    await kv.put({ key: "settings", value: { ...settings, notify_time: DEFAULT_NOTIFY_TIME } });
+  }
+  await tx
+    .table<Product, string>("products")
+    .toCollection()
+    .modify((product) => {
+      if (product.min_stock === undefined) {
+        product.min_stock = null;
+      }
+    });
+}
+
 export class StowlyDb extends Dexie {
   products!: Table<Product, string>;
   packages!: Table<Package, string>;
@@ -177,6 +218,7 @@ export class StowlyDb extends Dexie {
   printer_status!: Table<PrinterStatus, string>;
   print_jobs!: Table<PrintJob, string>;
   label_templates!: Table<LabelTemplate, string>;
+  shopping_items!: Table<ShoppingItem, string>;
   outbox!: Table<OutboxEntry, number, Omit<OutboxEntry, "seq">>;
   id_pool!: Table<PoolEntry, number, Omit<PoolEntry, "n">>;
   problems!: Table<StoredProblem, string>;
@@ -200,9 +242,15 @@ export class StowlyDb extends Dexie {
       kv: "key",
     });
     // Version 2 (Runde 2): die Buchführung des Zustellens. Alles Bisherige bleibt, wie es ist.
-    this.version(DB_VERSION).stores({
+    this.version(2).stores({
       deliveries: "job_id",
     });
+    // Version 3 (Stufe 2, Protokoll 2): die Einkaufsliste; der Umstieg holt alles einmal neu.
+    this.version(DB_VERSION)
+      .stores({
+        shopping_items: "id",
+      })
+      .upgrade(upgradeToV3);
   }
 
   async readKv<K extends keyof KvValues>(key: K): Promise<KvValues[K] | undefined> {

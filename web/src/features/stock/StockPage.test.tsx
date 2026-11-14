@@ -127,7 +127,9 @@ describe("Bestandsliste", () => {
     if (!first) {
       throw new Error("Beispieldaten ohne Packung");
     }
-    renderApp({ data: { packages: [{ ...first, product_id: sampleUuid(2, 999), zone_id: sampleUuid(1, 999) }] } });
+    // Ohne Mindestbestand: Sonst stünden die Produkte ohne Packung als „fehlt n" mit in der Liste.
+    const products = data.products.map((product) => ({ ...product, min_stock: null }));
+    renderApp({ data: { products, packages: [{ ...first, product_id: sampleUuid(2, 999), zone_id: sampleUuid(1, 999) }] } });
     await ready();
 
     expect(listedProducts()).toEqual(["Unbekanntes Produkt"]);
@@ -434,10 +436,10 @@ describe("Entnehmen und löschen", () => {
   it("entnimmt eine Auswahl mit Grund und macht es über die Meldung rückgängig", async () => {
     const core = renderApp();
     await ready();
-    const butter = packagesOf(core, "Butter").map((pkg) => pkg.id);
-    expect(butter).toHaveLength(2);
+    const lentils = packagesOf(core, "Rote Linsen").map((pkg) => pkg.id);
+    expect(lentils).toHaveLength(2);
 
-    await userEvent.click(screen.getByRole("button", { name: "Löschen: Butter" }));
+    await userEvent.click(screen.getByRole("button", { name: "Löschen: Rote Linsen" }));
     const dialog = screen.getByRole("dialog", { name: "Packungen entnehmen" });
     // Bei mehreren Packungen ist nichts vorgewählt: Welche es ist, steht auf dem Etikett.
     expect(within(dialog).getByRole("button", { name: "Auswahl fehlt" })).toBeUnavailable();
@@ -447,14 +449,18 @@ describe("Entnehmen und löschen", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "2 entnehmen" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: "Details: Butter" })).not.toBeInTheDocument();
-    const removed = value(core.data.removedPackages).filter((pkg) => butter.includes(pkg.id));
+    expect(screen.queryByRole("button", { name: "Details: Rote Linsen" })).not.toBeInTheDocument();
+    const removed = value(core.data.removedPackages).filter((pkg) => lentils.includes(pkg.id));
     expect(removed.map((pkg) => pkg.removal_reason)).toEqual(["discarded", "discarded"]);
 
     expect(screen.getByText("2 Packungen entsorgt")).toBeInTheDocument();
+    // Die letzten Packungen: Eine zweite Meldung bietet die Einkaufsliste an.
+    expect(screen.getByText("„Rote Linsen“ ist nicht mehr im Bestand.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Rückgängig" }));
-    expect(await screen.findByRole("button", { name: "Details: Butter" })).toBeInTheDocument();
-    expect(packagesOf(core, "Butter").map((pkg) => pkg.id).sort()).toEqual([...butter].sort());
+    expect(await screen.findByRole("button", { name: "Details: Rote Linsen" })).toBeInTheDocument();
+    expect(packagesOf(core, "Rote Linsen").map((pkg) => pkg.id).sort()).toEqual([...lentils].sort());
+    // Mit den Packungen ist auch das Angebot fort.
+    expect(screen.queryByText("„Rote Linsen“ ist nicht mehr im Bestand.")).not.toBeInTheDocument();
   });
 
   it("entnimmt einzelne Packungen einer Charge", async () => {
@@ -752,9 +758,9 @@ describe("Änderungen des Kerns", () => {
   it("erscheinen ohne Zutun in der Liste", async () => {
     const core: MockCore = renderApp();
     await ready();
-    const milk = packagesOf(core, "H-Milch 3,5 %").map((pkg) => pkg.id);
-    await core.stock.remove(milk, "consumed");
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Details: H-Milch 3,5 %" })).not.toBeInTheDocument());
+    const beans = packagesOf(core, "Kidneybohnen").map((pkg) => pkg.id);
+    await core.stock.remove(beans, "consumed");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Details: Kidneybohnen" })).not.toBeInTheDocument());
 
     await core.products.update(productId(core, "Apfelmus"), { name: "Apfelmark" });
     expect(await screen.findByRole("button", { name: "Details: Apfelmark" })).toBeInTheDocument();
@@ -991,5 +997,356 @@ describe("Etiketten beim Einlagern von Hand", () => {
     await userEvent.type(within(dialog).getByLabelText("Name"), "p".repeat(121));
     await userEvent.click(within(dialog).getByRole("button", { name: "Einlagern" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Der Name ist zu lang (höchstens 120 Zeichen).");
+  });
+});
+
+/** Die Zeile eines Produkts in der Tabelle. */
+function rowOf(name: string): HTMLElement {
+  const row = screen.getByRole("button", { name: `Details: ${name}` }).closest<HTMLElement>('[role="row"]');
+  if (!row) {
+    throw new Error(`Zeile ${name} fehlt`);
+  }
+  return row;
+}
+
+describe("Mindestbestand in der Bestandsliste", () => {
+  // Beispieldaten: H-Milch hat 6 von mindestens 8, Butter 2 von 3; Spaghetti und Tomaten reichen.
+  it("markiert Produkte unter dem Mindestbestand mit „fehlt n“", async () => {
+    renderApp();
+    await ready();
+    expect(within(rowOf("H-Milch 3,5 %")).getAllByRole("cell")[0]).toHaveTextContent("Unter dem Mindestbestand, fehlt 2");
+    expect(within(rowOf("Butter")).getAllByRole("cell")[0]).toHaveTextContent("fehlt 1");
+    expect(within(rowOf("Spaghetti")).getAllByRole("cell")[0]).not.toHaveTextContent("fehlt");
+    expect(within(rowOf("Basmati Reis")).getAllByRole("cell")[0]).not.toHaveTextContent("fehlt");
+  });
+
+  it("zählt sofort selbst, auch offline, und abgelaufene Packungen zählen mit", async () => {
+    const core = renderApp({ scenarios: ["offline"] });
+    await ready();
+    // Spaghetti: 5 im Bestand, mindestens 3. Drei entnehmen: Es fehlt eine.
+    const spaghetti = packagesOf(core, "Spaghetti").map((pkg) => pkg.id);
+    await core.stock.remove(spaghetti.slice(0, 3), "consumed");
+    await waitFor(() => expect(within(rowOf("Spaghetti")).getAllByRole("cell")[0]).toHaveTextContent("fehlt 1"));
+    expect(value(core.sync.status).online).toBe(false);
+
+    // Passierte Tomaten: 6 im Bestand, mindestens 4; die zwei mit MHD in 9 Tagen laufen ab. Abgelaufen zählt mit.
+    const tomatoes = packagesOf(core, "Passierte Tomaten");
+    const expired = addDays(todayLocal(), -1);
+    await core.stock.update(
+      tomatoes.slice(0, 3).map((pkg) => pkg.id),
+      { best_before: expired },
+    );
+    await waitFor(() => expect(within(rowOf("Passierte Tomaten")).getAllByRole("cell")[2]).toHaveTextContent("abgelaufen"));
+    expect(within(rowOf("Passierte Tomaten")).getAllByRole("cell")[0]).not.toHaveTextContent("fehlt");
+  });
+
+  it("zeigt ein Produkt ohne Packung weiter, mit Menge 0, und bietet Einlagern an", async () => {
+    const core = renderApp();
+    await ready();
+    const milk = packagesOf(core, "H-Milch 3,5 %").map((pkg) => pkg.id);
+    await core.stock.remove(milk, "consumed");
+    await waitFor(() => expect(within(rowOf("H-Milch 3,5 %")).getAllByRole("cell")[0]).toHaveTextContent("fehlt 8"));
+    const cells = within(rowOf("H-Milch 3,5 %")).getAllByRole("cell");
+    expect(cells[1]).toHaveTextContent("nirgends");
+    expect(cells[2]).toHaveTextContent("kein MHD");
+    expect(cells[3]).toHaveTextContent("0");
+    // Nichts zu entnehmen
+    expect(screen.getByRole("button", { name: "Löschen: H-Milch 3,5 %" })).toBeUnavailable();
+
+    await userEvent.click(screen.getByRole("button", { name: "Details: H-Milch 3,5 %" }));
+    const panel = screen.getByRole("region", { name: "Bestand im Detail: H-Milch 3,5 %" });
+    expect(panel).toHaveTextContent("Mindestbestand 8 Packungen, im Bestand 0, es fehlen 8 Packungen.");
+    expect(panel).toHaveTextContent("Nichts im Bestand.");
+    expect(within(panel).queryByRole("table")).not.toBeInTheDocument();
+    await userEvent.click(within(panel).getByRole("button", { name: "Einlagern" }));
+    expect(within(screen.getByRole("dialog", { name: "Von Hand einlagern" })).getByText("H-Milch 3,5 %")).toBeInTheDocument();
+  });
+
+  it("filtert mit dem Umschalter „Unter Mindestbestand“, auch auf Produkte ohne Packung", async () => {
+    const core = renderApp();
+    await ready();
+    // Ein Umschalter über der Liste; die Reihe der Zonen-Karten bleibt wie im Entwurf.
+    expect(within(screen.getByRole("group", { name: "Nach Zone filtern" })).queryByRole("button", { name: /Mindestbestand/ })).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: /Unter Mindestbestand/ });
+    // H-Milch und Butter
+    expect(toggle).toHaveTextContent("2");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(listedProducts()).toEqual(["Butter", "H-Milch 3,5 %"]);
+    expect(screen.getByText("2 Produkte · 8 Packungen")).toBeInTheDocument();
+
+    await core.stock.remove(
+      packagesOf(core, "Butter").map((pkg) => pkg.id),
+      "consumed",
+    );
+    await waitFor(() => expect(within(rowOf("Butter")).getAllByRole("cell")[3]).toHaveTextContent("0"));
+    expect(listedProducts()).toEqual(["Butter", "H-Milch 3,5 %"]);
+
+    // Zusammen mit einer Zone: nur, was dort liegt.
+    await userEvent.click(within(screen.getByRole("group", { name: "Nach Zone filtern" })).getByRole("button", { name: /Vorratsregal/ }));
+    expect(listedProducts()).toEqual(["H-Milch 3,5 %"]);
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(listedProducts()).toContain("Basmati Reis");
+  });
+
+  it("kennt den Umschalter auch mit nur einer Zone", async () => {
+    renderApp({ scenarios: ["single-zone"] });
+    await ready();
+    const toggle = screen.getByRole("button", { name: /Unter Mindestbestand/ });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(listedProducts()).toEqual(["Butter", "H-Milch 3,5 %"]);
+  });
+
+  it("zeigt den Filter nicht, solange kein Produkt unter seinem Mindestbestand liegt", async () => {
+    renderApp({ data: { products: createSampleData().products.map((product) => ({ ...product, min_stock: product.min_stock === null ? null : 1 })) } });
+    await ready();
+    expect(screen.queryByRole("button", { name: /Unter Mindestbestand/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/fehlt/)).not.toBeInTheDocument();
+  });
+
+  it("markiert auch am Handy, mit Menge 0 für Produkte ohne Packung", async () => {
+    setTestViewport(375);
+    const core = renderApp();
+    await ready();
+    await core.stock.remove(
+      packagesOf(core, "Butter").map((pkg) => pkg.id),
+      "consumed",
+    );
+    const card = (await screen.findByRole("heading", { name: "Butter" })).closest("li");
+    if (!card) {
+      throw new Error("Karte fehlt");
+    }
+    await waitFor(() => expect(card).toHaveTextContent("fehlt 3"));
+    expect(within(card).getAllByRole("definition")[1]).toHaveTextContent("0");
+  });
+});
+
+describe("Mindestbestand im Produkt-Dialog", () => {
+  async function openDialog(name: string): Promise<HTMLElement> {
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: `Bearbeiten: ${name}` }));
+    return screen.getByRole("dialog", { name: "Produkt bearbeiten" });
+  }
+
+  it("setzt den Mindestbestand und erklärt, was er bewirkt", async () => {
+    const core = renderApp();
+    const dialog = await openDialog("Basmati Reis");
+    const field = within(dialog).getByLabelText("Mindestbestand");
+    expect(field).toHaveValue("");
+    expect(field).toHaveAccessibleDescription(/Leer = keiner\. Liegen weniger Packungen im Bestand \(abgelaufene zählen mit\), setzt der Server das Produkt auf die Einkaufsliste\./);
+    expect(field).toHaveAccessibleDescription(/Im Bestand: 4 Packungen\./);
+    expect(field).toHaveAccessibleDescription(/Wer „3 Milch, egal welche Marke“ will, führt die Produkte zusammen; ein Produkt kann mehrere Barcodes haben\./);
+
+    await userEvent.type(field, "6");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(value(core.data.products).find((product) => product.name === "Basmati Reis")?.min_stock).toBe(6);
+    // Sofort markiert, ohne auf den Server zu warten
+    expect(within(rowOf("Basmati Reis")).getAllByRole("cell")[0]).toHaveTextContent("fehlt 2");
+  });
+
+  it("entfernt den Mindestbestand, wenn das Feld geleert wird", async () => {
+    const core = renderApp();
+    const update = vi.spyOn(core.products, "update");
+    const dialog = await openDialog("Butter");
+    const field = within(dialog).getByLabelText("Mindestbestand");
+    expect(field).toHaveValue("3");
+    await userEvent.clear(field);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(update).toHaveBeenCalledWith(productId(core, "Butter"), { min_stock: null });
+    expect(value(core.data.products).find((product) => product.name === "Butter")?.min_stock).toBeNull();
+    expect(within(rowOf("Butter")).getAllByRole("cell")[0]).not.toHaveTextContent("fehlt");
+  });
+
+  it("prüft die Eingabe nach den Grenzen des Vertrags", async () => {
+    const core = renderApp();
+    const dialog = await openDialog("Butter");
+    const field = within(dialog).getByLabelText("Mindestbestand");
+    await userEvent.clear(field);
+    await userEvent.type(field, "0");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));
+    expect(field).toBeInvalid();
+    expect(within(dialog).getByText("Der Mindestbestand muss zwischen 1 und 999 Packungen liegen.")).toBeInTheDocument();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, "zwei");
+    expect(within(dialog).getByText("Bitte eine ganze Zahl von 1 bis 999 eingeben oder das Feld leer lassen.")).toBeInTheDocument();
+    expect(value(core.data.products).find((product) => product.name === "Butter")?.min_stock).toBe(3);
+  });
+
+  it("legt beim Einlagern von Hand ein neues Produkt mit Mindestbestand an", async () => {
+    const core = renderApp();
+    const store = vi.spyOn(core.stock, "store");
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Von Hand einlagern" }));
+    const dialog = screen.getByRole("dialog", { name: "Von Hand einlagern" });
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Neues Produkt" }));
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Kichererbsen");
+    const field = within(dialog).getByLabelText("Mindestbestand (freiwillig)");
+    await userEvent.type(field, "abc");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Einlagern" }));
+    expect(field).toBeInvalid();
+    expect(store).not.toHaveBeenCalled();
+
+    await userEvent.clear(field);
+    await userEvent.type(field, "2");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Einlagern" }));
+    await screen.findByRole("dialog", { name: "Eingelagert" });
+    expect(store.mock.calls[0]?.[0].product).toMatchObject({ kind: "new", name: "Kichererbsen", min_stock: 2 });
+    expect(value(core.data.products).find((product) => product.name === "Kichererbsen")?.min_stock).toBe(2);
+  });
+});
+
+describe("Auf die Einkaufsliste", () => {
+  async function openPanel(name: string): Promise<HTMLElement> {
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: `Details: ${name}` }));
+    return screen.getByRole("region", { name: `Bestand im Detail: ${name}` });
+  }
+
+  it("setzt ein Produkt auf die Liste und sagt danach, dass es dort steht", async () => {
+    const core = renderApp();
+    const panel = await openPanel("Basmati Reis");
+    await userEvent.click(within(panel).getByRole("button", { name: "Auf die Einkaufsliste: Basmati Reis" }));
+    const link = await within(panel).findByRole("link", { name: "Steht auf der Einkaufsliste: Basmati Reis" });
+    expect(link).toHaveAttribute("href", "/einkaufsliste");
+    // Der Fokus bleibt an der Stelle des Knopfs.
+    expect(link).toHaveFocus();
+    const item = value(core.data.shoppingItems).find((candidate) => candidate.product_id === productId(core, "Basmati Reis"));
+    expect(item).toMatchObject({ origin: "manual", quantity: null, done_at: null });
+    expect(screen.getByText("„Basmati Reis“ steht jetzt auf der Einkaufsliste.")).toBeInTheDocument();
+
+    // Rückgängig löscht den eben angelegten Eintrag.
+    await userEvent.click(screen.getByRole("button", { name: "Rückgängig" }));
+    expect(await within(panel).findByRole("button", { name: "Auf die Einkaufsliste: Basmati Reis" })).toBeInTheDocument();
+    expect(value(core.data.shoppingItems).some((candidate) => candidate.id === item?.id)).toBe(false);
+  });
+
+  it("legt keinen zweiten Eintrag an, wenn das Produkt schon offen auf der Liste steht", async () => {
+    const core = renderApp();
+    const create = vi.spyOn(core.shopping, "create");
+    // H-Milch steht automatisch auf der Liste, Olivenöl als eigener Eintrag.
+    for (const name of ["H-Milch 3,5 %", "Olivenöl"]) {
+      const panel = await openPanel(name);
+      expect(within(panel).getByRole("link", { name: `Steht auf der Einkaufsliste: ${name}` })).toBeInTheDocument();
+      expect(within(panel).queryByRole("button", { name: /^Auf die Einkaufsliste/ })).not.toBeInTheDocument();
+    }
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("bietet es nach dem Entnehmen der letzten Packung an", async () => {
+    const core = renderApp();
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Löschen: Weizenmehl Type 405" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Packungen entnehmen" })).getByRole("button", { name: "Entnehmen" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(screen.getByText("„Weizenmehl Type 405“ ist nicht mehr im Bestand.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Auf die Einkaufsliste" }));
+    await waitFor(() => expect(value(core.data.shoppingItems).some((item) => item.product_id === productId(core, "Weizenmehl Type 405"))).toBe(true));
+    expect(await screen.findByText("„Weizenmehl Type 405“ steht jetzt auf der Einkaufsliste.")).toBeInTheDocument();
+  });
+
+  it("sagt nach dem Entnehmen der letzten Packung, wenn es schon auf der Liste steht", async () => {
+    const core = renderApp();
+    const create = vi.spyOn(core.shopping, "create");
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Löschen: Olivenöl" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Packungen entnehmen" })).getByRole("button", { name: "Entnehmen" }));
+    expect(await screen.findByText("„Olivenöl“ ist nicht mehr im Bestand und steht schon auf der Einkaufsliste.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("bietet nichts an, solange Packungen bleiben, beim Löschen eines Irrtums oder bei Mindestbestand", async () => {
+    const core = renderApp();
+    await ready();
+    // Basmati Reis: eine von vier Packungen
+    const [rice] = packagesOf(core, "Basmati Reis");
+    await userEvent.click(screen.getByRole("button", { name: "Details: Basmati Reis" }));
+    const panel = screen.getByRole("region", { name: "Bestand im Detail: Basmati Reis" });
+    await userEvent.click(within(panel).getAllByRole("button", { name: /^Entnehmen: / })[0] as HTMLElement);
+    const dialog = screen.getByRole("dialog", { name: "Packungen entnehmen" });
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: new RegExp(rice?.id ?? "") }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Entnehmen" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByText(/ist nicht mehr im Bestand/)).not.toBeInTheDocument();
+
+    // Weizenmehl als „Falsch erfasst": Es war nie da, also fehlt auch nichts.
+    await userEvent.click(screen.getByRole("button", { name: "Löschen: Weizenmehl Type 405" }));
+    const wrong = screen.getByRole("dialog", { name: "Packungen entnehmen" });
+    await userEvent.click(within(wrong).getByRole("radio", { name: "Falsch erfasst" }));
+    await userEvent.click(within(wrong).getByRole("button", { name: "Löschen" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByText(/ist nicht mehr im Bestand/)).not.toBeInTheDocument();
+
+    // Butter hat einen Mindestbestand: Den Eintrag legt der Server an, die Zeile bleibt mit „fehlt 3".
+    await userEvent.click(screen.getByRole("button", { name: "Löschen: Butter" }));
+    const butter = screen.getByRole("dialog", { name: "Packungen entnehmen" });
+    await userEvent.click(within(butter).getByRole("checkbox", { name: "Alle 2 Packungen" }));
+    await userEvent.click(within(butter).getByRole("button", { name: "2 entnehmen" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByText(/ist nicht mehr im Bestand/)).not.toBeInTheDocument();
+    expect(within(rowOf("Butter")).getAllByRole("cell")[0]).toHaveTextContent("fehlt 3");
+  });
+});
+
+describe("Nächste Charge", () => {
+  it("markiert in der Chargen-Ansicht, was als Nächstes dran ist", async () => {
+    renderApp();
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Details: Basmati Reis" }));
+    const panel = screen.getByRole("region", { name: "Bestand im Detail: Basmati Reis" });
+    const rows = within(panel).getAllByRole("row").slice(1);
+    // Die beiden Packungen im Keller mit dem frühesten MHD, die zuerst eingelagert wurden
+    expect(rows.map((row) => within(row).queryByText("als Nächstes") !== null)).toEqual([true, false, false]);
+    expect(rows[0]).toHaveTextContent("als Nächstes verbrauchen");
+  });
+
+  it("markiert nichts, wenn es nur eine Charge gibt", async () => {
+    renderApp();
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "Details: Kidneybohnen" }));
+    expect(within(screen.getByRole("region", { name: "Bestand im Detail: Kidneybohnen" })).queryByText("als Nächstes")).not.toBeInTheDocument();
+  });
+
+  it("markiert auch am Handy", async () => {
+    setTestViewport(375);
+    renderApp();
+    await ready();
+    const card = screen.getByRole("heading", { name: "Lachsfilet (TK)" }).closest("li");
+    if (!card) {
+      throw new Error("Karte fehlt");
+    }
+    await userEvent.click(within(card).getByRole("button", { name: "Details: Lachsfilet (TK)" }));
+    const items = within(within(card).getByRole("region", { name: "Bestand im Detail: Lachsfilet (TK)" })).getAllByRole("listitem").filter((item) => item.querySelector("ul"));
+    expect(items.map((item) => item.textContent?.includes("als Nächstes"))).toEqual([true, false]);
+  });
+});
+
+describe("Kennzahl Einkaufsliste", () => {
+  it("führt mit der Zahl der offenen Einträge zur Einkaufsliste", async () => {
+    renderApp();
+    await ready();
+    // Beispieldaten: H-Milch (automatisch), Olivenöl, Backpapier, Kaffeebohnen
+    const card = within(screen.getByRole("main")).getByRole("link", { name: /Einkaufsliste/ });
+    expect(card).toHaveTextContent("4 offen");
+    await userEvent.click(card);
+    expect(await screen.findByRole("heading", { name: "Einkaufsliste", level: 1 })).toBeInTheDocument();
+  });
+
+  it("steht am Handy im Raster der Kennzahlen", async () => {
+    setTestViewport(375);
+    renderApp();
+    await ready();
+    expect(screen.getByText("Einkaufsliste").nextElementSibling).toHaveTextContent("4 offen");
+    expect(screen.getByText("Aktive Zonen")).toBeInTheDocument();
   });
 });

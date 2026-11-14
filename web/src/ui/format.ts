@@ -92,6 +92,23 @@ export function timeAgo(timestamp: string, now: number): string {
   return `vor ${span(days)}`;
 }
 
+const sizeFormat = (digits: number) => new Intl.NumberFormat("de-DE", { maximumFractionDigits: digits });
+
+/** Größe einer Datei: "812 Byte", "52 kB", "1,4 MB" (Dezimalpräfixe, Komma wie im Deutschen). */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 1000) {
+    return `${String(Math.max(0, Math.round(Number.isFinite(bytes) ? bytes : 0)))} Byte`;
+  }
+  const units = ["kB", "MB", "GB", "TB"];
+  let value = bytes / 1000;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${sizeFormat(value < 10 ? 1 : 0).format(value)} ${units[unit] ?? ""}`;
+}
+
 /** Entnahmegründe, wie sie in Sätzen stehen: „3 Packungen verbraucht". */
 export const REMOVAL_REASON_LABELS: Record<RemovalReason, string> = {
   consumed: "verbraucht",
