@@ -34,6 +34,10 @@ export const HA_SUMMARY_LIST_MAX = 5;
 export const HA_SUMMARY_ENTRY_MAX = 40;
 /** Sensor für Home Assistant: höchstens so viele Zeichen im Satz `message`. */
 export const HA_SUMMARY_MESSAGE_MAX = 255;
+/** Liste aller Waren für Home Assistant: höchstens so viele Zeichen je Produktname. */
+export const HA_STOCK_NAME_MAX = 60;
+/** Liste aller Waren für Home Assistant: höchstens so viele Einträge über alle Zonen. */
+export const HA_STOCK_ENTRY_MAX = 300;
 /** Ein offener Eintrag geht erst nach Bring!, wenn er so viele Sekunden offen ist. */
 export const HA_MIRROR_DELAY_S = 120;
 /** Der Abgleich mit Home Assistant läuft spätestens nach so vielen Sekunden wieder. */
@@ -133,6 +137,7 @@ export const ENDPOINTS = {
   get_integrations: { method: "GET", path: "/api/integrations" },
   get_push_key: { method: "GET", path: "/api/push/key" },
   get_stats: { method: "GET", path: "/api/stats" },
+  ha_stock: { method: "GET", path: "/api/ha/stock" },
   ha_summary: { method: "GET", path: "/api/ha/summary" },
   health: { method: "GET", path: "/api/health" },
   list_devices: { method: "GET", path: "/api/devices" },
@@ -600,6 +605,46 @@ export interface HaStatus {
   linked: number;
   /** Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN). */
   sensor: boolean;
+}
+
+/** Alle Waren im Bestand je Zone, für die rest-Integration von Home Assistant (docs/integrationen.md, 6.3). */
+export interface HaStock {
+  /** Zustand des Sensors: Packungen im Bestand. */
+  state: number;
+  /** Verschiedene Produkte im Bestand. */
+  product_count: number;
+  /** Zonen mit Bestand, in der Reihenfolge der Zonen. */
+  zones: HaStockZone[];
+  /** true: nach 300 Einträgen gekürzt; state, product_count und count zählen trotzdem alles. */
+  truncated: boolean;
+  /** Serverzeit der Antwort. */
+  updated_at: string;
+}
+
+/** Ein Produkt in einer Zone: seine Packungen dort, beschrieben durch die mit dem frühesten MHD. */
+export interface HaStockProduct {
+  /** Anzeigename des Produkts (bei Platzhaltern der Barcode), höchstens 60 Zeichen. */
+  name: string;
+  /** Packungen dieses Produkts in dieser Zone. */
+  count: number;
+  /** Das früheste MHD dieser Packungen; null = keine hat ein MHD. */
+  best_before: string | null;
+  /** best_before als TT.MM.JJJJ zum Anzeigen; null wie best_before. */
+  mhd: string | null;
+  /** Tage bis best_before: 0 = heute, negativ = abgelaufen; null wie best_before. */
+  days: number | null;
+  /** Warnstufe der Packung mit dem frühesten MHD (none = ohne MHD). */
+  state: "none" | "ok" | "soon" | "expired";
+}
+
+/** Eine Zone mit Bestand. */
+export interface HaStockZone {
+  /** Name der Zone. */
+  name: string;
+  /** Packungen in dieser Zone, auch wenn die Liste gekürzt ist. */
+  count: number;
+  /** Nach dem frühesten MHD (ohne MHD zuletzt), dann nach Name, dann nach Produkt. */
+  products: HaStockProduct[];
 }
 
 /** Zusammenfassung für die rest-Integration von Home Assistant (docs/integrationen.md, Abschnitt 6). */

@@ -1810,6 +1810,143 @@
         ],
         "type": "object"
       },
+      "HaStock": {
+        "additionalProperties": false,
+        "description": "Alle Waren im Bestand je Zone, für die rest-Integration von Home Assistant (docs/integrationen.md, 6.3).",
+        "properties": {
+          "product_count": {
+            "description": "Verschiedene Produkte im Bestand.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "state": {
+            "description": "Zustand des Sensors: Packungen im Bestand.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "true: nach 300 Einträgen gekürzt; state, product_count und count zählen trotzdem alles.",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "description": "Serverzeit der Antwort.",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "zones": {
+            "description": "Zonen mit Bestand, in der Reihenfolge der Zonen.",
+            "items": {
+              "$ref": "#/components/schemas/HaStockZone"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "state",
+          "product_count",
+          "zones",
+          "truncated",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "HaStockProduct": {
+        "additionalProperties": false,
+        "description": "Ein Produkt in einer Zone: seine Packungen dort, beschrieben durch die mit dem frühesten MHD.",
+        "properties": {
+          "best_before": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Das früheste MHD dieser Packungen; null = keine hat ein MHD."
+          },
+          "count": {
+            "description": "Packungen dieses Produkts in dieser Zone.",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tage bis best_before: 0 = heute, negativ = abgelaufen; null wie best_before."
+          },
+          "mhd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "best_before als TT.MM.JJJJ zum Anzeigen; null wie best_before."
+          },
+          "name": {
+            "description": "Anzeigename des Produkts (bei Platzhaltern der Barcode), höchstens 60 Zeichen.",
+            "maxLength": 60,
+            "type": "string"
+          },
+          "state": {
+            "description": "Warnstufe der Packung mit dem frühesten MHD (none = ohne MHD).",
+            "enum": [
+              "none",
+              "ok",
+              "soon",
+              "expired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "count",
+          "best_before",
+          "mhd",
+          "days",
+          "state"
+        ],
+        "type": "object"
+      },
+      "HaStockZone": {
+        "additionalProperties": false,
+        "description": "Eine Zone mit Bestand.",
+        "properties": {
+          "count": {
+            "description": "Packungen in dieser Zone, auch wenn die Liste gekürzt ist.",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Name der Zone.",
+            "type": "string"
+          },
+          "products": {
+            "description": "Nach dem frühesten MHD (ohne MHD zuletzt), dann nach Name, dann nach Produkt.",
+            "items": {
+              "$ref": "#/components/schemas/HaStockProduct"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "count",
+          "products"
+        ],
+        "type": "object"
+      },
       "HaSummary": {
         "additionalProperties": false,
         "description": "Zusammenfassung für die rest-Integration von Home Assistant (docs/integrationen.md, Abschnitt 6).",
@@ -4338,6 +4475,28 @@
         "summary": "List Events",
         "tags": [
           "events"
+        ]
+      }
+    },
+    "/api/ha/stock": {
+      "get": {
+        "description": "Nur lesen, mit dem Token des Sensors: alle Waren im Bestand, je Zone, mit dem nächsten MHD.\n\n401 ohne gültigen Sensor-Token (ein Geräte-Token gilt nicht), 503 ohne STOWLY_HA_SUMMARY_TOKEN.",
+        "operationId": "ha_stock",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaStock"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ha Stock",
+        "tags": [
+          "ha"
         ]
       }
     },

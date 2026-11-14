@@ -57,6 +57,7 @@ def test_openapi_lists_every_endpoint_and_command():
         # Stufe 2
         ("GET", "/api/stats"),
         ("GET", "/api/ha/summary"),
+        ("GET", "/api/ha/stock"),
         ("GET", "/api/push/key"),
         ("PUT", "/api/push/subscription"),
         ("DELETE", "/api/push/subscription"),

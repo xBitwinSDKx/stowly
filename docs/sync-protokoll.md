@@ -600,6 +600,7 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `GET /api/lookup/{barcode}?wait=` | Token | 200 `LookupResult { barcode, state, name, brand, quantity, image_id }`, `Cache-Control: no-store`; 400 bei ungültigem Barcode oder `wait` (Abschnitt 10.1) |
 | `GET /api/stats?start=&end=` | Token | 200 `Stats`, `Cache-Control: no-store`; 400 bei ungültigem Zeitraum (11.1) |
 | `GET /api/ha/summary` | Token des Sensors (`STOWLY_HA_SUMMARY_TOKEN`), kein Geräte-Token | 200 `HaSummary`, `Cache-Control: no-store`; 401 ohne gültigen Sensor-Token; 503 `not_configured` ohne gesetzten Token (11.2) |
+| `GET /api/ha/stock` | Token des Sensors, kein Geräte-Token | 200 `HaStock`, sonst wie `GET /api/ha/summary` (11.2) |
 | `GET /api/push/key` | Token | 200 `PushKey { public_key }`, `Cache-Control: no-store`; 503 `not_configured` (11.3) |
 | `PUT /api/push/subscription` | Token | `PushSubscriptionInput { endpoint, keys { p256dh, auth }, origin }`; 204; 422 bei ungültigem oder unbekanntem Push-Dienst; 503 `not_configured` |
 | `DELETE /api/push/subscription` | Token | 204, auch ohne Abo; 503 `not_configured` |
@@ -624,6 +625,8 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 ### 11.2 Sensor für Home Assistant
 
 `GET /api/ha/summary`, nur lesend, mit eigenem Token: `Authorization: Bearer <STOWLY_HA_SUMMARY_TOKEN>`. Der Vergleich läuft in konstanter Zeit (über die SHA-256 beider Werte, wie beim Passwort). Ein Geräte-Token gilt hier nicht (401), und der Sensor-Token gilt nirgends sonst (dort ist er ein unbekanntes Geräte-Token: 401). Ist `STOWLY_HA_SUMMARY_TOKEN` nicht gesetzt, antwortet der Endpunkt jedem mit 503 `not_configured`. Inhalt, Regeln und die Schnipsel für HA: [`integrationen.md`](integrationen.md), Abschnitt 6.
+
+`GET /api/ha/stock` liefert mit demselben Token und denselben Regeln die Liste aller Waren im Bestand, je Zone (`HaStock`, [`integrationen.md`](integrationen.md), Abschnitt 6.3).
 
 ### 11.3 Push
 

@@ -12,6 +12,8 @@ from typing import Any
 from stowly.contract import ID_POOL_TARGET, MAX_CHANGES_PER_SYNC, MAX_COMMANDS_PER_SYNC, PROTOCOL_VERSION, ids
 from stowly.contract.api import (
     HA_MIRROR_DELAY_S,
+    HA_STOCK_ENTRY_MAX,
+    HA_STOCK_NAME_MAX,
     HA_SUMMARY_ENTRY_MAX,
     HA_SUMMARY_LIST_MAX,
     HA_SUMMARY_MESSAGE_MAX,
@@ -213,6 +215,16 @@ def _constants() -> list[str]:
             "HA_SUMMARY_MESSAGE_MAX",
             HA_SUMMARY_MESSAGE_MAX,
             "Sensor für Home Assistant: höchstens so viele Zeichen im Satz `message`.",
+        ),
+        (
+            "HA_STOCK_NAME_MAX",
+            HA_STOCK_NAME_MAX,
+            "Liste aller Waren für Home Assistant: höchstens so viele Zeichen je Produktname.",
+        ),
+        (
+            "HA_STOCK_ENTRY_MAX",
+            HA_STOCK_ENTRY_MAX,
+            "Liste aller Waren für Home Assistant: höchstens so viele Einträge über alle Zonen.",
         ),
         (
             "HA_MIRROR_DELAY_S",

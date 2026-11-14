@@ -41,6 +41,12 @@ HA_SUMMARY_LIST_MAX = 5
 HA_SUMMARY_ENTRY_MAX = 40
 HA_SUMMARY_MESSAGE_MAX = 255
 
+# Liste aller Waren für Home Assistant (GET /api/ha/stock): je Zone die Produkte, zum Anzeigen in
+# einer Karte. Namen höchstens HA_STOCK_NAME_MAX Zeichen; über alle Zonen höchstens
+# HA_STOCK_ENTRY_MAX Einträge, danach ist die Liste gekürzt (Zahlen zählen trotzdem alles).
+HA_STOCK_NAME_MAX = 60
+HA_STOCK_ENTRY_MAX = 300
+
 # Einkaufsliste nach Bring! über Home Assistant (docs/integrationen.md, 5.2 und 5.4): Ein offener
 # Eintrag geht erst nach Bring!, wenn er so viele Sekunden offen ist (Zeit für Rückgängig und
 # Tippfehler); der Abgleich läuft spätestens nach so vielen Sekunden wieder.
@@ -248,6 +254,51 @@ class HaSummary(Model):
     shopping_list: list[str] = Field(description="Offene Einträge der Einkaufsliste, höchstens 5.")
     message: str = Field(
         max_length=HA_SUMMARY_MESSAGE_MAX, description="Fertiger deutscher Satz zum Vorlesen."
+    )
+    updated_at: Timestamp = Field(description="Serverzeit der Antwort.")
+
+
+# --- Liste aller Waren für Home Assistant (GET /api/ha/stock) ---------------------------
+
+
+class HaStockProduct(Model):
+    """Ein Produkt in einer Zone: seine Packungen dort, beschrieben durch die mit dem frühesten MHD."""
+
+    name: str = Field(
+        max_length=HA_STOCK_NAME_MAX,
+        description="Anzeigename des Produkts (bei Platzhaltern der Barcode), höchstens 60 Zeichen.",
+    )
+    count: int = Field(ge=1, description="Packungen dieses Produkts in dieser Zone.")
+    best_before: DateStr | None = Field(
+        description="Das früheste MHD dieser Packungen; null = keine hat ein MHD."
+    )
+    mhd: str | None = Field(description="best_before als TT.MM.JJJJ zum Anzeigen; null wie best_before.")
+    days: int | None = Field(
+        description="Tage bis best_before: 0 = heute, negativ = abgelaufen; null wie best_before."
+    )
+    state: Literal["none", "ok", "soon", "expired"] = Field(
+        description="Warnstufe der Packung mit dem frühesten MHD (none = ohne MHD)."
+    )
+
+
+class HaStockZone(Model):
+    """Eine Zone mit Bestand."""
+
+    name: str = Field(description="Name der Zone.")
+    count: int = Field(ge=1, description="Packungen in dieser Zone, auch wenn die Liste gekürzt ist.")
+    products: list[HaStockProduct] = Field(
+        description="Nach dem frühesten MHD (ohne MHD zuletzt), dann nach Name, dann nach Produkt."
+    )
+
+
+class HaStock(Model):
+    """Alle Waren im Bestand je Zone, für die rest-Integration von Home Assistant (docs/integrationen.md, 6.3)."""
+
+    state: int = Field(ge=0, description="Zustand des Sensors: Packungen im Bestand.")
+    product_count: int = Field(ge=0, description="Verschiedene Produkte im Bestand.")
+    zones: list[HaStockZone] = Field(description="Zonen mit Bestand, in der Reihenfolge der Zonen.")
+    truncated: bool = Field(
+        description="true: nach 300 Einträgen gekürzt; state, product_count und count zählen trotzdem alles."
     )
     updated_at: Timestamp = Field(description="Serverzeit der Antwort.")
 

@@ -514,6 +514,50 @@ automation:
 - *HA muss Stowly vertrauen (Sensor).* Die `rest`-Integration kennt nur `verify_ssl: true/false`, keine eigene CA. Am besten bekommt HA die CA ins Vertrauen des Systems (bei HA im Container etwa über die Zertifikatsablage des Containers; wie es bei eurer Installation geht, klärt die Probe mit dem Anwender). Sonst `verify_ssl: false`: verschlüsselt, aber ohne Prüfung; der Sensor-Token erlaubt nur, diese Zusammenfassung zu lesen.
 - *Stowly muss HA vertrauen (Bring!),* wenn HA per https mit eigenem Zertifikat läuft: die CA als PEM-Datei in den Container legen und `STOWLY_HA_CA` darauf zeigen lassen. Läuft HA per http im Heimnetz, entfällt das.
 
+### 6.3 Liste aller Waren
+
+`GET /api/ha/stock` (`sync-protokoll.md`, 11.2): nur lesend, mit demselben Token wie der Sensor, `Cache-Control: no-store`. Gedacht für eine Karte in HA (`betrieb.md`, 18.4), nicht für den Zustand einer Entität: Die Liste steht in einem Attribut und ist deshalb nicht an 255 Zeichen gebunden.
+
+```json
+{
+  "state": 7,
+  "product_count": 5,
+  "zones": [
+    {
+      "name": "Kühlschrank",
+      "count": 3,
+      "products": [
+        { "name": "Quark", "count": 1, "best_before": "2026-11-12", "mhd": "12.11.2026", "days": -2, "state": "expired" },
+        { "name": "Joghurt", "count": 2, "best_before": "2026-11-14", "mhd": "14.11.2026", "days": 0, "state": "soon" }
+      ]
+    },
+    {
+      "name": "Keller",
+      "count": 4,
+      "products": [
+        { "name": "Reis", "count": 2, "best_before": "2027-03-01", "mhd": "01.03.2027", "days": 107, "state": "ok" },
+        { "name": "Nudeln", "count": 1, "best_before": "2027-05-01", "mhd": "01.05.2027", "days": 168, "state": "ok" },
+        { "name": "Salz", "count": 1, "best_before": null, "mhd": null, "days": null, "state": "none" }
+      ]
+    }
+  ],
+  "truncated": false,
+  "updated_at": "2026-11-14T06:30:00.000Z"
+}
+```
+
+Alles gilt für „heute" in `STOWLY_TIMEZONE` und für Packungen im Bestand, gestuft wie beim Sensor (6.1):
+
+- `state`: alle Packungen im Bestand (wie `total` des Sensors); `product_count`: verschiedene Produkte.
+- `zones`: nur Zonen mit Bestand, in der Reihenfolge der Zonen (`sort`, dann Name, dann Kennung, wie die Statistik). Eine gelöschte Zone führt zu ihrem Ziel (`moved_to`), wie bei `next.zone`. Eine Packung ohne auffindbare Zone stünde am Ende unter „Ohne Zone".
+- Je Zone `count`, die Packungen dort, und `products`: je Produkt ein Eintrag mit der Zahl seiner Packungen in dieser Zone (`count`). Liegt ein Produkt in zwei Zonen, steht es in beiden.
+- Ein Eintrag beschreibt sich durch die nach FIFO erste seiner Packungen in der Zone, also die mit dem frühesten MHD: `best_before`, `mhd` (dasselbe als `TT.MM.JJJJ` zum Anzeigen), `days` (0 = heute, negativ = abgelaufen) und `state` (`none`, `ok`, `soon`, `expired`). Hat keine Packung ein MHD, sind die drei ersten `null` und `state` ist `none`.
+- Sortiert nach diesem MHD (ohne MHD zuletzt), dann nach dem Anzeigenamen (`str.casefold()`), dann nach der Kennung des Produkts.
+- `name`: der Anzeigename (bei Platzhaltern der Barcode), höchstens 60 Zeichen (`HA_STOCK_NAME_MAX`), sonst mit „…" gekürzt.
+- Höchstens 300 Einträge über alle Zonen (`HA_STOCK_ENTRY_MAX`). Danach ist `truncated` `true`, die übrigen Einträge und Zonen fehlen; `state`, `product_count` und `count` zählen trotzdem alles.
+
+HA speichert Attribute über 16 KB nicht in seiner Historie und schreibt dann eine Warnung ins Log; das sind grob 150 Einträge. Deshalb nimmt man diesen Sensor aus der Historie aus (`betrieb.md`, 18.4); die Anzeige geht trotzdem.
+
 ## 7. Umgebungsvariablen
 
 Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/config.py`). Ein Konfigurationsfehler beendet den Start mit Exit-Code 2 und einer deutschen Meldung, die die Variable nennt; der Wert eines Tokens erscheint darin nie. Leere Werte gelten als nicht gesetzt, Leerraum am Rand fällt weg.
@@ -572,6 +616,15 @@ Kurze Probe gegen euer HA mit einer eigenen Testliste in Bring! (Plan, Runde 1).
 8. Wie lang dürfen Name und Spezifikation in Bring! sein?
 9. Wie bekommt euer HA die eigene CA von Stowly ins Vertrauen (Sensor über https), oder bleibt es bei `verify_ssl: false`?
 10. Darf ein HA-Benutzer ohne Administratorrechte die Dienste `todo.*` über die Schnittstelle aufrufen?
+
+**Stand 14.11.2026**, aus der Einrichtung beim Anwender (Home Assistant OS, echte Bring!-Liste statt einer Testliste, `docs/pruefliste.md` 54 und 55):
+
+- **1:** Ja. Ein in Bring! abgehakter Artikel kam über `get_items` als `completed` zurück. Wie viele aus „zuletzt gekauft" höchstens kommen, ist offen.
+- **4:** Die `description` kommt als Spezifikation an („1× · Stowly") und über `get_items` zurück. `update_item` mit nur `description` ist ungeprüft.
+- **6:** Ein Neustart von HA, während der Artikel in Bring! stand, ließ den Eintrag in Stowly offen. Welche der Varianten HA dabei zeigte, ist nicht beobachtet.
+- **9:** `verify_ssl: false`; Home Assistant OS bietet keinen einfachen Weg für eine eigene CA.
+- **10:** Ja. Ein Benutzer ohne Administratorrechte liest Zustände und ruft `todo.add_item` und `todo.get_items` auf; `update_item` und `remove_item` kamen im Test nicht vor.
+- Offen: 2, 3, 5, 7 und 8.
 
 **Bis zur Probe angenommen** (Vorgaben des nachgebildeten HA, `Behaviour()` in `server/tests/ha_fake.py`; jede Annahme ist dort umschaltbar, und die Tests prüfen, dass die Regeln aus 5.4 in jeder Variante gelten):
 

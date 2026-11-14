@@ -232,6 +232,7 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
     - K1–K3: Mit Token kommt die Zusammenfassung; ohne Token und mit dem Sensor-Token an `/api/devices` jeweils 401.
     - K4: In HA haben `sensor.stowly` und die drei Vorlagen-Sensoren Werte, über HTTPS zum NAS mit `verify_ssl: false` (Home Assistant OS, K6).
     - Offen: K5, die Ansage.
+- [ ] **55a.** Die Liste aller Waren in HA: der zweite Sensor und die Markdown-Karte aus [`betrieb.md`](betrieb.md), Abschnitt 18.4 (K7, K8). Abgelaufenes steht rot, bald Fälliges orange, je Zone eine Tabelle.
 
 ## S. Bedienung
 

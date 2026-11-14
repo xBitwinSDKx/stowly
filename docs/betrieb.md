@@ -763,6 +763,63 @@ Die `rest`-Integration kennt nur `verify_ssl: true` (Vorgabe) oder `false`, kein
 
 Die andere Richtung, Stowly vertraut HA, steht in 17.4.
 
+### 18.4 Liste aller Waren
+
+Ein zweiter Sensor holt mit demselben Token die Liste aller Waren im Bestand, je Zone (`/api/ha/stock`, Inhalt in [`integrationen.md`](integrationen.md), 6.3). Sein Zustand ist die Zahl der Packungen; die Liste steht im Attribut `zones` und ist für eine Markdown-Karte gedacht.
+
+In die `configuration.yaml`, unter den vorhandenen Abschnitt `rest:` aus 18.2 (die Adresse und `verify_ssl` wie dort):
+
+```yaml
+rest:
+  - resource: https://stowly.example/api/ha/stock
+    headers:
+      Authorization: !secret stowly_summary_auth
+    scan_interval: 300
+    timeout: 10
+    sensor:
+      - name: Stowly Bestand
+        unique_id: stowly_stock
+        value_template: "{{ value_json.state }}"
+        unit_of_measurement: Packungen
+        json_attributes:
+          - product_count
+          - zones
+          - truncated
+
+recorder:
+  exclude:
+    entities:
+      - sensor.stowly_bestand
+```
+
+Der Abschnitt `recorder:` nimmt den Sensor aus der Historie von HA. Ohne ihn warnt HA ab etwa 150 Einträgen, die Attribute seien größer als 16 KB, und speichert sie nicht. Steht `recorder:` schon in der Datei, kommt `exclude` dort hinein. Danach die Konfiguration prüfen und HA neu starten.
+
+Die Karte: im Dashboard „Karte hinzufügen" → „Markdown", dann im Code-Editor:
+
+```yaml
+type: markdown
+title: Bestand
+content: |
+  {%- set zones = state_attr('sensor.stowly_bestand', 'zones') or [] %}
+  {%- for zone in zones %}
+  ### {{ zone.name }} ({{ zone.count }})
+  | Produkt | Anz. | MHD |
+  |:--|--:|--:|
+  {%- for p in zone.products %}
+  | {{ p.name }} | {{ p.count }} | {% if p.state == 'expired' %}<font color="#d32f2f">{{ p.mhd }}</font>{% elif p.state == 'soon' %}<font color="#ef6c00">{{ p.mhd }}</font>{% else %}{{ p.mhd or '–' }}{% endif %} |
+  {%- endfor %}
+
+  {% else %}
+  Nichts im Bestand.
+  {%- endfor %}
+  {%- if state_attr('sensor.stowly_bestand', 'truncated') %}
+
+  *Die Liste ist gekürzt.*
+  {%- endif %}
+```
+
+Je Zone eine Tabelle, darin nach MHD; abgelaufene Daten rot, bald fällige orange, ohne MHD ein Strich. Die Bindestriche in `{%-` sorgen dafür, dass die Zeilen einer Tabelle ohne Leerzeilen aufeinander folgen; sonst zerfällt die Tabelle. Wer statt nach Zonen lieber eine einzige Liste will, ändert nur die Vorlage: Die Daten enthalten alles.
+
 ## Prüfliste für die Zielumgebung
 
 Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe nach; hinter jedem Schritt steht, was zu sehen sein muss.
@@ -931,3 +988,5 @@ Mit der Liste, die ihr wirklich nutzt (Abschnitt 17.2; ein späterer Wechsel hak
 | K4 | Schnipsel aus 18.2 in HA, HA neu starten | `sensor.stowly` mit der Zahl der bald ablaufenden Packungen und allen Attributen; die drei Vorlagen-Sensoren mit Werten |
 | K5 | Die Automation „Stowly am Morgen" auf eine Minute von jetzt stellen | Der Satz wird vorgelesen. |
 | K6 | Nur mit eigener Zertifizierungsstelle: 18.3 (`REQUESTS_CA_BUNDLE` im Container von HA, sonst `verify_ssl: false`) | Der Sensor bekommt Werte; im Log von HA kein Fehler zum Zertifikat. Bitte notieren, welcher Weg ging. |
+| K7 | `curl` wie in 18.1, aber an `/api/ha/stock` | JSON mit `state`, `product_count`, `zones` (je Zone `name`, `count`, `products`) und `truncated` |
+| K8 | Sensor und Karte aus 18.4 in HA, HA neu starten | `sensor.stowly_bestand` mit der Zahl der Packungen; die Karte zeigt je Zone eine Tabelle, abgelaufene Daten rot, bald fällige orange; im Log von HA keine Warnung zur Größe der Attribute |
