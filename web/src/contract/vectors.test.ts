@@ -1,5 +1,5 @@
 /**
- * Kennungen, QR-Inhalte, Barcodes und Zeit gegen die gemeinsamen Beispiele.
+ * Kennungen, QR-Inhalte, Barcodes, Zeit und MHD gegen die gemeinsamen Beispiele.
  * Dieselbe Datei (docs/vectors.json) prüft auch den Server: server/tests/test_vectors.py.
  */
 import { describe, expect, it } from "vitest";
@@ -8,8 +8,9 @@ import rawVectors from "../../../docs/vectors.json";
 import { PACKAGE_ID_ALPHABET, PACKAGE_ID_LENGTH } from "./api.gen";
 import { isStoreInternalBarcode, isValidBarcode, normalizeBarcode } from "./barcode";
 import { isPackageId, isUuid, newUuid, normalizePackageId, randomPackageId } from "./ids";
+import { daysUntil, expiredFrom, expiryState, soonFrom, warnDaysFor, type ExpiryState } from "./mhd";
 import { classifyScan, packageQr, parseQr, zoneQr } from "./qr";
-import { isDate, isTimestamp, nowTimestamp } from "./time";
+import { addDays, isDate, isMonth, isTimeOfDay, isTimestamp, nowTimestamp } from "./time";
 
 interface Vectors {
   package_ids: {
@@ -37,6 +38,17 @@ interface Vectors {
     invalid: string[];
     dates_valid: string[];
     dates_invalid: string[];
+    times_of_day_valid: string[];
+    times_of_day_invalid: string[];
+    months_valid: string[];
+    months_invalid: string[];
+  };
+  mhd: {
+    days_until: { best_before: string | null; today: string; days: number | null }[];
+    days_until_invalid: { best_before: string; today: string }[];
+    expiry_state: { best_before: string | null; warn_days: number; today: string; state: ExpiryState }[];
+    warn_days_for: { product: { warn_days: number | null } | null; settings: { warn_days: number }; warn_days: number }[];
+    entry: { best_before: string | null; warn_days: number; soon_from: string | null; expired_from: string | null }[];
   };
 }
 
@@ -158,6 +170,63 @@ describe("Zeit", () => {
     }
     for (const value of vectors.timestamps.dates_invalid) {
       expect(isDate(value), value).toBe(false);
+    }
+  });
+
+  it("erkennt Uhrzeiten und Monate", () => {
+    for (const value of vectors.timestamps.times_of_day_valid) {
+      expect(isTimeOfDay(value), value).toBe(true);
+    }
+    for (const value of vectors.timestamps.times_of_day_invalid) {
+      expect(isTimeOfDay(value), JSON.stringify(value)).toBe(false);
+    }
+    for (const value of vectors.timestamps.months_valid) {
+      expect(isMonth(value), value).toBe(true);
+    }
+    for (const value of vectors.timestamps.months_invalid) {
+      expect(isMonth(value), JSON.stringify(value)).toBe(false);
+    }
+  });
+});
+
+describe("MHD", () => {
+  it("zählt Tage bis zum MHD", () => {
+    for (const { best_before, today, days } of vectors.mhd.days_until) {
+      expect(daysUntil(best_before, today), `${best_before} / ${today}`).toBe(days);
+    }
+    for (const { best_before, today } of vectors.mhd.days_until_invalid) {
+      expect(() => daysUntil(best_before, today), `${best_before} / ${JSON.stringify(today)}`).toThrow();
+    }
+  });
+
+  it("stuft nach der Regel des Vertrags ein", () => {
+    for (const { best_before, warn_days, today, state } of vectors.mhd.expiry_state) {
+      expect(expiryState(best_before, warn_days, today), `${best_before} / ${warn_days} / ${today}`).toBe(state);
+    }
+  });
+
+  it("nimmt die Vorlaufzeit des Produkts, sonst die des Haushalts", () => {
+    for (const { product, settings, warn_days } of vectors.mhd.warn_days_for) {
+      expect(warnDaysFor(product, settings), JSON.stringify(product)).toBe(warn_days);
+    }
+  });
+
+  it("nennt den Eintritt in „bald“ und „abgelaufen“ passend zur Warnstufe", () => {
+    for (const { best_before, warn_days, soon_from, expired_from } of vectors.mhd.entry) {
+      const soon = soonFrom(best_before, warn_days);
+      const expired = expiredFrom(best_before);
+      expect([soon, expired], `${best_before} / ${warn_days}`).toEqual([soon_from, expired_from]);
+      if (best_before === null || soon === null) {
+        continue;
+      }
+      expect(expiryState(best_before, warn_days, soon)).toBe("soon");
+      if (soon !== "0001-01-01") {
+        expect(expiryState(best_before, warn_days, addDays(soon, -1))).toBe("ok");
+      }
+      if (expired !== null) {
+        expect(expiryState(best_before, warn_days, expired)).toBe("expired");
+        expect(expiryState(best_before, warn_days, best_before)).toBe("soon");
+      }
     }
   });
 });

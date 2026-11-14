@@ -422,6 +422,7 @@ describe("Produktbilder", () => {
     quantity: "",
     image,
     warn_days: null,
+    min_stock: null,
     lookup: "found",
     barcodes: [],
     created_at: "2026-11-13T10:00:00.000Z",

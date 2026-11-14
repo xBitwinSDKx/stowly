@@ -2,7 +2,7 @@
 
 Selbst gehostete Lagerverwaltung für Lebensmittel. Jede Packung bekommt beim Einlagern ein Etikett mit einer 5-stelligen ID (Klartext und QR-Code), wird per Handy-Scan ein- und ausgebucht und erscheint in einer nach Produkt gruppierten Bestandsliste mit dem kritischsten MHD. Die App funktioniert im Keller ohne Netz und gleicht ab, sobald der Server wieder erreichbar ist.
 
-**Stand:** Stufe 1 nach zwei Runden samt Integration: Bestand, Offline-Betrieb, Scannen und Etikettendruck (Server und Raspberry Pi) laufen zusammen auf dem Entwicklungsrechner. In der Zielumgebung (Container, Handys, Drucker, Pi) ist noch nichts geprüft: [`docs/pruefliste.md`](docs/pruefliste.md) führt Schritt für Schritt hindurch, die Tabellen mit Befehl und erwartetem Ergebnis stehen in [`docs/betrieb.md`](docs/betrieb.md) und [`pi/README.md`](pi/README.md). Plan: [`docs/plan-stufe-1.md`](docs/plan-stufe-1.md).
+**Stand:** Stufe 1 nach zwei Runden samt Integration: Bestand, Offline-Betrieb, Scannen und Etikettendruck (Server und Raspberry Pi) laufen zusammen auf dem Entwicklungsrechner. In der Zielumgebung (Container, Handys, Drucker, Pi) ist noch nichts geprüft: [`docs/pruefliste.md`](docs/pruefliste.md) führt Schritt für Schritt hindurch, die Tabellen mit Befehl und erwartetem Ergebnis stehen in [`docs/betrieb.md`](docs/betrieb.md) und [`pi/README.md`](pi/README.md). Plan: [`docs/plan-stufe-1.md`](docs/plan-stufe-1.md). Stufe 2 (Mindestbestand und Einkaufsliste, Bring! über Home Assistant, Sensor, Web-Push, FIFO, Statistik, verschlüsselte Sicherungen) ist in Arbeit: [`docs/plan-stufe-2.md`](docs/plan-stufe-2.md); ihre Verträge stehen schon (Protokoll 2, [`docs/integrationen.md`](docs/integrationen.md)).
 
 ## Aufbau
 
@@ -18,7 +18,7 @@ In `web/src`:
 
 | Ordner | Inhalt |
 |---|---|
-| `contract/` | Der Vertrag als Code: erzeugte Datentypen (`api.gen.ts`), Schnittstelle des Offline-Kerns (`core.ts`), gemeinsame Regeln (IDs, QR, Barcodes, Zeit, MHD, Etikett-Daten). |
+| `contract/` | Der Vertrag als Code: erzeugte Datentypen (`api.gen.ts`), Schnittstelle des Offline-Kerns (`core.ts`), gemeinsame Regeln (IDs, QR, Barcodes, Zeit, MHD, Etikett-Daten, Mindestbestand und Einkaufsliste, FIFO). |
 | `core/` | Der Offline-Kern: lokale Datenbank, Outbox, Sync, Scanner. |
 | `mock/` | Attrappe des Kerns mit Beispieldaten, ohne Server. |
 | `ui/` | Design-System: Tokens (`tokens.css`), Thema, Grundbausteine (`ui/base`). |
@@ -27,11 +27,12 @@ In `web/src`:
 
 ## Verträge
 
-- [`docs/sync-protokoll.md`](docs/sync-protokoll.md): Datenmodell, Sync-Aufruf, Befehle, Konfliktregeln, ID-Vorrat, Anmeldung, Fehlerformat, Zeit
+- [`docs/sync-protokoll.md`](docs/sync-protokoll.md): Datenmodell, Sync-Aufruf, Befehle, Konfliktregeln, Einkaufsliste und automatische Einträge, ID-Vorrat, Anmeldung, Endpunkte, Fehlerformat, Zeit
+- [`docs/integrationen.md`](docs/integrationen.md): Zeitplan, Sicherungen, Web-Push, Home Assistant mit Bring!, Sensor, Umgebungsvariablen
 - [`docs/etiketten.md`](docs/etiketten.md): QR-Inhalte, Aufbau des Etiketts, Protokoll des Druckdienstes
 - [`docs/openapi.json`](docs/openapi.json) und `web/src/contract/api.gen.ts`: dieselben Datentypen für beide Seiten, erzeugt aus den Python-Modellen in `server/stowly/contract/` und `print/stowly_print/model.py`
-- [`docs/vectors.json`](docs/vectors.json): gemeinsame Beispiele, gegen die Server und Web-App getestet werden
-- `server/stowly/migrations/`: das Datenbankschema (`0001_initial.sql`) und seine Ergänzungen als nummerierte Migrationen
+- [`docs/vectors.json`](docs/vectors.json): gemeinsame Beispiele, gegen die Server und Web-App getestet werden (auch Warnstufen nach dem MHD und die automatischen Einträge der Einkaufsliste)
+- `server/stowly/migrations/`: das Datenbankschema (`0001_initial.sql`) und seine Ergänzungen als nummerierte Migrationen (`0003` für Stufe 2)
 
 Die Quelle der Datentypen ist Python. Nach einer Änderung an den Modellen:
 

@@ -357,6 +357,1714 @@
         "received": "2026-11-13T11:00:00.000Z",
         "effective": "2026-11-13T11:00:00.000Z"
       }
+    ],
+    "times_of_day_valid": [
+      "00:00",
+      "07:05",
+      "17:00",
+      "21:00",
+      "23:59"
+    ],
+    "times_of_day_invalid": [
+      "7:00",
+      "24:00",
+      "17:60",
+      "17:00:00",
+      "17.00",
+      "",
+      "17:00\n",
+      "１7:00",
+      " 17:00"
+    ],
+    "months_valid": [
+      "2026-11",
+      "2026-01",
+      "2026-12",
+      "0001-01",
+      "9999-12"
+    ],
+    "months_invalid": [
+      "2026-13",
+      "2026-00",
+      "2026-1",
+      "26-11",
+      "2026-11-01",
+      "0000-01",
+      "",
+      "2026-11\n",
+      "２026-11"
+    ]
+  },
+  "mhd": {
+    "_hinweis": "Warnstufen nach dem MHD (docs/sync-protokoll.md, 3.2). Server: stowly/contract/mhd.py, Web-App: web/src/contract/mhd.ts. Alle Tage sind Kalendertage YYYY-MM-DD; today ist der Tag, für den gerechnet wird. Fälle in *_invalid müssen auf beiden Seiten einen Fehler werfen.",
+    "days_until": [
+      {
+        "best_before": null,
+        "today": "2026-11-13",
+        "days": null
+      },
+      {
+        "best_before": "2026-11-13",
+        "today": "2026-11-13",
+        "days": 0
+      },
+      {
+        "best_before": "2026-11-20",
+        "today": "2026-11-13",
+        "days": 7
+      },
+      {
+        "best_before": "2026-11-12",
+        "today": "2026-11-13",
+        "days": -1
+      },
+      {
+        "_fall": "über die Zeitumstellung hinweg",
+        "best_before": "2027-03-29",
+        "today": "2027-03-27",
+        "days": 2
+      },
+      {
+        "_fall": "über die Zeitumstellung im Herbst",
+        "best_before": "2026-10-26",
+        "today": "2026-10-24",
+        "days": 2
+      },
+      {
+        "_fall": "Schaltjahr",
+        "best_before": "2028-03-01",
+        "today": "2028-02-28",
+        "days": 2
+      },
+      {
+        "_fall": "Jahreswechsel",
+        "best_before": "2027-01-01",
+        "today": "2026-12-31",
+        "days": 1
+      },
+      {
+        "best_before": "2016-11-13",
+        "today": "2026-11-13",
+        "days": -3652
+      },
+      {
+        "best_before": "0001-01-01",
+        "today": "0001-01-02",
+        "days": -1
+      }
+    ],
+    "days_until_invalid": [
+      {
+        "best_before": "2026-02-30",
+        "today": "2026-11-13"
+      },
+      {
+        "best_before": "13.11.2026",
+        "today": "2026-11-13"
+      },
+      {
+        "best_before": "2026-11-13",
+        "today": "heute"
+      },
+      {
+        "best_before": "2026-11-13",
+        "today": "2026-11-13\n"
+      },
+      {
+        "best_before": "0000-12-31",
+        "today": "2026-11-13"
+      }
+    ],
+    "expiry_state": [
+      {
+        "best_before": null,
+        "warn_days": 14,
+        "today": "2026-11-13",
+        "state": "none"
+      },
+      {
+        "best_before": "2026-11-12",
+        "warn_days": 14,
+        "today": "2026-11-13",
+        "state": "expired"
+      },
+      {
+        "_fall": "heute ist noch nicht abgelaufen",
+        "best_before": "2026-11-13",
+        "warn_days": 14,
+        "today": "2026-11-13",
+        "state": "soon"
+      },
+      {
+        "best_before": "2026-11-27",
+        "warn_days": 14,
+        "today": "2026-11-13",
+        "state": "soon"
+      },
+      {
+        "best_before": "2026-11-28",
+        "warn_days": 14,
+        "today": "2026-11-13",
+        "state": "ok"
+      },
+      {
+        "best_before": "2026-11-13",
+        "warn_days": 0,
+        "today": "2026-11-13",
+        "state": "soon"
+      },
+      {
+        "best_before": "2026-11-14",
+        "warn_days": 0,
+        "today": "2026-11-13",
+        "state": "ok"
+      },
+      {
+        "best_before": "2026-11-12",
+        "warn_days": 0,
+        "today": "2026-11-13",
+        "state": "expired"
+      },
+      {
+        "best_before": "2036-11-10",
+        "warn_days": 3650,
+        "today": "2026-11-13",
+        "state": "soon"
+      },
+      {
+        "best_before": "2036-11-11",
+        "warn_days": 3650,
+        "today": "2026-11-13",
+        "state": "ok"
+      },
+      {
+        "_fall": "29. Februar",
+        "best_before": "2028-02-29",
+        "warn_days": 1,
+        "today": "2028-02-28",
+        "state": "soon"
+      }
+    ],
+    "warn_days_for": [
+      {
+        "product": {
+          "warn_days": 3
+        },
+        "settings": {
+          "warn_days": 14
+        },
+        "warn_days": 3
+      },
+      {
+        "_fall": "0 ist ein eigener Wert",
+        "product": {
+          "warn_days": 0
+        },
+        "settings": {
+          "warn_days": 14
+        },
+        "warn_days": 0
+      },
+      {
+        "product": {
+          "warn_days": null
+        },
+        "settings": {
+          "warn_days": 14
+        },
+        "warn_days": 14
+      },
+      {
+        "_fall": "Produkt (noch) unbekannt",
+        "product": null,
+        "settings": {
+          "warn_days": 14
+        },
+        "warn_days": 14
+      }
+    ],
+    "entry": [
+      {
+        "best_before": "2026-11-27",
+        "warn_days": 14,
+        "soon_from": "2026-11-13",
+        "expired_from": "2026-11-28"
+      },
+      {
+        "best_before": "2026-12-31",
+        "warn_days": 0,
+        "soon_from": "2026-12-31",
+        "expired_from": "2027-01-01"
+      },
+      {
+        "best_before": "2028-03-01",
+        "warn_days": 1,
+        "soon_from": "2028-02-29",
+        "expired_from": "2028-03-02"
+      },
+      {
+        "best_before": "2026-03-01",
+        "warn_days": 1,
+        "soon_from": "2026-02-28",
+        "expired_from": "2026-03-02"
+      },
+      {
+        "best_before": null,
+        "warn_days": 14,
+        "soon_from": null,
+        "expired_from": null
+      },
+      {
+        "_fall": "früher als der erste Tag geht nicht",
+        "best_before": "0001-01-05",
+        "warn_days": 14,
+        "soon_from": "0001-01-01",
+        "expired_from": "0001-01-06"
+      },
+      {
+        "_fall": "nach dem letzten Tag kommt keiner",
+        "best_before": "9999-12-31",
+        "warn_days": 3650,
+        "soon_from": "9990-01-02",
+        "expired_from": null
+      }
+    ]
+  },
+  "shopping_auto": {
+    "_hinweis": "Automatische Einträge der Einkaufsliste (docs/sync-protokoll.md, 7.6). Server: server/tests (Runde 1); Nachbildung des Servers: web/src/core/testing (Runde 1). Jeder Fall beginnt mit einem leeren Datenbestand (nur die Zone „Vorrat\"). Schritte laufen in ihrer Reihenfolge. at = Sekunden nach dem Beginn des Falls, zu denen der Anwender gehandelt hat (wirksamer Zeitpunkt); received = wann der Server den Befehl bekommt (Vorgabe: at), nie früher als beim Schritt davor; device = Gerät (Vorgabe A), jedes ist eine eigene Anmeldung, und je Gerät steigt at. Kürzel: product, package, item, source, target nennen Datensätze des Falls; im Befehl werden daraus Kennungen (product -> product_id, package -> package_id, item -> item_id, changes.product -> changes.product_id). auto = der offene automatische Eintrag dieses Produkts (pick: done = der zuletzt erledigte). expect = alle Einträge der Einkaufsliste nach den Schritten davor, als Menge (Reihenfolge egal), auch erledigte und gelöschte: product (Kürzel) oder text, origin, quantity, state (open, done, deleted; gelöscht geht vor erledigt). Kennungen automatischer Einträge vergibt der Server; sie werden nicht verglichen.",
+    "cases": [
+      {
+        "name": "Entnehmen unter den Mindestbestand legt einen Eintrag an, er zählt mit und verschwindet, wenn der Bestand reicht",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "package.create",
+            "package": "m2",
+            "product": "milch"
+          },
+          {
+            "at": 3,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 2
+            }
+          },
+          {
+            "expect": []
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "cmd": "package.remove",
+            "package": "m2",
+            "reason": "discarded"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 30,
+            "cmd": "package.create",
+            "package": "m3",
+            "product": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "cmd": "package.create",
+            "package": "m4",
+            "product": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Ohne Mindestbestand entsteht nichts; abgelaufene Packungen zählen zum Bestand",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "reis",
+            "name": "Reis"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "r1",
+            "product": "reis"
+          },
+          {
+            "at": 2,
+            "cmd": "package.remove",
+            "package": "r1",
+            "reason": "consumed"
+          },
+          {
+            "expect": []
+          },
+          {
+            "at": 3,
+            "cmd": "product.create",
+            "product": "joghurt",
+            "name": "Joghurt"
+          },
+          {
+            "at": 4,
+            "cmd": "package.create",
+            "package": "j1",
+            "product": "joghurt",
+            "best_before": "2000-01-01"
+          },
+          {
+            "at": 5,
+            "cmd": "product.update",
+            "product": "joghurt",
+            "changes": {
+              "min_stock": 1
+            }
+          },
+          {
+            "expect": []
+          }
+        ]
+      },
+      {
+        "name": "Ein neues Produkt mit Mindestbestand kommt sofort auf die Liste",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "quark",
+            "name": "Quark",
+            "min_stock": 2
+          },
+          {
+            "expect": [
+              {
+                "product": "quark",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "cmd": "package.create",
+            "package": "q1",
+            "product": "quark"
+          },
+          {
+            "expect": [
+              {
+                "product": "quark",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 11,
+            "cmd": "package.create",
+            "package": "q2",
+            "product": "quark"
+          },
+          {
+            "expect": [
+              {
+                "product": "quark",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Wiederherstellen (Rückgängig) lässt den Eintrag wieder verschwinden",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 1
+            }
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 12,
+            "cmd": "package.restore",
+            "package": "m1"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Abhaken sperrt bis zum nächsten Einlagern des Produkts",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "package.create",
+            "package": "m2",
+            "product": "milch"
+          },
+          {
+            "at": 3,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 2
+            }
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "at": 20,
+            "cmd": "shopping_item.update",
+            "auto": "milch",
+            "changes": {
+              "done": true
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 30,
+            "cmd": "package.remove",
+            "package": "m2",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "cmd": "package.create",
+            "package": "m3",
+            "product": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "done"
+              },
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Löschen sperrt ebenso; eine Änderung des Mindestbestands hebt die Sperre auf, dieselbe Zahl nicht",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "package.create",
+            "package": "m2",
+            "product": "milch"
+          },
+          {
+            "at": 3,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 2
+            }
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "at": 20,
+            "cmd": "shopping_item.delete",
+            "auto": "milch"
+          },
+          {
+            "at": 30,
+            "cmd": "package.remove",
+            "package": "m2",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 2
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          },
+          {
+            "at": 50,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 3
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              },
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 3,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Ohne Mindestbestand verschwindet der Eintrag",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 2
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": null
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Ein erledigter Eintrag, der gelöscht wird, sperrt nicht noch einmal",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 1
+            }
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "at": 20,
+            "cmd": "shopping_item.update",
+            "auto": "milch",
+            "changes": {
+              "done": true
+            }
+          },
+          {
+            "at": 30,
+            "cmd": "package.create",
+            "package": "m2",
+            "product": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "cmd": "shopping_item.delete",
+            "auto": "milch",
+            "pick": "done"
+          },
+          {
+            "at": 50,
+            "cmd": "package.remove",
+            "package": "m2",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              },
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Wiederöffnen hebt die Sperre auf; der Eintrag folgt wieder dem Bestand",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "package.create",
+            "package": "m2",
+            "product": "milch"
+          },
+          {
+            "at": 3,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 2
+            }
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "at": 20,
+            "cmd": "shopping_item.update",
+            "auto": "milch",
+            "changes": {
+              "done": true
+            }
+          },
+          {
+            "at": 30,
+            "cmd": "shopping_item.update",
+            "auto": "milch",
+            "pick": "done",
+            "changes": {
+              "done": false
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "cmd": "package.remove",
+            "package": "m2",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Ein wieder geöffneter Eintrag verschwindet, wenn der Bestand schon reicht",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 1
+            }
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "at": 20,
+            "cmd": "shopping_item.update",
+            "auto": "milch",
+            "changes": {
+              "done": true
+            }
+          },
+          {
+            "at": 30,
+            "cmd": "package.create",
+            "package": "m2",
+            "product": "milch"
+          },
+          {
+            "at": 40,
+            "cmd": "shopping_item.update",
+            "auto": "milch",
+            "pick": "done",
+            "changes": {
+              "done": false
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Die Sperre endet nur mit einem Einlagern, das nach dem Abhaken geschah",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "package.create",
+            "package": "m2",
+            "product": "milch"
+          },
+          {
+            "at": 3,
+            "cmd": "package.create",
+            "package": "m3",
+            "product": "milch"
+          },
+          {
+            "at": 4,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 3
+            }
+          },
+          {
+            "at": 10,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "at": 12,
+            "cmd": "package.remove",
+            "package": "m2",
+            "reason": "consumed"
+          },
+          {
+            "at": 30,
+            "cmd": "shopping_item.update",
+            "auto": "milch",
+            "changes": {
+              "done": true
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "cmd": "package.create",
+            "device": "B",
+            "received": 40,
+            "package": "m4",
+            "product": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 50,
+            "cmd": "package.create",
+            "package": "m5",
+            "product": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 60,
+            "cmd": "package.remove",
+            "package": "m3",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "done"
+              },
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Eigene Einträge eines Produkts sind mit dem Einlagern erledigt, freie Texte und andere Produkte nicht",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "butter",
+            "name": "Butter"
+          },
+          {
+            "at": 1,
+            "cmd": "product.create",
+            "product": "kaese",
+            "name": "Käse"
+          },
+          {
+            "at": 10,
+            "cmd": "shopping_item.create",
+            "item": "i1",
+            "product": "butter",
+            "quantity": 2
+          },
+          {
+            "at": 11,
+            "cmd": "shopping_item.create",
+            "item": "i2",
+            "text": "Grillkohle"
+          },
+          {
+            "at": 12,
+            "cmd": "shopping_item.create",
+            "item": "i3",
+            "product": "kaese"
+          },
+          {
+            "at": 20,
+            "cmd": "package.create",
+            "package": "b1",
+            "product": "butter"
+          },
+          {
+            "expect": [
+              {
+                "product": "butter",
+                "origin": "manual",
+                "quantity": 2,
+                "state": "done"
+              },
+              {
+                "text": "Grillkohle",
+                "origin": "manual",
+                "quantity": null,
+                "state": "open"
+              },
+              {
+                "product": "kaese",
+                "origin": "manual",
+                "quantity": null,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Ein Einlagern vor dem Anlegen des Eintrags erledigt ihn nicht",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "butter",
+            "name": "Butter"
+          },
+          {
+            "at": 100,
+            "cmd": "shopping_item.create",
+            "item": "i1",
+            "product": "butter"
+          },
+          {
+            "at": 50,
+            "cmd": "package.create",
+            "device": "B",
+            "received": 150,
+            "package": "b1",
+            "product": "butter"
+          },
+          {
+            "expect": [
+              {
+                "product": "butter",
+                "origin": "manual",
+                "quantity": null,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 200,
+            "cmd": "package.create",
+            "package": "b2",
+            "product": "butter"
+          },
+          {
+            "expect": [
+              {
+                "product": "butter",
+                "origin": "manual",
+                "quantity": null,
+                "state": "done"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Wer nach dem Einlagern wieder öffnet, behält den Eintrag offen, auch gegen ein früheres Einlagern",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "butter",
+            "name": "Butter"
+          },
+          {
+            "at": 5,
+            "cmd": "shopping_item.create",
+            "item": "i1",
+            "product": "butter"
+          },
+          {
+            "at": 10,
+            "cmd": "package.create",
+            "package": "b1",
+            "product": "butter"
+          },
+          {
+            "expect": [
+              {
+                "product": "butter",
+                "origin": "manual",
+                "quantity": null,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "cmd": "shopping_item.update",
+            "item": "i1",
+            "changes": {
+              "done": false
+            }
+          },
+          {
+            "at": 15,
+            "cmd": "package.create",
+            "device": "B",
+            "received": 30,
+            "package": "b2",
+            "product": "butter"
+          },
+          {
+            "expect": [
+              {
+                "product": "butter",
+                "origin": "manual",
+                "quantity": null,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 40,
+            "cmd": "package.create",
+            "package": "b3",
+            "product": "butter"
+          },
+          {
+            "expect": [
+              {
+                "product": "butter",
+                "origin": "manual",
+                "quantity": null,
+                "state": "done"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Was vor dem Einlagern abgehakt und wieder geöffnet wurde, verliert gegen das Erledigen durch das Einlagern",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "butter",
+            "name": "Butter"
+          },
+          {
+            "at": 5,
+            "cmd": "shopping_item.create",
+            "item": "i1",
+            "product": "butter"
+          },
+          {
+            "at": 10,
+            "cmd": "package.create",
+            "package": "b1",
+            "product": "butter"
+          },
+          {
+            "at": 6,
+            "cmd": "shopping_item.update",
+            "device": "B",
+            "received": 20,
+            "item": "i1",
+            "changes": {
+              "done": true
+            }
+          },
+          {
+            "at": 7,
+            "cmd": "shopping_item.update",
+            "device": "B",
+            "received": 20,
+            "item": "i1",
+            "changes": {
+              "done": false
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "butter",
+                "origin": "manual",
+                "quantity": null,
+                "state": "done"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Zusammenführen: Einträge wandern mit, zwei offene automatische werden einer",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "product.create",
+            "product": "vollmilch",
+            "name": "Vollmilch"
+          },
+          {
+            "at": 2,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 3,
+            "cmd": "package.create",
+            "package": "v1",
+            "product": "vollmilch"
+          },
+          {
+            "at": 10,
+            "cmd": "product.update",
+            "product": "milch",
+            "changes": {
+              "min_stock": 3
+            }
+          },
+          {
+            "at": 11,
+            "cmd": "product.update",
+            "product": "vollmilch",
+            "changes": {
+              "min_stock": 2
+            }
+          },
+          {
+            "at": 12,
+            "cmd": "shopping_item.create",
+            "item": "i1",
+            "product": "vollmilch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "open"
+              },
+              {
+                "product": "vollmilch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              },
+              {
+                "product": "vollmilch",
+                "origin": "manual",
+                "quantity": null,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 20,
+            "cmd": "product.merge",
+            "source": "vollmilch",
+            "target": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              },
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              },
+              {
+                "product": "milch",
+                "origin": "manual",
+                "quantity": null,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Zusammenführen übernimmt den Mindestbestand der Quelle, wenn das Ziel keinen hat",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 2,
+            "cmd": "product.create",
+            "product": "frisch",
+            "name": "Frischmilch",
+            "min_stock": 2
+          },
+          {
+            "expect": [
+              {
+                "product": "frisch",
+                "origin": "min_stock",
+                "quantity": 2,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "cmd": "product.merge",
+            "source": "frisch",
+            "target": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Zusammenführen übernimmt die Sperre der Quelle",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "product.create",
+            "product": "frisch",
+            "name": "Frischmilch",
+            "min_stock": 1
+          },
+          {
+            "at": 10,
+            "cmd": "shopping_item.update",
+            "auto": "frisch",
+            "changes": {
+              "done": true
+            }
+          },
+          {
+            "at": 20,
+            "cmd": "product.merge",
+            "source": "frisch",
+            "target": "milch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "done"
+              }
+            ]
+          },
+          {
+            "at": 30,
+            "cmd": "package.create",
+            "package": "m1",
+            "product": "milch"
+          },
+          {
+            "at": 40,
+            "cmd": "package.remove",
+            "package": "m1",
+            "reason": "consumed"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "done"
+              },
+              {
+                "product": "milch",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Eine Packung, die zu einem anderen Produkt wechselt, zählt bei beiden",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "a",
+            "name": "Haferdrink"
+          },
+          {
+            "at": 1,
+            "cmd": "product.create",
+            "product": "b",
+            "name": "Sojadrink"
+          },
+          {
+            "at": 2,
+            "cmd": "package.create",
+            "package": "p1",
+            "product": "a"
+          },
+          {
+            "at": 3,
+            "cmd": "product.update",
+            "product": "a",
+            "changes": {
+              "min_stock": 1
+            }
+          },
+          {
+            "at": 4,
+            "cmd": "product.update",
+            "product": "b",
+            "changes": {
+              "min_stock": 1
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "b",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              }
+            ]
+          },
+          {
+            "at": 10,
+            "cmd": "package.update",
+            "package": "p1",
+            "changes": {
+              "product": "b"
+            }
+          },
+          {
+            "expect": [
+              {
+                "product": "a",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "open"
+              },
+              {
+                "product": "b",
+                "origin": "min_stock",
+                "quantity": 1,
+                "state": "deleted"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Ein Eintrag mit Produkt folgt dessen Zusammenführung, auch wenn er später ankommt",
+        "steps": [
+          {
+            "at": 0,
+            "cmd": "product.create",
+            "product": "milch",
+            "name": "Milch"
+          },
+          {
+            "at": 1,
+            "cmd": "product.create",
+            "product": "vollmilch",
+            "name": "Vollmilch"
+          },
+          {
+            "at": 10,
+            "cmd": "product.merge",
+            "source": "vollmilch",
+            "target": "milch"
+          },
+          {
+            "at": 5,
+            "cmd": "shopping_item.create",
+            "device": "B",
+            "received": 20,
+            "item": "i1",
+            "product": "vollmilch"
+          },
+          {
+            "expect": [
+              {
+                "product": "milch",
+                "origin": "manual",
+                "quantity": null,
+                "state": "open"
+              }
+            ]
+          }
+        ]
+      }
     ]
   }
 }

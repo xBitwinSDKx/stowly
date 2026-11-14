@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from stowly.contract import ID_POOL_TARGET, MAX_CHANGES_PER_SYNC, MAX_COMMANDS_PER_SYNC, PROTOCOL_VERSION, ids
+from stowly.contract.api import PUSH_PATHS, PUSH_TEST_INTERVAL_S, STATS_DEFAULT_MONTHS, STATS_MAX_MONTHS
 from stowly.contract.commands import COMMAND_TYPES
 from stowly.contract.limits import LIMITS
 from stowly_print.model import PrinterError, ServiceError
@@ -172,6 +173,26 @@ def _constants() -> list[str]:
         ("PACKAGE_ID_LENGTH", ids.PACKAGE_ID_LENGTH, "Länge einer Packungs-ID."),
         ("QR_PACKAGE_PREFIX", ids.QR_PACKAGE_PREFIX, "Beginn des QR-Inhalts eines Packungs-Etiketts."),
         ("QR_ZONE_PREFIX", ids.QR_ZONE_PREFIX, "Beginn des QR-Inhalts eines Zonen-Etiketts."),
+        (
+            "STATS_DEFAULT_MONTHS",
+            STATS_DEFAULT_MONTHS,
+            "Statistik ohne Zeitraum: so viele Monate bis einschließlich des laufenden.",
+        ),
+        (
+            "STATS_MAX_MONTHS",
+            STATS_MAX_MONTHS,
+            "Höchstens so viele Monate umfasst ein Zeitraum der Statistik.",
+        ),
+        (
+            "PUSH_TEST_INTERVAL_S",
+            PUSH_TEST_INTERVAL_S,
+            "Höchstens eine Testnachricht je Gerät in so vielen Sekunden.",
+        ),
+        (
+            "PUSH_PATHS",
+            PUSH_PATHS,
+            "Wohin eine Push-Nachricht führt; der Server setzt den Ursprung der App davor.",
+        ),
     ]
     lines: list[str] = []
     for name, value, description in values:

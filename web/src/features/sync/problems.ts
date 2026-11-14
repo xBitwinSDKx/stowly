@@ -116,6 +116,15 @@ function subject(command: Command, lookup: ProblemLookup): string {
       }
       return job?.zone_id ? `Der Stand des Etiketts für ${zone(job.zone_id).nom} wurde nicht übernommen` : "Der Stand eines Etiketts wurde nicht übernommen";
     }
+    case "shopping_item.create": {
+      const found = command.product_id ? lookup.products.find((candidate) => candidate.id === command.product_id) : undefined;
+      const name = command.text?.trim() || (found ? productTitle(found) : "");
+      return `${name ? `Der Eintrag ${quoted(name)}` : "Ein Eintrag"} wurde nicht auf die Einkaufsliste gesetzt`;
+    }
+    case "shopping_item.update":
+      return "Die Änderung an einem Eintrag der Einkaufsliste wurde nicht übernommen";
+    case "shopping_item.delete":
+      return "Ein Eintrag der Einkaufsliste wurde nicht gelöscht";
   }
 }
 
@@ -160,6 +169,8 @@ function reason(command: Command, code: RejectCode | null, message: string | nul
               : "weil es die Packung oder die Zone auf dem Server nicht gibt";
         case "print.report":
           return "weil es dieses Etikett auf dem Server nicht gibt";
+        case "shopping_item.create":
+          return "weil es das Produkt auf dem Server nicht gibt";
         default:
           return "weil es den Eintrag auf dem Server nicht gibt";
       }

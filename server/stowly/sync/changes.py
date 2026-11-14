@@ -127,6 +127,9 @@ def collect(con: sqlite3.Connection, *, cursor: int, reset: bool, now: datetime)
         "printer_status": [records.printer_status(row) for row in rows["printer_status"]],
         "print_jobs": [records.print_job(row) for row in rows["print_jobs"]],
         "label_templates": [records.label_template(row) for row in rows["label_templates"]],
+        # Platzhalter bis Runde 1: Die Einkaufsliste kommt mit Abschnitt 6.4 des Protokolls hierher
+        # (eigene Tabelle in _TABLES, Aufbewahrung im vollständigen Abzug wie bei Packungen).
+        "shopping_items": [],
         "settings": settings,
     }
     return Page(changes=changes, cursor=upto, has_more=has_more)

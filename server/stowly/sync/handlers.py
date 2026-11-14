@@ -367,7 +367,7 @@ class CommandRunner:
         for field in ("name", "brand", "quantity"):
             if target[field] == "" and source[field] != "":
                 filled[field] = source[field]
-        for field in ("warn_days", "image"):
+        for field in ("warn_days", "image", "min_stock"):
             if target[field] is None and source[field] is not None:
                 filled[field] = source[field]
         self._update("products", target_id, filled, changed=True)
@@ -411,9 +411,19 @@ class CommandRunner:
             elif target_id is None:
                 target_id = owner["product_id"]
         con.execute(
-            "INSERT INTO products (id, name, brand, quantity, warn_days, lookup, created_at, updated_at, rev) "
-            "VALUES (?, ?, ?, ?, ?, 'none', ?, ?, ?)",
-            (cmd.product_id, cmd.name, cmd.brand, cmd.quantity, cmd.warn_days, self.at, self.at, self._rev()),
+            "INSERT INTO products (id, name, brand, quantity, warn_days, min_stock, lookup, created_at, updated_at, rev) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'none', ?, ?, ?)",
+            (
+                cmd.product_id,
+                cmd.name,
+                cmd.brand,
+                cmd.quantity,
+                cmd.warn_days,
+                cmd.min_stock,
+                self.at,
+                self.at,
+                self._rev(),
+            ),
         )
         for barcode in free:
             con.execute(
@@ -429,6 +439,7 @@ class CommandRunner:
                 "brand": cmd.brand,
                 "quantity": cmd.quantity,
                 "warn_days": cmd.warn_days,
+                "min_stock": cmd.min_stock,
                 "barcodes": barcodes,
             },
         )
@@ -984,6 +995,12 @@ class CommandRunner:
         )
         return APPLIED
 
+    # ------------------------------------------------------------------ Einkaufsliste
+
+    def _shopping_not_yet(self, _cmd: Any) -> CommandStatus:
+        """Platzhalter bis Runde 1: Die Einkaufsliste (Protokoll 6.6 und 7.6) baut der Server-Worker."""
+        raise Reject(RejectCode.INTERNAL, "Die Einkaufsliste ist in diesem Server noch nicht umgesetzt.")
+
 
 _HANDLERS: dict[str, Callable[[CommandRunner, Any], CommandStatus]] = {
     "product.create": CommandRunner._product_create,
@@ -1005,6 +1022,9 @@ _HANDLERS: dict[str, Callable[[CommandRunner, Any], CommandStatus]] = {
     "printer.report": CommandRunner._printer_report,
     "print.request": CommandRunner._print_request,
     "print.report": CommandRunner._print_report,
+    "shopping_item.create": CommandRunner._shopping_not_yet,
+    "shopping_item.update": CommandRunner._shopping_not_yet,
+    "shopping_item.delete": CommandRunner._shopping_not_yet,
 }
 
 
@@ -1043,4 +1063,7 @@ _SUBJECTS: dict[str, tuple[str, str]] = {
     "printer.report": ("printer", "printer_id"),
     "print.request": ("print_job", "job_id"),
     "print.report": ("print_job", "job_id"),
+    "shopping_item.create": ("shopping_item", "item_id"),
+    "shopping_item.update": ("shopping_item", "item_id"),
+    "shopping_item.delete": ("shopping_item", "item_id"),
 }

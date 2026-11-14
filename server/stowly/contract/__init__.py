@@ -12,7 +12,9 @@ Die Regeln dazu stehen in ``docs/sync-protokoll.md`` und ``docs/etiketten.md``.
 Wer hier etwas ändert, ändert den Vertrag für alle drei Teile.
 """
 
-PROTOCOL_VERSION = 1
+# Protokollversion des Sync. 2 seit Stufe 2: Mindestbestand, Einkaufsliste, notify_time
+# (docs/sync-protokoll.md, 6.5).
+PROTOCOL_VERSION = 2
 
 # Wie viele freie Packungs-IDs ein Gerät vorhalten soll (docs/sync-protokoll.md, „ID-Vorrat").
 ID_POOL_TARGET = 300

@@ -167,6 +167,7 @@ export function createSampleData(now: Date = new Date()): MockData {
       quantity: seed.quantity ?? "",
       image: seed.image ? SAMPLE_IMAGE_ID : null,
       warn_days: seed.warn_days ?? null,
+      min_stock: null,
       lookup: seed.lookup ?? "found",
       barcodes: barcodes.sort(),
       created_at: created,
@@ -306,6 +307,7 @@ export function createSampleData(now: Date = new Date()): MockData {
     warn_days: 14,
     trash_retention_days: 30,
     default_printer_id: PRINTER_IDS.kitchen,
+    notify_time: "17:00",
     updated_at: created,
   };
 
@@ -338,6 +340,7 @@ export function createEmptyData(now: Date = new Date()): MockData {
       warn_days: 14,
       trash_retention_days: 30,
       default_printer_id: null,
+      notify_time: "17:00",
       updated_at: stamp,
     },
     printers: [],
@@ -432,6 +435,7 @@ export function createLargeData(now: Date = new Date()): MockData {
         quantity: LARGE_SIZES[next(LARGE_SIZES.length)] ?? "",
         image: index % 9 === 0 ? SAMPLE_IMAGE_ID : null,
         warn_days: null,
+        min_stock: null,
         lookup: "found",
         barcodes: [sampleBarcode(index, "4000002")],
         created_at: at(400),

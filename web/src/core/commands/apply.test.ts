@@ -17,14 +17,14 @@ function zone(n: number, changes: Partial<Zone> = {}): Zone {
 }
 
 function product(n: number, changes: Partial<Product> = {}): Product {
-  return { id: uuid(2, n), name: `Produkt ${n}`, brand: "", quantity: "", image: null, warn_days: null, lookup: "none", barcodes: [], created_at: T0, updated_at: T0, deleted_at: null, merged_into: null, ...changes };
+  return { id: uuid(2, n), name: `Produkt ${n}`, brand: "", quantity: "", image: null, warn_days: null, min_stock: null, lookup: "none", barcodes: [], created_at: T0, updated_at: T0, deleted_at: null, merged_into: null, ...changes };
 }
 
 function pkg(id: string, changes: Partial<Package> = {}): Package {
   return { id, product_id: uuid(2, 1), zone_id: uuid(1, 1), best_before: "2027-01-01", created_at: T0, updated_at: T0, removed_at: null, removal_reason: null, displaced: null, ...changes };
 }
 
-const SETTINGS: HouseholdSettings = { zone_mode: "primary", primary_zone_id: uuid(1, 1), warn_days: 14, trash_retention_days: 30, default_printer_id: null, updated_at: T0 };
+const SETTINGS: HouseholdSettings = { zone_mode: "primary", primary_zone_id: uuid(1, 1), warn_days: 14, trash_retention_days: 30, default_printer_id: null, notify_time: "17:00", updated_at: T0 };
 
 function tables(data: { zones?: Zone[]; products?: Product[]; packages?: Package[]; printers?: Printer[]; settings?: HouseholdSettings | null } = {}): Tables {
   return {
@@ -82,9 +82,26 @@ describe("Produkte", () => {
   });
 
   it("überschreibt beim Zusammenführen keine gefüllten Felder des Ziels", () => {
-    const start = tables({ products: [product(1, { name: "Basmati", warn_days: 3 }), product(2, { name: "Reis", warn_days: 9 })] });
+    const start = tables({ products: [product(1, { name: "Basmati", warn_days: 3, min_stock: 2 }), product(2, { name: "Reis", warn_days: 9, min_stock: 5 })] });
     const { state } = run(start, { type: "product.merge", source_id: uuid(2, 2), target_id: uuid(2, 1) });
-    expect(state.products.get(uuid(2, 1))).toMatchObject({ name: "Basmati", warn_days: 3 });
+    expect(state.products.get(uuid(2, 1))).toMatchObject({ name: "Basmati", warn_days: 3, min_stock: 2 });
+  });
+
+  it("führt den Mindestbestand wie die Vorlaufzeit: anlegen, ändern, entfernen, beim Zusammenführen übernehmen", () => {
+    const { state, outcomes } = run(
+      tables({ products: [product(1)] }),
+      { type: "product.create", product_id: uuid(2, 2), name: "Milch", min_stock: 3 },
+      { type: "product.create", product_id: uuid(2, 3), name: "Butter" },
+      { type: "product.update", product_id: uuid(2, 2), changes: { min_stock: 4 } },
+      { type: "product.update", product_id: uuid(2, 3), changes: { min_stock: 2 } },
+      { type: "product.update", product_id: uuid(2, 3), changes: { min_stock: null } },
+      { type: "product.update", product_id: uuid(2, 3), changes: { name: "Süßrahmbutter" } },
+      { type: "product.merge", source_id: uuid(2, 2), target_id: uuid(2, 1) },
+    );
+    expect(statuses(outcomes)).toEqual(["applied", "applied", "applied", "applied", "applied", "applied", "applied"]);
+    expect(state.products.get(uuid(2, 3))).toMatchObject({ name: "Süßrahmbutter", min_stock: null });
+    // Das Ziel hatte keinen Mindestbestand: Es übernimmt den der Quelle (Protokoll 7.3).
+    expect(state.products.get(uuid(2, 1))?.min_stock).toBe(4);
   });
 
   it("lässt ein neues Produkt mit schon vergebenem Barcode sofort im Besitzer aufgehen", () => {
@@ -222,7 +239,12 @@ describe("Zonen und Einstellungen", () => {
     );
     expect(statuses(outcomes)).toEqual(["applied", "id_conflict", "applied", "applied", "applied"]);
     expect(state.zones.get(uuid(1, 3))).toMatchObject({ name: "Keller", icon: "box", color: null, sort: 7, printer_id: null });
-    expect(state.settings).toMatchObject({ zone_mode: "equal", primary_zone_id: null, trash_retention_days: 60, warn_days: 14, updated_at: T1 });
+    expect(state.settings).toMatchObject({ zone_mode: "equal", primary_zone_id: null, trash_retention_days: 60, warn_days: 14, notify_time: "17:00", updated_at: T1 });
+  });
+
+  it("ändert die Uhrzeit der Tagesnachricht nur, wenn sie genannt ist", () => {
+    const { state } = run(tables(), { type: "settings.update", changes: { notify_time: "07:45" } }, { type: "settings.update", changes: { warn_days: 3 } });
+    expect(state.settings).toMatchObject({ notify_time: "07:45", warn_days: 3 });
   });
 });
 

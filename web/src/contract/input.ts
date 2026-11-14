@@ -14,7 +14,7 @@ import { isValidBarcode } from "./barcode";
 import { MAX_STORE_COUNT } from "./core";
 import { CoreError } from "./errors";
 import { isUuid } from "./ids";
-import { isDate } from "./time";
+import { isDate, isTimeOfDay } from "./time";
 
 export function invalidInput(message: string): CoreError {
   return new CoreError("invalid", message);
@@ -65,6 +65,45 @@ export function checkWarnDays(value: unknown): void {
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > LIMITS.warn_days) {
     throw invalidInput(`Die Vorlaufzeit muss zwischen 0 und ${LIMITS.warn_days} Tagen liegen.`);
+  }
+}
+
+/** Mindestbestand in Packungen; null und undefined heißen „keiner" und gehen durch. */
+export function checkMinStock(value: unknown): void {
+  if (value === null || value === undefined) {
+    return;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > LIMITS.min_stock) {
+    throw invalidInput(`Der Mindestbestand muss zwischen 1 und ${LIMITS.min_stock} Packungen liegen.`);
+  }
+}
+
+/** Uhrzeit der täglichen Push-Nachricht, "HH:MM" (Zeitzone des Servers). */
+export function checkNotifyTime(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !isTimeOfDay(value)) {
+    throw invalidInput("Die Uhrzeit muss als HH:MM angegeben sein, etwa 17:00.");
+  }
+}
+
+/** Text eines Eintrags der Einkaufsliste ohne Produkt; liefert die gekürzte Fassung. */
+export function checkShoppingText(value: unknown): string {
+  const text = cleanText(value);
+  if (text === "") {
+    throw invalidInput("Der Eintrag braucht einen Text.");
+  }
+  if (text.length > LIMITS.shopping_text) {
+    throw invalidInput(`Der Text ist zu lang (höchstens ${LIMITS.shopping_text} Zeichen).`);
+  }
+  return text;
+}
+
+/** Menge eines Eintrags der Einkaufsliste; null und undefined heißen „ohne Angabe" und gehen durch. */
+export function checkShoppingQuantity(value: unknown): void {
+  if (value === null || value === undefined) {
+    return;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > LIMITS.shopping_quantity) {
+    throw invalidInput(`Die Menge muss zwischen 1 und ${LIMITS.shopping_quantity} liegen.`);
   }
 }
 

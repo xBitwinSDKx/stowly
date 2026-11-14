@@ -5,7 +5,7 @@
  * Filter und Sortierung stehen in src/contract/core.ts. Jeder Wert hängt nur an „seiner"
  * Tabelle: Eine Änderung an den Zonen lässt die Packungen in Ruhe.
  */
-import type { HouseholdSettings } from "@/contract/api.gen";
+import type { HouseholdSettings, ShoppingItem } from "@/contract/api.gen";
 import type { DataApi } from "@/contract/core";
 
 import { barcodeOwner, resolveProduct } from "../commands/apply";
@@ -22,8 +22,12 @@ const DEFAULT_SETTINGS: HouseholdSettings = {
   warn_days: 14,
   trash_retention_days: 30,
   default_printer_id: null,
+  notify_time: "17:00",
   updated_at: "1970-01-01T00:00:00.000Z",
 };
+
+/** Platzhalter bis Runde 1: Die Einkaufsliste kommt mit der App-Datenbank v3 (docs/sync-protokoll.md, 3.6). */
+const NO_SHOPPING_ITEMS: ShoppingItem[] = [];
 
 export function createDataApi(store: Store, ready: Promise<void>): DataApi {
   const state = store.state;
@@ -88,6 +92,11 @@ export function createDataApi(store: Store, ready: Promise<void>): DataApi {
         const limit = retentionLimit(store.serverNowMs(), PRINT_JOB_RETENTION_DAYS);
         return [...s.view.print_jobs.values()].filter((job) => !isExpiredJob(job, limit)).sort((a, b) => b.created_at.localeCompare(a.created_at));
       },
+    ),
+    shoppingItems: derived(
+      state,
+      (s) => [s.loaded],
+      (s) => (s.loaded ? NO_SHOPPING_ITEMS : undefined),
     ),
 
     async findPackage(id) {

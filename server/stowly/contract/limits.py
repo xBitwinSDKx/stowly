@@ -33,5 +33,10 @@ LIMITS: Final = MappingProxyType(
         "printer_url": 200,
         "printer_token": 200,
         "printer_queue": 60,  # Name des Druckers im Druckdienst
+        "min_stock": 999,  # Mindestbestand eines Produkts in Packungen, 1 bis …
+        "shopping_text": 120,  # freier Text eines Eintrags der Einkaufsliste
+        "shopping_quantity": 999,  # Menge eines Eintrags der Einkaufsliste, 1 bis …
+        "push_endpoint": 1024,  # Adresse eines Push-Abos beim Push-Dienst
+        "push_origin": 200,  # Ursprung der App (location.origin) beim Anmelden für Push
     }
 )

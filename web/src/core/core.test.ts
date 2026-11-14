@@ -500,6 +500,29 @@ describe("Produkte", () => {
     await syncClean(harness);
     expect(commandsOf(server.syncRequests.at(-1)).map((command) => command.changes)).toEqual([{ warn_days: null }, { name: "Lachs", brand: "" }]);
   });
+
+  it("führt den Mindestbestand: anlegen, ändern, entfernen, nach den Grenzen des Servers", async () => {
+    const harness = await household();
+    const { core, server } = harness;
+    const created = await core.products.create({ name: "Milch", min_stock: 3 });
+    expect(created.min_stock).toBe(3);
+    // Ohne Mindestbestand bleibt der Befehl wie in Protokoll 1.
+    const plain = await core.products.create({ name: "Salz" });
+    expect(plain.min_stock).toBeNull();
+    await core.products.update(created.id, { min_stock: 2 });
+    await core.products.update(plain.id, { min_stock: null });
+    expect(value(core.data.products).find((product) => product.id === created.id)?.min_stock).toBe(2);
+    for (const wrong of [0, 1000, 1.5]) {
+      await expectCoreError(core.products.create({ name: "Quark", min_stock: wrong }), "invalid");
+      await expectCoreError(core.products.update(created.id, { min_stock: wrong }), "invalid");
+    }
+
+    await syncClean(harness);
+    const sent = commandsOf(server.syncRequests.at(-1));
+    expect(sent.filter((command) => command.type === "product.create").map((command) => command.min_stock)).toEqual([3, undefined]);
+    expect(sent.filter((command) => command.type === "product.update").map((command) => command.changes)).toEqual([{ min_stock: 2 }, { min_stock: null }]);
+    expect(server.data.products.get(created.id)?.min_stock).toBe(2);
+  });
 });
 
 describe("Nachschlagen beim Scannen (products.lookup)", () => {
@@ -645,14 +668,16 @@ describe("Zonen und Einstellungen", () => {
     await expectCoreError(core.settings.update({ warn_days: 4000 }), "invalid");
     await expectCoreError(core.settings.update({ primary_zone_id: "10000000-0000-4000-8000-000000000099" }), "not_found");
     await expectCoreError(core.settings.update({ default_printer_id: "30000000-0000-4000-8000-000000000099" }), "not_found");
-    await core.settings.update({ primary_zone_id: ZONE_IDS.cellar, default_printer_id: null });
-    expect(value(core.data.settings)).toMatchObject({ primary_zone_id: ZONE_IDS.cellar, default_printer_id: null });
+    await expectCoreError(core.settings.update({ notify_time: "7:30" }), "invalid");
+    await expectCoreError(core.settings.update({ notify_time: "24:00" }), "invalid");
+    await core.settings.update({ primary_zone_id: ZONE_IDS.cellar, default_printer_id: null, notify_time: "07:30" });
+    expect(value(core.data.settings)).toMatchObject({ primary_zone_id: ZONE_IDS.cellar, default_printer_id: null, notify_time: "07:30" });
 
     await core.prefs.update({ scan_zone_id: ZONE_IDS.cellar });
     expect(value(core.prefs.value)).toMatchObject({ scan_zone_id: ZONE_IDS.cellar, print_labels: true });
     await expectCoreError(core.prefs.update({ scan_sound: "laut" as unknown as boolean }), "invalid");
     await syncClean(harness);
-    expect(value(core.data.settings)).toMatchObject({ zone_mode: "equal", warn_days: 7, primary_zone_id: ZONE_IDS.cellar });
+    expect(value(core.data.settings)).toMatchObject({ zone_mode: "equal", warn_days: 7, primary_zone_id: ZONE_IDS.cellar, notify_time: "07:30" });
 
     // Geräte-Einstellungen sind dauerhaft, werden aber nie gesendet.
     core.dispose();

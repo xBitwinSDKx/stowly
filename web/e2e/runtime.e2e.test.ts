@@ -5,7 +5,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { CoreError } from "@/contract";
+import { CoreError, PROTOCOL_VERSION } from "@/contract";
 import { runBackgroundSync } from "@/core/background";
 import { CHECK_INTERVAL_MS } from "@/core/sync/scheduler";
 
@@ -194,9 +194,9 @@ describe("Andere Protokollversion", () => {
     const raw = await RawClient.login(server.url);
     await device.core.stock.store({ product: { kind: "new", name: "Gerste V1" }, zone_id: firstZone(device).id, best_before: null, count: 1, labels: false });
 
-    // Die App spricht eine Version, die der Server nicht kennt.
+    // Die App spricht noch eine ältere Protokollversion als der Server.
     device.net.rewriteSyncRequest = (body) => {
-      body.protocol = 2;
+      body.protocol = PROTOCOL_VERSION - 1;
     };
     const status = await device.trySync();
     expect(device.net.lastSync.status).toBe(409);

@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from support import TEST_PASSWORD
 
-from stowly import auth, db
+from stowly import auth, db, records
 from stowly.app import create_app
 from stowly.contract import PROTOCOL_VERSION, ids, timeutil
 
@@ -31,6 +32,12 @@ EXPECTED_TABLES = {
     "printer_status",
     "print_jobs",
     "label_templates",
+    # Schema-Version 3 (Stufe 2)
+    "shopping_items",
+    "push_subscriptions",
+    "push_notices",
+    "ha_links",
+    "job_runs",
 }
 
 
@@ -82,6 +89,7 @@ def test_seed_creates_dataset_first_zone_and_settings(con):
         "warn_days": 14,
         "trash_retention_days": 30,
         "default_printer_id": None,
+        "notify_time": "17:00",
     }
 
     rev = db.current_rev(con)
@@ -289,3 +297,156 @@ def test_a_server_started_on_a_version_1_database_keeps_the_order_of_its_devices
     assert db.schema_version(con) == len(db.list_migrations())
     assert con.execute("SELECT last_command_at FROM devices WHERE id = ?", (device_id,)).fetchone()[0] == last
     con.close()
+
+
+def stage_1_database(path: Path) -> sqlite3.Connection:
+    """Eine Datenbank, wie sie Stufe 1 hinterlassen hat: Schema-Version 2, Einstellungen ohne notify_time."""
+    con = database_at_version(path, 2)
+    with db.transaction(con):
+        con.execute("DELETE FROM settings WHERE key = 'notify_time'")
+    return con
+
+
+def test_migration_3_brings_a_stage_1_database_to_stage_2(tmp_path):
+    """Mindestbestand, Einkaufsliste, Push, Zeitplan, HA und notify_time kommen dazu; sonst ändert sich nichts."""
+    path = tmp_path / "data" / "stowly.sqlite3"
+    con = stage_1_database(path)
+    assert db.schema_version(con) == 2
+    assert "min_stock" not in {row["name"] for row in con.execute("PRAGMA table_info(products)")}
+
+    stamp = "2026-11-01T10:00:00.000Z"
+    zone_id = con.execute("SELECT id FROM zones").fetchone()[0]
+    product_id = ids.new_uuid()
+    with db.transaction(con):
+        con.execute(
+            "INSERT INTO products (id, name, warn_days, created_at, updated_at, rev) VALUES (?, 'Reis', 5, ?, ?, ?)",
+            (product_id, stamp, stamp, db.next_rev(con)),
+        )
+        con.execute(
+            "INSERT INTO packages (id, product_id, zone_id, created_at, updated_at, rev) VALUES ('A2B3C', ?, ?, ?, ?, ?)",
+            (product_id, zone_id, stamp, stamp, db.next_rev(con)),
+        )
+        con.execute("UPDATE settings SET updated_at = '2026-11-01T07:00:00.000Z'")
+        con.execute(
+            "UPDATE settings SET value = '7', updated_at = '2026-11-02T08:00:00.000Z' WHERE key = 'warn_days'"
+        )
+    before = {
+        "dataset_id": db.get_meta(con, "dataset_id"),
+        "rev": db.current_rev(con),
+        "settings_rev": con.execute("SELECT value FROM counters WHERE name = 'settings_rev'").fetchone()[0],
+        "settings": dict(con.execute("SELECT key, value FROM settings").fetchall()),
+    }
+    con.close()
+
+    db.initialise(path)
+    con = db.connect(path)
+    assert db.schema_version(con) == len(db.list_migrations()) >= 3
+    tables = {row["name"] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert EXPECTED_TABLES <= tables
+    for table in ("shopping_items", "push_subscriptions", "push_notices", "ha_links", "job_runs"):
+        assert con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+
+    product = con.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    assert (product["name"], product["warn_days"], product["min_stock"], product["shopping_lock_at"]) == (
+        "Reis",
+        5,
+        None,
+        None,
+    )
+    # Die neue Einstellung, einmal und mit dem bisherigen Stand: Geändert hat niemand etwas.
+    rows = con.execute("SELECT key, value, updated_at FROM settings WHERE key = 'notify_time'").fetchall()
+    assert [(row["value"], row["updated_at"]) for row in rows] == [('"17:00"', "2026-11-02T08:00:00.000Z")]
+    settings = dict(con.execute("SELECT key, value FROM settings").fetchall())
+    assert settings == {**before["settings"], "notify_time": '"17:00"'}
+    assert records.household_settings(con)["notify_time"] == "17:00"
+    assert records.household_settings(con)["updated_at"] == "2026-11-02T08:00:00.000Z"
+    # Kein neuer Stand der Änderungsfolge, dieselbe Kennung: Die App lädt beim Umstieg ohnehin alles neu.
+    assert db.get_meta(con, "dataset_id") == before["dataset_id"]
+    assert db.current_rev(con) == before["rev"]
+    assert (
+        con.execute("SELECT value FROM counters WHERE name = 'settings_rev'").fetchone()[0]
+        == before["settings_rev"]
+    )
+    con.close()
+
+    # Ein zweiter Start ändert nichts mehr.
+    db.initialise(path)
+    con = db.connect(path)
+    assert con.execute("SELECT COUNT(*) FROM settings WHERE key = 'notify_time'").fetchone()[0] == 1
+    con.close()
+
+
+def test_a_server_started_on_a_stage_1_database_delivers_the_new_fields(settings, clock):
+    """Nach dem Hochziehen liefert der Abzug min_stock an jedem Produkt und notify_time in den Einstellungen."""
+    con = stage_1_database(settings.database_path)
+    stamp = clock.stamp(3600)
+    product_id = ids.new_uuid()
+    with db.transaction(con):
+        con.execute(
+            "INSERT INTO products (id, name, created_at, updated_at, rev) VALUES (?, 'Milch', ?, ?, ?)",
+            (product_id, stamp, stamp, db.next_rev(con)),
+        )
+    con.close()
+
+    with TestClient(create_app(settings)) as client:
+        login = client.post("/api/auth/login", json={"password": TEST_PASSWORD, "device_name": "Handy"})
+        token = login.json()["token"]
+        body = {
+            "protocol": PROTOCOL_VERSION,
+            "dataset_id": None,
+            "cursor": 0,
+            "sent_at": clock.stamp(),
+            "commands": [],
+            "id_pool": {"have": 0},
+        }
+        response = client.post("/api/sync", json=body, headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    changes = response.json()["changes"]
+    assert [(product["id"], product["min_stock"]) for product in changes["products"]] == [(product_id, None)]
+    assert changes["settings"]["notify_time"] == "17:00"
+    assert changes["shopping_items"] == []
+
+
+def test_shopping_items_keep_product_or_text_and_their_closing(con):
+    """Die Einkaufsliste prüft im Schema: Produkt oder Text, automatische nur mit Produkt, closed_by nur wenn geschlossen."""
+    stamp = timeutil.now()
+    product_id = ids.new_uuid()
+    with db.transaction(con):
+        con.execute(
+            "INSERT INTO products (id, name, created_at, updated_at, rev) VALUES (?, 'Milch', ?, ?, ?)",
+            (product_id, stamp, stamp, db.next_rev(con)),
+        )
+
+    def insert(**values):
+        row = {
+            "id": ids.new_uuid(),
+            "product_id": None,
+            "text": "",
+            "origin": "manual",
+            "done_at": None,
+            "deleted_at": None,
+            "closed_by": None,
+            **values,
+        }
+        con.execute(
+            "INSERT INTO shopping_items (id, product_id, text, origin, done_at, deleted_at, closed_by, "
+            "created_at, updated_at, rev) VALUES (:id, :product_id, :text, :origin, :done_at, :deleted_at, "
+            ":closed_by, :stamp, :stamp, 1)",
+            {**row, "stamp": stamp},
+        )
+
+    insert(product_id=product_id)
+    insert(text="Grillkohle")
+    insert(product_id=product_id, origin="min_stock", done_at=stamp, closed_by="device")
+    for broken in (
+        {},  # weder Produkt noch Text
+        {"product_id": product_id, "text": "Milch"},  # beides
+        {"text": "Milch", "origin": "min_stock"},  # automatisch ohne Produkt
+        {"text": "Milch", "origin": "irgendwer"},
+        {"text": "Milch", "done_at": stamp},  # geschlossen ohne closed_by
+        {"text": "Milch", "closed_by": "device"},  # offen mit closed_by
+        {"text": "Milch", "deleted_at": stamp, "closed_by": "zufall"},
+        {"product_id": ids.new_uuid()},  # unbekanntes Produkt
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            insert(**broken)

@@ -13,8 +13,14 @@ from stowly.contract.ids import exact
 # Gültig sind die Jahre 0001 bis 9999; das Jahr 0000 kennt der Kalender des Servers nicht.
 TIMESTAMP_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$"
 DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+# Uhrzeit ohne Datum, "HH:MM" von 00:00 bis 23:59 (Einstellung notify_time, STOWLY_BACKUP_TIME).
+TIME_OF_DAY_PATTERN = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
+# Ein Kalendermonat "YYYY-MM" (Statistik).
+MONTH_PATTERN = r"^[0-9]{4}-(0[1-9]|1[0-2])$"
 _TIMESTAMP_RE = exact(TIMESTAMP_PATTERN)
 _DATE_RE = exact(DATE_PATTERN)
+_TIME_OF_DAY_RE = exact(TIME_OF_DAY_PATTERN)
+_MONTH_RE = exact(MONTH_PATTERN)
 
 
 def format_timestamp(moment: datetime) -> str:
@@ -61,6 +67,16 @@ def is_date(text: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def is_time_of_day(text: str) -> bool:
+    """Wahr für eine Uhrzeit ``HH:MM`` von ``00:00`` bis ``23:59``, zweistellig geschrieben."""
+    return bool(_TIME_OF_DAY_RE.match(text))
+
+
+def is_month(text: str) -> bool:
+    """Wahr für einen Monat ``YYYY-MM`` der Jahre 0001 bis 9999."""
+    return bool(_MONTH_RE.match(text)) and text[:4] != "0000"
 
 
 def effective_time(at: str, sent_at: str, received: datetime) -> str:

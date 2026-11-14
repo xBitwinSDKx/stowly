@@ -23,12 +23,18 @@
  *    sie verletzt, scheitert sofort mit "invalid" statt später als Sync-Problem: Produktname
  *    120 Zeichen, Marke 80, Packungsgröße 40, Zonenname 60, Geräte- und Druckername 60,
  *    höchstens 20 Barcodes je Produkt, Vorlaufzeit 0 bis 3650 Tage, Aufbewahrung 1 bis 3650
- *    Tage. Texte werden an den Rändern gekürzt (trim). Die Zahlen stehen in `LIMITS`
- *    (api.gen.ts), die Prüfungen samt ihren Sätzen in src/contract/input.ts; Kern und
- *    Attrappe benutzen beide dieselben. Bei "invalid" ist `message` ein Satz für die Anzeige.
+ *    Tage, Mindestbestand 1 bis 999 Packungen, Text eines Eintrags der Einkaufsliste 120
+ *    Zeichen, seine Menge 1 bis 999, Uhrzeit der Tagesnachricht "HH:MM". Texte werden an den
+ *    Rändern gekürzt (trim). Die Zahlen stehen in `LIMITS` (api.gen.ts), die Prüfungen samt
+ *    ihren Sätzen in src/contract/input.ts; Kern und Attrappe benutzen beide dieselben. Bei
+ *    "invalid" ist `message` ein Satz für die Anzeige.
  * 7. Ein Aufruf ohne Wirkung gelingt und erzeugt keinen Befehl: derselbe Grund auf eine schon
  *    entnommene Packung, Wiederherstellen einer Packung im Bestand, `update` ohne Felder,
- *    Umsortieren ohne Änderung, ein Barcode, den das Produkt nicht hat, `merge(a, a)`.
+ *    Umsortieren ohne Änderung, ein Barcode, den das Produkt nicht hat, `merge(a, a)`, Abhaken
+ *    eines erledigten Eintrags, Löschen eines gelöschten.
+ * 8. Was der Server selbst schreibt (automatische Einträge der Einkaufsliste, Erledigtes aus
+ *    Bring!), nimmt der Kern nicht vorweg: Es kommt mit dem nächsten Abgleich, online Sekunden
+ *    nach dem auslösenden Befehl, oft schon in der Antwort auf ihn (docs/sync-protokoll.md, 7.6).
  *
  * Schreibweise: Alles, was Daten trägt, hat Feldnamen in snake_case wie im Sync, auch
  * Eingaben und Optionen (`zone_id`, `apply_displaced`). Methoden und die Zugänge der
@@ -39,6 +45,7 @@ import type {
   Device,
   DirectPrinterConfig,
   HouseholdSettings,
+  IntegrationStatus,
   LookupResultState,
   Package,
   PackageChanges,
@@ -48,11 +55,15 @@ import type {
   PrintJob,
   Product,
   ProductChanges,
+  PushTestResult,
   RejectCode,
   RemovalReason,
   ServerPrinterConfig,
   ServiceHealth,
   SettingsChanges,
+  ShoppingItem,
+  ShoppingItemChanges,
+  Stats,
   Zone,
   ZoneChanges,
 } from "./api.gen";
@@ -124,7 +135,8 @@ export interface SessionApi {
 
   /**
    * Meldet ab und löscht die lokale Kopie samt ID-Vorrat, dazu die Sync-Probleme und die
-   * vorab geladenen Produktbilder. Von den Geräte-Einstellungen fällt nur `scan_zone_id` weg.
+   * vorab geladenen Produktbilder. Ein Push-Abo dieses Geräts endet mit (im Browser sofort,
+   * beim Server mit dem Sperren des Tokens). Von den Geräte-Einstellungen fällt nur `scan_zone_id` weg.
    * Der Name des Geräts bleibt als Vorschlag für die nächste Anmeldung (`last_device_name`).
    * Gelingt auch offline; das Token wird beim Server gesperrt, sobald er erreichbar ist.
    * @throws CoreError pending_changes, wenn ungesendete Änderungen vorliegen und
@@ -233,6 +245,13 @@ export interface DataApi {
   readonly printerStatus: Live<PrinterStatus[]>;
   /** Etiketten: alle offenen und die der letzten 30 Tage, neueste zuerst. */
   readonly printJobs: Live<PrintJob[]>;
+  /**
+   * Die Einkaufsliste: alle nicht gelöschten Einträge, erledigte nur innerhalb der
+   * Aufbewahrungsdauer der Lösch-Historie (wie entnommene Packungen). Offene zuerst, die ältesten
+   * vorn; dann erledigte, die zuletzt erledigten vorn (`compareShoppingItems`, shopping.ts).
+   * Automatische Einträge (`origin: "min_stock"`) legt nur der Server an.
+   */
+  readonly shoppingItems: Live<ShoppingItem[]>;
 
   /** Eine Packung nach ID, auch wenn sie entnommen ist. */
   findPackage(id: string): Promise<Package | undefined>;
@@ -270,6 +289,8 @@ export type ProductRef =
       brand?: string;
       quantity?: string;
       warn_days?: number | null;
+      /** Mindestbestand in Packungen, 1 bis 999; null oder fehlend = keiner. */
+      min_stock?: number | null;
       barcodes?: string[];
     };
 
@@ -337,6 +358,11 @@ export interface NewProduct {
   brand?: string;
   quantity?: string;
   warn_days?: number | null;
+  /**
+   * Mindestbestand in Packungen, 1 bis 999; null oder fehlend = keiner. Liegt der Bestand darunter,
+   * legt der Server einen automatischen Eintrag der Einkaufsliste an (docs/sync-protokoll.md, 7.6).
+   */
+  min_stock?: number | null;
   barcodes?: string[];
 }
 
@@ -370,7 +396,10 @@ export interface ProductLookup {
 export interface ProductsApi {
   /** @throws CoreError invalid | barcode_taken */
   create(input: NewProduct): Promise<Product>;
-  /** Nur die vorhandenen Schlüssel werden geändert. @throws CoreError not_found | invalid */
+  /**
+   * Nur die vorhandenen Schlüssel werden geändert; `min_stock: null` entfernt den Mindestbestand.
+   * @throws CoreError not_found | invalid
+   */
   update(id: string, changes: ProductChanges): Promise<void>;
   /**
    * @throws CoreError barcode_taken, wenn der Barcode lokal schon zu einem anderen Produkt
@@ -415,8 +444,136 @@ export interface ZonesApi {
 }
 
 export interface SettingsApi {
-  /** Haushalts-Einstellungen ändern (gelten für alle Geräte). Nur vorhandene Schlüssel. */
+  /**
+   * Haushalts-Einstellungen ändern (gelten für alle Geräte). Nur vorhandene Schlüssel.
+   * `notify_time` ist die Uhrzeit der täglichen Push-Nachricht als "HH:MM" in der Zeitzone des
+   * Servers (`IntegrationStatus.timezone`), nicht in der des Geräts.
+   * @throws CoreError invalid | not_found (Zone, Drucker)
+   */
   update(changes: SettingsChanges): Promise<void>;
+}
+
+// --------------------------------------------------------------------------------------
+// Einkaufsliste
+// --------------------------------------------------------------------------------------
+//
+// Ein Eintrag ist ein synchronisierter Datensatz (`ShoppingItem`, docs/sync-protokoll.md, 3.6):
+// ein Produkt oder freier Text, eine Menge, wenn man will, offen oder erledigt. Eigene Einträge
+// legt jedes Gerät an, auch offline. Automatische Einträge (`origin: "min_stock"`) legt nur der
+// Server an, sobald der Bestand eines Produkts unter seinen Mindestbestand fällt; er führt ihre
+// Menge nach („fehlt 2") und löscht sie, wenn der Bestand wieder reicht (7.6). Eigene Einträge zu
+// einem Produkt erledigt der Server, sobald es eingelagert wird.
+
+/** Ein neuer eigener Eintrag: ein Produkt oder freier Text, genau eines von beiden. */
+export interface NewShoppingItem {
+  /** Ein Produkt; folgt einer Zusammenführung zum Ziel. */
+  product_id?: string | null;
+  /** Freier Text, wenn kein Produkt; wird an den Rändern gekürzt. */
+  text?: string;
+  /** Menge in Packungen, 1 bis 999; null oder fehlend = ohne Angabe. */
+  quantity?: number | null;
+}
+
+export interface ShoppingApi {
+  /**
+   * Legt einen eigenen Eintrag an (`origin: "manual"`). Gelingt offline wie jede Änderung.
+   * @throws CoreError invalid (weder Produkt noch Text, beides, Text leer oder zu lang, Menge) | not_found (Produkt)
+   */
+  create(input: NewShoppingItem): Promise<ShoppingItem>;
+  /**
+   * Ändert einen Eintrag; nur die vorhandenen Schlüssel. `done: true` hakt ab, `done: false` öffnet
+   * wieder. `text` gibt es nur bei Einträgen ohne Produkt, `quantity` nur bei eigenen Einträgen
+   * (die Menge eines automatischen führt der Server). Nach dem Abhaken eines automatischen
+   * Eintrags legt der Server für dieses Produkt erst wieder einen an, wenn es eingelagert oder sein
+   * Mindestbestand geändert wird; Wiederöffnen hebt diese Sperre auf (Protokoll 7.6).
+   * @throws CoreError not_found (auch gelöscht) | invalid
+   */
+  update(id: string, changes: ShoppingItemChanges): Promise<void>;
+  /**
+   * Löscht einen Eintrag endgültig, auch einen automatischen (ist er offen, sperrt das wie das
+   * Abhaken). Ohne Wirkung, wenn er schon gelöscht ist.
+   * @throws CoreError not_found
+   */
+  remove(id: string): Promise<void>;
+}
+
+// --------------------------------------------------------------------------------------
+// Benachrichtigungen per Web-Push: dieses Gerät
+// --------------------------------------------------------------------------------------
+
+/**
+ * Push auf diesem Gerät (docs/integrationen.md, Abschnitt 4).
+ *
+ * - "unsupported":    Der Browser kann hier kein Push (kein Service Worker oder PushManager,
+ *                     kein sicherer Kontext, iOS vor 16.4).
+ * - "ios_install":    iPhone oder iPad im Browser: Push geht erst, wenn Stowly auf dem
+ *                     Home-Bildschirm installiert ist. Die Oberfläche erklärt das, statt einen
+ *                     Knopf zu zeigen.
+ * - "not_configured": Der Server ist nicht für Push eingerichtet (STOWLY_PUSH_CONTACT).
+ * - "off":            möglich, aber nicht eingeschaltet.
+ * - "on":             eingeschaltet: Der Browser hat ein Abo, und der Server kennt es.
+ * - "denied":         Die Erlaubnis ist im Browser verweigert; nur dessen Einstellungen ändern das.
+ */
+export type PushState = "unsupported" | "ios_install" | "not_configured" | "off" | "on" | "denied";
+
+export interface PushApi {
+  /**
+   * Zustand auf diesem Gerät. Der Kern prüft ihn beim Start und nach jedem Aufruf. Ist Push an,
+   * vergleicht er beim Start den Schlüssel des Servers (`GET /api/push/key`) mit dem des Abos
+   * und meldet sich neu an, wenn er abweicht (eine zurückgespielte Sicherung bringt einen
+   * anderen mit); ebenso, wenn der Server das Abo nicht mehr kennt.
+   */
+  readonly state: Live<PushState>;
+  /**
+   * Schaltet Push für dieses Gerät ein: fragt die Erlaubnis des Browsers und meldet das Abo beim
+   * Server an (mit `location.origin`). Nur auf einen Tipp hin aufrufen: Sonst fragt der Browser
+   * nicht. Braucht den Server. Liefert den Zustand danach: "on", oder "denied", wenn der Anwender
+   * die Erlaubnis verweigert hat.
+   * @throws CoreError offline | not_configured | not_supported (Zustand "unsupported" oder "ios_install")
+   */
+  enable(): Promise<PushState>;
+  /**
+   * Schaltet Push für dieses Gerät aus: beendet das Abo im Browser und meldet es beim Server ab.
+   * Gelingt auch offline; der Server erfährt es dann beim nächsten Kontakt oder spätestens, wenn
+   * der Push-Dienst das Abo als erloschen meldet. Auch das Abmelden des Geräts beendet Push.
+   */
+  disable(): Promise<void>;
+  /**
+   * Schickt eine Testnachricht an dieses Gerät und liefert, was der Push-Dienst geantwortet hat.
+   * Braucht den Server. Bei "gone" kennt der Server das Abo nicht mehr; der Zustand ist danach "off".
+   * @throws CoreError offline | not_configured | not_found (kein Abo beim Server) | rate_limited (`details.retry_after_s`)
+   */
+  test(): Promise<PushTestResult>;
+}
+
+// --------------------------------------------------------------------------------------
+// Statistik und Zustand der Integrationen: braucht den Server
+// --------------------------------------------------------------------------------------
+
+/** Zeitraum der Statistik in ganzen Monaten "YYYY-MM", beide eingeschlossen. */
+export interface StatsRange {
+  /** Erster Monat; ohne Angabe `STATS_DEFAULT_MONTHS` − 1 Monate vor `end`. */
+  start?: string;
+  /** Letzter Monat; ohne Angabe der laufende (Zeitzone des Servers). */
+  end?: string;
+}
+
+export interface StatsApi {
+  /**
+   * Verbraucht und entsorgt je Monat und je Zone, dazu die am häufigsten entsorgten Produkte.
+   * Der Server rechnet über alle Packungen der ganzen Zeit; die App behält Entnommenes nur für
+   * die Aufbewahrungsdauer. Braucht den Server. „Versehentlich" zählt nicht.
+   * @throws CoreError offline | invalid (Zeitraum: Form, start nach end, mehr als `STATS_MAX_MONTHS` Monate)
+   */
+  load(range?: StatsRange): Promise<Stats>;
+}
+
+export interface IntegrationsApi {
+  /**
+   * Zustand von Sicherung, Home Assistant und Push für die Einstellungen; nie ein Token.
+   * Braucht den Server. @throws CoreError offline
+   */
+  load(): Promise<IntegrationStatus>;
 }
 
 // --------------------------------------------------------------------------------------
@@ -753,4 +910,12 @@ export interface Core {
   readonly devices: DevicesApi;
   readonly backup: BackupApi;
   readonly app: AppApi;
+  /** Einkaufsliste (Stufe 2); lesen über `data.shoppingItems`. */
+  readonly shopping: ShoppingApi;
+  /** Push auf diesem Gerät (Stufe 2). */
+  readonly push: PushApi;
+  /** Statistik (Stufe 2). Braucht den Server. */
+  readonly stats: StatsApi;
+  /** Zustand von Sicherung, Home Assistant und Push (Stufe 2). Braucht den Server. */
+  readonly integrations: IntegrationsApi;
 }

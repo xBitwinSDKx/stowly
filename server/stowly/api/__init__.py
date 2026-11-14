@@ -7,7 +7,20 @@ Pfade, Methoden, Parameter und Modelle sind durch ``docs/openapi.json`` festgele
 
 from fastapi import APIRouter
 
-from stowly.api import auth, backup, devices, events, images, lookup, sync, system
+from stowly.api import (
+    auth,
+    backup,
+    devices,
+    events,
+    ha,
+    images,
+    integrations,
+    lookup,
+    push,
+    stats,
+    sync,
+    system,
+)
 
 router = APIRouter()
 router.include_router(system.router)
@@ -18,5 +31,9 @@ router.include_router(lookup.router)
 router.include_router(images.router)
 router.include_router(backup.router)
 router.include_router(events.router)
+router.include_router(stats.router)
+router.include_router(push.router)
+router.include_router(integrations.router)
+router.include_router(ha.router)
 
 __all__ = ["router"]

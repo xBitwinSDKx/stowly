@@ -5,7 +5,7 @@
 import Dexie from "dexie";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { CoreError, type Changes, type HouseholdSettings, type Package, type Product, type SyncResponse, type Zone } from "@/contract";
+import { CoreError, PROTOCOL_VERSION, type Changes, type HouseholdSettings, type Package, type Product, type SyncResponse, type Zone } from "@/contract";
 
 import type { StoredSession } from "./db";
 import { Store } from "./store";
@@ -19,6 +19,7 @@ const PRODUCT: Product = {
   quantity: "",
   image: null,
   warn_days: null,
+  min_stock: null,
   lookup: "none",
   barcodes: [],
   created_at: AT,
@@ -26,7 +27,7 @@ const PRODUCT: Product = {
   deleted_at: null,
   merged_into: null,
 };
-const SETTINGS: HouseholdSettings = { zone_mode: "primary", primary_zone_id: ZONE.id, warn_days: 14, trash_retention_days: 30, default_printer_id: null, updated_at: AT };
+const SETTINGS: HouseholdSettings = { zone_mode: "primary", primary_zone_id: ZONE.id, warn_days: 14, trash_retention_days: 30, default_printer_id: null, notify_time: "17:00", updated_at: AT };
 const SESSION: StoredSession = { status: "signed_in", token: "token-1", device: { id: "50000000-0000-4000-8000-000000000001", name: "Test" } };
 const DATASET = "8c0b4b0e-6c1a-4f2e-9f0a-2d5b7c9e1a34";
 
@@ -36,12 +37,12 @@ function pkg(id: string, changes: Partial<Package> = {}): Package {
 
 function response(changes: Partial<Changes>, extra: Partial<SyncResponse> = {}): SyncResponse {
   return {
-    protocol: 1,
+    protocol: PROTOCOL_VERSION,
     dataset_id: DATASET,
     server_time: AT,
     results: [],
     reset: false,
-    changes: { products: [], zones: [], packages: [], printers: [], printer_status: [], print_jobs: [], label_templates: [], settings: null, ...changes },
+    changes: { products: [], zones: [], packages: [], printers: [], printer_status: [], print_jobs: [], label_templates: [], shopping_items: [], settings: null, ...changes },
     cursor: 1,
     has_more: false,
     id_pool: { grant: [], target: 300 },

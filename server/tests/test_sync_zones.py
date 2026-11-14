@@ -350,6 +350,18 @@ def test_settings_follow_the_later_timestamp_per_field(make_device, clock):
     ]
 
 
+def test_notify_time_is_a_setting_with_its_own_clock(make_device, clock):
+    """notify_time: "HH:MM", Vorgabe 17:00, Feld-Uhr wie jede Einstellung (Protokoll 3.4 und 7.1)."""
+    phone, tablet = make_device("Handy"), make_device("Tablet")
+    assert phone.settings["notify_time"] == "17:00"
+    clock.advance(3600)
+    new = tablet.cmd("settings.update", age=5, changes={"notify_time": "18:30"})
+    old = phone.cmd("settings.update", age=60, changes={"notify_time": "07:15"})
+    tablet.sync([new])
+    assert statuses(phone.sync([old])) == [("applied", None)]
+    assert phone.settings["notify_time"] == "18:30"
+
+
 def test_references_in_settings_are_not_checked(make_device):
     device = make_device()
     nowhere, nothing = ids.new_uuid(), ids.new_uuid()
@@ -373,6 +385,11 @@ def test_references_in_settings_are_not_checked(make_device):
         {"zone_mode": "chaos"},
         {"zone_mode": None},
         {"sprache": "de"},
+        {"notify_time": None},
+        {"notify_time": "7:00"},
+        {"notify_time": "24:00"},
+        {"notify_time": "17:60"},
+        {"notify_time": "17:00:00"},
     ],
 )
 def test_invalid_settings_are_rejected(make_device, changes):

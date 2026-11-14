@@ -81,7 +81,7 @@ describe("Sync", () => {
     const token = await login(network);
     const first = await sync(network, token, { protocol: PROTOCOL_VERSION, dataset_id: null, cursor: 0, sent_at: AT, commands: [], id_pool: { have: 0 } });
     expect(first.status).toBe(200);
-    expect(first.body).toMatchObject({ protocol: 1, dataset_id: server.datasetId, reset: true, has_more: false, results: [] });
+    expect(first.body).toMatchObject({ protocol: PROTOCOL_VERSION, dataset_id: server.datasetId, reset: true, has_more: false, results: [] });
     expect(first.body.changes.zones.map((zone) => zone.name)).toEqual(["Vorrat"]);
     expect(first.body.changes.settings).toMatchObject({ zone_mode: "primary", warn_days: 14, trash_retention_days: 30 });
     expect(first.body.changes.label_templates.map((template) => template.key).sort()).toEqual(["package", "zone"]);
@@ -90,7 +90,7 @@ describe("Sync", () => {
     // Danach nur noch, was sich seit dem cursor geändert hat.
     const second = await sync(network, token, { protocol: PROTOCOL_VERSION, dataset_id: first.body.dataset_id, cursor: first.body.cursor, sent_at: AT, commands: [], id_pool: { have: 300 } });
     expect(second.body.reset).toBe(false);
-    expect(second.body.changes).toEqual({ products: [], zones: [], packages: [], printers: [], printer_status: [], print_jobs: [], label_templates: [], settings: null });
+    expect(second.body.changes).toEqual({ products: [], zones: [], packages: [], printers: [], printer_status: [], print_jobs: [], label_templates: [], shopping_items: [], settings: null });
     expect(second.body.id_pool.grant).toEqual([]);
     // Ein cursor jenseits des Stands des Servers ergibt wieder einen vollständigen Abzug.
     const beyond = await sync(network, token, { protocol: PROTOCOL_VERSION, dataset_id: first.body.dataset_id, cursor: first.body.cursor + 100, sent_at: AT, commands: [], id_pool: { have: 300 } });
@@ -216,7 +216,7 @@ describe("Sync", () => {
       return [response.status, ((await response.json()) as { error?: { code: string } }).error?.code];
     };
     expect(await status(good, "falsch")).toEqual([401, "unauthorized"]);
-    expect(await status({ ...good, protocol: 2 })).toEqual([409, "protocol_mismatch"]);
+    expect(await status({ ...good, protocol: PROTOCOL_VERSION + 1 })).toEqual([409, "protocol_mismatch"]);
     // Wie der Server: Nur eine andere Zahl ist eine andere Protokollversion; fehlt das Feld, verletzt der Rahmen den Vertrag.
     const { protocol: _protocol, ...withoutProtocol } = good;
     expect(await status(withoutProtocol)).toEqual([422, "invalid_request"]);

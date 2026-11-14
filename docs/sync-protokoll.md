@@ -1,10 +1,10 @@
 # Sync-Protokoll
 
-Verbindlicher Vertrag zwischen dem Stowly-Server (`server/`) und der Web-App (`web/`) für Stufe 1. Er legt fest, welche Daten es gibt, wie Geräte Änderungen melden, wie der Server Konflikte entscheidet und was beide Seiten voneinander erwarten dürfen.
+Verbindlicher Vertrag zwischen dem Stowly-Server (`server/`) und der Web-App (`web/`), seit Stufe 2 in Protokollversion 2 (Abschnitt 6.5). Er legt fest, welche Daten es gibt, wie Geräte Änderungen melden, wie der Server Konflikte entscheidet und was beide Seiten voneinander erwarten dürfen.
 
 Die Datentypen stehen zusätzlich als Code bereit (Abschnitt 14). Wo dieses Dokument und der Code voneinander abweichen, ist das ein Fehler im Vertrag und wird dem Coordinator gemeldet, nicht stillschweigend ausgelegt.
 
-Etiketten, QR-Inhalte und der Druckdienst stehen in [`etiketten.md`](etiketten.md).
+Etiketten, QR-Inhalte und der Druckdienst stehen in [`etiketten.md`](etiketten.md); Zeitplan, Sicherungen, Push, Home Assistant mit Bring!, der Sensor und die Umgebungsvariablen in [`integrationen.md`](integrationen.md).
 
 ## 1. Grundsätze
 
@@ -39,13 +39,14 @@ Alle Datensätze kommen im Sync immer vollständig, nie als Differenz. Felder mi
 | `quantity` | Text, 0–40 | Packungsgröße als Text, z. B. `500 g` |
 | `image` | Text \| null | Bild-ID für `GET /api/images/{id}` |
 | `warn_days` | Zahl 0–3650 \| null | Vorlaufzeit der MHD-Warnung; `null` = Haushaltswert |
+| `min_stock` | Zahl 1–999 \| null | Mindestbestand in Packungen; `null` = keiner. Zum Bestand zählt jede nicht entnommene Packung des Produkts, auch eine abgelaufene. Liegt er darunter, legt der Server einen Eintrag der Einkaufsliste an (7.6). Seit Protokoll 2. |
 | `lookup` | `none` \| `pending` \| `found` \| `not_found` | Stand bei Open Food Facts (Abschnitt 10) |
 | `barcodes` | Liste | Alle Barcodes, aufsteigend sortiert. Ein Barcode gehört zu genau einem Produkt. |
 | `created_at`, `updated_at` | Zeitstempel | |
 | `deleted_at` | Zeitstempel \| null | Gesetzt = in einem anderen Produkt aufgegangen |
 | `merged_into` | UUID \| null | Zielprodukt der Zusammenführung |
 
-Produkte ohne Packungen bleiben bestehen: Sie merken sich, was hinter einem Barcode steckt. Ein eigenes „Produkt löschen" gibt es in Stufe 1 nicht.
+Produkte ohne Packungen bleiben bestehen: Sie merken sich, was hinter einem Barcode steckt. Ein eigenes „Produkt löschen" gibt es auch in Stufe 2 nicht.
 
 ### 3.2 Packung (`Package`)
 
@@ -90,6 +91,7 @@ Ein einziger Datensatz für alle Geräte.
 | `warn_days` | Zahl 0–3650 | 14 | Vorlaufzeit der MHD-Warnung |
 | `trash_retention_days` | Zahl 1–3650 | 30 | Aufbewahrungsdauer der Lösch-Historie |
 | `default_printer_id` | UUID \| null | null | Drucker für Zonen ohne eigenen |
+| `notify_time` | Text `"HH:MM"` | `"17:00"` | Uhrzeit der täglichen Push-Nachricht, `00:00` bis `23:59`, zweistellig. Sie gilt in der Zeitzone des Servers (`STOWLY_TIMEZONE`), nicht in der des Geräts ([`integrationen.md`](integrationen.md), Abschnitt 4.8). Seit Protokoll 2. |
 | `updated_at` | Zeitstempel | | |
 
 Verweise auf Zonen und Drucker in Einstellungen und Zonen prüft der Server nicht. Zeigt ein Verweis ins Leere oder auf etwas Gelöschtes, gilt er als `null` (Primärzone: die erste Zone der Reihenfolge).
@@ -99,6 +101,26 @@ Einstellungen einzelner Geräte (Thema, Akzentfarbe, Ton, Kamera) werden nicht s
 ### 3.5 Drucker, Druckerzustand, Etiketten, Vorlagen
 
 `Printer`, `PrinterStatus`, `PrintJob` und `LabelTemplate` sind Teil des Sync und in [`etiketten.md`](etiketten.md) beschrieben.
+
+### 3.6 Einkaufsliste (`ShoppingItem`)
+
+Seit Protokoll 2. Ein Eintrag hat ein Produkt oder freien Text, genau eines von beiden, und eine Menge, wenn man will. Er ist offen, erledigt oder gelöscht.
+
+| Feld | Typ | Bedeutung |
+|---|---|---|
+| `id` | UUID | Eigene Einträge: vom Gerät erzeugt. Automatische: vom Server. |
+| `product_id` | UUID \| null | Das Produkt; `null` = freier Text. Folgt Zusammenführungen (7.3): Der Server schreibt das Ziel hinein. |
+| `text` | Text, 0–120 | Freier Text; leer genau dann, wenn `product_id` gesetzt ist |
+| `quantity` | Zahl 1–999 \| null | Menge in Packungen; `null` = ohne Angabe. Bei `origin = min_stock` gehört sie dem Server: wie viele Packungen zum Mindestbestand fehlen („fehlt 2"), laufend nachgeführt (7.6). |
+| `origin` | `manual` \| `min_stock` | `manual`: von einem Gerät angelegt („eigener Eintrag"). `min_stock`: vom Server, weil der Bestand unter dem Mindestbestand liegt („automatischer Eintrag"); immer mit Produkt. |
+| `done_at` | Zeitstempel \| null | Gesetzt = erledigt: abgehakt, eingekauft, durch Einlagern erledigt (7.6) oder in Bring! abgehakt |
+| `deleted_at` | Zeitstempel \| null | Gesetzt = gelöscht. Endgültig: Danach ändert kein Befehl mehr etwas daran. |
+| `created_at`, `updated_at` | Zeitstempel | |
+
+- **Offen** heißt: `done_at` und `deleted_at` sind `null`. Gelöscht geht vor erledigt: Ein Eintrag mit beidem ist gelöscht.
+- Je Produkt gibt es höchstens einen offenen automatischen Eintrag (7.6). Eigene Einträge gibt es beliebig viele, auch neben einem automatischen.
+- Gelöschte Einträge bleiben als Grabstein erhalten wie entnommene Packungen; erledigte und gelöschte fallen nach der Aufbewahrungsdauer aus einem vollständigen Abzug und von den Geräten (6.4, 9.3).
+- Den Namen eines Eintrags zeigt die App selbst: bei einem Produkt dessen Name (`productTitle`), sonst den Text (`shoppingItemTitle` in `web/src/contract/shopping.ts`).
 
 ## 4. Umgang mit Zeit
 
@@ -152,7 +174,7 @@ Die App meldet ein Gerät erst an, wenn auch der erste Abgleich gelungen ist: Da
 
 ```json
 {
-  "protocol": 1,
+  "protocol": 2,
   "dataset_id": "8c0b4b0e-6c1a-4f2e-9f0a-2d5b7c9e1a34",
   "cursor": 1234,
   "sent_at": "2026-11-13T10:15:31.000Z",
@@ -167,7 +189,7 @@ Die App meldet ein Gerät erst an, wenn auch der erste Abgleich gelungen ist: Da
 
 | Feld | Bedeutung |
 |---|---|
-| `protocol` | Protokollversion der App, derzeit `1` |
+| `protocol` | Protokollversion der App, derzeit `2` (Abschnitt 6.5) |
 | `dataset_id` | Wert der letzten Antwort; `null` beim ersten Sync |
 | `cursor` | Wert der letzten Antwort; `0` beim ersten Sync |
 | `sent_at` | Geräteuhr im Moment des Absendens |
@@ -181,7 +203,7 @@ Der ganze Aufruf läuft in **einer** Transaktion (`BEGIN IMMEDIATE`): entweder i
 
 1. Die Anfrage prüfen, in dieser Reihenfolge; die erste Verletzung bestimmt die Antwort:
    - Token (401 `unauthorized`).
-   - `protocol` ist eine Zahl ungleich `1`: 409 `protocol_mismatch` mit `details: { "server": 1, "client": n }`.
+   - `protocol` ist eine Zahl ungleich `2`: 409 `protocol_mismatch` mit `details: { "server": 2, "client": n }`.
    - Mehr als 500 Befehle: 413 `payload_too_large`.
    - Der Rahmen: `protocol`, `dataset_id`, `cursor`, `sent_at`, `id_pool` und dass `commands` eine Liste von Objekten mit gültiger `id` ist. Sonst 422 `invalid_request`, auch wenn `protocol` fehlt oder keine Zahl ist.
 
@@ -196,7 +218,7 @@ Der ganze Aufruf läuft in **einer** Transaktion (`BEGIN IMMEDIATE`): entweder i
 1. Ist die `id` schon in der Tabelle `commands`, wird nichts ausgeführt. Das Ergebnis ist das gespeicherte von damals mit `duplicate: true`.
 2. Der Befehl wird gegen den Katalog geprüft (`Command`, Abschnitt 6.6). Unbekannte `type`, fehlende oder zusätzliche Felder, falsche Formate: Ergebnis `rejected` mit `code: "invalid"`. Dazu zählt auch, was der Form nach stimmt und trotzdem nichts bezeichnet: ein Zeitpunkt oder Datum, das es nicht gibt, ein Barcode mit falscher Prüfziffer.
 3. Der wirksame Zeitpunkt wird berechnet, mit der Untergrenze des Geräts (Abschnitt 4).
-4. Der Befehl wird in einem eigenen Sicherungspunkt ausgeführt. Wirft die Ausführung unerwartet, wird der Sicherungspunkt zurückgerollt; das Ergebnis ist `rejected` mit `code: "internal"`, der Fehler steht im Server-Log.
+4. Der Befehl wird in einem eigenen Sicherungspunkt ausgeführt. Wirft die Ausführung unerwartet, wird der Sicherungspunkt zurückgerollt; das Ergebnis ist `rejected` mit `code: "internal"`, der Fehler steht im Server-Log. Was der Server aus dem Befehl selbst ableitet (die Einkaufsliste nach 7.6), gehört in denselben Sicherungspunkt: Es gilt mit dem Befehl oder gar nicht.
 5. Befehl und Ergebnis werden in `commands` gespeichert, die Wirkung im Ereignisprotokoll vermerkt (Abschnitt 12).
 
 Ergebnis je Befehl (`CommandResult`), in der Reihenfolge der Anfrage:
@@ -219,7 +241,7 @@ Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
 
 ```json
 {
-  "protocol": 1,
+  "protocol": 2,
   "dataset_id": "8c0b4b0e-6c1a-4f2e-9f0a-2d5b7c9e1a34",
   "server_time": "2026-11-13T10:15:31.412Z",
   "results": [
@@ -229,6 +251,7 @@ Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
   "changes": {
     "products": [], "zones": [], "packages": [ { "id": "A2B3C", "…": "…" } ],
     "printers": [], "printer_status": [], "print_jobs": [], "label_templates": [],
+    "shopping_items": [ { "id": "6a1f…", "origin": "min_stock", "quantity": 1, "…": "…" } ],
     "settings": null
   },
   "cursor": 1240,
@@ -239,16 +262,29 @@ Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
 ```
 
 - **`changes`** enthält jeden Datensatz, der sich seit `cursor` geändert hat, vollständig und in seinem aktuellen Zustand. `settings` ist `null`, wenn unverändert. Technisch: Jede Zeile trägt den Stand der Änderungsfolge (`rev`) ihres letzten Schreibens; geliefert wird alles mit `rev > cursor`.
+- **Was der Server selbst schreibt** (automatische Einträge der Einkaufsliste, Erledigtes aus Bring!, 7.6), kommt als gewöhnliche Änderung: Die Zeile bekommt einen neuen `rev`, und das nächste `changes` jedes Geräts enthält sie. Was ein Befehl auslöst, steht schon in der Antwort auf den Sync, der ihn gebracht hat (Schritt 4 von 6.2 kommt nach den Befehlen). Was ein Hintergrund-Ablauf schreibt (der Abgleich mit Bring!), kommt mit dem nächsten Abgleich. Die App nimmt nichts davon vorweg und braucht keine eigene Behandlung: Für sie ist es Stand des Servers.
 - **`cursor`** schickt die App beim nächsten Aufruf zurück. Für die App ist er eine undurchsichtige Zahl.
 - **`has_more`:** Eine Antwort enthält höchstens 5000 Datensätze. Bei `true` ruft die App sofort erneut ab, bis `false` kommt: ohne Befehle, mit `dataset_id` und `cursor` der Seite davor; als `have` nennt sie ihren Vorrat einschließlich dessen, was dieser Abgleich schon zugeteilt hat. Meldet eine Folgeseite selbst `reset: true` (der Bestand hat mitten im Blättern gewechselt), wendet die App nichts davon an und beginnt den Abgleich neu. Verweise können zwischen den Seiten vorübergehend ins Leere zeigen; die App wendet deshalb alle Seiten gemeinsam an (Abschnitt 9). Beim Blättern geht nichts verloren: Der gelieferte `cursor` ist immer ein Stand, bis zu dem die Antworten zusammen alles enthalten, über alle Tabellen hinweg. Tragen mehrere Zeilen denselben `rev` (ein Befehl, der viele Packungen auf einmal verschiebt), endet eine Seite nie mitten in diesem `rev`; sie darf dafür größer als 5000 werden.
 - **`dataset_id`** kennzeichnet den Datenbestand. **`reset: true`** kommt, wenn die `dataset_id` der Anfrage nicht die des Servers ist (auch beim ersten Sync) oder der `cursor` der Anfrage größer ist als der Stand des Servers vor den Befehlen dieser Anfrage. Die Antwort ist dann ein vollständiger Abzug ab `cursor = 0`; die App leert ihre Kopie vorher (Abschnitt 9.3). Die Befehle der Anfrage sind trotzdem verarbeitet, ihre Wirkung steckt im Abzug. Eine neue Kennung bekommt der Bestand mit jeder Sicherung (Abschnitt 11) und mit `python -m stowly --new-dataset`, nachdem eine Kopie der Datenbank auf anderem Weg zurückgespielt wurde.
-- **Was ein vollständiger Abzug weglässt:** Eine Antwort mit `reset: true` enthält keine entnommenen Packungen, deren `removed_at` länger zurückliegt als `trash_retention_days`, und keine Etiketten in einem Endzustand (`printed`, `sent`, `failed`, `cancelled`), deren `updated_at` länger als 30 Tage zurückliegt. **Jede andere Antwort liefert ausnahmslos alles mit `rev > cursor`, egal wie alt**, auch die Folgeseiten eines Abzugs. Ein Gerät, das länger offline war als die Aufbewahrungsdauer, muss erfahren, dass eine Packung inzwischen entnommen oder ein Etikett erledigt ist: Sonst zeigte es die Packung für immer im Bestand und stellte das Etikett noch einmal zu. Die App verwirft beides nach derselben Regel, beim Empfang und beim Start; was sie so verwirft, verschwindet auch dann aus ihrer Kopie, wenn es dort bis eben noch als Bestand oder als ausstehend geführt war. Gelöschte Zonen und zusammengeführte Produkte kommen immer mit: Die App braucht sie, um alten Verweisen zu folgen.
+- **Was ein vollständiger Abzug weglässt:** Eine Antwort mit `reset: true` enthält keine entnommenen Packungen, deren `removed_at` länger zurückliegt als `trash_retention_days`, keine Einträge der Einkaufsliste, die länger als `trash_retention_days` erledigt oder gelöscht sind (gemessen am späteren von `done_at` und `deleted_at`), und keine Etiketten in einem Endzustand (`printed`, `sent`, `failed`, `cancelled`), deren `updated_at` länger als 30 Tage zurückliegt. **Jede andere Antwort liefert ausnahmslos alles mit `rev > cursor`, egal wie alt**, auch die Folgeseiten eines Abzugs. Ein Gerät, das länger offline war als die Aufbewahrungsdauer, muss erfahren, dass eine Packung inzwischen entnommen, ein Eintrag erledigt oder ein Etikett erledigt ist: Sonst zeigte es die Packung für immer im Bestand, den Eintrag auf der Liste und stellte das Etikett noch einmal zu. Die App verwirft alles drei nach derselben Regel, beim Empfang und beim Start; was sie so verwirft, verschwindet auch dann aus ihrer Kopie, wenn es dort bis eben noch als Bestand, offen oder ausstehend geführt war. Gelöschte Zonen und zusammengeführte Produkte kommen immer mit: Die App braucht sie, um alten Verweisen zu folgen.
 - **`lookup_enabled`** sagt in jeder Antwort, ob dieser Server unbekannte Barcodes bei Open Food Facts nachschlägt (`STOWLY_OFF_ENABLED`, Abschnitt 10). Die App merkt sich den Wert über Neustarts und richtet danach, was sie verspricht und vorwegnimmt; bis zur ersten Antwort gilt er als unbekannt und wird wie „eingeschaltet" behandelt. Beim Abmelden vergisst sie ihn.
 - **Längere Aufbewahrung:** Vergrößert sich `trash_retention_days` in der Kopie der App (durch eine eigene Änderung oder durch eine Antwort), holt sie den Bestand beim nächsten Abgleich einmal vollständig neu (`dataset_id: null`, `cursor: 0`; der Server antwortet mit `reset: true`). Nur so reicht ihre Lösch-Historie wieder so weit zurück wie die des Servers.
 
 ### 6.5 Protokollversion
 
-Derzeit `1`. Jede Änderung, die eine ältere App oder einen älteren Server falsch arbeiten ließe, erhöht die Version. Bei Abweichung antwortet der Server mit 409 `protocol_mismatch`; die App sendet dann nicht weiter und fordert zum Aktualisieren auf. Ihre Outbox bleibt erhalten.
+Derzeit `2`. Jede Änderung, die eine ältere App oder einen älteren Server falsch arbeiten ließe, erhöht die Version. Bei Abweichung antwortet der Server mit 409 `protocol_mismatch`; die App sendet dann nicht weiter und fordert zum Aktualisieren auf. Ihre Outbox bleibt erhalten.
+
+**Was Protokoll 2 gegenüber 1 ändert (Stufe 2):**
+
+- `Product.min_stock` (3.1) mit eigener Feld-Uhr; `product.create` und `product.update` kennen es (6.6), das Zusammenführen übernimmt es wie `warn_days` (7.3).
+- Der neue Datensatz `ShoppingItem` (3.6), seine Befehle `shopping_item.create`, `.update`, `.delete` (6.6) und die Liste `changes.shopping_items` in jeder Antwort (6.4).
+- Automatische Einträge, die der Server selbst schreibt (7.6), samt eigenen Ereignistypen ohne Gerät (Abschnitt 12).
+- Die Einstellung `notify_time` (3.4) in `HouseholdSettings` und `settings.update`.
+- Die neuen Endpunkte für Statistik, Sensor, Push und den Zustand der Integrationen (Abschnitt 11) liegen außerhalb des Sync; sie allein hätten die Version nicht erhöht.
+
+**Befehle aus Protokoll 1 bleiben gültig.** Alles Neue in bestehenden Befehlen ist optional: `product.create` ohne `min_stock` legt ein Produkt ohne Mindestbestand an, `changes` ohne die neuen Schlüssel ändern sie nicht. Eine App, die mit einer Outbox aus Protokoll 1 aktualisiert wird, sendet sie danach unverändert mit `protocol: 2`; der Server nimmt jeden dieser Befehle an wie zuvor. Die App sendet `min_stock` beim Anlegen nur, wenn es gesetzt ist.
+
+**Der Umstieg in der App:** Ihre lokale Datenbank (Version 3) lädt beim ersten Start einmal alles neu (`dataset_id: null`, `cursor: 0`, 6.4), behält aber Outbox, Geräte-Einstellungen und Anmeldung: Ihre gespeicherten Datensätze aus Protokoll 1 kennen `min_stock`, `notify_time` und die Einkaufsliste noch nicht. Antwortet der Server mit 409 `protocol_mismatch` und meldet eine höhere Version (`details.server` größer als die eigene), sucht die App sofort nach einer neuen Version von sich selbst (Service Worker), nicht erst beim stündlichen Nachsehen (`web/src/core/pwa/updates.ts`). Der Server legt beim Hochziehen der Datenbank (Migration 0003) nichts in die Änderungsfolge: Geräte mit Protokoll 1 können ohnehin nicht abgleichen, und jede App mit Protokoll 2 lädt beim Umstieg alles neu.
 
 ### 6.6 Katalog der Befehle
 
@@ -258,8 +294,8 @@ Jeder Befehl hat `id` (UUID, vom Gerät erzeugt), `at` (Geräteuhr im Moment der
 
 | `type` | Nutzlast | Wirkung | Ablehnung |
 |---|---|---|---|
-| `product.create` | `product_id`, `name` (""), `brand` (""), `quantity` (""), `warn_days` (null), `barcodes` ([]) | Legt das Produkt an. Gehört einer der Barcodes schon einem anderen Produkt, entsteht es als Zusammenführung (7.3). Hat es einen nachschlagbaren Barcode, wird `lookup = pending` (Abschnitt 10). | `id_conflict` |
-| `product.update` | `product_id`, `changes { name?, brand?, quantity?, warn_days? }` | Feldänderungen (7.1) | `not_found` |
+| `product.create` | `product_id`, `name` (""), `brand` (""), `quantity` (""), `warn_days` (null), `barcodes` ([]), `min_stock` (null) | Legt das Produkt an. Gehört einer der Barcodes schon einem anderen Produkt, entsteht es als Zusammenführung (7.3). Hat es einen nachschlagbaren Barcode, wird `lookup = pending` (Abschnitt 10). Mit `min_stock` beginnt die Einkaufsliste des Produkts (7.6). | `id_conflict` |
+| `product.update` | `product_id`, `changes { name?, brand?, quantity?, warn_days?, min_stock? }` | Feldänderungen (7.1); `min_stock: null` entfernt den Mindestbestand | `not_found` |
 | `product.add_barcode` | `product_id`, `barcode` | Ordnet den Barcode zu. Gehört er einem anderen Produkt, geht dieses im genannten auf (7.3). | `not_found` |
 | `product.remove_barcode` | `product_id`, `barcode` | Entfernt die Zuordnung; ohne Wirkung, wenn sie nicht besteht | `not_found` |
 | `product.merge` | `source_id`, `target_id` | Führt zusammen (7.3) | `not_found` |
@@ -270,15 +306,18 @@ Jeder Befehl hat `id` (UUID, vom Gerät erzeugt), `at` (Geräteuhr im Moment der
 | `zone.create` | `zone_id`, `name`, `icon` ("box"), `color` (null), `sort` (0), `printer_id` (null) | Legt die Zone an | `id_conflict` |
 | `zone.update` | `zone_id`, `changes { name?, icon?, color?, sort?, printer_id? }` | Feldänderungen (7.1). Eine neue Reihenfolge sind mehrere `zone.update` mit `sort`. | `not_found` (auch gelöscht) |
 | `zone.delete` | `zone_id`, `move_to` | Löscht die Zone und verschiebt ihre Packungen (7.4); ohne Wirkung, wenn sie schon gelöscht ist | `not_found`, `invalid` (`move_to` ist dieselbe Zone), `last_zone` |
-| `settings.update` | `changes { zone_mode?, primary_zone_id?, warn_days?, trash_retention_days?, default_printer_id? }` | Feldänderungen (7.1) | – |
+| `settings.update` | `changes { zone_mode?, primary_zone_id?, warn_days?, trash_retention_days?, default_printer_id?, notify_time? }` | Feldänderungen (7.1) | – |
 | `printer.create` | `printer_id`, `name`, `connection`, `server` oder `direct` | Legt den Drucker an | `id_conflict` |
 | `printer.update` | `printer_id`, `changes { name?, server?, direct? }` | Feldänderungen (7.1); die Art der Verbindung ändert sich nie | `not_found` (auch gelöscht), `invalid` (Objekt passt nicht zur Verbindung) |
 | `printer.delete` | `printer_id` | Markiert den Drucker als gelöscht und setzt Verweise in Zonen und Einstellungen auf `null`; ohne Wirkung, wenn schon gelöscht | `not_found` |
 | `printer.report` | `printer_id`, `boot_id`, `status`, `host` | Ersetzt den zuletzt gesehenen Zustand, wenn die Beobachtung neuer ist als die gespeicherte | `not_found` |
 | `print.request` | `job_id`, `kind`, `package_id` oder `zone_id`, `printer_id` (null) | Legt ein Etikett im Zustand `pending` an | `id_conflict`, `not_found` |
 | `print.report` | `job_id`, `state`, `printer_id`, `boot_id`, `error` | Setzt den Zustand des Etiketts, wenn die Meldung neuer ist als die gespeicherte | `not_found` |
+| `shopping_item.create` | `item_id`, `product_id` (null), `text` (""), `quantity` (null) | Legt einen eigenen Eintrag an (`origin = manual`), genau eines von Produkt und Text; `created_at` ist der wirksame Zeitpunkt | `id_conflict`, `not_found` (Produkt), `invalid` (weder Produkt noch Text, oder beides) |
+| `shopping_item.update` | `item_id`, `changes { text?, quantity?, done? }` | Feldänderungen (7.1): `done: true` hakt ab (`done_at` = wirksamer Zeitpunkt), `done: false` öffnet wieder. Ohne Wirkung, wenn gelöscht. Folgen für automatische Einträge: 7.6. | `not_found`, `invalid` (`text` bei einem Eintrag mit Produkt, `quantity` bei einem automatischen) |
+| `shopping_item.delete` | `item_id` | Löscht endgültig (`deleted_at` = wirksamer Zeitpunkt); ohne Wirkung, wenn schon gelöscht. Folgen für automatische Einträge: 7.6. | `not_found` |
 
-Alle Befehle des Katalogs gehören zum Sync von Anfang an, auch die für Drucker und Etiketten: Sie sind reine Datenhaltung. Gedruckt wird über den Druckdienst ([`etiketten.md`](etiketten.md)).
+Alle Befehle des Katalogs gehören zum Sync von Anfang an, auch die für Drucker und Etiketten: Sie sind reine Datenhaltung. Gedruckt wird über den Druckdienst ([`etiketten.md`](etiketten.md)). Die drei Befehle der Einkaufsliste gibt es seit Protokoll 2.
 
 Genauer, wo die Tabelle es offen lässt:
 
@@ -291,7 +330,10 @@ Genauer, wo die Tabelle es offen lässt:
 - **Ein Zwischenstand überschreibt keinen Ausgang:** Eine Meldung mit `queued` oder `printing` ändert ein Etikett nicht, das schon `printed`, `sent`, `failed`, `cancelled` oder `unknown` ist, gleich welchen Zeitpunkt sie trägt, und stellt auch seine Uhr nicht. Der Befehl gilt trotzdem (`applied`, mit Echo, ohne Eintrag im Ereignisprotokoll). So überschreibt ein `queued`, das ein Gerät erst meldet, nachdem der Server den Druck schon selbst als `printed` fortgeschrieben hat, das Ergebnis nicht. Dieselbe Regel gilt für das, was der Server selbst schreibt (nächster Punkt), und für die lokale Vorwegnahme der App; die App erzeugt eine solche Meldung gar nicht erst. Als Code: `progress_after_outcome` in `server/stowly/sync/handlers.py`, `progressAfterOutcome` in `web/src/contract/labels.ts`.
 - **Was der Server selbst schreibt:** Druckt der Server ein Etikett (Druckdienst unter `/print`, [`etiketten.md`](etiketten.md) 5.8), setzt er Zustand, `printer_id`, `boot_id` und `error` des Etiketts selbst, als hätte ein Gerät im selben Moment gemeldet: mit seiner eigenen Uhr als Zeitpunkt und nach derselben Regel (die jüngste Meldung gilt). Ebenso schreibt er den zuletzt gesehenen Zustand seiner eigenen Drucker fort. Beides läuft außerhalb eines Sync-Aufrufs, hebt den Stand der Änderungsfolge und erreicht die Geräte mit ihrem nächsten Abgleich. Für einen Drucker am Server schickt kein Gerät `printer.report`.
 - **`product.remove_barcode`** verlangt wie jeder Befehl mit Barcode eine gültige Prüfziffer.
-- **Befehle ohne Wirkung** schreiben nichts ins Ereignisprotokoll. Die App erzeugt sie gar nicht erst, wo sie es schon lokal erkennt (derselbe Grund auf eine entnommene Packung, Wiederherstellen einer Packung im Bestand, Umsortieren ohne Änderung, `changes` ohne Felder).
+- **`shopping_item.create`** folgt bei `product_id` wie jeder Verweis `merged_into`; ein Produkt, das es nie gab, ist `not_found`. Ein Produkt, das gerade im Bestand ist, macht den Eintrag nicht sofort erledigt: Das tut erst ein Einlagern danach (7.6).
+- **`shopping_item.update`** prüft in dieser Reihenfolge: Eintrag unbekannt (`not_found`); gelöscht (ohne Wirkung, `applied`); `text` bei einem Eintrag mit Produkt oder `quantity` bei einem automatischen (`invalid`, der ganze Befehl gilt nicht); dann je Feld die Uhr (7.1). `done: true` auf einen erledigten Eintrag lässt `done_at`, wie es ist, stellt aber die Uhr; ebenso `done: false` auf einen offenen. Wieder öffnen setzt `done_at` auf `null`.
+- **`shopping_item.delete`** gewinnt immer: Ein gelöschter Eintrag bleibt gelöscht, gleich welchen Zeitpunkt ein späterer Befehl trägt (wie „Löschen gewinnt" bei Packungen, 7.2, aber ohne Wiederherstellen).
+- **Befehle ohne Wirkung** schreiben nichts ins Ereignisprotokoll. Die App erzeugt sie gar nicht erst, wo sie es schon lokal erkennt (derselbe Grund auf eine entnommene Packung, Wiederherstellen einer Packung im Bestand, Umsortieren ohne Änderung, `changes` ohne Felder, Abhaken eines erledigten Eintrags, Löschen eines gelöschten).
 
 ## 7. Konfliktregeln
 
@@ -306,7 +348,7 @@ Für jedes änderbare Feld jedes Datensatzes merkt sich der Server den wirksamen
 - Eine Uhr stellt nur, wer ein Feld bearbeitet. Anlegen, Zusammenführen, das Löschen einer Zone oder eines Druckers und Open Food Facts stellen keine: Jede Eingabe eines Anwenders gewinnt gegen sie, davor wie danach. Eine Änderung auf den Wert, den das Feld schon hat, stellt die Uhr, steht aber nicht im Ereignisprotokoll.
 - Die App entscheidet lokal nichts nach Zeitstempeln: Bis zur Antwort des Servers gilt in ihrer Anzeige der eigene, noch unbestätigte Befehl (Abschnitt 9.1).
 
-Felder mit dieser Regel: Produkt `name`, `brand`, `quantity`, `warn_days`; Packung `best_before`, `zone_id`, `product_id`; Zone `name`, `icon`, `color`, `sort`, `printer_id`; jede Einstellung; Drucker `name`, `server`, `direct` (das Objekt als Ganzes); Etikett: Zustand samt `printer_id`, `boot_id`, `error` als ein Feld, mit einer Ausnahme (6.6: ein Zwischenstand überschreibt keinen Ausgang); Druckerzustand als Ganzes.
+Felder mit dieser Regel: Produkt `name`, `brand`, `quantity`, `warn_days`, `min_stock`; Packung `best_before`, `zone_id`, `product_id`; Zone `name`, `icon`, `color`, `sort`, `printer_id`; jede Einstellung (auch `notify_time`); Drucker `name`, `server`, `direct` (das Objekt als Ganzes); Etikett: Zustand samt `printer_id`, `boot_id`, `error` als ein Feld, mit einer Ausnahme (6.6: ein Zwischenstand überschreibt keinen Ausgang); Druckerzustand als Ganzes; Eintrag der Einkaufsliste `text`, `quantity` und `done` (die Uhr von `done` stellt auch das Erledigen durch Einlagern und durch Bring!, 7.6).
 
 ### 7.2 Löschen gewinnt gegen Bearbeiten
 
@@ -325,8 +367,9 @@ Zusammenführen von `source` in `target` heißt:
 
 1. Alle Packungen von `source`, auch entnommene, gehören danach zu `target`.
 2. Alle Barcodes von `source` gehören danach zu `target`.
-3. Leere Felder von `target` (`name`, `brand`, `quantity` leer, `warn_days` und `image` null) übernehmen den Wert von `source`.
+3. Leere Felder von `target` (`name`, `brand`, `quantity` leer, `warn_days`, `min_stock` und `image` null) übernehmen den Wert von `source`.
 4. `source` bekommt `deleted_at` und `merged_into = target` und hat keine Barcodes mehr.
+5. Alle Einträge der Einkaufsliste von `source`, auch erledigte und gelöschte, gehören danach zu `target` (`product_id`, `updated_at` wie bei den Packungen). Die Sperre der automatischen Einträge wandert mit, und der Server gleicht `target` ab (7.6): Zwei offene automatische Einträge werden dabei zu einem.
 
 Auslöser:
 
@@ -349,6 +392,54 @@ Eine Zusammenführung lässt sich nicht rückgängig machen. Die App fragt desha
 Legt ein Befehl etwas mit einer Kennung an, die es schon gibt, wird er abgelehnt (`id_conflict`). Bei UUIDs passiert das praktisch nie. Bei Packungs-IDs ist es der Fall, der nicht still geheilt werden darf: Das Etikett ist bereits gedruckt. Die App zeigt die Ablehnung in den Sync-Problemen; der Anwender lagert die Packung neu ein und ersetzt das Etikett.
 
 Die Etiketten, die das Gerät zu der abgelehnten Packung selbst angefordert hat, gehören zu einer Packung, die es nie gab; die ID trägt jetzt die Packung eines anderen Geräts. Das Gerät verwirft sie deshalb, sobald es die Ablehnung erfährt: Eine Anforderung (`print.request`), die noch in der Outbox wartet, entfernt es dort samt allen Meldungen dazu; für ein schon gesendetes Etikett, das noch nicht in einem Endzustand ist, meldet es `cancelled`. Zugestellt wird davon nichts mehr. Ein Etikett, das schon gedruckt ist, bleibt als Datensatz, wie es ist; das Sync-Problem sagt dem Anwender, dass er es entfernen und die Packung neu einlagern muss.
+
+### 7.6 Einkaufsliste: automatische Einträge und Erledigen durch Einlagern
+
+Seit Protokoll 2. Was hier steht, schreibt der Server selbst; kein Gerät schickt dafür einen Befehl.
+
+**Begriffe:**
+
+- **Bestand** eines Produkts: seine Packungen mit `removed_at = null`, auch abgelaufene.
+- **Fehlbestand:** `min_stock` minus Bestand, mindestens 0; ohne Mindestbestand 0. Ein Produkt liegt **unter dem Mindestbestand**, wenn der Fehlbestand größer als 0 ist (`missingStock` in `web/src/contract/shopping.ts`).
+- **Offener automatischer Eintrag:** `origin = min_stock`, `done_at` und `deleted_at` sind `null`.
+- **Sperre:** je Produkt ein wirksamer Zeitpunkt oder keine (`products.shopping_lock_at`, nicht im Sync).
+
+**Abgleich eines Produkts p zum wirksamen Zeitpunkt t**, immer im Sicherungspunkt des Befehls, der ihn auslöst (6.3):
+
+1. Hat p mehr als einen offenen automatischen Eintrag, bleibt der älteste (nach `created_at`, dann `id`); die übrigen löscht der Server (`deleted_at = t`).
+2. Fehlbestand größer als 0:
+   - Es gibt einen offenen automatischen Eintrag: Seine `quantity` wird der Fehlbestand.
+   - Es gibt keinen, und p ist nicht gesperrt: Der Server legt einen an: neue `id` (UUID v4), `product_id = p`, `text = ""`, `quantity` = Fehlbestand, `origin = min_stock`, `created_at = updated_at = t`.
+   - Es gibt keinen, und p ist gesperrt: nichts.
+3. Fehlbestand 0 (der Bestand reicht, oder es gibt keinen Mindestbestand mehr): Ein offener automatischer Eintrag wird gelöscht (`deleted_at = t`); seine `quantity` bleibt, wie sie war. Gelöscht, nicht erledigt: So entsteht in Bring! kein „gekauft", das niemand getan hat ([`integrationen.md`](integrationen.md), 5.5).
+
+Jedes Schreiben gibt der Zeile einen neuen `rev` und `updated_at = max(updated_at, t)`. Der Abgleich ist wiederholbar: Läuft er ohne Anlass, ändert er nichts, was schon zur Regel passt.
+
+**Auslöser**, jeweils nur, wenn der Befehl angewendet wurde:
+
+| Befehl | Wann | Vorher | Abgleich für |
+|---|---|---|---|
+| `package.create` | immer | Sperre von p aufheben, wenn sie nicht nach t liegt; eigene Einträge von p erledigen (unten) | p, das Produkt der Packung |
+| `package.remove` | Die Packung war im Bestand. | – | ihr Produkt |
+| `package.restore` | Die Packung war entnommen. | – | ihr Produkt; hat `apply_displaced` das Produkt geändert, auch das vorige |
+| `package.update` | `product_id` angewendet und geändert | – | das alte und das neue Produkt |
+| `product.create` | mit `min_stock` | – | das Produkt, bei einer Zusammenführung das Ziel |
+| `product.update` | `min_stock` angewendet und geändert (neuer Wert ungleich altem) | Sperre aufheben, wenn sie nicht nach t liegt | das Produkt |
+| Zusammenführen (`product.merge`; `product.create` oder `product.add_barcode` mit vergebenem Barcode) | immer | Einträge wandern (7.3, Schritt 5); Sperre des Ziels = die spätere beider Sperren, die Quelle hat keine mehr | das Ziel |
+| `shopping_item.update` | `done: false` angewendet auf einen erledigten automatischen Eintrag | Sperre aufheben, wenn sie nicht nach t liegt | sein Produkt |
+| `shopping_item.update` | `done: true` angewendet auf einen offenen automatischen Eintrag | Sperre = die spätere von Sperre und t | – |
+| `shopping_item.delete` | trifft einen offenen automatischen Eintrag | Sperre = die spätere von Sperre und t | – |
+| Abgleich mit Bring! ([`integrationen.md`](integrationen.md), 5.5) | ein offener automatischer Eintrag ist dort abgehakt oder gelöscht | Sperre = die spätere von Sperre und Zeitpunkt des Abgleichs | – |
+
+Ein erledigter automatischer Eintrag, der danach gelöscht wird, sperrt nicht noch einmal: Das ist Aufräumen, kein Abwählen.
+
+**Die Sperre** gilt bis zum nächsten Einlagern des Produkts oder bis sich sein Mindestbestand ändert, und zwar durch ein Einlagern oder Ändern, das nicht vor dem Abhaken geschah (wirksamer Zeitpunkt ≥ Sperre). Ein Gerät, das offline vor dem Abhaken eingelagert hat und erst danach abgleicht, hebt sie also nicht auf. Solange sie gilt, entsteht kein neuer automatischer Eintrag; ein offener (etwa ein wieder geöffneter) wird weiter nachgeführt.
+
+**Eigene Einträge erledigen sich beim Einlagern:** `package.create` für das Produkt p mit wirksamem Zeitpunkt t erledigt jeden offenen eigenen Eintrag mit `product_id = p`, der seit t oder früher offen ist: `done_at = t`, und die Uhr von `done` (7.1) steht danach auf t. „Offen seit" ist der Zeitpunkt dieser Uhr, wenn es sie gibt (das letzte Wiederöffnen), sonst `created_at`. So erledigt ein Einlagern, das vor dem Anlegen oder vor dem Wiederöffnen geschah, den Eintrag nicht; und ein Abhaken oder Öffnen, das vor dem Einlagern geschah und erst später eintrifft, verliert gegen das Erledigen. Freie Texte erledigt nur der Anwender.
+
+**Was die App davon sieht:** Alles in diesem Abschnitt schreibt der Server ohne Gerät, mit eigenen Ereignistypen (Abschnitt 12). Für die App sind es gewöhnliche Änderungen des Stands (6.4), meist schon in der Antwort auf den Sync, dessen Befehl sie ausgelöst hat; offline kommen sie mit dem nächsten Abgleich. Die App nimmt nichts davon vorweg: Ihre Anzeige ist Stand des Servers plus eigene Befehle (9.1). Den Fehlbestand dagegen zeigt sie sofort selbst, auch offline.
+
+**Testfälle:** [`vectors.json`](vectors.json), Abschnitt `shopping_auto`: Folgen von Befehlen, auch verspätete von einem zweiten Gerät, mit dem erwarteten Stand der Liste. Der Server und die Nachbildung des Servers (`web/src/core/testing`) prüfen dieselben Fälle.
 
 ## 8. ID-Vorrat
 
@@ -391,7 +482,7 @@ Die Sync-Probleme sind begrenzt: Die App hebt höchstens 200 auf, die ältesten 
 
 1. Bei `has_more` weiter abrufen und alle Seiten sammeln.
 2. In einer lokalen Transaktion: bei `reset` zuerst alle synchronisierten Tabellen und den ID-Vorrat leeren (Outbox, Geräte-Einstellungen und Token bleiben); dann alle Datensätze übernehmen; `dataset_id`, `cursor` und den zugeteilten ID-Vorrat speichern.
-3. Entnommene Packungen jenseits der Aufbewahrungsdauer und alte abgeschlossene Etiketten verwerfen (Abschnitt 6.4), auch wenn sie eben erst geliefert wurden. Gerechnet wird dabei mit `server_time` der Antwort; beim Start und in der Anzeige mit der Geräteuhr plus dem Abstand zur Serverzeit, den der letzte Abgleich gemessen hat.
+3. Entnommene Packungen jenseits der Aufbewahrungsdauer, Einträge der Einkaufsliste, die länger als die Aufbewahrungsdauer erledigt oder gelöscht sind, und alte abgeschlossene Etiketten verwerfen (Abschnitt 6.4), auch wenn sie eben erst geliefert wurden. Gerechnet wird dabei mit `server_time` der Antwort; beim Start und in der Anzeige mit der Geräteuhr plus dem Abstand zur Serverzeit, den der letzte Abgleich gemessen hat.
 4. Die verbliebenen Befehle der Outbox erneut auf die lokale Kopie anwenden.
 5. Hat sich `trash_retention_days` vergrößert: den Bestand beim nächsten Abgleich vollständig neu holen (Abschnitt 6.4).
 
@@ -414,7 +505,7 @@ Es läuft immer nur ein Abgleich je Gerät, auch über mehrere Tabs und den Serv
 
 `navigator.onLine` meldet auf jeder Verbindung `true`, auch im WLAN des Pi ohne Internet. Nur `false` ist verlässlich. Die App prüft deshalb selbst: `GET /api/health` mit `cache: "no-store"`, Abbruch nach 3 Sekunden, und die Antwort gilt nur, wenn `app === "stowly"` ist. Einem Abgleich geht die Prüfung voraus, wenn der letzte Kontakt zum Server länger als 30 Sekunden zurückliegt, der letzte Versuch ihn nicht erreicht hat oder das Gerät nicht angemeldet ist.
 
-**Prüfung nebenbei.** Solange die App sichtbar und das Gerät angemeldet ist, prüft sie so auch ohne Anlass, ob der Server erreichbar ist, sobald 15 Sekunden lang kein Kontakt zu ihm bestand. Kontakt ist jeder Abgleich, jede Prüfung und jeder Aufruf, der den Server braucht (Geräte, Sicherung, Vorschau, Nachschlagen beim Scannen), auch der eines anderen Tabs desselben Geräts: Die Tabs sagen es einander über einen BroadcastChannel (`stowly-contact`). So entsteht höchstens eine kleine Anfrage je 15 Sekunden, bei mehreren sichtbaren Tabs meist nur in einem, und die App merkt Ausfall und Rückkehr binnen etwa 15 Sekunden (dazu höchstens die 3 Sekunden Zeitgrenze), auch wenn niemand etwas ändert.
+**Prüfung nebenbei.** Solange die App sichtbar und das Gerät angemeldet ist, prüft sie so auch ohne Anlass, ob der Server erreichbar ist, sobald 15 Sekunden lang kein Kontakt zu ihm bestand. Kontakt ist jeder Abgleich, jede Prüfung und jeder Aufruf, der den Server braucht (Geräte, Sicherung, Vorschau, Nachschlagen beim Scannen, Statistik, Zustand der Integrationen, Push), auch der eines anderen Tabs desselben Geräts: Die Tabs sagen es einander über einen BroadcastChannel (`stowly-contact`). So entsteht höchstens eine kleine Anfrage je 15 Sekunden, bei mehreren sichtbaren Tabs meist nur in einem, und die App merkt Ausfall und Rückkehr binnen etwa 15 Sekunden (dazu höchstens die 3 Sekunden Zeitgrenze), auch wenn niemand etwas ändert.
 
 - Antwortet der Server nicht, zeigt `sync.status` „nicht erreichbar" wie nach einem gescheiterten Abgleich, in diesem Tab und in den anderen. Der Abgleich alle 60 Sekunden ruht dann.
 - Antwortet er nach einem Ausfall wieder, gleicht die App sofort ab.
@@ -507,15 +598,50 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `GET /api/backup` | Token | 200 `application/vnd.sqlite3`, `Content-Disposition: attachment; filename="stowly-JJJJ-MM-TT.sqlite3"` |
 | `GET /api/events?before=&limit=&entity=&entity_id=` | Token | 200 `EventPage { events, next_before }`, neueste zuerst, `limit` 1–500 (Vorgabe 100) |
 | `GET /api/lookup/{barcode}?wait=` | Token | 200 `LookupResult { barcode, state, name, brand, quantity, image_id }`, `Cache-Control: no-store`; 400 bei ungültigem Barcode oder `wait` (Abschnitt 10.1) |
+| `GET /api/stats?start=&end=` | Token | 200 `Stats`, `Cache-Control: no-store`; 400 bei ungültigem Zeitraum (11.1) |
+| `GET /api/ha/summary` | Token des Sensors (`STOWLY_HA_SUMMARY_TOKEN`), kein Geräte-Token | 200 `HaSummary`, `Cache-Control: no-store`; 401 ohne gültigen Sensor-Token; 503 `not_configured` ohne gesetzten Token (11.2) |
+| `GET /api/push/key` | Token | 200 `PushKey { public_key }`, `Cache-Control: no-store`; 503 `not_configured` (11.3) |
+| `PUT /api/push/subscription` | Token | `PushSubscriptionInput { endpoint, keys { p256dh, auth }, origin }`; 204; 422 bei ungültigem oder unbekanntem Push-Dienst; 503 `not_configured` |
+| `DELETE /api/push/subscription` | Token | 204, auch ohne Abo; 503 `not_configured` |
+| `POST /api/push/test` | Token | 200 `PushTestResult { status, http_status, message }`, `Cache-Control: no-store`; 404 ohne Abo dieses Geräts; 429 `rate_limited`; 503 `not_configured` |
+| `GET /api/integrations` | Token | 200 `IntegrationStatus { timezone, backup, ha, push }`, `Cache-Control: no-store` (11.4) |
 | `/print/v1/…` | Token | Druckdienst des Servers, siehe [`etiketten.md`](etiketten.md) |
 
 - **Bilder sind ohne Anmeldung abrufbar**, weil `<img>` keinen `Authorization`-Kopf senden kann. Die Kennung ist der Hash des Inhalts und nicht zu erraten; ausgeliefert werden nur Vorschaubilder aus Open Food Facts.
 - **Sicherung:** eine in sich stimmige Kopie der ganzen Datenbank (`sqlite3.Connection.backup`). Die Kopie bekommt eine **neue `dataset_id`**. Wird sie später eingespielt (Server anhalten, Datei ersetzen, starten), antwortet der Server allen Geräten mit `reset: true`; sie holen den Bestand vollständig neu und senden ihre Outbox erneut. Befehle, die schon in der Sicherung stecken, erkennt der Server als bekannt.
 - Unbekannte Pfade unter `/api` antworten mit 404 im Fehlerformat. Alles außerhalb von `/api` und `/print` liefert die Web-App (Datei oder `index.html`).
+- **Seit Stufe 2** kommen Statistik, Sensor, Push und der Zustand der Integrationen dazu (11.1 bis 11.4). Die Pfade, Methoden, `operation_id`, Modelle und die Beschreibungen in `server/stowly/api/` sind Vertrag (sie stehen in `openapi.json`); umsetzen heißt, den Rumpf der Funktion zu füllen.
+
+### 11.1 Statistik
+
+`GET /api/stats?start=YYYY-MM&end=YYYY-MM` mit Geräte-Token.
+
+- **Zeitraum:** ganze Monate in der Zeitzone des Servers (`STOWLY_TIMEZONE`), beide eingeschlossen. Ohne `end` der laufende Monat, ohne `start` 11 Monate vor `end` (zusammen 12, `STATS_DEFAULT_MONTHS`). Höchstens 120 Monate (`STATS_MAX_MONTHS`). Ein Monat, der nicht `YYYY-MM` ist (`isMonth`, Jahre 0001 bis 9999), `start` nach `end`, mehr als 120 Monate oder ein Parameter doppelt: 400 `invalid_request` mit `details.errors[].loc = ["query", "start"]` bzw. `["query", "end"]`.
+- **Gezählt** werden Packungen mit `removed_at` im Zeitraum (umgerechnet in die Zeitzone des Servers) und `removal_reason` `consumed` oder `discarded`. `mistake` („versehentlich") zählt nirgends. Grundlage ist der heutige Stand jeder Packung: Eine wiederhergestellte zählt nicht, ein nachträglich geänderter Grund zählt mit dem neuen Wert. Weil das Zusammenführen die Packungen umhängt (7.3), zählt eine Packung eines zusammengeführten Produkts beim Ziel; ebenso folgt die Zone dem Löschen einer Zone (7.4).
+- **Antwort `Stats`:** `months` hat jeden Monat des Zeitraums aufsteigend, auch leere; `consumed` und `discarded` sind die Summen; `discarded_share` = entsorgt / (verbraucht + entsorgt), `null` bei 0 + 0, gerundet auf 4 Nachkommastellen; `top_discarded` sind höchstens 10 Produkte mit mindestens einer entsorgten Packung, meiste zuerst, bei Gleichstand nach Name, dann nach Kennung, mit Name und erstem Barcode (für Platzhalter); `zones` hat jede nicht gelöschte Zone in der Reihenfolge der Zonen (`sort`, dann Name), auch mit 0; `timezone` nennt die Zeitzone.
+- Die App zeigt die Statistik nur mit Verbindung und sagt offline, warum sie fehlt (`core.stats.load`, CoreError `offline`).
+
+### 11.2 Sensor für Home Assistant
+
+`GET /api/ha/summary`, nur lesend, mit eigenem Token: `Authorization: Bearer <STOWLY_HA_SUMMARY_TOKEN>`. Der Vergleich läuft in konstanter Zeit (über die SHA-256 beider Werte, wie beim Passwort). Ein Geräte-Token gilt hier nicht (401), und der Sensor-Token gilt nirgends sonst (dort ist er ein unbekanntes Geräte-Token: 401). Ist `STOWLY_HA_SUMMARY_TOKEN` nicht gesetzt, antwortet der Endpunkt jedem mit 503 `not_configured`. Inhalt, Regeln und die Schnipsel für HA: [`integrationen.md`](integrationen.md), Abschnitt 6.
+
+### 11.3 Push
+
+Alle vier Aufrufe mit Geräte-Token; das Abo gehört zum Gerät, höchstens eines je Gerät. Ohne `STOWLY_PUSH_CONTACT` antworten alle mit 503 `not_configured`. Erlaubte Push-Dienste, Prüfung der Eingabe, Verschlüsselung, Nachricht und Antworten der Push-Dienste: [`integrationen.md`](integrationen.md), Abschnitt 4.
+
+- `GET /api/push/key`: der öffentliche VAPID-Schlüssel (`applicationServerKey`).
+- `PUT /api/push/subscription`: legt das Abo dieses Geräts an oder ersetzt es. Gehört derselbe `endpoint` einem anderen Gerät, wechselt er zu diesem (das andere verliert sein Abo). Ungültige Form, unbekannter Push-Dienst oder ungültiger Ursprung: 422 `invalid_request` mit `details.errors[].loc`, etwa `["body", "endpoint"]`.
+- `DELETE /api/push/subscription`: löscht das Abo dieses Geräts; 204 auch, wenn es keines gibt.
+- `POST /api/push/test`: schickt eine Testnachricht an das Abo dieses Geräts und antwortet erst, wenn der Push-Dienst geantwortet hat (höchstens 10 Sekunden). 404 `not_found` ohne Abo; mehr als eine Testnachricht je Gerät in 10 Sekunden (`PUSH_TEST_INTERVAL_S`): 429 `rate_limited` mit `Retry-After` und `details.retry_after_s`.
+- Wird ein Gerät gesperrt oder meldet es sich ab, löscht der Server sein Abo in derselben Transaktion.
+
+### 11.4 Zustand der Integrationen
+
+`GET /api/integrations` mit Geräte-Token: Sicherung, Home Assistant und Push für die Einstellungen der App. Nie ein Token, nie ein privater Schlüssel, keine Adresse von HA und kein Push-Kontakt; öffentliche age-Schlüssel nur gekürzt. Felder und Regeln: [`integrationen.md`](integrationen.md), Abschnitt 8.
 
 ## 12. Ereignisprotokoll
 
-Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `events`. Das Protokoll wird nie gekürzt und nicht an die Geräte synchronisiert; es ist die Grundlage für die Statistik „verbraucht/entsorgt" in Stufe 2 und über `GET /api/events` lesbar.
+Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `events`. Das Protokoll wird nie gekürzt und nicht an die Geräte synchronisiert; es ist über `GET /api/events` lesbar. Die Statistik (11.1) rechnet nicht daraus, sondern aus dem heutigen Stand der Packungen: So zählt ein Zusammenführen oder ein geänderter Grund richtig.
 
 `EventRecord`: `id` (fortlaufend), `at` (wirksamer Zeitpunkt), `recorded_at` (Serverzeit beim Verbuchen), `device_id`, `command_id`, `type`, `entity`, `entity_id`, `data`.
 
@@ -538,6 +664,22 @@ Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `
 | `print.requested`, `print.reported` | `print_job` | `kind`, `state`, `printer_id`, `error` |
 | `device.login`, `device.revoked`, `device.renamed` | `device` | `name` |
 | `command.rejected` | Art des Befehls | `code`, `type` |
+| `shopping_item.created` | `shopping_item` | `product_id`, `text`, `quantity` |
+| `shopping_item.updated` | `shopping_item` | `changes`, `superseded` wie bei Packungen; `done` als Feld |
+| `shopping_item.deleted` | `shopping_item` | `origin`, `product_id` |
+
+**Was der Server selbst schreibt** (7.6, Bring!), steht mit `device_id: null` und eigenem Typ im Protokoll. `command_id` nennt den Befehl, der es ausgelöst hat, beim Abgleich mit Bring! `null`; `at` ist der wirksame Zeitpunkt des Befehls bzw. die Serverzeit des Abgleichs.
+
+| `type` | `entity` | `data` |
+|---|---|---|
+| `shopping_item.auto_created` | `shopping_item` | `product_id`, `quantity` |
+| `shopping_item.auto_quantity` | `shopping_item` | `product_id`, `old`, `new` |
+| `shopping_item.auto_removed` | `shopping_item` | `product_id`, `quantity`, `reason`: `stock` (Bestand reicht oder kein Mindestbestand) oder `merge` (zwei offene zusammengelegt) |
+| `shopping_item.store_done` | `shopping_item` | `product_id`, `package_id` |
+| `shopping_item.bring_done` | `shopping_item` | `name`, `how`: `completed` (abgehakt) oder `removed` (gelöscht) |
+| `product.shopping_lock` | `product` | `lock`: der Zeitpunkt der Sperre oder `null` (aufgehoben), `old` |
+
+Das Zusammenführen vermerkt die mitgewanderten Einträge in `product.merged` (`shopping_items`: Anzahl).
 
 `printer.report` erzeugt keinen Eintrag (zu häufig, kein bleibender Wert), ebenso wenig ein Befehl ohne Wirkung. Tokens und das Passwort stehen nie im Protokoll. `data` darf weitere Schlüssel tragen als hier genannt (derzeit: `barcodes` und `filled` bei `product.merged`, `package_id` und `zone_id` bei `print.requested`, `old` bei `print.reported` und `device.renamed`, `message` bei `command.rejected`, `token_changed` bei `printer.updated`); wer das Protokoll auswertet, übergeht Unbekanntes.
 
@@ -558,10 +700,10 @@ Jede Fehlerantwort unter `/api` hat denselben Rumpf (`ErrorBody`):
 | 409 | `conflict` | Zustand passt nicht zur Anfrage | `invalid` |
 | 409 | `protocol_mismatch` | verschiedene Protokollversionen; `details: { server, client }` | `protocol_mismatch` |
 | 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf | `internal` |
-| 429 | `rate_limited` | zu viele Fehlversuche; `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
+| 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung, zu viele Testnachrichten (11.3); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
 | 500 | `internal` | Fehler im Server; Einzelheiten nur im Log | `internal` |
 | 501 | `not_implemented` | Endpunkt ist noch nicht umgesetzt | `not_supported` |
-| 503 | `not_configured` | `STOWLY_PASSWORD` ist nicht gesetzt | `not_configured` |
+| 503 | `not_configured` | `STOWLY_PASSWORD` ist nicht gesetzt, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (`STOWLY_PUSH_CONTACT`), Sensor (`STOWLY_HA_SUMMARY_TOKEN`) | `not_configured` |
 
 `message` ist deutscher Klartext und als Rückfall anzeigbar. Die App unterscheidet nach `code` und zeigt dazu ihren eigenen Text; die letzte Spalte nennt, als welchen Fehler ihr Kern die Antwort an die Oberfläche weitergibt (`web/src/core/http.ts`). Eine Fehlerantwort ohne diesen Rumpf stammt nicht vom Stowly-Server und gilt in der App als `offline` (Abschnitt 9.2). Im Server: `raise ApiError(status, ErrorCode.X, "…")` aus `stowly/errors.py`. Unbekannte Pfade unter `/api` und `/print` antworten bei jeder Methode mit 404, ein bekannter Pfad mit falscher Methode mit 405 und der Kopfzeile `Allow`; 401 trägt `WWW-Authenticate: Bearer`.
 
@@ -591,20 +733,25 @@ Regeln, die sich nicht als Typ ausdrücken lassen, gibt es als Funktionen auf be
 | QR-Inhalte | `stowly/contract/ids.py` | `web/src/contract/qr.ts` |
 | Barcodes, „wird nachgeschlagen?" | `stowly/contract/ids.py` | `web/src/contract/barcode.ts` |
 | Eingabegrenzen | `stowly/contract/limits.py` | `LIMITS` in `api.gen.ts`, Prüfungen in `web/src/contract/input.ts` |
-| Zeitstempel, wirksamer Zeitpunkt | `stowly/contract/timeutil.py` | `web/src/contract/time.ts` |
-| MHD-Eingabe, Warnstufen | – | `web/src/contract/mhd.ts` |
+| Zeitstempel, wirksamer Zeitpunkt, Uhrzeit, Monat | `stowly/contract/timeutil.py` | `web/src/contract/time.ts` |
+| Warnstufen nach dem MHD, Eintritt in „bald" und „abgelaufen" | `stowly/contract/mhd.py` | `web/src/contract/mhd.ts` |
+| MHD-Eingabe | – | `web/src/contract/mhd.ts` |
+| Automatische Einträge der Einkaufsliste (7.6) | Server (Runde 1), gegen `shopping_auto` | Nachbildung in `web/src/core/testing`, gegen `shopping_auto` |
+| Fehlbestand, Name und Menge eines Eintrags | – (der Server rechnet den Fehlbestand nach 7.6) | `web/src/contract/shopping.ts` |
+| Welche Packung als Nächstes dran ist (FIFO) | – | `web/src/contract/fifo.ts` |
 | Etikett-Daten, „welcher Drucker?" | `stowly/contract/labels.py` (nur Typ) | `web/src/contract/labels.ts` |
 
 Die Schnittstelle zwischen Oberfläche und Offline-Kern steht in `web/src/contract/core.ts`.
 
 ## 15. Datenbankschema
 
-Das Schema für die gesamte Stufe 1 steht in `server/stowly/migrations/0001_initial.sql` und ist Teil dieses Vertrags. Die Datei wird nicht mehr geändert; Ergänzungen kommen als weitere, nummerierte Migrationen. `stowly.db.migrate` wendet sie beim Start an und merkt sich den Stand in `PRAGMA user_version`.
+Das Schema steht in `server/stowly/migrations/` und ist Teil dieses Vertrags: `0001_initial.sql` für Stufe 1, Ergänzungen als weitere, nummerierte Migrationen. Eine Migration wird nach ihrem Commit nicht mehr geändert; neue Migrationen schreibt nur der Coordinator. `stowly.db.migrate` wendet sie beim Start an und merkt sich den Stand in `PRAGMA user_version`.
 
 | Migration | Inhalt |
 |---|---|
 | `0001_initial.sql` | das Schema |
 | `0002_device_command_floor.sql` | `devices.last_command_at`: wirksamer Zeitpunkt des letzten gültigen Befehls je Gerät (Abschnitt 4). Bestehende Datenbanken bekommen den spätesten Zeitpunkt aus `commands`. |
+| `0003_shopping_push_jobs.sql` | Stufe 2: `products.min_stock` und `products.shopping_lock_at` (Sperre, 7.6), die Tabellen `shopping_items`, `push_subscriptions`, `push_notices`, `ha_links` und `job_runs`, die Einstellung `notify_time` (`"17:00"`) für Datenbanken, die schon Einstellungen haben. Ändert nichts an der Änderungsfolge. |
 
 | Tabelle | Inhalt |
 |---|---|
@@ -612,13 +759,17 @@ Das Schema für die gesamte Stufe 1 steht in `server/stowly/migrations/0001_init
 | `counters` | `rev` (Änderungsfolge), `settings_rev` |
 | `devices` | Geräte mit Token-Hash, `last_seen_at`, `revoked_at`, `last_command_at` |
 | `zones`, `products`, `product_barcodes`, `packages` | der Bestand |
-| `field_clocks` | Uhr je Datensatz und Feld (7.1), dazu `removed` je Packung (7.2) |
+| `shopping_items` | Einkaufsliste (3.6), dazu nicht synchronisiert: wodurch ein Eintrag geschlossen wurde (`closed_by`) und an welchen Artikel in Bring! er gebunden ist (`bring_key`) |
+| `field_clocks` | Uhr je Datensatz und Feld (7.1), dazu `removed` je Packung (7.2); Einträge der Einkaufsliste als `shopping_item` mit `text`, `quantity`, `done` |
 | `settings` | Einstellungen des Haushalts, ein Schlüssel je Zeile |
 | `commands` | jeder verarbeitete Befehl mit Ergebnis |
 | `events` | Ereignisprotokoll |
 | `id_reservations` | reservierte, noch unbenutzte Packungs-IDs |
 | `off_lookups`, `images` | Open Food Facts: Warteschlange, Ergebnisse, Bilder |
 | `printers`, `printer_status`, `print_jobs`, `label_templates` | Druck |
+| `push_subscriptions`, `push_notices` | Push: Abo je Gerät; welche Packung schon in einer Tagesnachricht stand ([`integrationen.md`](integrationen.md), 4) |
+| `ha_links` | Home Assistant und Bring!: was Stowly je Artikel zuletzt geschrieben und gesehen hat ([`integrationen.md`](integrationen.md), 5.3) |
+| `job_runs` | Zeitplan: je Aufgabe der letzte Lauf ([`integrationen.md`](integrationen.md), 1) |
 
 Regeln für jeden Zugriff (`stowly/db.py`):
 

@@ -148,6 +148,9 @@ describe("describeProblem", () => {
       "printer.report": { printer_id: PRINTER_IDS.cellar },
       "print.request": { job_id: sampleUuid(4, 50), kind: "package", package_id: "A2B3C" },
       "print.report": { job_id: sampleUuid(4, 50), state: "printed" },
+      "shopping_item.create": { item_id: sampleUuid(5, 50), product_id: rice?.id },
+      "shopping_item.update": { item_id: sampleUuid(5, 50), changes: { done: true } },
+      "shopping_item.delete": { item_id: sampleUuid(5, 50) },
     };
     const codes: (RejectCode | null)[] = ["invalid", "not_found", "id_conflict", "last_zone", "internal", null];
     for (const type of COMMAND_TYPES) {

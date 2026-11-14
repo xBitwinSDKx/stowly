@@ -3,8 +3,12 @@
  *
  * Eine gemeinsame Auslegung für alle Ansichten (Scannen, Bearbeiten, Warnungen),
  * damit dieselbe Eingabe überall dasselbe Datum ergibt.
+ *
+ * Die Warnstufen (`daysUntil`, `expiryState`, `warnDaysFor`, `soonFrom`, `expiredFrom`) rechnet
+ * der Server genauso (server/stowly/contract/mhd.py: Sensor, Tagesnachricht). Beide Seiten prüfen
+ * dieselben Beispiele: docs/vectors.json, Abschnitt "mhd".
  */
-import { daysBetween, isDate, lastDayOfMonth, makeDate } from "./time";
+import { addDays, daysBetween, isDate, lastDayOfMonth, makeDate } from "./time";
 
 export interface ParsedBestBefore {
   /** Das Datum als "YYYY-MM-DD". Bei Monatsangaben der letzte Tag des Monats. */
@@ -191,6 +195,40 @@ export function expiryState(bestBefore: string | null, warnDays: number, today: 
 }
 
 /** Vorlaufzeit für ein Produkt: der eigene Wert, sonst der des Haushalts. */
-export function warnDaysFor(product: { warn_days: number | null } | undefined, settings: { warn_days: number }): number {
+export function warnDaysFor(product: { warn_days: number | null } | undefined | null, settings: { warn_days: number }): number {
   return product?.warn_days ?? settings.warn_days;
+}
+
+const FIRST_DAY = "0001-01-01";
+
+function checkedDate(text: string): string {
+  if (!isDate(text)) {
+    throw new Error(`Kein gültiges Datum: ${text}`);
+  }
+  return text;
+}
+
+/**
+ * Erster Tag, an dem eine Packung „bald" abläuft: MHD minus Vorlaufzeit (`expiryState` ist ab
+ * dann "soon"). null ohne MHD. Läge der Tag vor dem 0001-01-01, ist es dieser.
+ * Gegenstück im Server: `soon_from` in server/stowly/contract/mhd.py.
+ */
+export function soonFrom(bestBefore: string | null, warnDays: number): string | null {
+  if (bestBefore === null) {
+    return null;
+  }
+  const day = addDays(checkedDate(bestBefore), -warnDays);
+  return isDate(day) ? day : FIRST_DAY;
+}
+
+/**
+ * Erster Tag, an dem eine Packung abgelaufen ist: MHD plus ein Tag. null ohne MHD und beim
+ * 9999-12-31: Danach gibt es keinen Tag mehr. Gegenstück: `expired_from` im Server.
+ */
+export function expiredFrom(bestBefore: string | null): string | null {
+  if (bestBefore === null) {
+    return null;
+  }
+  const day = addDays(checkedDate(bestBefore), 1);
+  return isDate(day) ? day : null;
 }

@@ -48,6 +48,7 @@
 import {
   COMMAND_TYPES,
   ID_POOL_TARGET,
+  LIMITS,
   MAX_CHANGES_PER_SYNC,
   MAX_COMMANDS_PER_SYNC,
   PROTOCOL_VERSION,
@@ -69,7 +70,7 @@ import {
 import { gtinCheckDigit, isStoreInternalBarcode, isValidBarcode } from "@/contract/barcode";
 import { isPackageId, isUuid, newUuid, randomPackageId } from "@/contract/ids";
 import { progressAfterOutcome } from "@/contract/labels";
-import { isDate, isTimestamp } from "@/contract/time";
+import { isDate, isTimeOfDay, isTimestamp } from "@/contract/time";
 
 import { applyCommand } from "../commands/apply";
 import { DAY_MS, isExpiredJob, isExpiredPackage, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
@@ -217,6 +218,9 @@ const directConfig = object({
   printer: req(nullable(text(0, 60))),
 });
 const warnDays = integer(0, 3650);
+const minStock = integer(1, LIMITS.min_stock);
+const shoppingQuantity = integer(1, LIMITS.shopping_quantity);
+const timeOfDay: Check = (value) => typeof value === "string" && isTimeOfDay(value);
 const loose: Check = (value) => value === null || isRecord(value);
 const JOB_STATES = ["pending", "queued", "printing", "printed", "sent", "failed", "unknown", "cancelled"];
 
@@ -228,10 +232,19 @@ const COMMAND_FIELDS: Record<(typeof COMMAND_TYPES)[number], Record<string, Fiel
     quantity: opt(text(0, 40)),
     warn_days: opt(nullable(warnDays)),
     barcodes: opt(listOf(barcode, 0, 20)),
+    min_stock: opt(nullable(minStock)),
   },
   "product.update": {
     product_id: req(uuid),
-    changes: req(object({ name: opt(text(0, 120)), brand: opt(text(0, 80)), quantity: opt(text(0, 40)), warn_days: opt(nullable(warnDays)) })),
+    changes: req(
+      object({
+        name: opt(text(0, 120)),
+        brand: opt(text(0, 80)),
+        quantity: opt(text(0, 40)),
+        warn_days: opt(nullable(warnDays)),
+        min_stock: opt(nullable(minStock)),
+      }),
+    ),
   },
   "product.add_barcode": { product_id: req(uuid), barcode: req(barcode) },
   "product.remove_barcode": { product_id: req(uuid), barcode: req(barcode) },
@@ -264,6 +277,7 @@ const COMMAND_FIELDS: Record<(typeof COMMAND_TYPES)[number], Record<string, Fiel
         warn_days: opt(warnDays),
         trash_retention_days: opt(integer(1, 3650)),
         default_printer_id: opt(nullable(uuid)),
+        notify_time: opt(timeOfDay),
       }),
     ),
   },
@@ -291,6 +305,19 @@ const COMMAND_FIELDS: Record<(typeof COMMAND_TYPES)[number], Record<string, Fiel
     boot_id: opt(nullable(text(0, 80))),
     error: opt(nullable(text(0, 200))),
   },
+  // Die Wirkung der Befehle der Einkaufsliste kommt in Runde 1 (Protokoll 6.6 und 7.6); bis dahin
+  // lehnt `applyCommand` sie ab.
+  "shopping_item.create": {
+    item_id: req(uuid),
+    product_id: opt(nullable(uuid)),
+    text: opt(text(0, LIMITS.shopping_text)),
+    quantity: opt(nullable(shoppingQuantity)),
+  },
+  "shopping_item.update": {
+    item_id: req(uuid),
+    changes: req(object({ text: opt(text(1, LIMITS.shopping_text)), quantity: opt(nullable(shoppingQuantity)), done: opt(bool) })),
+  },
+  "shopping_item.delete": { item_id: req(uuid) },
 };
 
 /** null, wenn der Befehl dem Katalog entspricht; sonst der Grund. */
@@ -334,6 +361,13 @@ export function validateCommand(command: unknown): string | null {
     const zone = command.zone_id ?? null;
     if ((command.kind === "package" && (pkg === null || zone !== null)) || (command.kind === "zone" && (zone === null || pkg !== null))) {
       return "Das Etikett braucht genau eine Packung oder genau eine Zone.";
+    }
+  }
+  if (type === "shopping_item.create") {
+    const hasProduct = (command.product_id ?? null) !== null;
+    const hasText = (command.text ?? "") !== "";
+    if (hasProduct === hasText) {
+      return "Ein Eintrag hat genau eines von Produkt und Text.";
     }
   }
   return null;
@@ -538,7 +572,15 @@ export class FakeServer {
     this.put("zones", zone);
     this.tables = {
       ...this.tables,
-      settings: { zone_mode: "primary", primary_zone_id: zone.id, warn_days: 14, trash_retention_days: 30, default_printer_id: null, updated_at: at },
+      settings: {
+        zone_mode: "primary",
+        primary_zone_id: zone.id,
+        warn_days: 14,
+        trash_retention_days: 30,
+        default_printer_id: null,
+        notify_time: "17:00",
+        updated_at: at,
+      },
     };
     this.rev += 1;
     this.settingsRev = this.rev;
@@ -827,7 +869,18 @@ export class FakeServer {
     }
     const included = pending.slice(0, count);
     const hasMore = count < pending.length;
-    const changes: Changes = { products: [], zones: [], packages: [], printers: [], printer_status: [], print_jobs: [], label_templates: [], settings: null };
+    // shopping_items: bis Runde 1 immer leer (die Einkaufsliste der Nachbildung baut der Kern-Worker).
+    const changes: Changes = {
+      products: [],
+      zones: [],
+      packages: [],
+      printers: [],
+      printer_status: [],
+      print_jobs: [],
+      label_templates: [],
+      shopping_items: [],
+      settings: null,
+    };
     for (const entry of included) {
       if (entry.table === "settings") {
         changes.settings = entry.row as HouseholdSettings;

@@ -514,6 +514,25 @@ describe("Sitzung und Sync", () => {
     // Texte werden an den Rändern gekürzt, bevor sie gemessen werden.
     const trimmed = await core.products.create({ name: `  ${"y".repeat(LIMITS.product_name)}  ` });
     expect(trimmed.name).toHaveLength(LIMITS.product_name);
+    // Stufe 2: Mindestbestand und Uhrzeit der Tagesnachricht.
+    expect(await message(core.products.create({ name: "Milch", min_stock: 0 }))).toBe("Der Mindestbestand muss zwischen 1 und 999 Packungen liegen.");
+    expect(await message(core.products.update(trimmed.id, { min_stock: 1000 }))).toBe("Der Mindestbestand muss zwischen 1 und 999 Packungen liegen.");
+    expect(await message(core.settings.update({ notify_time: "7:00" }))).toBe("Die Uhrzeit muss als HH:MM angegeben sein, etwa 17:00.");
+  });
+
+  it("führt Mindestbestand und Uhrzeit der Tagesnachricht", async () => {
+    const core = mock();
+    const milk = await core.products.create({ name: "Milch", min_stock: 2 });
+    expect(milk.min_stock).toBe(2);
+    await core.products.update(milk.id, { min_stock: null });
+    expect(value(core.data.products).find((product) => product.id === milk.id)?.min_stock).toBeNull();
+    const cream = await core.products.create({ name: "Sahne", min_stock: 4 });
+    await core.products.merge(cream.id, milk.id);
+    // Wie im Server: Ein leerer Mindestbestand des Ziels übernimmt den der Quelle.
+    expect(value(core.data.products).find((product) => product.id === milk.id)?.min_stock).toBe(4);
+    expect(value(core.data.settings).notify_time).toBe("17:00");
+    await core.settings.update({ notify_time: "18:15" });
+    expect(value(core.data.settings).notify_time).toBe("18:15");
   });
 });
 

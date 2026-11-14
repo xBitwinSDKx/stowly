@@ -54,6 +54,14 @@ def test_openapi_lists_every_endpoint_and_command():
         ("GET", "/api/images/{image_id}"),
         ("GET", "/api/backup"),
         ("GET", "/api/events"),
+        # Stufe 2
+        ("GET", "/api/stats"),
+        ("GET", "/api/ha/summary"),
+        ("GET", "/api/push/key"),
+        ("PUT", "/api/push/subscription"),
+        ("DELETE", "/api/push/subscription"),
+        ("POST", "/api/push/test"),
+        ("GET", "/api/integrations"),
     }
     mapping = document["components"]["schemas"]["Command"]["discriminator"]["mapping"]
     assert sorted(mapping) == sorted(COMMAND_TYPES)
@@ -125,6 +133,9 @@ def test_every_command_type_parses():
         },
         "print.request": {"job_id": ID, "kind": "package", "package_id": "A2B3C"},
         "print.report": {"job_id": ID, "state": "printed"},
+        "shopping_item.create": {"item_id": ID, "product_id": OTHER},
+        "shopping_item.update": {"item_id": ID, "changes": {"done": True}},
+        "shopping_item.delete": {"item_id": ID},
     }
     assert tuple(samples) == COMMAND_TYPES
     for kind, payload in samples.items():
@@ -149,7 +160,10 @@ def test_changes_distinguish_absent_from_null():
         ("zone.update", "sort", {"zone_id": ID}),
         ("settings.update", "zone_mode", {}),
         ("settings.update", "warn_days", {}),
+        ("settings.update", "notify_time", {}),
         ("printer.update", "name", {"printer_id": ID}),
+        ("shopping_item.update", "text", {"item_id": ID}),
+        ("shopping_item.update", "done", {"item_id": ID}),
     ]:
         with pytest.raises(ValidationError):
             command(kind, changes={key: None}, **payload)
@@ -158,12 +172,24 @@ def test_changes_distinguish_absent_from_null():
     # Felder, bei denen null ein Wert ist.
     for kind, key, payload in [
         ("product.update", "warn_days", {"product_id": ID}),
+        ("product.update", "min_stock", {"product_id": ID}),
         ("zone.update", "color", {"zone_id": ID}),
         ("zone.update", "printer_id", {"zone_id": ID}),
         ("settings.update", "primary_zone_id", {}),
         ("settings.update", "default_printer_id", {}),
+        ("shopping_item.update", "quantity", {"item_id": ID}),
     ]:
         assert command(kind, changes={key: None}, **payload).changes.model_fields_set == {key}
+
+
+def test_commands_of_protocol_1_stay_valid():
+    """Eine alte App (Protokoll 1) schickt nach dem Aktualisieren ihre Outbox: Alles Neue ist optional."""
+    created = command("product.create", product_id=ID, name="Reis", warn_days=None, barcodes=[])
+    assert created.min_stock is None and "min_stock" not in created.model_fields_set
+    updated = command("product.update", product_id=ID, changes={"warn_days": 3})
+    assert updated.changes.model_fields_set == {"warn_days"}
+    settings = command("settings.update", changes={"warn_days": 7})
+    assert settings.changes.model_fields_set == {"warn_days"}
 
 
 @pytest.mark.parametrize(
@@ -196,6 +222,17 @@ def test_changes_distinguish_absent_from_null():
         ),
         ("print.request", {"job_id": ID, "kind": "package", "zone_id": OTHER}),
         ("print.request", {"job_id": ID, "kind": "zone"}),
+        ("product.create", {"product_id": ID, "min_stock": 0}),
+        ("product.update", {"product_id": ID, "changes": {"min_stock": 1000}}),
+        ("settings.update", {"changes": {"notify_time": "7:00"}}),
+        ("settings.update", {"changes": {"notify_time": "24:00"}}),
+        ("settings.update", {"changes": {"notify_time": "17:00\n"}}),
+        ("shopping_item.create", {"item_id": ID}),  # weder Produkt noch Text
+        ("shopping_item.create", {"item_id": ID, "product_id": OTHER, "text": "Milch"}),  # beides
+        ("shopping_item.create", {"item_id": ID, "text": "Milch", "origin": "min_stock"}),
+        ("shopping_item.create", {"item_id": ID, "text": "Milch", "quantity": 0}),
+        ("shopping_item.update", {"item_id": ID, "changes": {"text": ""}}),
+        ("shopping_item.update", {"item_id": ID, "changes": {"done_at": AT}}),
         ("unbekannt.befehl", {}),
     ],
 )
@@ -255,6 +292,19 @@ def test_sync_request_and_response_round_trip():
                 "printer_status": [],
                 "print_jobs": [],
                 "label_templates": [],
+                "shopping_items": [
+                    {
+                        "id": OTHER,
+                        "product_id": ID,
+                        "text": "",
+                        "quantity": 2,
+                        "origin": "min_stock",
+                        "done_at": None,
+                        "deleted_at": None,
+                        "created_at": AT,
+                        "updated_at": AT,
+                    }
+                ],
                 "settings": None,
             },
             "cursor": 7,
@@ -286,6 +336,24 @@ def test_wrong_method_uses_the_error_format(client):
     response = client.put("/api/health")
     assert response.status_code == 405
     assert response.json()["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("GET", "/api/stats"),
+        ("GET", "/api/push/key"),
+        ("DELETE", "/api/push/subscription"),
+        ("POST", "/api/push/test"),
+        ("GET", "/api/integrations"),
+    ],
+)
+def test_the_endpoints_of_stage_2_need_a_device_token(client, method, path):
+    """Alles außer dem Sensor gilt nur mit Geräte-Token (docs/sync-protokoll.md, Abschnitt 11)."""
+    response = client.request(method, path)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    assert response.headers["www-authenticate"] == "Bearer"
 
 
 def test_limits_are_one_place_for_models_and_web_app():

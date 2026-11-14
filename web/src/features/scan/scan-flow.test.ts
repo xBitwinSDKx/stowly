@@ -10,7 +10,7 @@ import { evaluateScan, parseManualInput, type ScanLookups } from "./scan-flow";
 const AT = "2026-11-13T10:00:00.000Z";
 const ZONE_A: Zone = { id: "10000000-0000-4000-8000-000000000001", name: "Vorrat", icon: "box", color: null, sort: 0, printer_id: null, created_at: AT, updated_at: AT, deleted_at: null, moved_to: null };
 const ZONE_B: Zone = { ...ZONE_A, id: "10000000-0000-4000-8000-000000000002", name: "Keller", sort: 1 };
-const RICE: Product = { id: "20000000-0000-4000-8000-000000000001", name: "Reis", brand: "", quantity: "", image: null, warn_days: null, lookup: "found", barcodes: ["4006381333931"], created_at: AT, updated_at: AT, deleted_at: null, merged_into: null };
+const RICE: Product = { id: "20000000-0000-4000-8000-000000000001", name: "Reis", brand: "", quantity: "", image: null, warn_days: null, min_stock: null, lookup: "found", barcodes: ["4006381333931"], created_at: AT, updated_at: AT, deleted_at: null, merged_into: null };
 const IN_STOCK: Package = { id: "A2B3C", product_id: RICE.id, zone_id: ZONE_A.id, best_before: null, created_at: AT, updated_at: AT, removed_at: null, removal_reason: null, displaced: null };
 const REMOVED: Package = { ...IN_STOCK, id: "7K9QX", removed_at: AT, removal_reason: "consumed" };
 

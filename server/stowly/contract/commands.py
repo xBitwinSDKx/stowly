@@ -19,6 +19,7 @@ from stowly.contract.entities import (
     DateStr,
     DirectPrinterConfig,
     IconKey,
+    MinStock,
     Model,
     PackageId,
     PrinterConnection,
@@ -29,6 +30,9 @@ from stowly.contract.entities import (
     QuantityText,
     RemovalReason,
     ServerPrinterConfig,
+    ShoppingQuantity,
+    ShoppingText,
+    TimeOfDay,
     Timestamp,
     Uuid,
     WarnDays,
@@ -57,6 +61,7 @@ class CmdProductCreate(CommandBase):
     quantity: QuantityText = ""
     warn_days: WarnDays | None = None
     barcodes: list[Barcode] = Field(default_factory=list, max_length=LIMITS["barcodes"])
+    min_stock: MinStock | None = Field(default=None, description="Seit Protokoll 2; fehlt bei älteren Apps.")
 
 
 class ProductChanges(Model):
@@ -64,6 +69,9 @@ class ProductChanges(Model):
     brand: BrandName = Field(default=None)
     quantity: QuantityText = Field(default=None)
     warn_days: WarnDays | None = None
+    min_stock: MinStock | None = Field(
+        default=None, description="null = kein Mindestbestand. Seit Protokoll 2."
+    )
 
 
 class CmdProductUpdate(CommandBase):
@@ -166,11 +174,54 @@ class SettingsChanges(Model):
     warn_days: WarnDays = Field(default=None)
     trash_retention_days: int = Field(default=None, ge=1, le=LIMITS["retention_days"])
     default_printer_id: Uuid | None = None
+    notify_time: TimeOfDay = Field(default=None, description="Seit Protokoll 2.")
 
 
 class CmdSettingsUpdate(CommandBase):
     type: Literal["settings.update"]
     changes: SettingsChanges
+
+
+# --- Einkaufsliste --------------------------------------------------------------------
+
+
+class CmdShoppingItemCreate(CommandBase):
+    """Legt einen eigenen Eintrag an (``origin = manual``): genau eines von Produkt und Text."""
+
+    type: Literal["shopping_item.create"]
+    item_id: Uuid
+    product_id: Uuid | None = None
+    text: ShoppingText = ""
+    quantity: ShoppingQuantity | None = None
+
+    @model_validator(mode="after")
+    def _product_or_text(self) -> "CmdShoppingItemCreate":
+        if self.product_id is None and self.text == "":
+            raise ValueError("Ein Eintrag braucht ein Produkt oder einen Text.")
+        if self.product_id is not None and self.text != "":
+            raise ValueError("Ein Eintrag hat ein Produkt oder einen Text, nicht beides.")
+        return self
+
+
+class ShoppingItemChanges(Model):
+    """``text`` nur bei Einträgen ohne Produkt, ``quantity`` nur bei eigenen Einträgen (docs/sync-protokoll.md, 6.6)."""
+
+    text: Annotated[str, Field(min_length=1, max_length=LIMITS["shopping_text"])] = Field(default=None)
+    quantity: ShoppingQuantity | None = None
+    done: bool = Field(default=None, description="true = abhaken (erledigt), false = wieder öffnen.")
+
+
+class CmdShoppingItemUpdate(CommandBase):
+    type: Literal["shopping_item.update"]
+    item_id: Uuid
+    changes: ShoppingItemChanges
+
+
+class CmdShoppingItemDelete(CommandBase):
+    """Löscht einen Eintrag endgültig, auch einen automatischen."""
+
+    type: Literal["shopping_item.delete"]
+    item_id: Uuid
 
 
 # --- Drucker und Etiketten ------------------------------------------------------------
@@ -277,7 +328,10 @@ Command = Annotated[
     | CmdPrinterDelete
     | CmdPrinterReport
     | CmdPrintRequest
-    | CmdPrintReport,
+    | CmdPrintReport
+    | CmdShoppingItemCreate
+    | CmdShoppingItemUpdate
+    | CmdShoppingItemDelete,
     Field(discriminator="type"),
 ]
 
@@ -301,4 +355,7 @@ COMMAND_TYPES: tuple[str, ...] = (
     "printer.report",
     "print.request",
     "print.report",
+    "shopping_item.create",
+    "shopping_item.update",
+    "shopping_item.delete",
 )

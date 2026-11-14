@@ -1,26 +1,57 @@
-"""Alle weiteren Endpunkte: Anmeldung, Geräte, Nachschlagen, Ereignisprotokoll, Fehlerformat."""
+"""Alle weiteren Endpunkte: Anmeldung, Geräte, Nachschlagen, Ereignisprotokoll, Fehlerformat,
+dazu seit Stufe 2 Statistik, Sensor für Home Assistant, Push und der Zustand der Integrationen
+(docs/sync-protokoll.md, Abschnitt 11; docs/integrationen.md)."""
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
 from stowly.contract.entities import (
     Barcode,
     BrandName,
+    DateStr,
     DeviceName,
     Model,
     ProductName,
     QuantityText,
+    TimeOfDay,
     Timestamp,
     Uuid,
+    ZoneName,
 )
 from stowly.contract.limits import LIMITS
+from stowly.contract.timeutil import MONTH_PATTERN
 
 # Wartezeit von GET /api/lookup/{barcode} in Sekunden: ?wait=0 bis LOOKUP_WAIT_MAX_S,
 # ohne Angabe LOOKUP_WAIT_DEFAULT_S.
 LOOKUP_WAIT_MAX_S = 8
 LOOKUP_WAIT_DEFAULT_S = 4
+
+# Statistik (GET /api/stats): ohne Angabe die letzten STATS_DEFAULT_MONTHS Monate bis
+# einschließlich des laufenden, höchstens STATS_MAX_MONTHS Monate; die häufigsten entsorgten
+# Produkte höchstens STATS_TOP_PRODUCTS.
+STATS_DEFAULT_MONTHS = 12
+STATS_MAX_MONTHS = 120
+STATS_TOP_PRODUCTS = 10
+
+# Sensor für Home Assistant (GET /api/ha/summary): Home Assistant begrenzt Zustände auf 255
+# Zeichen. Der Satz bleibt darunter, die Listen kurz, damit auch Vorlagen-Sensoren daraus passen.
+HA_SUMMARY_LIST_MAX = 5
+HA_SUMMARY_ENTRY_MAX = 40
+HA_SUMMARY_MESSAGE_MAX = 255
+
+# Testnachricht (POST /api/push/test): höchstens eine je Gerät in diesem Abstand.
+PUSH_TEST_INTERVAL_S = 10
+
+# Wohin eine Push-Nachricht führt: Der Server setzt den Ursprung der App davor, den sie beim
+# Anmelden mitgibt (docs/integrationen.md, 4.5). Es sind Adressen der Web-App
+# (ROUTES in web/src/contract/routes.ts: warnings, settings).
+PUSH_PATHS = {"daily": "/warnungen", "test": "/einstellungen"}
+
+Month = Annotated[str, Field(pattern=MONTH_PATTERN)]
+Count = Annotated[int, Field(ge=0)]
+Share = Annotated[float, Field(ge=0, le=1)]
 
 
 class ErrorCode(StrEnum):
@@ -30,7 +61,9 @@ class ErrorCode(StrEnum):
     UNAUTHORIZED = "unauthorized"  # 401: Token fehlt, ist unbekannt oder gesperrt
     INVALID_PASSWORD = "invalid_password"  # 401: falsches Haushalts-Passwort
     RATE_LIMITED = "rate_limited"  # 429: zu viele Fehlversuche, Retry-After beachten
-    NOT_CONFIGURED = "not_configured"  # 503: auf dem Server ist kein Passwort gesetzt
+    # 503: Auf dem Server ist kein Passwort gesetzt, oder eine Integration, die der Aufruf braucht,
+    # ist nicht eingerichtet (Push: STOWLY_PUSH_CONTACT, Sensor: STOWLY_HA_SUMMARY_TOKEN).
+    NOT_CONFIGURED = "not_configured"
     NOT_FOUND = "not_found"  # 404
     CONFLICT = "conflict"  # 409
     PROTOCOL_MISMATCH = "protocol_mismatch"  # 409: App und Server sprechen verschiedene Protokollversionen
@@ -133,3 +166,206 @@ class EventRecord(Model):
 class EventPage(Model):
     events: list[EventRecord] = Field(description="Neueste zuerst.")
     next_before: int | None = Field(description="Als ?before= mitsenden, um weiterzublättern; null = Ende.")
+
+
+# --- Statistik (GET /api/stats) ---------------------------------------------------------
+
+
+class StatsMonth(Model):
+    month: Month = Field(description="Kalendermonat in der Zeitzone des Servers, 'YYYY-MM'.")
+    consumed: int = Field(ge=0, description="Packungen, in diesem Monat als verbraucht entnommen.")
+    discarded: int = Field(ge=0, description="Packungen, in diesem Monat als entsorgt entnommen.")
+
+
+class StatsProduct(Model):
+    product_id: Uuid = Field(description="Das Produkt; nach einer Zusammenführung das Ziel.")
+    name: ProductName = Field(description="Name des Produkts; leer bei Platzhaltern.")
+    barcode: Barcode | None = Field(description="Erster Barcode, als Anzeige für Platzhalter; null = keiner.")
+    discarded: int = Field(ge=1, description="Entsorgte Packungen im Zeitraum.")
+
+
+class StatsZone(Model):
+    zone_id: Uuid
+    name: ZoneName
+    consumed: int = Field(ge=0)
+    discarded: int = Field(ge=0)
+
+
+class Stats(Model):
+    """Verbraucht und entsorgt im Zeitraum. „Versehentlich" (mistake) zählt nirgends mit."""
+
+    start: Month = Field(description="Erster Monat des Zeitraums.")
+    end: Month = Field(description="Letzter Monat des Zeitraums (eingeschlossen).")
+    months: list[StatsMonth] = Field(description="Jeder Monat des Zeitraums, aufsteigend, auch leere.")
+    consumed: int = Field(ge=0)
+    discarded: int = Field(ge=0)
+    discarded_share: Share | None = Field(
+        description="Anteil des Entsorgten an verbraucht + entsorgt, 0 bis 1; null, wenn beides 0 ist."
+    )
+    top_discarded: list[StatsProduct] = Field(
+        description="Die am häufigsten entsorgten Produkte, meiste zuerst, höchstens 10."
+    )
+    zones: list[StatsZone] = Field(
+        description="Je nicht gelöschter Zone, in der Reihenfolge der Zonen, auch mit 0."
+    )
+    timezone: str = Field(description="Zeitzone, in der die Monate gerechnet sind (STOWLY_TIMEZONE).")
+
+
+# --- Sensor für Home Assistant (GET /api/ha/summary) ------------------------------------
+
+
+class HaSummaryNext(Model):
+    """Das nächste ablaufende Produkt: die nicht abgelaufene Packung mit dem frühesten MHD."""
+
+    name: str = Field(description="Anzeigename des Produkts (bei Platzhaltern der Barcode).")
+    best_before: DateStr
+    days: int = Field(ge=0, description="Tage bis zum MHD; 0 = heute.")
+    count: int = Field(ge=1, description="Packungen dieses Produkts mit diesem MHD.")
+    zone: str = Field(description="Name der Zone der ersten dieser Packungen.")
+
+
+class HaSummary(Model):
+    """Zusammenfassung für die rest-Integration von Home Assistant (docs/integrationen.md, Abschnitt 6)."""
+
+    state: int = Field(
+        ge=0, description="Zustand des Sensors: Packungen, die bald ablaufen (heute eingeschlossen)."
+    )
+    today: int = Field(ge=0, description="Davon: Packungen, deren MHD heute ist.")
+    expired: int = Field(ge=0, description="Abgelaufene Packungen.")
+    total: int = Field(ge=0, description="Packungen im Bestand.")
+    next: HaSummaryNext | None = Field(description="Das nächste ablaufende Produkt; null = keines.")
+    shopping: int = Field(ge=0, description="Offene Einträge der Einkaufsliste.")
+    soon_list: list[str] = Field(
+        description="Bald ablaufend, nach MHD, höchstens 5 Einträge wie 'Joghurt (16.11.)'."
+    )
+    expired_list: list[str] = Field(description="Abgelaufen, nach MHD, höchstens 5 Einträge.")
+    shopping_list: list[str] = Field(description="Offene Einträge der Einkaufsliste, höchstens 5.")
+    message: str = Field(
+        max_length=HA_SUMMARY_MESSAGE_MAX, description="Fertiger deutscher Satz zum Vorlesen."
+    )
+    updated_at: Timestamp = Field(description="Serverzeit der Antwort.")
+
+
+# --- Push (GET /api/push/key, PUT und DELETE /api/push/subscription, POST /api/push/test) --
+
+
+class PushKey(Model):
+    public_key: str = Field(
+        description=(
+            "Öffentlicher VAPID-Schlüssel des Servers: P-256, unkomprimiert (65 Byte), base64url ohne "
+            "Füllzeichen. Für pushManager.subscribe als applicationServerKey."
+        )
+    )
+
+
+class PushSubscriptionKeys(Model):
+    p256dh: str = Field(
+        min_length=1, max_length=120, description="Öffentlicher Schlüssel des Browsers (65 Byte), base64url."
+    )
+    auth: str = Field(min_length=1, max_length=40, description="Geheimnis des Abos (16 Byte), base64url.")
+
+
+class PushSubscriptionInput(Model):
+    """Das Push-Abo dieses Geräts; ersetzt ein früheres desselben Geräts."""
+
+    endpoint: str = Field(
+        min_length=1,
+        max_length=LIMITS["push_endpoint"],
+        description="https-Adresse beim Push-Dienst (PushSubscription.endpoint); nur bekannte Push-Dienste.",
+    )
+    keys: PushSubscriptionKeys
+    origin: str = Field(
+        min_length=1,
+        max_length=LIMITS["push_origin"],
+        description="Ursprung der App (location.origin); daraus baut der Server die Adresse in der Nachricht.",
+    )
+
+
+class PushTestStatus(StrEnum):
+    SENT = "sent"  # der Push-Dienst hat die Nachricht angenommen (2xx)
+    GONE = "gone"  # das Abo gilt nicht mehr (404, 410); der Server hat es gelöscht
+    REJECTED = "rejected"  # der Push-Dienst lehnt ab (400, 401, 403, 413): Einrichtung prüfen
+    FAILED = "failed"  # vorübergehend: 429, 5xx, Netzfehler, Zeitüberschreitung
+
+
+class PushTestResult(Model):
+    status: PushTestStatus
+    http_status: int | None = Field(description="Antwort des Push-Dienstes; null ohne Antwort.")
+    message: str = Field(description="Deutscher Klartext, als Rückfall anzeigbar.")
+
+
+# --- Zustand der Integrationen (GET /api/integrations) ----------------------------------
+
+
+class BackupStatus(Model):
+    """Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext."""
+
+    configured: bool = Field(description="STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS sind gesetzt.")
+    problem: str | None = Field(
+        description="Warum die Sicherung aus ist, obwohl etwas gesetzt ist; sonst null."
+    )
+    time: TimeOfDay | None = Field(description="Uhrzeit der täglichen Sicherung (STOWLY_BACKUP_TIME).")
+    recipients: list[str] = Field(description="Öffentliche age-Schlüssel, gekürzt: 'age1ql3z…ac8p'.")
+    last_ok_at: Timestamp | None = Field(description="Letzte gelungene Sicherung.")
+    last_file: str | None = Field(description="Dateiname der letzten gelungenen Sicherung.")
+    last_size: Count | None = Field(description="Größe der letzten gelungenen Sicherung in Byte.")
+    last_error: str | None = Field(description="Fehler des letzten Versuchs; null nach einem Erfolg.")
+    last_error_at: Timestamp | None
+    next_at: Timestamp | None = Field(description="Nächster geplanter Versuch; null = keiner.")
+    warning: bool = Field(
+        description="Seit 48 Stunden keine gelungene Sicherung (Regel: docs/integrationen.md, 3.6)."
+    )
+
+
+class HaState(StrEnum):
+    """Ergebnis des letzten Abgleichs mit Home Assistant."""
+
+    OFF = "off"  # nicht eingerichtet
+    PENDING = "pending"  # eingerichtet, seit dem Start noch kein Abgleich
+    OK = "ok"  # letzter Abgleich gelungen
+    UNAUTHORIZED = "unauthorized"  # HA lehnt den Token ab (401)
+    NOT_FOUND = "not_found"  # die To-do-Liste gibt es nicht (404)
+    UNAVAILABLE = "unavailable"  # HA antwortet, die Liste ist aber nicht verfügbar
+    UNREACHABLE = "unreachable"  # HA nicht erreichbar: Netz, Zeitüberschreitung, Zertifikat
+    ERROR = "error"  # anderer Fehler (5xx, unerwartete Antwort)
+
+
+class HaStatus(Model):
+    """Home Assistant und Bring! (docs/integrationen.md, Abschnitt 5). Nie ein Token."""
+
+    configured: bool = Field(
+        description="STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY sind gesetzt."
+    )
+    problem: str | None = Field(
+        description="Warum der Abgleich aus ist, obwohl etwas gesetzt ist; sonst null."
+    )
+    entity: str | None = Field(description="Die To-do-Liste in HA (STOWLY_HA_TODO_ENTITY).")
+    state: HaState
+    last_ok_at: Timestamp | None = Field(description="Letzter gelungener Abgleich.")
+    last_error: str | None = Field(description="Fehler des letzten Abgleichs; null nach einem Erfolg.")
+    last_error_at: Timestamp | None
+    linked: int = Field(ge=0, description="Offene Einträge, die gerade in Bring! stehen.")
+    sensor: bool = Field(description="Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN).")
+
+
+class PushStatus(Model):
+    """Benachrichtigungen per Web-Push (docs/integrationen.md, Abschnitt 4)."""
+
+    configured: bool = Field(description="STOWLY_PUSH_CONTACT ist gesetzt.")
+    problem: str | None = Field(description="Warum Push aus ist, obwohl etwas gesetzt ist; sonst null.")
+    subscriptions: int = Field(ge=0, description="Geräte des Haushalts mit Push-Abo.")
+    this_device: bool = Field(description="Das fragende Gerät hat ein Abo beim Server.")
+    last_run_at: Timestamp | None = Field(description="Letzter Lauf der Tagesnachricht, auch ohne Neues.")
+    last_sent_at: Timestamp | None = Field(description="Letzte verschickte Tagesnachricht.")
+    last_error: str | None = Field(description="Fehler des letzten Laufs; null nach einem Erfolg.")
+
+
+class IntegrationStatus(Model):
+    """Zustand von Sicherung, Home Assistant und Push für die Einstellungen der App."""
+
+    timezone: str = Field(
+        description="Zeitzone des Servers für Uhrzeiten und den heutigen Tag (STOWLY_TIMEZONE)."
+    )
+    backup: BackupStatus
+    ha: HaStatus
+    push: PushStatus

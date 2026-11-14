@@ -19,6 +19,7 @@ import {
   checkBarcode,
   checkBarcodeCount,
   checkBestBefore,
+  checkMinStock,
   checkStoreCount,
   checkWarnDays,
   existingPackages,
@@ -34,13 +35,14 @@ const REASONS: readonly RemovalReason[] = ["consumed", "discarded", "mistake"];
 /** Legt ein neues Produkt an und liefert seine Kennung. */
 export function createProduct(
   mutation: Mutation,
-  input: { name: string; brand?: string; quantity?: string; warn_days?: number | null; barcodes?: readonly string[] },
+  input: { name: string; brand?: string; quantity?: string; warn_days?: number | null; min_stock?: number | null; barcodes?: readonly string[] },
   options: { placeholder: boolean },
 ): string {
   const name = options.placeholder ? optionalText(input.name, LIMITS.product_name, "Der Name") : requiredText(input.name, LIMITS.product_name, "Das Produkt");
   const brand = optionalText(input.brand, LIMITS.brand, "Die Marke");
   const quantity = optionalText(input.quantity, LIMITS.quantity, "Die Packungsgröße");
   checkWarnDays(input.warn_days);
+  checkMinStock(input.min_stock);
   const barcodes = [...new Set(input.barcodes ?? [])];
   checkBarcodeCount(barcodes.length);
   for (const barcode of barcodes) {
@@ -51,7 +53,18 @@ export function createProduct(
     }
   }
   const productId = newUuid();
-  mutation.emit({ type: "product.create", product_id: productId, name, brand, quantity, warn_days: input.warn_days ?? null, barcodes: barcodes.sort() });
+  // min_stock nur, wenn gesetzt: So bleibt der Befehl ohne Mindestbestand derselbe wie in Protokoll 1.
+  const minStock = input.min_stock ?? null;
+  mutation.emit({
+    type: "product.create",
+    product_id: productId,
+    name,
+    brand,
+    quantity,
+    warn_days: input.warn_days ?? null,
+    barcodes: barcodes.sort(),
+    ...(minStock === null ? {} : { min_stock: minStock }),
+  });
   return productId;
 }
 

@@ -19,6 +19,8 @@ export {
   checkBestBefore,
   checkDeviceName,
   checkDirectConfig,
+  checkMinStock,
+  checkNotifyTime,
   checkReference,
   checkRetentionDays,
   checkServerConfig,

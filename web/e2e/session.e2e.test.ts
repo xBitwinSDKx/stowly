@@ -4,7 +4,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { ID_POOL_TARGET, isPackageId } from "@/contract";
+import { ID_POOL_TARGET, isPackageId, PROTOCOL_VERSION } from "@/contract";
 
 import { disposeDevices, expectCoreError, newDevice, signedIn, value } from "./support/device";
 import { expectSameAsServer, RawClient } from "./support/raw";
@@ -35,7 +35,7 @@ describe("Anmeldung und erster Abzug", () => {
 
     // Der erste Abgleich: ein vollständiger Abzug ohne eigenen Vorrat.
     const first = device.net.syncs[0];
-    expect(first?.request).toMatchObject({ protocol: 1, dataset_id: null, cursor: 0, commands: [], id_pool: { have: 0 } });
+    expect(first?.request).toMatchObject({ protocol: PROTOCOL_VERSION, dataset_id: null, cursor: 0, commands: [], id_pool: { have: 0 } });
     expect(first?.response?.reset).toBe(true);
     expect(first?.response?.has_more).toBe(false);
     expect(first?.response?.id_pool.target).toBe(ID_POOL_TARGET);

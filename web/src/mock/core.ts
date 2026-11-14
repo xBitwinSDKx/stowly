@@ -28,6 +28,8 @@ import {
   checkBestBefore,
   checkDeviceName,
   checkDirectConfig,
+  checkMinStock,
+  checkNotifyTime,
   checkRetentionDays,
   checkServerConfig,
   checkStoreCount,
@@ -70,10 +72,12 @@ import {
   type ProductChanges,
   type ProductLookup,
   type ProductRef,
+  type PushState,
   type RemovalReason,
   type ServiceHealth,
   type SessionState,
   type SettingsChanges,
+  type ShoppingItem,
   type StoreInput,
   type StoreResult,
   type SyncProblem,
@@ -146,6 +150,9 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
 export type MockPrintOutcome = "printed" | "failed" | "unknown";
 
 export const MOCK_PASSWORD = "stowly";
+
+/** Platzhalter bis Runde 1 für Einkaufsliste, Push, Statistik und Integrationen. */
+const STAGE_2_LATER = "In der Attrappe noch nicht umgesetzt.";
 
 export interface MockOptions {
   scenarios?: readonly MockScenario[];
@@ -243,6 +250,10 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     update_required: scenarios.has("update-required"),
     storage_persistent: null,
   });
+
+  // Platzhalter bis Runde 1: Einkaufsliste und Push der Attrappe baut der Kern-Worker.
+  const shoppingItems = new LiveValue<ShoppingItem[]>([]);
+  const pushState = new LiveValue<PushState>("unsupported");
 
   // Nachgespielter Druck (siehe Kopf der Datei).
   let piReachable = scenarios.has("at-pi");
@@ -378,6 +389,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       quantity: input.quantity ?? "",
       image: null,
       warn_days: input.warn_days ?? null,
+      min_stock: input.min_stock ?? null,
       lookup,
       barcodes: [...new Set(input.barcodes ?? [])].sort(),
       created_at: now,
@@ -434,6 +446,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     const brand = optionalText(ref.brand, LIMITS.brand, "Die Marke");
     const quantity = optionalText(ref.quantity, LIMITS.quantity, "Die Packungsgröße");
     checkWarnDays(ref.warn_days);
+    checkMinStock(ref.min_stock);
     const barcodes = [...new Set(ref.barcodes ?? [])];
     checkBarcodeCount(barcodes.length);
     for (const barcode of barcodes) {
@@ -443,7 +456,10 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         throw new CoreError("barcode_taken", "Der Barcode gehört schon zu einem anderen Produkt.", { product_id: owner.id });
       }
     }
-    return { product: buildProduct({ name, brand, quantity, warn_days: ref.warn_days ?? null, barcodes }, "none"), created: true };
+    return {
+      product: buildProduct({ name, brand, quantity, warn_days: ref.warn_days ?? null, min_stock: ref.min_stock ?? null, barcodes }, "none"),
+      created: true,
+    };
   }
 
   function buildJob(subject: { package_id: string } | { zone_id: string }, printerId: string | null): PrintJob {
@@ -750,6 +766,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         (data) => [data.printJobs],
         (data) => [...data.printJobs].sort((a, b) => b.created_at.localeCompare(a.created_at)),
       ),
+      shoppingItems,
       async findPackage(id) {
         return state.get().packages.find((pkg) => pkg.id === id);
       },
@@ -968,6 +985,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         const brand = changes.brand === undefined ? undefined : optionalText(changes.brand, LIMITS.brand, "Die Marke");
         const quantity = changes.quantity === undefined ? undefined : optionalText(changes.quantity, LIMITS.quantity, "Die Packungsgröße");
         checkWarnDays(changes.warn_days);
+        checkMinStock(changes.min_stock);
         mutate((data) => ({
           ...data,
           products: data.products.map((candidate) =>
@@ -978,6 +996,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
                   brand: brand ?? candidate.brand,
                   quantity: quantity ?? candidate.quantity,
                   warn_days: "warn_days" in changes ? (changes.warn_days ?? null) : candidate.warn_days,
+                  min_stock: "min_stock" in changes ? (changes.min_stock ?? null) : candidate.min_stock,
                   updated_at: stamp(),
                 }
               : candidate,
@@ -1029,7 +1048,13 @@ export function createMockCore(options: MockOptions = {}): MockCore {
               return { ...candidate, barcodes: [], deleted_at: now, merged_into: target.id, updated_at: now };
             }
             if (candidate.id === target.id) {
-              return { ...candidate, barcodes: [...new Set([...candidate.barcodes, ...source.barcodes])].sort(), updated_at: now };
+              return {
+                ...candidate,
+                barcodes: [...new Set([...candidate.barcodes, ...source.barcodes])].sort(),
+                // Wie im Server (Protokoll 7.3): Ein leerer Mindestbestand des Ziels übernimmt den der Quelle.
+                min_stock: candidate.min_stock ?? source.min_stock,
+                updated_at: now,
+              };
             }
             return candidate;
           }),
@@ -1150,6 +1175,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         }
         if (changes.trash_retention_days !== undefined) {
           checkRetentionDays(changes.trash_retention_days);
+        }
+        if (changes.notify_time !== undefined) {
+          checkNotifyTime(changes.notify_time);
         }
         mutate((data) => ({ ...data, settings: { ...data.settings, ...changes, updated_at: stamp() } }));
       },
@@ -1427,6 +1455,45 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       async requestPersistence() {
         app.update((value) => ({ ...value, storage_persistent: true }));
         return true;
+      },
+    },
+
+    // Platzhalter bis Runde 1 (docs/sync-protokoll.md 3.6 und 7.6, docs/integrationen.md): Die
+    // Attrappe der Einkaufsliste, von Push, Statistik und Integrationen baut der Kern-Worker.
+    shopping: {
+      async create() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async update() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async remove() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+    },
+
+    push: {
+      state: pushState,
+      async enable() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async disable() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async test() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+    },
+
+    stats: {
+      async load() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+    },
+
+    integrations: {
+      async load() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
       },
     },
 

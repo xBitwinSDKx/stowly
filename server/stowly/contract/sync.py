@@ -16,6 +16,7 @@ from stowly.contract.entities import (
     PrinterStatus,
     PrintJob,
     Product,
+    ShoppingItem,
     Timestamp,
     Uuid,
     Zone,
@@ -70,6 +71,9 @@ class Changes(Model):
     printer_status: list[PrinterStatus]
     print_jobs: list[PrintJob]
     label_templates: list[LabelTemplate]
+    shopping_items: list[ShoppingItem] = Field(
+        description="Einträge der Einkaufsliste, auch erledigte und gelöschte."
+    )
     settings: HouseholdSettings | None = Field(description="null = unverändert.")
 
 

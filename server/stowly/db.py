@@ -29,6 +29,7 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "warn_days": 14,
     "trash_retention_days": 30,
     "default_printer_id": None,
+    "notify_time": "17:00",  # seit Schema-Version 3; bestehende Datenbanken bekommt es über 0003
 }
 DEFAULT_ZONE_NAME = "Vorrat"
 DEFAULT_ZONE_ICON = "shelf"

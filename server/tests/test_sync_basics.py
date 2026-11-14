@@ -42,8 +42,10 @@ def test_first_sync_delivers_the_whole_stock(make_device, con):
         "warn_days": 14,
         "trash_retention_days": 30,
         "default_printer_id": None,
+        "notify_time": "17:00",
         "updated_at": changes["settings"]["updated_at"],
     }
+    assert changes["shopping_items"] == []
     assert {template["key"] for template in changes["label_templates"]} == {"package", "zone"}
     assert changes["products"] == changes["packages"] == changes["printers"] == []
 
@@ -57,10 +59,11 @@ def test_response_is_never_cached(make_device):
 
 def test_protocol_mismatch_is_409_before_anything_else(make_device):
     device = make_device()
-    response = device.post(protocol=2)
+    # Eine App von Stufe 1 spricht Protokoll 1.
+    response = device.post(protocol=1)
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "protocol_mismatch"
-    assert response.json()["error"]["details"] == {"server": PROTOCOL_VERSION, "client": 2}
+    assert response.json()["error"]["details"] == {"server": PROTOCOL_VERSION, "client": 1}
 
     # Die Version zählt vor dem Rest des Rahmens: Eine neuere App darf andere Felder schicken.
     bare = device.client.post("/api/sync", json={"protocol": 7, "neu": True}, headers=device.headers)
@@ -71,7 +74,7 @@ def test_protocol_mismatch_is_409_before_anything_else(make_device):
 def test_protocol_mismatch_changes_nothing(make_device, con):
     device = make_device()
     product_id, create = device.product()
-    assert device.post([create], protocol=2).status_code == 409
+    assert device.post([create], protocol=1).status_code == 409
     assert con.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0
     assert con.execute("SELECT COUNT(*) FROM commands").fetchone()[0] == 0
     # Die Outbox bleibt erhalten: Nach dem Aktualisieren geht derselbe Befehl durch.
@@ -387,6 +390,7 @@ def test_own_changes_come_back_in_the_same_response(make_device):
             "quantity": "1 kg",
             "image": None,
             "warn_days": None,
+            "min_stock": None,
             "lookup": "none",  # Open Food Facts ist in den Tests abgeschaltet
             "barcodes": [EAN_A],
             "created_at": create["at"],

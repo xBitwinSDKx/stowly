@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from stowly.contract.ids import BARCODE_PATTERN, PACKAGE_ID_PATTERN, UUID_PATTERN
 from stowly.contract.limits import LIMITS
-from stowly.contract.timeutil import DATE_PATTERN, TIMESTAMP_PATTERN
+from stowly.contract.timeutil import DATE_PATTERN, TIME_OF_DAY_PATTERN, TIMESTAMP_PATTERN
 from stowly_print.model import DriverStatus, HostHealth
 
 # --- Grundtypen -----------------------------------------------------------------------
@@ -21,6 +21,7 @@ PackageId = Annotated[str, Field(pattern=PACKAGE_ID_PATTERN)]
 Barcode = Annotated[str, Field(pattern=BARCODE_PATTERN)]
 Timestamp = Annotated[str, Field(pattern=TIMESTAMP_PATTERN)]
 DateStr = Annotated[str, Field(pattern=DATE_PATTERN)]
+TimeOfDay = Annotated[str, Field(pattern=TIME_OF_DAY_PATTERN)]
 
 ZoneName = Annotated[str, Field(min_length=1, max_length=LIMITS["zone_name"])]
 IconKey = Annotated[str, Field(min_length=1, max_length=LIMITS["icon"])]
@@ -31,6 +32,9 @@ QuantityText = Annotated[str, Field(max_length=LIMITS["quantity"])]
 PrinterName = Annotated[str, Field(min_length=1, max_length=LIMITS["printer_name"])]
 DeviceName = Annotated[str, Field(min_length=1, max_length=LIMITS["device_name"])]
 WarnDays = Annotated[int, Field(ge=0, le=LIMITS["warn_days"])]
+MinStock = Annotated[int, Field(ge=1, le=LIMITS["min_stock"])]
+ShoppingText = Annotated[str, Field(max_length=LIMITS["shopping_text"])]
+ShoppingQuantity = Annotated[int, Field(ge=1, le=LIMITS["shopping_quantity"])]
 
 
 class Model(BaseModel):
@@ -84,6 +88,13 @@ class PrintJobKind(StrEnum):
     ZONE = "zone"
 
 
+class ShoppingOrigin(StrEnum):
+    """Wer einen Eintrag der Einkaufsliste angelegt hat (docs/sync-protokoll.md, 3.6)."""
+
+    MANUAL = "manual"  # ein Gerät: ein eigener Eintrag
+    MIN_STOCK = "min_stock"  # der Server: Der Bestand liegt unter dem Mindestbestand (7.6)
+
+
 class PrintJobState(StrEnum):
     """Zustand eines Etiketts aus Sicht des Haushalts.
 
@@ -129,6 +140,12 @@ class Product(Model):
     image: str | None = Field(description="Bild-ID für GET /api/images/{id} oder null.")
     warn_days: WarnDays | None = Field(
         description="Vorlaufzeit der MHD-Warnung in Tagen; null = Haushaltswert."
+    )
+    min_stock: MinStock | None = Field(
+        description=(
+            "Mindestbestand in Packungen; null = keiner. Zum Bestand zählt jede nicht entnommene "
+            "Packung des Produkts, auch eine abgelaufene."
+        )
     )
     lookup: LookupState
     barcodes: list[Barcode] = Field(description="Alle Barcodes dieses Produkts, aufsteigend sortiert.")
@@ -176,6 +193,31 @@ class HouseholdSettings(Model):
         ge=1, le=LIMITS["retention_days"], description="Aufbewahrungsdauer der Lösch-Historie in Tagen."
     )
     default_printer_id: Uuid | None = Field(description="Drucker für Zonen ohne eigenen Drucker.")
+    notify_time: TimeOfDay = Field(
+        description='Uhrzeit der täglichen Push-Nachricht, "HH:MM" in der Zeitzone des Servers (STOWLY_TIMEZONE).'
+    )
+    updated_at: Timestamp
+
+
+# --- Einkaufsliste --------------------------------------------------------------------
+
+
+class ShoppingItem(Model):
+    """Ein Eintrag der Einkaufsliste: ein Produkt oder freier Text. Gelöschte bleiben als Grabstein."""
+
+    id: Uuid
+    product_id: Uuid | None = Field(description="Das Produkt; null = freier Text.")
+    text: ShoppingText = Field(description="Freier Text; leer bei Einträgen mit Produkt.")
+    quantity: ShoppingQuantity | None = Field(
+        description=(
+            "Menge in Packungen; null = ohne Angabe. Bei origin = min_stock: wie viele Packungen "
+            "zum Mindestbestand fehlen, vom Server nachgeführt."
+        )
+    )
+    origin: ShoppingOrigin
+    done_at: Timestamp | None = Field(description="Gesetzt = erledigt (abgehakt oder eingekauft).")
+    deleted_at: Timestamp | None = Field(description="Gesetzt = gelöscht; endgültig.")
+    created_at: Timestamp
     updated_at: Timestamp
 
 

@@ -1,6 +1,133 @@
 {
   "components": {
     "schemas": {
+      "BackupStatus": {
+        "additionalProperties": false,
+        "description": "Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext.",
+        "properties": {
+          "configured": {
+            "description": "STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS sind gesetzt.",
+            "type": "boolean"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fehler des letzten Versuchs; null nach einem Erfolg."
+          },
+          "last_error_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Dateiname der letzten gelungenen Sicherung."
+          },
+          "last_ok_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Letzte gelungene Sicherung."
+          },
+          "last_size": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Größe der letzten gelungenen Sicherung in Byte."
+          },
+          "next_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nächster geplanter Versuch; null = keiner."
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Warum die Sicherung aus ist, obwohl etwas gesetzt ist; sonst null."
+          },
+          "recipients": {
+            "description": "Öffentliche age-Schlüssel, gekürzt: 'age1ql3z…ac8p'.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "time": {
+            "anyOf": [
+              {
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Uhrzeit der täglichen Sicherung (STOWLY_BACKUP_TIME)."
+          },
+          "warning": {
+            "description": "Seit 48 Stunden keine gelungene Sicherung (Regel: docs/integrationen.md, 3.6).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured",
+          "problem",
+          "time",
+          "recipients",
+          "last_ok_at",
+          "last_file",
+          "last_size",
+          "last_error",
+          "last_error_at",
+          "next_at",
+          "warning"
+        ],
+        "type": "object"
+      },
       "Changes": {
         "additionalProperties": false,
         "description": "Alle seit ``cursor`` geänderten Datensätze, jeweils vollständig.",
@@ -52,6 +179,13 @@
             ],
             "description": "null = unverändert."
           },
+          "shopping_items": {
+            "description": "Einträge der Einkaufsliste, auch erledigte und gelöschte.",
+            "items": {
+              "$ref": "#/components/schemas/ShoppingItem"
+            },
+            "type": "array"
+          },
           "zones": {
             "items": {
               "$ref": "#/components/schemas/Zone"
@@ -67,6 +201,7 @@
           "printer_status",
           "print_jobs",
           "label_templates",
+          "shopping_items",
           "settings"
         ],
         "type": "object"
@@ -608,6 +743,19 @@
             "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
             "type": "string"
           },
+          "min_stock": {
+            "anyOf": [
+              {
+                "maximum": 999,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Seit Protokoll 2; fehlt bei älteren Apps."
+          },
           "name": {
             "default": "",
             "maxLength": 120,
@@ -781,6 +929,130 @@
         ],
         "type": "object"
       },
+      "CmdShoppingItemCreate": {
+        "additionalProperties": false,
+        "description": "Legt einen eigenen Eintrag an (``origin = manual``): genau eines von Produkt und Text.",
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "item_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "product_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "maximum": 999,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "default": "",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "type": {
+            "const": "shopping_item.create",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "CmdShoppingItemDelete": {
+        "additionalProperties": false,
+        "description": "Löscht einen Eintrag endgültig, auch einen automatischen.",
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "item_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "shopping_item.delete",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "CmdShoppingItemUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC).",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "changes": {
+            "$ref": "#/components/schemas/ShoppingItemChanges"
+          },
+          "id": {
+            "description": "Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "item_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "const": "shopping_item.update",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "type",
+          "item_id",
+          "changes"
+        ],
+        "type": "object"
+      },
       "CmdZoneCreate": {
         "additionalProperties": false,
         "properties": {
@@ -939,6 +1211,9 @@
             "product.remove_barcode": "#/components/schemas/CmdProductRemoveBarcode",
             "product.update": "#/components/schemas/CmdProductUpdate",
             "settings.update": "#/components/schemas/CmdSettingsUpdate",
+            "shopping_item.create": "#/components/schemas/CmdShoppingItemCreate",
+            "shopping_item.delete": "#/components/schemas/CmdShoppingItemDelete",
+            "shopping_item.update": "#/components/schemas/CmdShoppingItemUpdate",
             "zone.create": "#/components/schemas/CmdZoneCreate",
             "zone.delete": "#/components/schemas/CmdZoneDelete",
             "zone.update": "#/components/schemas/CmdZoneUpdate"
@@ -1002,6 +1277,15 @@
           },
           {
             "$ref": "#/components/schemas/CmdPrintReport"
+          },
+          {
+            "$ref": "#/components/schemas/CmdShoppingItemCreate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdShoppingItemUpdate"
+          },
+          {
+            "$ref": "#/components/schemas/CmdShoppingItemDelete"
           }
         ]
       },
@@ -1422,6 +1706,233 @@
         ],
         "type": "object"
       },
+      "HaState": {
+        "description": "Ergebnis des letzten Abgleichs mit Home Assistant.",
+        "enum": [
+          "off",
+          "pending",
+          "ok",
+          "unauthorized",
+          "not_found",
+          "unavailable",
+          "unreachable",
+          "error"
+        ],
+        "type": "string"
+      },
+      "HaStatus": {
+        "additionalProperties": false,
+        "description": "Home Assistant und Bring! (docs/integrationen.md, Abschnitt 5). Nie ein Token.",
+        "properties": {
+          "configured": {
+            "description": "STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY sind gesetzt.",
+            "type": "boolean"
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Die To-do-Liste in HA (STOWLY_HA_TODO_ENTITY)."
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fehler des letzten Abgleichs; null nach einem Erfolg."
+          },
+          "last_error_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_ok_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Letzter gelungener Abgleich."
+          },
+          "linked": {
+            "description": "Offene Einträge, die gerade in Bring! stehen.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Warum der Abgleich aus ist, obwohl etwas gesetzt ist; sonst null."
+          },
+          "sensor": {
+            "description": "Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN).",
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/HaState"
+          }
+        },
+        "required": [
+          "configured",
+          "problem",
+          "entity",
+          "state",
+          "last_ok_at",
+          "last_error",
+          "last_error_at",
+          "linked",
+          "sensor"
+        ],
+        "type": "object"
+      },
+      "HaSummary": {
+        "additionalProperties": false,
+        "description": "Zusammenfassung für die rest-Integration von Home Assistant (docs/integrationen.md, Abschnitt 6).",
+        "properties": {
+          "expired": {
+            "description": "Abgelaufene Packungen.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "expired_list": {
+            "description": "Abgelaufen, nach MHD, höchstens 5 Einträge.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "description": "Fertiger deutscher Satz zum Vorlesen.",
+            "maxLength": 255,
+            "type": "string"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HaSummaryNext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Das nächste ablaufende Produkt; null = keines."
+          },
+          "shopping": {
+            "description": "Offene Einträge der Einkaufsliste.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "shopping_list": {
+            "description": "Offene Einträge der Einkaufsliste, höchstens 5.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "soon_list": {
+            "description": "Bald ablaufend, nach MHD, höchstens 5 Einträge wie 'Joghurt (16.11.)'.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "Zustand des Sensors: Packungen, die bald ablaufen (heute eingeschlossen).",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "today": {
+            "description": "Davon: Packungen, deren MHD heute ist.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "Packungen im Bestand.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "updated_at": {
+            "description": "Serverzeit der Antwort.",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "today",
+          "expired",
+          "total",
+          "next",
+          "shopping",
+          "soon_list",
+          "expired_list",
+          "shopping_list",
+          "message",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "HaSummaryNext": {
+        "additionalProperties": false,
+        "description": "Das nächste ablaufende Produkt: die nicht abgelaufene Packung mit dem frühesten MHD.",
+        "properties": {
+          "best_before": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "type": "string"
+          },
+          "count": {
+            "description": "Packungen dieses Produkts mit diesem MHD.",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "days": {
+            "description": "Tage bis zum MHD; 0 = heute.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Anzeigename des Produkts (bei Platzhaltern der Barcode).",
+            "type": "string"
+          },
+          "zone": {
+            "description": "Name der Zone der ersten dieser Packungen.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "best_before",
+          "days",
+          "count",
+          "zone"
+        ],
+        "type": "object"
+      },
       "HostHealth": {
         "additionalProperties": false,
         "description": "Zustand des Rechners, auf dem der Druckdienst läuft. ``None`` = unbekannt.\n\n``undervoltage`` ist auf der Pi-Zero-Reihe immer ``None``: Sie hat keinen Detektor.\nFür die SD-Karte gibt es nur Symptome (docs/recherche.md, Abschnitt 6).",
@@ -1525,6 +2036,11 @@
             ],
             "description": "Drucker für Zonen ohne eigenen Drucker."
           },
+          "notify_time": {
+            "description": "Uhrzeit der täglichen Push-Nachricht, \"HH:MM\" in der Zeitzone des Servers (STOWLY_TIMEZONE).",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "type": "string"
+          },
           "primary_zone_id": {
             "anyOf": [
               {
@@ -1563,6 +2079,7 @@
           "warn_days",
           "trash_retention_days",
           "default_printer_id",
+          "notify_time",
           "updated_at"
         ],
         "type": "object"
@@ -1600,6 +2117,32 @@
         },
         "required": [
           "have"
+        ],
+        "type": "object"
+      },
+      "IntegrationStatus": {
+        "additionalProperties": false,
+        "description": "Zustand von Sicherung, Home Assistant und Push für die Einstellungen der App.",
+        "properties": {
+          "backup": {
+            "$ref": "#/components/schemas/BackupStatus"
+          },
+          "ha": {
+            "$ref": "#/components/schemas/HaStatus"
+          },
+          "push": {
+            "$ref": "#/components/schemas/PushStatus"
+          },
+          "timezone": {
+            "description": "Zeitzone des Servers für Uhrzeiten und den heutigen Tag (STOWLY_TIMEZONE).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezone",
+          "backup",
+          "ha",
+          "push"
         ],
         "type": "object"
       },
@@ -2307,6 +2850,19 @@
             ],
             "description": "Bei zusammengeführten Produkten: das Zielprodukt."
           },
+          "min_stock": {
+            "anyOf": [
+              {
+                "maximum": 999.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Mindestbestand in Packungen; null = keiner. Zum Bestand zählt jede nicht entnommene Packung des Produkts, auch eine abgelaufene."
+          },
           "name": {
             "description": "Leer = noch unbekannt (Platzhalter); die App zeigt dann den Barcode.",
             "maxLength": 120,
@@ -2342,6 +2898,7 @@
           "quantity",
           "image",
           "warn_days",
+          "min_stock",
           "lookup",
           "barcodes",
           "created_at",
@@ -2357,6 +2914,19 @@
           "brand": {
             "maxLength": 80,
             "type": "string"
+          },
+          "min_stock": {
+            "anyOf": [
+              {
+                "maximum": 999,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null = kein Mindestbestand. Seit Protokoll 2."
           },
           "name": {
             "maxLength": 120,
@@ -2380,6 +2950,181 @@
           }
         },
         "type": "object"
+      },
+      "PushKey": {
+        "additionalProperties": false,
+        "properties": {
+          "public_key": {
+            "description": "Öffentlicher VAPID-Schlüssel des Servers: P-256, unkomprimiert (65 Byte), base64url ohne Füllzeichen. Für pushManager.subscribe als applicationServerKey.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_key"
+        ],
+        "type": "object"
+      },
+      "PushStatus": {
+        "additionalProperties": false,
+        "description": "Benachrichtigungen per Web-Push (docs/integrationen.md, Abschnitt 4).",
+        "properties": {
+          "configured": {
+            "description": "STOWLY_PUSH_CONTACT ist gesetzt.",
+            "type": "boolean"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fehler des letzten Laufs; null nach einem Erfolg."
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Letzter Lauf der Tagesnachricht, auch ohne Neues."
+          },
+          "last_sent_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Letzte verschickte Tagesnachricht."
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Warum Push aus ist, obwohl etwas gesetzt ist; sonst null."
+          },
+          "subscriptions": {
+            "description": "Geräte des Haushalts mit Push-Abo.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "this_device": {
+            "description": "Das fragende Gerät hat ein Abo beim Server.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured",
+          "problem",
+          "subscriptions",
+          "this_device",
+          "last_run_at",
+          "last_sent_at",
+          "last_error"
+        ],
+        "type": "object"
+      },
+      "PushSubscriptionInput": {
+        "additionalProperties": false,
+        "description": "Das Push-Abo dieses Geräts; ersetzt ein früheres desselben Geräts.",
+        "properties": {
+          "endpoint": {
+            "description": "https-Adresse beim Push-Dienst (PushSubscription.endpoint); nur bekannte Push-Dienste.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "keys": {
+            "$ref": "#/components/schemas/PushSubscriptionKeys"
+          },
+          "origin": {
+            "description": "Ursprung der App (location.origin); daraus baut der Server die Adresse in der Nachricht.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint",
+          "keys",
+          "origin"
+        ],
+        "type": "object"
+      },
+      "PushSubscriptionKeys": {
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "description": "Geheimnis des Abos (16 Byte), base64url.",
+            "maxLength": 40,
+            "minLength": 1,
+            "type": "string"
+          },
+          "p256dh": {
+            "description": "Öffentlicher Schlüssel des Browsers (65 Byte), base64url.",
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "p256dh",
+          "auth"
+        ],
+        "type": "object"
+      },
+      "PushTestResult": {
+        "additionalProperties": false,
+        "properties": {
+          "http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Antwort des Push-Dienstes; null ohne Antwort."
+          },
+          "message": {
+            "description": "Deutscher Klartext, als Rückfall anzeigbar.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PushTestStatus"
+          }
+        },
+        "required": [
+          "status",
+          "http_status",
+          "message"
+        ],
+        "type": "object"
+      },
+      "PushTestStatus": {
+        "enum": [
+          "sent",
+          "gone",
+          "rejected",
+          "failed"
+        ],
+        "type": "string"
       },
       "RejectCode": {
         "enum": [
@@ -2734,6 +3479,11 @@
               }
             ]
           },
+          "notify_time": {
+            "description": "Seit Protokoll 2.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "type": "string"
+          },
           "primary_zone_id": {
             "anyOf": [
               {
@@ -2759,6 +3509,297 @@
             "$ref": "#/components/schemas/ZoneMode"
           }
         },
+        "type": "object"
+      },
+      "ShoppingItem": {
+        "additionalProperties": false,
+        "description": "Ein Eintrag der Einkaufsliste: ein Produkt oder freier Text. Gelöschte bleiben als Grabstein.",
+        "properties": {
+          "created_at": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt = gelöscht; endgültig."
+          },
+          "done_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Gesetzt = erledigt (abgehakt oder eingekauft)."
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/ShoppingOrigin"
+          },
+          "product_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Das Produkt; null = freier Text."
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "maximum": 999.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Menge in Packungen; null = ohne Angabe. Bei origin = min_stock: wie viele Packungen zum Mindestbestand fehlen, vom Server nachgeführt."
+          },
+          "text": {
+            "description": "Freier Text; leer bei Einträgen mit Produkt.",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "updated_at": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "product_id",
+          "text",
+          "quantity",
+          "origin",
+          "done_at",
+          "deleted_at",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ShoppingItemChanges": {
+        "additionalProperties": false,
+        "description": "``text`` nur bei Einträgen ohne Produkt, ``quantity`` nur bei eigenen Einträgen (docs/sync-protokoll.md, 6.6).",
+        "properties": {
+          "done": {
+            "description": "true = abhaken (erledigt), false = wieder öffnen.",
+            "type": "boolean"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "maximum": 999,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ShoppingOrigin": {
+        "description": "Wer einen Eintrag der Einkaufsliste angelegt hat (docs/sync-protokoll.md, 3.6).",
+        "enum": [
+          "manual",
+          "min_stock"
+        ],
+        "type": "string"
+      },
+      "Stats": {
+        "additionalProperties": false,
+        "description": "Verbraucht und entsorgt im Zeitraum. „Versehentlich\" (mistake) zählt nirgends mit.",
+        "properties": {
+          "consumed": {
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "discarded": {
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "discarded_share": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Anteil des Entsorgten an verbraucht + entsorgt, 0 bis 1; null, wenn beides 0 ist."
+          },
+          "end": {
+            "description": "Letzter Monat des Zeitraums (eingeschlossen).",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+            "type": "string"
+          },
+          "months": {
+            "description": "Jeder Monat des Zeitraums, aufsteigend, auch leere.",
+            "items": {
+              "$ref": "#/components/schemas/StatsMonth"
+            },
+            "type": "array"
+          },
+          "start": {
+            "description": "Erster Monat des Zeitraums.",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+            "type": "string"
+          },
+          "timezone": {
+            "description": "Zeitzone, in der die Monate gerechnet sind (STOWLY_TIMEZONE).",
+            "type": "string"
+          },
+          "top_discarded": {
+            "description": "Die am häufigsten entsorgten Produkte, meiste zuerst, höchstens 10.",
+            "items": {
+              "$ref": "#/components/schemas/StatsProduct"
+            },
+            "type": "array"
+          },
+          "zones": {
+            "description": "Je nicht gelöschter Zone, in der Reihenfolge der Zonen, auch mit 0.",
+            "items": {
+              "$ref": "#/components/schemas/StatsZone"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "months",
+          "consumed",
+          "discarded",
+          "discarded_share",
+          "top_discarded",
+          "zones",
+          "timezone"
+        ],
+        "type": "object"
+      },
+      "StatsMonth": {
+        "additionalProperties": false,
+        "properties": {
+          "consumed": {
+            "description": "Packungen, in diesem Monat als verbraucht entnommen.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "discarded": {
+            "description": "Packungen, in diesem Monat als entsorgt entnommen.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "month": {
+            "description": "Kalendermonat in der Zeitzone des Servers, 'YYYY-MM'.",
+            "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "month",
+          "consumed",
+          "discarded"
+        ],
+        "type": "object"
+      },
+      "StatsProduct": {
+        "additionalProperties": false,
+        "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "pattern": "^([0-9]{8}|[0-9]{13})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Erster Barcode, als Anzeige für Platzhalter; null = keiner."
+          },
+          "discarded": {
+            "description": "Entsorgte Packungen im Zeitraum.",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Name des Produkts; leer bei Platzhaltern.",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "product_id": {
+            "description": "Das Produkt; nach einer Zusammenführung das Ziel.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_id",
+          "name",
+          "barcode",
+          "discarded"
+        ],
+        "type": "object"
+      },
+      "StatsZone": {
+        "additionalProperties": false,
+        "properties": {
+          "consumed": {
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "discarded": {
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "zone_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zone_id",
+          "name",
+          "consumed",
+          "discarded"
+        ],
         "type": "object"
       },
       "SyncRequest": {
@@ -3300,6 +4341,28 @@
         ]
       }
     },
+    "/api/ha/summary": {
+      "get": {
+        "description": "Nur lesen, mit dem Token des Sensors: Was bald abläuft, was abgelaufen ist, die Einkaufsliste.\n\n401 ohne gültigen Sensor-Token (ein Geräte-Token gilt nicht), 503 ohne STOWLY_HA_SUMMARY_TOKEN.",
+        "operationId": "ha_summary",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ha Summary",
+        "tags": [
+          "ha"
+        ]
+      }
+    },
     "/api/health": {
       "get": {
         "description": "Ohne Anmeldung. Die App prüft damit selbst, ob der Server erreichbar ist:\n``navigator.onLine`` meldet im WLAN des Pi „online\", obwohl der Server fehlt.",
@@ -3353,6 +4416,28 @@
         ]
       }
     },
+    "/api/integrations": {
+      "get": {
+        "description": "Sicherung, Home Assistant und Push: eingerichtet, letzter Erfolg, letzter Fehler. Nie ein Token.",
+        "operationId": "get_integrations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Integrations",
+        "tags": [
+          "integrations"
+        ]
+      }
+    },
     "/api/lookup/{barcode}": {
       "get": {
         "description": "Schlägt einen Barcode bei Open Food Facts nach, während der Anwender wartet.\n\nEin gespeichertes Ergebnis kommt sofort. Sonst stellt der Server den Barcode vorn in die\nWarteschlange seines Hintergrund-Ablaufs und wartet höchstens ``wait`` Sekunden; die Rate\ngilt unverändert. Ungültiger Barcode oder ``wait``: 400.",
@@ -3397,6 +4482,132 @@
         "summary": "Lookup Barcode",
         "tags": [
           "lookup"
+        ]
+      }
+    },
+    "/api/push/key": {
+      "get": {
+        "description": "Der öffentliche VAPID-Schlüssel des Servers für pushManager.subscribe.",
+        "operationId": "get_push_key",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Push Key",
+        "tags": [
+          "push"
+        ]
+      }
+    },
+    "/api/push/subscription": {
+      "delete": {
+        "description": "Löscht das Push-Abo dieses Geräts. Wiederholbar, auch ohne Abo.",
+        "operationId": "delete_push_subscription",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Push Subscription",
+        "tags": [
+          "push"
+        ]
+      },
+      "put": {
+        "description": "Legt das Push-Abo dieses Geräts an oder ersetzt es. Unbekannter Push-Dienst: 422.",
+        "operationId": "put_push_subscription",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushSubscriptionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Put Push Subscription",
+        "tags": [
+          "push"
+        ]
+      }
+    },
+    "/api/push/test": {
+      "post": {
+        "description": "Schickt eine Testnachricht an dieses Gerät und meldet, was der Push-Dienst geantwortet hat.\n\n404 ohne Abo dieses Geräts, 429 bei mehr als einer Testnachricht in 10 Sekunden.",
+        "operationId": "send_push_test",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushTestResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Send Push Test",
+        "tags": [
+          "push"
+        ]
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "description": "Verbraucht und entsorgt je Monat, je Zone und die am häufigsten entsorgten Produkte.\n\nGerechnet aus allen Packungen über die ganze Zeit; „versehentlich\" zählt nicht.\nUngültiger Zeitraum: 400.",
+        "operationId": "get_stats",
+        "parameters": [
+          {
+            "description": "Erster Monat 'YYYY-MM' (Zeitzone des Servers). Ohne Angabe: 11 Monate vor end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Letzter Monat 'YYYY-MM', eingeschlossen. Ohne Angabe: der laufende Monat. Höchstens 120 Monate von start bis end.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Stats"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Stats",
+        "tags": [
+          "stats"
         ]
       }
     },

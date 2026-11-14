@@ -34,6 +34,7 @@ import {
   type CoreErrorCode,
   type Device,
   type ProductLookup,
+  type PushState,
   type SessionState,
   type SyncProblem,
   type SyncStatus,
@@ -102,6 +103,8 @@ export interface CoreOptions {
 const BLOCKED_TIMEOUT_MS = 8_000;
 
 const SUPERSEDED_MESSAGE = "Ein anderer Tab läuft schon mit einer neueren Version von Stowly. Diese Seite muss neu geladen werden.";
+/** Platzhalter bis Runde 1 (Einkaufsliste, Push) und Runde 2 (Statistik, Integrationen). */
+const STAGE_2_LATER = "In diesem Kern noch nicht umgesetzt.";
 const BLOCKED_MESSAGE = "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest. Schließe ihn, dann geht es hier weiter.";
 const NO_STORAGE_MESSAGE = "Die lokale Datenbank ist nicht verfügbar.";
 const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
@@ -197,6 +200,9 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     update_required: false,
     storage_persistent: null,
   });
+
+  /** Platzhalter bis Runde 1: Push auf diesem Gerät (docs/integrationen.md, Abschnitt 4). */
+  const pushState = new Signal<PushState>("unsupported");
 
   function patchApp(changes: Partial<AppState>): void {
     app.update((current) => {
@@ -878,6 +884,45 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       async requestPersistence() {
         await checkPersistence(true);
         return app.get().storage_persistent === true;
+      },
+    },
+
+    // Platzhalter: Einkaufsliste und Push baut der Kern-Worker in Runde 1, Statistik und
+    // Integrationen in Runde 2 (docs/sync-protokoll.md 3.6, 7.6 und 11; docs/integrationen.md).
+    shopping: {
+      async create() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async update() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async remove() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+    },
+
+    push: {
+      state: pushState,
+      async enable() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async disable() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+      async test() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+    },
+
+    stats: {
+      async load() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
+      },
+    },
+
+    integrations: {
+      async load() {
+        throw new CoreError("not_supported", STAGE_2_LATER);
       },
     },
 

@@ -7,7 +7,7 @@
 /* eslint-disable */
 
 /** Protokollversion des Sync. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 /** Sollgröße des ID-Vorrats je Gerät. */
 export const ID_POOL_TARGET = 300;
 /** Höchstzahl an Befehlen je Sync-Aufruf. */
@@ -22,6 +22,14 @@ export const PACKAGE_ID_LENGTH = 5;
 export const QR_PACKAGE_PREFIX = "STOWLY/P/";
 /** Beginn des QR-Inhalts eines Zonen-Etiketts. */
 export const QR_ZONE_PREFIX = "STOWLY/Z/";
+/** Statistik ohne Zeitraum: so viele Monate bis einschließlich des laufenden. */
+export const STATS_DEFAULT_MONTHS = 12;
+/** Höchstens so viele Monate umfasst ein Zeitraum der Statistik. */
+export const STATS_MAX_MONTHS = 120;
+/** Höchstens eine Testnachricht je Gerät in so vielen Sekunden. */
+export const PUSH_TEST_INTERVAL_S = 10;
+/** Wohin eine Push-Nachricht führt; der Server setzt den Ursprung der App davor. */
+export const PUSH_PATHS = {"daily": "/warnungen", "test": "/einstellungen"};
 /**
  * Eingabegrenzen des Vertrags: Zeichen bei Texten, Anzahl bei Listen, Tage bei Fristen.
  * Kern und Attrappe prüfen damit, bevor ein Befehl entsteht (src/contract/input.ts).
@@ -46,6 +54,11 @@ export const LIMITS = {
   printer_url: 200,
   printer_token: 200,
   printer_queue: 60,
+  min_stock: 999,
+  shopping_text: 120,
+  shopping_quantity: 999,
+  push_endpoint: 1024,
+  push_origin: 200,
 } as const;
 /** Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3). */
 export const SERVICE_ERROR_CODES = [
@@ -95,22 +108,57 @@ export const COMMAND_TYPES = [
   "printer.report",
   "print.request",
   "print.report",
+  "shopping_item.create",
+  "shopping_item.update",
+  "shopping_item.delete",
 ] as const;
 
 /** Alle Endpunkte des Servers. Platzhalter wie {device_id} ersetzt der Aufrufer. */
 export const ENDPOINTS = {
+  delete_push_subscription: { method: "DELETE", path: "/api/push/subscription" },
   download_backup: { method: "GET", path: "/api/backup" },
   get_image: { method: "GET", path: "/api/images/{image_id}" },
+  get_integrations: { method: "GET", path: "/api/integrations" },
+  get_push_key: { method: "GET", path: "/api/push/key" },
+  get_stats: { method: "GET", path: "/api/stats" },
+  ha_summary: { method: "GET", path: "/api/ha/summary" },
   health: { method: "GET", path: "/api/health" },
   list_devices: { method: "GET", path: "/api/devices" },
   list_events: { method: "GET", path: "/api/events" },
   login: { method: "POST", path: "/api/auth/login" },
   logout: { method: "POST", path: "/api/auth/logout" },
   lookup_barcode: { method: "GET", path: "/api/lookup/{barcode}" },
+  put_push_subscription: { method: "PUT", path: "/api/push/subscription" },
   revoke_device: { method: "DELETE", path: "/api/devices/{device_id}" },
+  send_push_test: { method: "POST", path: "/api/push/test" },
   sync: { method: "POST", path: "/api/sync" },
   update_device: { method: "PATCH", path: "/api/devices/{device_id}" },
 } as const;
+
+/** Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext. */
+export interface BackupStatus {
+  /** STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS sind gesetzt. */
+  configured: boolean;
+  /** Warum die Sicherung aus ist, obwohl etwas gesetzt ist; sonst null. */
+  problem: string | null;
+  /** Uhrzeit der täglichen Sicherung (STOWLY_BACKUP_TIME). */
+  time: string | null;
+  /** Öffentliche age-Schlüssel, gekürzt: 'age1ql3z…ac8p'. */
+  recipients: string[];
+  /** Letzte gelungene Sicherung. */
+  last_ok_at: string | null;
+  /** Dateiname der letzten gelungenen Sicherung. */
+  last_file: string | null;
+  /** Größe der letzten gelungenen Sicherung in Byte. */
+  last_size: number | null;
+  /** Fehler des letzten Versuchs; null nach einem Erfolg. */
+  last_error: string | null;
+  last_error_at: string | null;
+  /** Nächster geplanter Versuch; null = keiner. */
+  next_at: string | null;
+  /** Seit 48 Stunden keine gelungene Sicherung (Regel: docs/integrationen.md, 3.6). */
+  warning: boolean;
+}
 
 /** Alle seit `cursor` geänderten Datensätze, jeweils vollständig. */
 export interface Changes {
@@ -121,6 +169,8 @@ export interface Changes {
   printer_status: PrinterStatus[];
   print_jobs: PrintJob[];
   label_templates: LabelTemplate[];
+  /** Einträge der Einkaufsliste, auch erledigte und gelöschte. */
+  shopping_items: ShoppingItem[];
   /** null = unverändert. */
   settings: HouseholdSettings | null;
 }
@@ -263,6 +313,8 @@ export interface CmdProductCreate {
   quantity?: string;
   warn_days?: number | null;
   barcodes?: string[];
+  /** Seit Protokoll 2; fehlt bei älteren Apps. */
+  min_stock?: number | null;
 }
 
 export interface CmdProductMerge {
@@ -303,6 +355,39 @@ export interface CmdSettingsUpdate {
   at: string;
   type: "settings.update";
   changes: SettingsChanges;
+}
+
+/** Legt einen eigenen Eintrag an (`origin = manual`): genau eines von Produkt und Text. */
+export interface CmdShoppingItemCreate {
+  /** Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus. */
+  id: string;
+  /** Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC). */
+  at: string;
+  type: "shopping_item.create";
+  item_id: string;
+  product_id?: string | null;
+  text?: string;
+  quantity?: number | null;
+}
+
+/** Löscht einen Eintrag endgültig, auch einen automatischen. */
+export interface CmdShoppingItemDelete {
+  /** Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus. */
+  id: string;
+  /** Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC). */
+  at: string;
+  type: "shopping_item.delete";
+  item_id: string;
+}
+
+export interface CmdShoppingItemUpdate {
+  /** Kennung des Befehls (UUID v4, vom Gerät erzeugt). Der Server führt sie höchstens einmal aus. */
+  id: string;
+  /** Wann der Anwender die Änderung gemacht hat (Geräteuhr, UTC). */
+  at: string;
+  type: "shopping_item.update";
+  item_id: string;
+  changes: ShoppingItemChanges;
 }
 
 export interface CmdZoneCreate {
@@ -359,7 +444,10 @@ export type Command =
   | CmdPrinterDelete
   | CmdPrinterReport
   | CmdPrintRequest
-  | CmdPrintReport;
+  | CmdPrintReport
+  | CmdShoppingItemCreate
+  | CmdShoppingItemUpdate
+  | CmdShoppingItemDelete;
 
 export interface CommandResult {
   id: string;
@@ -471,6 +559,76 @@ export interface EventRecord {
   data: { [key: string]: unknown };
 }
 
+/** Ergebnis des letzten Abgleichs mit Home Assistant. */
+export type HaState =
+  | "off"
+  | "pending"
+  | "ok"
+  | "unauthorized"
+  | "not_found"
+  | "unavailable"
+  | "unreachable"
+  | "error";
+
+/** Home Assistant und Bring! (docs/integrationen.md, Abschnitt 5). Nie ein Token. */
+export interface HaStatus {
+  /** STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY sind gesetzt. */
+  configured: boolean;
+  /** Warum der Abgleich aus ist, obwohl etwas gesetzt ist; sonst null. */
+  problem: string | null;
+  /** Die To-do-Liste in HA (STOWLY_HA_TODO_ENTITY). */
+  entity: string | null;
+  state: HaState;
+  /** Letzter gelungener Abgleich. */
+  last_ok_at: string | null;
+  /** Fehler des letzten Abgleichs; null nach einem Erfolg. */
+  last_error: string | null;
+  last_error_at: string | null;
+  /** Offene Einträge, die gerade in Bring! stehen. */
+  linked: number;
+  /** Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN). */
+  sensor: boolean;
+}
+
+/** Zusammenfassung für die rest-Integration von Home Assistant (docs/integrationen.md, Abschnitt 6). */
+export interface HaSummary {
+  /** Zustand des Sensors: Packungen, die bald ablaufen (heute eingeschlossen). */
+  state: number;
+  /** Davon: Packungen, deren MHD heute ist. */
+  today: number;
+  /** Abgelaufene Packungen. */
+  expired: number;
+  /** Packungen im Bestand. */
+  total: number;
+  /** Das nächste ablaufende Produkt; null = keines. */
+  next: HaSummaryNext | null;
+  /** Offene Einträge der Einkaufsliste. */
+  shopping: number;
+  /** Bald ablaufend, nach MHD, höchstens 5 Einträge wie 'Joghurt (16.11.)'. */
+  soon_list: string[];
+  /** Abgelaufen, nach MHD, höchstens 5 Einträge. */
+  expired_list: string[];
+  /** Offene Einträge der Einkaufsliste, höchstens 5. */
+  shopping_list: string[];
+  /** Fertiger deutscher Satz zum Vorlesen. */
+  message: string;
+  /** Serverzeit der Antwort. */
+  updated_at: string;
+}
+
+/** Das nächste ablaufende Produkt: die nicht abgelaufene Packung mit dem frühesten MHD. */
+export interface HaSummaryNext {
+  /** Anzeigename des Produkts (bei Platzhaltern der Barcode). */
+  name: string;
+  best_before: string;
+  /** Tage bis zum MHD; 0 = heute. */
+  days: number;
+  /** Packungen dieses Produkts mit diesem MHD. */
+  count: number;
+  /** Name der Zone der ersten dieser Packungen. */
+  zone: string;
+}
+
 /**
  * Zustand des Rechners, auf dem der Druckdienst läuft. `None` = unbekannt.
  *
@@ -499,6 +657,8 @@ export interface HouseholdSettings {
   trash_retention_days: number;
   /** Drucker für Zonen ohne eigenen Drucker. */
   default_printer_id: string | null;
+  /** Uhrzeit der täglichen Push-Nachricht, "HH:MM" in der Zeitzone des Servers (STOWLY_TIMEZONE). */
+  notify_time: string;
   updated_at: string;
 }
 
@@ -512,6 +672,15 @@ export interface IdPoolGrant {
 export interface IdPoolState {
   /** Wie viele unbenutzte Packungs-IDs das Gerät noch hat. */
   have: number;
+}
+
+/** Zustand von Sicherung, Home Assistant und Push für die Einstellungen der App. */
+export interface IntegrationStatus {
+  /** Zeitzone des Servers für Uhrzeiten und den heutigen Tag (STOWLY_TIMEZONE). */
+  timezone: string;
+  backup: BackupStatus;
+  ha: HaStatus;
+  push: PushStatus;
 }
 
 /** Etikett-Vorlage. Die App reicht `body` unverändert mit jedem Druckauftrag weiter. */
@@ -699,6 +868,8 @@ export interface Product {
   image: string | null;
   /** Vorlaufzeit der MHD-Warnung in Tagen; null = Haushaltswert. */
   warn_days: number | null;
+  /** Mindestbestand in Packungen; null = keiner. Zum Bestand zählt jede nicht entnommene Packung des Produkts, auch eine abgelaufene. */
+  min_stock: number | null;
   lookup: LookupState;
   /** Alle Barcodes dieses Produkts, aufsteigend sortiert. */
   barcodes: string[];
@@ -715,7 +886,58 @@ export interface ProductChanges {
   brand?: string;
   quantity?: string;
   warn_days?: number | null;
+  /** null = kein Mindestbestand. Seit Protokoll 2. */
+  min_stock?: number | null;
 }
+
+export interface PushKey {
+  /** Öffentlicher VAPID-Schlüssel des Servers: P-256, unkomprimiert (65 Byte), base64url ohne Füllzeichen. Für pushManager.subscribe als applicationServerKey. */
+  public_key: string;
+}
+
+/** Benachrichtigungen per Web-Push (docs/integrationen.md, Abschnitt 4). */
+export interface PushStatus {
+  /** STOWLY_PUSH_CONTACT ist gesetzt. */
+  configured: boolean;
+  /** Warum Push aus ist, obwohl etwas gesetzt ist; sonst null. */
+  problem: string | null;
+  /** Geräte des Haushalts mit Push-Abo. */
+  subscriptions: number;
+  /** Das fragende Gerät hat ein Abo beim Server. */
+  this_device: boolean;
+  /** Letzter Lauf der Tagesnachricht, auch ohne Neues. */
+  last_run_at: string | null;
+  /** Letzte verschickte Tagesnachricht. */
+  last_sent_at: string | null;
+  /** Fehler des letzten Laufs; null nach einem Erfolg. */
+  last_error: string | null;
+}
+
+/** Das Push-Abo dieses Geräts; ersetzt ein früheres desselben Geräts. */
+export interface PushSubscriptionInput {
+  /** https-Adresse beim Push-Dienst (PushSubscription.endpoint); nur bekannte Push-Dienste. */
+  endpoint: string;
+  keys: PushSubscriptionKeys;
+  /** Ursprung der App (location.origin); daraus baut der Server die Adresse in der Nachricht. */
+  origin: string;
+}
+
+export interface PushSubscriptionKeys {
+  /** Öffentlicher Schlüssel des Browsers (65 Byte), base64url. */
+  p256dh: string;
+  /** Geheimnis des Abos (16 Byte), base64url. */
+  auth: string;
+}
+
+export interface PushTestResult {
+  status: PushTestStatus;
+  /** Antwort des Push-Dienstes; null ohne Antwort. */
+  http_status: number | null;
+  /** Deutscher Klartext, als Rückfall anzeigbar. */
+  message: string;
+}
+
+export type PushTestStatus = "sent" | "gone" | "rejected" | "failed";
 
 export type RejectCode = "invalid" | "not_found" | "id_conflict" | "last_zone" | "internal";
 
@@ -806,6 +1028,84 @@ export interface SettingsChanges {
   warn_days?: number;
   trash_retention_days?: number;
   default_printer_id?: string | null;
+  /** Seit Protokoll 2. */
+  notify_time?: string;
+}
+
+/** Ein Eintrag der Einkaufsliste: ein Produkt oder freier Text. Gelöschte bleiben als Grabstein. */
+export interface ShoppingItem {
+  id: string;
+  /** Das Produkt; null = freier Text. */
+  product_id: string | null;
+  /** Freier Text; leer bei Einträgen mit Produkt. */
+  text: string;
+  /** Menge in Packungen; null = ohne Angabe. Bei origin = min_stock: wie viele Packungen zum Mindestbestand fehlen, vom Server nachgeführt. */
+  quantity: number | null;
+  origin: ShoppingOrigin;
+  /** Gesetzt = erledigt (abgehakt oder eingekauft). */
+  done_at: string | null;
+  /** Gesetzt = gelöscht; endgültig. */
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `text` nur bei Einträgen ohne Produkt, `quantity` nur bei eigenen Einträgen (docs/sync-protokoll.md, 6.6). */
+export interface ShoppingItemChanges {
+  text?: string;
+  quantity?: number | null;
+  /** true = abhaken (erledigt), false = wieder öffnen. */
+  done?: boolean;
+}
+
+/** Wer einen Eintrag der Einkaufsliste angelegt hat (docs/sync-protokoll.md, 3.6). */
+export type ShoppingOrigin = "manual" | "min_stock";
+
+/** Verbraucht und entsorgt im Zeitraum. „Versehentlich" (mistake) zählt nirgends mit. */
+export interface Stats {
+  /** Erster Monat des Zeitraums. */
+  start: string;
+  /** Letzter Monat des Zeitraums (eingeschlossen). */
+  end: string;
+  /** Jeder Monat des Zeitraums, aufsteigend, auch leere. */
+  months: StatsMonth[];
+  consumed: number;
+  discarded: number;
+  /** Anteil des Entsorgten an verbraucht + entsorgt, 0 bis 1; null, wenn beides 0 ist. */
+  discarded_share: number | null;
+  /** Die am häufigsten entsorgten Produkte, meiste zuerst, höchstens 10. */
+  top_discarded: StatsProduct[];
+  /** Je nicht gelöschter Zone, in der Reihenfolge der Zonen, auch mit 0. */
+  zones: StatsZone[];
+  /** Zeitzone, in der die Monate gerechnet sind (STOWLY_TIMEZONE). */
+  timezone: string;
+}
+
+export interface StatsMonth {
+  /** Kalendermonat in der Zeitzone des Servers, 'YYYY-MM'. */
+  month: string;
+  /** Packungen, in diesem Monat als verbraucht entnommen. */
+  consumed: number;
+  /** Packungen, in diesem Monat als entsorgt entnommen. */
+  discarded: number;
+}
+
+export interface StatsProduct {
+  /** Das Produkt; nach einer Zusammenführung das Ziel. */
+  product_id: string;
+  /** Name des Produkts; leer bei Platzhaltern. */
+  name: string;
+  /** Erster Barcode, als Anzeige für Platzhalter; null = keiner. */
+  barcode: string | null;
+  /** Entsorgte Packungen im Zeitraum. */
+  discarded: number;
+}
+
+export interface StatsZone {
+  zone_id: string;
+  name: string;
+  consumed: number;
+  discarded: number;
 }
 
 export interface SyncRequest {

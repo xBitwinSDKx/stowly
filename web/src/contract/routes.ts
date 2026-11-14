@@ -15,6 +15,10 @@ export const ROUTES = {
   sync: "/sync",
   /** Scannen: Vollbild, außerhalb des Rahmens. */
   scan: "/scan",
+  /** Einkaufsliste (Stufe 2). */
+  shopping: "/einkaufsliste",
+  /** Statistik: verbraucht und entsorgt (Stufe 2). */
+  stats: "/statistik",
 } as const;
 
 export type RouteKey = keyof typeof ROUTES;

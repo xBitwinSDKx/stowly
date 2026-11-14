@@ -12,6 +12,10 @@
 
 const TIMESTAMP_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
 const DATE_RE = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/;
+/** Uhrzeit ohne Datum, wie TIME_OF_DAY_PATTERN in server/stowly/contract/timeutil.py. */
+const TIME_OF_DAY_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+/** Kalendermonat "YYYY-MM", wie MONTH_PATTERN im Server. */
+const MONTH_RE = /^[0-9]{4}-(0[1-9]|1[0-2])$/;
 const DAY_MS = 86_400_000;
 
 /**
@@ -57,6 +61,19 @@ function parts(text: string): [number, number, number] | null {
 /** Wahr für ein existierendes Kalenderdatum "YYYY-MM-DD". */
 export function isDate(text: string): boolean {
   return parts(text) !== null;
+}
+
+/**
+ * Wahr für eine Uhrzeit "HH:MM" von "00:00" bis "23:59", zweistellig geschrieben (Einstellung
+ * `notify_time`). Sie gilt in der Zeitzone des Servers, nicht in der des Geräts.
+ */
+export function isTimeOfDay(text: string): boolean {
+  return typeof text === "string" && TIME_OF_DAY_RE.test(text);
+}
+
+/** Wahr für einen Kalendermonat "YYYY-MM" der Jahre 0001 bis 9999 (Zeitraum der Statistik). */
+export function isMonth(text: string): boolean {
+  return typeof text === "string" && MONTH_RE.test(text) && !text.startsWith("0000");
 }
 
 /** Baut "YYYY-MM-DD" aus Jahr, Monat (1-12) und Tag; null, wenn es den Tag nicht gibt. */

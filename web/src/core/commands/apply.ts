@@ -126,6 +126,7 @@ function mergeProducts(ws: Draft, source: Product, target: Product, at: string):
     brand: target.brand === "" ? source.brand : target.brand,
     quantity: target.quantity === "" ? source.quantity : target.quantity,
     warn_days: target.warn_days ?? source.warn_days,
+    min_stock: target.min_stock ?? source.min_stock,
     image: target.image ?? source.image,
     updated_at: at,
   });
@@ -157,6 +158,7 @@ function productCreate(ws: Draft, cmd: CmdProductCreate, ctx: ApplyContext): App
     quantity: cmd.quantity ?? "",
     image: null,
     warn_days: cmd.warn_days ?? null,
+    min_stock: cmd.min_stock ?? null,
     lookup: wanted.some((barcode) => willLookUp(barcode, ctx.lookup_enabled)) ? "pending" : "none",
     barcodes: free.sort(),
     created_at: ctx.at,
@@ -184,6 +186,7 @@ function productUpdate(ws: Draft, cmd: CmdProductUpdate, ctx: ApplyContext): App
     brand: changes.brand === undefined ? product.brand : changes.brand,
     quantity: changes.quantity === undefined ? product.quantity : changes.quantity,
     warn_days: "warn_days" in changes ? (changes.warn_days ?? null) : product.warn_days,
+    min_stock: "min_stock" in changes ? (changes.min_stock ?? null) : product.min_stock,
     updated_at: ctx.at,
   });
   return APPLIED;
@@ -425,6 +428,7 @@ function settingsUpdate(ws: Draft, cmd: CmdSettingsUpdate, ctx: ApplyContext): A
     warn_days: changes.warn_days === undefined ? settings.warn_days : changes.warn_days,
     trash_retention_days: changes.trash_retention_days === undefined ? settings.trash_retention_days : changes.trash_retention_days,
     default_printer_id: "default_printer_id" in changes ? (changes.default_printer_id ?? null) : settings.default_printer_id,
+    notify_time: changes.notify_time === undefined ? settings.notify_time : changes.notify_time,
     updated_at: ctx.at,
   };
   return APPLIED;
@@ -613,6 +617,7 @@ export function applyCommand(ws: Draft, command: Command, ctx: ApplyContext): Ap
       return printReport(ws, command, ctx);
     default:
       // Eine Befehlsart, die diese Version nicht kennt (neuerer Befehl in einer alten Outbox).
+      // Bis Runde 1 gehören die Befehle der Einkaufsliste dazu (shopping_item.*, Protokoll 6.6).
       return rejected("invalid");
   }
 }

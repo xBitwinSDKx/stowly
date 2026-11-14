@@ -9,7 +9,14 @@ import sqlite3
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-SETTINGS_KEYS = ("zone_mode", "primary_zone_id", "warn_days", "trash_retention_days", "default_printer_id")
+SETTINGS_KEYS = (
+    "zone_mode",
+    "primary_zone_id",
+    "warn_days",
+    "trash_retention_days",
+    "default_printer_id",
+    "notify_time",
+)
 
 # SQLite erlaubt nur eine begrenzte Zahl von Platzhaltern je Anweisung.
 _CHUNK = 400
@@ -51,6 +58,7 @@ def product(row: Mapping[str, Any], barcodes: Iterable[str]) -> dict[str, Any]:
         "quantity": row["quantity"],
         "image": row["image"],
         "warn_days": row["warn_days"],
+        "min_stock": row["min_stock"],
         "lookup": row["lookup"],
         "barcodes": sorted(barcodes),
         "created_at": row["created_at"],

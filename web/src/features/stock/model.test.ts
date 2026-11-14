@@ -36,6 +36,7 @@ function product(n: number, name: string, extra: Partial<Product> = {}): Product
     quantity: "",
     image: null,
     warn_days: null,
+    min_stock: null,
     lookup: "none",
     barcodes: [],
     created_at: STAMP,

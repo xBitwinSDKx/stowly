@@ -21,17 +21,19 @@ def test_creating_a_product(make_device, clock):
         brand="Kornhaus",
         quantity="1 kg",
         warn_days=60,
+        min_stock=2,
         barcodes=[EAN_A, EAN_B, EAN_A],
     )
     assert statuses(device.sync([create])) == [("applied", None)]
     product = device.products[product_id]
     assert product["barcodes"] == sorted([EAN_A, EAN_B])  # aufsteigend, ohne Doppelte
-    assert (product["name"], product["brand"], product["quantity"], product["warn_days"]) == (
-        "Basmati Reis",
-        "Kornhaus",
-        "1 kg",
-        60,
-    )
+    assert (
+        product["name"],
+        product["brand"],
+        product["quantity"],
+        product["warn_days"],
+        product["min_stock"],
+    ) == ("Basmati Reis", "Kornhaus", "1 kg", 60, 2)
     assert product["created_at"] == product["updated_at"] == clock.stamp(30)
     assert product["deleted_at"] is None and product["merged_into"] is None
     assert product_events(device, product_id) == [
@@ -42,6 +44,7 @@ def test_creating_a_product(make_device, clock):
                 "brand": "Kornhaus",
                 "quantity": "1 kg",
                 "warn_days": 60,
+                "min_stock": 2,
                 "barcodes": [EAN_A, EAN_B],
             },
         )
@@ -55,6 +58,7 @@ def test_a_placeholder_needs_nothing_but_an_id(make_device):
     product = device.products[product_id]
     assert (product["name"], product["brand"], product["quantity"]) == ("", "", "")
     assert product["warn_days"] is None and product["barcodes"] == [] and product["image"] is None
+    assert product["min_stock"] is None
 
 
 def test_a_product_id_can_only_be_used_once(make_device):
@@ -98,6 +102,49 @@ def test_warn_days_can_be_cleared(make_device):
     product_id, create = device.product("Reis", warn_days=30)
     device.sync([create, device.cmd("product.update", product_id=product_id, changes={"warn_days": None})])
     assert device.products[product_id]["warn_days"] is None
+
+
+def test_min_stock_has_its_own_clock_and_can_be_cleared(make_device, clock):
+    """Mindestbestand: ein Feld wie warn_days, mit eigener Uhr (Protokoll 7.1); null heißt keiner."""
+    phone, tablet = make_device("Handy"), make_device("Tablet")
+    product_id, create = phone.product("Milch", min_stock=2)
+    phone.sync([create])
+    tablet.sync()
+    clock.advance(3600)
+
+    new = tablet.cmd("product.update", age=5, product_id=product_id, changes={"min_stock": 4})
+    old = phone.cmd("product.update", age=60, product_id=product_id, changes={"min_stock": 3, "warn_days": 5})
+    tablet.sync([new])
+    phone.sync([old])
+    product = phone.products[product_id]
+    assert (product["min_stock"], product["warn_days"]) == (4, 5)
+    assert product_events(phone, product_id)[-1] == (
+        "product.updated",
+        {"changes": {"warn_days": {"old": None, "new": 5}}, "superseded": {"min_stock": 3}},
+    )
+
+    phone.sync([phone.cmd("product.update", product_id=product_id, changes={"min_stock": None})])
+    assert phone.products[product_id]["min_stock"] is None
+
+
+def test_min_stock_is_checked_like_the_contract_says(make_device):
+    device = make_device()
+    product_id, create = device.product("Milch")
+    data = device.sync(
+        [
+            create,
+            device.cmd("product.update", product_id=product_id, changes={"min_stock": 0}),
+            device.cmd("product.update", product_id=product_id, changes={"min_stock": 1000}),
+            device.cmd("product.update", product_id=product_id, changes={"min_stock": 999}),
+        ]
+    )
+    assert statuses(data) == [
+        ("applied", None),
+        ("rejected", "invalid"),
+        ("rejected", "invalid"),
+        ("applied", None),
+    ]
+    assert device.products[product_id]["min_stock"] == 999
 
 
 def test_unknown_products_are_rejected(make_device):
@@ -291,7 +338,7 @@ def test_add_barcode_with_a_taken_barcode_merges_the_owner_into_the_named_produc
 def test_merging_by_hand(make_device, con, clock):
     device = make_device()
     source, create_source = device.product(
-        "Reis lose", brand="Kornhaus", quantity="1 kg", warn_days=90, barcodes=[EAN_A]
+        "Reis lose", brand="Kornhaus", quantity="1 kg", warn_days=90, min_stock=3, barcodes=[EAN_A]
     )
     target, create_target = device.product("Basmati Reis", quantity="500 g", barcodes=[EAN_B])
     first, store_first = device.package(source)
@@ -322,13 +369,14 @@ def test_merging_by_hand(make_device, con, clock):
     assert device.products[target]["barcodes"] == sorted([EAN_A, EAN_B])
     # 3. Leere Felder des Ziels übernehmen den Wert der Quelle; gefüllte bleiben.
     merged = device.products[target]
-    assert (merged["name"], merged["brand"], merged["quantity"], merged["warn_days"], merged["image"]) == (
-        "Basmati Reis",
-        "Kornhaus",
-        "500 g",
-        90,
-        "abc.jpg",
-    )
+    assert (
+        merged["name"],
+        merged["brand"],
+        merged["quantity"],
+        merged["warn_days"],
+        merged["image"],
+        merged["min_stock"],
+    ) == ("Basmati Reis", "Kornhaus", "500 g", 90, "abc.jpg", 3)
     assert merged["updated_at"] == clock.stamp(30)
     # 4. Die Quelle bekommt deleted_at und merged_into und hat keine Barcodes mehr.
     gone = device.products[source]
@@ -342,7 +390,7 @@ def test_merging_by_hand(make_device, con, clock):
             "reason": "user",
             "packages": 2,
             "barcodes": [EAN_A],
-            "filled": ["brand", "image", "warn_days"],
+            "filled": ["brand", "image", "min_stock", "warn_days"],
         },
     )
     # Die Packungen eines Zusammenführens teilen sich einen rev und kommen gemeinsam.

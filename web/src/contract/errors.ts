@@ -13,7 +13,10 @@ export type CoreErrorCode =
   | "invalid_password"
   /** Zu viele Fehlversuche; `details.retry_after_s` nennt die Wartezeit. */
   | "rate_limited"
-  /** Auf dem Server ist kein Passwort gesetzt (STOWLY_PASSWORD). */
+  /**
+   * Auf dem Server ist kein Passwort gesetzt (STOWLY_PASSWORD), oder eine Integration, die der
+   * Aufruf braucht, ist dort nicht eingerichtet (Push: STOWLY_PUSH_CONTACT).
+   */
   | "not_configured"
   /** App und Server sprechen verschiedene Protokollversionen. */
   | "protocol_mismatch"

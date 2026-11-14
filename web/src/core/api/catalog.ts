@@ -17,6 +17,8 @@ import {
   activeZones,
   checkBarcode,
   checkBarcodeCount,
+  checkMinStock,
+  checkNotifyTime,
   checkReference,
   checkRetentionDays,
   checkWarnDays,
@@ -58,6 +60,10 @@ export function createProductsApi(runtime: CoreRuntime): Omit<ProductsApi, "look
         if ("warn_days" in changes) {
           checkWarnDays(changes.warn_days);
           wanted.warn_days = changes.warn_days ?? null;
+        }
+        if ("min_stock" in changes) {
+          checkMinStock(changes.min_stock);
+          wanted.min_stock = changes.min_stock ?? null;
         }
         if (Object.keys(wanted).length > 0) {
           mutation.emit({ type: "product.update", product_id: product.id, changes: wanted });
@@ -223,6 +229,10 @@ export function createSettingsApi(runtime: CoreRuntime): SettingsApi {
         if ("default_printer_id" in changes) {
           const printerId = changes.default_printer_id ?? null;
           wanted.default_printer_id = printerId === null ? null : activePrinter(mutation.draft, printerId).id;
+        }
+        if (changes.notify_time !== undefined) {
+          checkNotifyTime(changes.notify_time);
+          wanted.notify_time = changes.notify_time;
         }
         if (Object.keys(wanted).length === 0) {
           return;
