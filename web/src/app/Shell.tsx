@@ -27,6 +27,7 @@ import {
   RefreshIcon,
   SearchIcon,
   SettingsIcon,
+  StatsIcon,
 } from "@/ui/icons";
 
 import { primaryDestinations, SECONDARY_DESTINATIONS } from "./destinations";
@@ -315,6 +316,7 @@ function ShellFrame() {
                     { key: "settings", label: "Einstellungen", icon: <SettingsIcon />, to: ROUTES.settings },
                     { key: "sync", label: "Sync-Status", icon: <RefreshIcon />, to: ROUTES.sync },
                     { key: "history", label: "Lösch-Historie", icon: <HistoryIcon />, to: ROUTES.history },
+                    { key: "stats", label: "Statistik", icon: <StatsIcon />, to: ROUTES.stats },
                     { key: "printers", label: "Drucker", icon: <PrinterIcon />, to: ROUTES.printers },
                     { key: "logout", label: "Abmelden", icon: <LogOutIcon />, onSelect: logout, tone: "danger", separated: true },
                   ]}

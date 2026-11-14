@@ -22,5 +22,13 @@ def get_integrations(
 ) -> IntegrationStatus:
     """Sicherung, Home Assistant und Push: eingerichtet, letzter Erfolg, letzter Fehler. Nie ein Token."""
     response.headers["Cache-Control"] = "no-store"
-    status = integrations.status(get_settings(request), con, device_id=_device["id"], now=server_now())
+    # Der Abgleich mit Home Assistant hält seinen Zustand im Arbeitsspeicher (docs/integrationen.md, 5.6).
+    sync = getattr(request.app.state, "bring", None)
+    status = integrations.status(
+        get_settings(request),
+        con,
+        device_id=_device["id"],
+        now=server_now(),
+        ha_sync=None if sync is None else sync.status(),
+    )
     return IntegrationStatus.model_validate(status)

@@ -14,7 +14,8 @@ export interface PushText {
   hint: string;
 }
 
-const DAILY = "Höchstens eine Nachricht am Tag, und nur, wenn seit der letzten etwas neu bald abläuft oder abgelaufen ist. Gilt nur für dieses Gerät.";
+const DAILY =
+  "Höchstens eine Nachricht am Tag, zur Uhrzeit unter „Haushalt“, und nur, wenn seit der letzten etwas neu bald abläuft oder abgelaufen ist. Gilt nur für dieses Gerät.";
 
 /**
  * Die Zeile „Benachrichtigungen" je Zustand (`core.push.state`, docs/integrationen.md, Abschnitt 4).

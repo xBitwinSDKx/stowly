@@ -10,6 +10,11 @@
  * abgehakt (bis zum nächsten Einlagern kommt keiner nach). Dazu eigene Einträge mit Produkt und
  * mit freiem Text, offen und erledigt, ein gelöschter und ein erledigter jenseits der
  * Aufbewahrungsdauer (beide unsichtbar).
+ *
+ * Statistik (Stufe 2): Dazu kommt ein Verlauf über gut ein Jahr (`HISTORY`): verbraucht und
+ * entsorgt, in allen vier Zonen, mit zwei Versehen. Am häufigsten entsorgt sind H-Milch und der
+ * Platzhalter im Kühlschrank (ohne Namen), dann Butter. Alle diese Packungen sind vor mehr als
+ * 30 Tagen entnommen worden: Die Lösch-Historie zeigt sie nicht, die Statistik zählt sie.
  */
 import {
   addDays,
@@ -138,6 +143,67 @@ const REMOVED: [number, ZoneKey, number | null, number, RemovalReason][] = [
   [3, "cellar", 700, 40, "consumed"],
 ];
 
+/**
+ * Verlauf für die Statistik: [Produkt, Zone, vor wie vielen Tagen entnommen, Grund]. Alles liegt
+ * jenseits der Aufbewahrungsdauer von 30 Tagen (siehe Kopf der Datei). Die Einträge vor mehr als
+ * 360 Tagen fallen meist aus dem Zeitraum von 12 Monaten, den die Statistik ohne Angabe zeigt.
+ */
+const HISTORY: [number, ZoneKey, number, RemovalReason][] = [
+  [1, "shelf", 36, "consumed"],
+  [9, "shelf", 38, "consumed"],
+  [9, "shelf", 41, "discarded"],
+  [15, "fridge", 43, "discarded"],
+  [7, "freezer", 44, "consumed"],
+  [0, "cellar", 58, "consumed"],
+  [2, "cellar", 61, "consumed"],
+  [8, "fridge", 64, "discarded"],
+  [4, "shelf", 66, "consumed"],
+  [12, "cellar", 70, "consumed"],
+  [9, "shelf", 88, "consumed"],
+  [9, "shelf", 92, "discarded"],
+  [6, "freezer", 95, "consumed"],
+  [15, "fridge", 99, "discarded"],
+  [11, "shelf", 102, "consumed"],
+  [1, "cellar", 118, "consumed"],
+  [3, "cellar", 121, "consumed"],
+  [7, "freezer", 126, "discarded"],
+  [10, "cellar", 130, "consumed"],
+  [9, "shelf", 147, "consumed"],
+  [12, "cellar", 150, "mistake"],
+  [4, "shelf", 152, "discarded"],
+  [13, "shelf", 156, "consumed"],
+  [2, "cellar", 161, "consumed"],
+  [8, "fridge", 178, "consumed"],
+  [15, "fridge", 183, "discarded"],
+  [0, "shelf", 187, "consumed"],
+  [9, "shelf", 191, "discarded"],
+  [6, "freezer", 208, "discarded"],
+  [1, "shelf", 212, "consumed"],
+  [5, "shelf", 217, "consumed"],
+  [12, "cellar", 221, "consumed"],
+  [8, "fridge", 238, "discarded"],
+  [10, "cellar", 243, "discarded"],
+  [2, "cellar", 247, "consumed"],
+  [3, "cellar", 251, "consumed"],
+  [9, "shelf", 268, "consumed"],
+  [7, "freezer", 272, "discarded"],
+  [4, "shelf", 277, "discarded"],
+  [11, "shelf", 281, "consumed"],
+  [15, "fridge", 298, "discarded"],
+  [0, "cellar", 303, "consumed"],
+  [2, "cellar", 308, "discarded"],
+  [1, "cellar", 312, "consumed"],
+  [9, "shelf", 327, "discarded"],
+  [12, "cellar", 331, "consumed"],
+  [6, "freezer", 336, "consumed"],
+  [13, "shelf", 340, "mistake"],
+  [8, "fridge", 368, "consumed"],
+  [0, "cellar", 374, "consumed"],
+  [9, "shelf", 381, "consumed"],
+  [1, "shelf", 388, "consumed"],
+  [4, "shelf", 393, "consumed"],
+];
+
 export function createSampleData(now: Date = new Date()): MockData {
   const today = toLocalDate(now);
   const at = (daysAgo: number) => new Date(now.getTime() - daysAgo * DAY_MS).toISOString();
@@ -222,6 +288,23 @@ export function createSampleData(now: Date = new Date()): MockData {
       displaced: index === 4 ? { at: at(daysAgo - 1), changes: [{ field: "best_before", value: addDays(today, 40) }] } : null,
     });
   });
+
+  // Der Verlauf für die Statistik: entsorgt meist nach dem MHD, verbraucht meist lange davor.
+  // Eingelagert ist alles nach dem Anlegen der Produkte (vor 400 Tagen).
+  for (const [productIndex, zoneKey, daysAgo, reason] of HISTORY) {
+    packageCounter += 1;
+    packages.push({
+      id: samplePackageId(packageCounter),
+      product_id: sampleUuid(2, productIndex + 1),
+      zone_id: ZONE_IDS[zoneKey],
+      best_before: addDays(today, -daysAgo + (reason === "discarded" ? -4 : 120)),
+      created_at: at(Math.min(daysAgo + 25, 399)),
+      updated_at: at(daysAgo),
+      removed_at: at(daysAgo),
+      removal_reason: reason,
+      displaced: null,
+    });
+  }
 
   const printers: Printer[] = [
     {

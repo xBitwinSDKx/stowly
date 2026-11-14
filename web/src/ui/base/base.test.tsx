@@ -406,6 +406,95 @@ describe("Dialog", () => {
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
   });
 
+  describe("solange er arbeitet (busy)", () => {
+    function Working({ onClose }: { onClose: () => void }) {
+      const [busy, setBusy] = useState(false);
+      return (
+        <Dialog
+          open
+          onClose={onClose}
+          busy={busy}
+          title="Zone löschen"
+          footer={
+            <Button variant="danger" busy={busy} onClick={() => setBusy(true)}>
+              Löschen
+            </Button>
+          }
+        >
+          <p>Inhalt des Dialogs</p>
+          <Button onClick={() => setBusy(false)}>Fertig gearbeitet</Button>
+        </Dialog>
+      );
+    }
+
+    it("lässt das ✕ an seinem Platz, sperrt es aber erkennbar und sagt, warum", async () => {
+      const onClose = vi.fn();
+      render(<Working onClose={onClose} />);
+      const dialog = screen.getByRole("dialog", { name: "Zone löschen" });
+      const close = within(dialog).getByRole("button", { name: "Schließen" });
+      expect(close).toBeAvailable();
+      expect(close).not.toHaveAttribute("title");
+
+      await userEvent.click(within(dialog).getByRole("button", { name: "Löschen" }));
+      expect(within(dialog).getByRole("button", { name: "Schließen" })).toBe(close);
+      expect(close).toHaveAttribute("aria-disabled", "true");
+      expect(close).toHaveAccessibleDescription("Schließen geht wieder, sobald der Vorgang abgeschlossen ist.");
+      await userEvent.click(close);
+      expect(onClose).not.toHaveBeenCalled();
+
+      // Danach schließt es wieder.
+      await userEvent.click(within(dialog).getByRole("button", { name: "Fertig gearbeitet" }));
+      expect(close).toBeAvailable();
+      await userEvent.click(close);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it("schließt weder auf Escape noch auf ein Tippen daneben", async () => {
+      const onClose = vi.fn();
+      render(<Working onClose={onClose} />);
+      const dialog = screen.getByRole("dialog", { name: "Zone löschen" });
+      await userEvent.click(within(dialog).getByRole("button", { name: "Löschen" }));
+
+      const cancel = new Event("cancel", { cancelable: true });
+      act(() => {
+        dialog.dispatchEvent(cancel);
+      });
+      expect(cancel.defaultPrevented).toBe(true);
+      await userEvent.click(dialog);
+      expect(onClose).not.toHaveBeenCalled();
+      expect(within(dialog).getByText("Inhalt des Dialogs")).toBeInTheDocument();
+
+      // Arbeitet er nicht mehr, schließen Escape und ein Tippen daneben wieder.
+      await userEvent.click(within(dialog).getByRole("button", { name: "Fertig gearbeitet" }));
+      act(() => {
+        dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+      });
+      await userEvent.click(dialog);
+      expect(onClose).toHaveBeenCalledTimes(2);
+    });
+
+    it("behält den Fokus am ✕, wenn er zu arbeiten beginnt, während es ihn hat", async () => {
+      const onClose = vi.fn();
+      function FocusOnClose({ busy }: { busy: boolean }) {
+        return (
+          <Dialog open onClose={onClose} busy={busy} title="Speichern">
+            <p>Inhalt</p>
+          </Dialog>
+        );
+      }
+      const { rerender } = render(<FocusOnClose busy={false} />);
+      const close = screen.getByRole("button", { name: "Schließen" });
+      close.focus();
+      rerender(<FocusOnClose busy />);
+      expect(close).toHaveFocus();
+      expect(close).not.toBeDisabled();
+      expect(close).toBeUnavailable();
+      await userEvent.keyboard("{Enter}");
+      await userEvent.keyboard(" ");
+      expect(onClose).not.toHaveBeenCalled();
+    });
+  });
+
   it("bleibt zu, wenn der Browser ihn schließt und der Aufrufer das annimmt", async () => {
     render(<Example />);
     const opener = screen.getByRole("button", { name: "Öffnen" });

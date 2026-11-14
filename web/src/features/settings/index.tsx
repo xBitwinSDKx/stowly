@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { formatBuild, ROUTES, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
+import { formatBuild, isTimeOfDay, ROUTES, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
 import { useLogout } from "@/features/auth/logout";
 import { errorText, List, ListLink, ListRow, plural, Section } from "@/ui";
@@ -10,7 +10,9 @@ import { ACCENTS, setAccent, setTheme, useTheme, type AccentKey, type ThemeChoic
 
 import { BackupSection } from "./BackupSection";
 import { DevicesSection } from "./DevicesSection";
+import { HomeAssistantSection } from "./HomeAssistantSection";
 import { useIntegrations } from "./integrations";
+import { DEFAULT_NOTIFY_TIME, NotifyTimeSetting } from "./NotifyTimeSetting";
 import { PushSetting } from "./PushSetting";
 import styles from "./SettingsPage.module.css";
 
@@ -154,9 +156,10 @@ export function describeLookup(enabled: boolean | null | undefined): RowText {
 
 /**
  * Einstellungen nach dem Entwurf: eine Liste aus Zeilen mit dem Bedienelement rechts,
- * gegliedert in Darstellung, dieses Gerät (samt Benachrichtigungen), Haushalt, Geräte,
- * Sicherung, diese App und Über. Solange die Ansicht offen ist, lädt sie den Zustand der
- * Integrationen vom Server (Sicherung, Push).
+ * gegliedert in Darstellung, dieses Gerät (samt Benachrichtigungen), Haushalt (samt der Uhrzeit
+ * der Tagesnachricht), Geräte, Sicherung, Home Assistant und Bring!, diese App und Über. Solange
+ * die Ansicht offen ist, lädt sie den Zustand der Integrationen vom Server (Sicherung, Home
+ * Assistant, Push).
  */
 export function SettingsPage() {
   const core = useCore();
@@ -287,6 +290,11 @@ export function SettingsPage() {
             max={3650}
             onCommit={(warn_days) => updateSettings({ warn_days })}
           />
+          <NotifyTimeSetting
+            value={isTimeOfDay(settings.notify_time) ? settings.notify_time : DEFAULT_NOTIFY_TIME}
+            integrations={integrations.state}
+            onCommit={(notify_time) => updateSettings({ notify_time })}
+          />
           <NumberSetting
             label="Aufbewahrung der Lösch-Historie"
             hint="So lange lassen sich entnommene Packungen wiederherstellen."
@@ -321,6 +329,8 @@ export function SettingsPage() {
       <DevicesSection />
 
       <BackupSection integrations={integrations.state} onReload={integrations.reload} />
+
+      <HomeAssistantSection integrations={integrations.state} onReload={integrations.reload} />
 
       <Section title="Diese App" id="app" description="Installation und Speicher auf diesem Gerät.">
         <List>

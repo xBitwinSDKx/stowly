@@ -48,7 +48,8 @@ function RenameDialog({ device, onClose, onRenamed }: { device: Device; onClose:
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title="Gerät umbenennen"
       size="sm"
       variant="sheet"

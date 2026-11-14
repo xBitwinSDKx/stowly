@@ -36,6 +36,22 @@
   text-align: right;
 }
 
+/* Uhrzeit: so breit, dass auch die Anzeige mit „AM"/„PM" eines englischen Browsers hineinpasst */
+.time {
+  width: 9rem;
+}
+
+.time :global(input) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Erklärung unter einem Abschnitt */
+.foot {
+  max-width: 44rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
 /* Akzentfarbe: jedes Feld in seiner Farbe (data-accent setzt Farbton und Sättigung, tokens.css) */
 .accents {
   display: flex;

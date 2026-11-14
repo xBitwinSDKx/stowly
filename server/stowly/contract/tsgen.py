@@ -10,7 +10,18 @@ import json
 from typing import Any
 
 from stowly.contract import ID_POOL_TARGET, MAX_CHANGES_PER_SYNC, MAX_COMMANDS_PER_SYNC, PROTOCOL_VERSION, ids
-from stowly.contract.api import PUSH_PATHS, PUSH_TEST_INTERVAL_S, STATS_DEFAULT_MONTHS, STATS_MAX_MONTHS
+from stowly.contract.api import (
+    HA_MIRROR_DELAY_S,
+    HA_SUMMARY_ENTRY_MAX,
+    HA_SUMMARY_LIST_MAX,
+    HA_SUMMARY_MESSAGE_MAX,
+    HA_SYNC_INTERVAL_S,
+    PUSH_PATHS,
+    PUSH_TEST_INTERVAL_S,
+    STATS_DEFAULT_MONTHS,
+    STATS_MAX_MONTHS,
+    STATS_TOP_PRODUCTS,
+)
 from stowly.contract.commands import COMMAND_TYPES
 from stowly.contract.limits import LIMITS
 from stowly_print.model import PrinterError, ServiceError
@@ -182,6 +193,36 @@ def _constants() -> list[str]:
             "STATS_MAX_MONTHS",
             STATS_MAX_MONTHS,
             "Höchstens so viele Monate umfasst ein Zeitraum der Statistik.",
+        ),
+        (
+            "STATS_TOP_PRODUCTS",
+            STATS_TOP_PRODUCTS,
+            "Höchstens so viele Produkte stehen in `Stats.top_discarded`.",
+        ),
+        (
+            "HA_SUMMARY_LIST_MAX",
+            HA_SUMMARY_LIST_MAX,
+            "Sensor für Home Assistant: höchstens so viele Einträge je Liste.",
+        ),
+        (
+            "HA_SUMMARY_ENTRY_MAX",
+            HA_SUMMARY_ENTRY_MAX,
+            "Sensor für Home Assistant: höchstens so viele Zeichen je Eintrag einer Liste.",
+        ),
+        (
+            "HA_SUMMARY_MESSAGE_MAX",
+            HA_SUMMARY_MESSAGE_MAX,
+            "Sensor für Home Assistant: höchstens so viele Zeichen im Satz `message`.",
+        ),
+        (
+            "HA_MIRROR_DELAY_S",
+            HA_MIRROR_DELAY_S,
+            "Ein offener Eintrag geht erst nach Bring!, wenn er so viele Sekunden offen ist.",
+        ),
+        (
+            "HA_SYNC_INTERVAL_S",
+            HA_SYNC_INTERVAL_S,
+            "Der Abgleich mit Home Assistant läuft spätestens nach so vielen Sekunden wieder.",
         ),
         (
             "PUSH_TEST_INTERVAL_S",

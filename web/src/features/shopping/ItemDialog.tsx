@@ -95,7 +95,8 @@ export function ItemDialog({ item, title, onClose, onSaved }: ItemDialogProps) {
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title="Eintrag ändern"
       size="sm"
       variant="sheet"

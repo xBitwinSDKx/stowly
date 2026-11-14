@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from stowly import __version__, autobackup, db, label_templates, off, push, scheduler
+from stowly import __version__, autobackup, bring, daily, db, label_templates, off, push, scheduler
 from stowly.api import router as api_router
 from stowly.auth import LoginGuard
 from stowly.config import MAX_REQUEST_BYTES, Settings
@@ -74,8 +74,12 @@ def report_configuration(settings: Settings) -> None:
             log.warning("Sicherung: %s", autobackup.MISSING_DIR)
     elif settings.backup_problem is not None:
         log.warning("Keine automatische Sicherung: %s", settings.backup_problem)
-    if settings.ha_problem is not None:
+    if settings.ha_configured:
+        log.info("Einkaufsliste nach Bring! über Home Assistant, Liste %s.", settings.ha_todo_entity)
+    elif settings.ha_problem is not None:
         log.warning("Kein Abgleich mit Home Assistant: %s", settings.ha_problem)
+    if settings.ha_summary_token is not None:
+        log.info("Sensor für Home Assistant unter /api/ha/summary eingerichtet.")
     if not settings.push_configured:
         log.info("Push ist aus (STOWLY_PUSH_CONTACT ist nicht gesetzt).")
 
@@ -88,12 +92,15 @@ def build_app(
     push_transport: httpx2.AsyncBaseTransport | None = None,
     push_clock: off.Clock | None = None,
     job_clock: off.Clock | None = None,
+    ha_transport: httpx2.AsyncBaseTransport | None = None,
+    ha_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Baut die Anwendung, ohne Dateien oder die Datenbank anzufassen.
 
     ``off_transport`` und ``off_clock`` ersetzen in Tests die Verbindung zu Open Food Facts
     und die Uhr des Hintergrund-Ablaufs, ``push_transport`` und ``push_clock`` die Verbindung zu
-    den Push-Diensten und deren Uhr, ``job_clock`` die Uhr des Zeitplans.
+    den Push-Diensten und deren Uhr, ``job_clock`` die Uhr des Zeitplans, ``ha_transport`` und
+    ``ha_clock`` die Verbindung zu Home Assistant und die Uhr des Abgleichs mit Bring!.
     """
 
     gateway = PrintGateway()
@@ -104,26 +111,41 @@ def build_app(
         report_configuration(settings)
         sender = push.PushService(settings, transport=push_transport, clock=push_clock)
         app.state.push = sender
-        # Aufgaben des Zeitplans (docs/integrationen.md, 1.1): die Sicherung, wenn sie eingerichtet
-        # ist; die Tagesnachricht (push_daily) kommt in Runde 2 dazu.
+        # Aufgaben des Zeitplans (docs/integrationen.md, 1.1), in dieser Reihenfolge: die Sicherung und
+        # die Tagesnachricht, jeweils nur, wenn sie eingerichtet sind.
         tasks: list[scheduler.Job] = []
         if settings.backup_configured:
             tasks.append(autobackup.BackupJob(settings))
+        if settings.push_configured:
+            tasks.append(daily.PushDailyJob(settings, sender, clock=job_clock))
         jobs = scheduler.Scheduler(settings.database_path, tasks, clock=job_clock)
         app.state.scheduler = jobs
         schedule = asyncio.create_task(jobs.run(), name="stowly-scheduler")
+        # Der Abgleich mit Home Assistant und Bring! hat seine eigene Schleife (5.4), nur wenn HA
+        # eingerichtet ist.
+        ha: bring.BringSync | None = None
+        ha_task: asyncio.Task[None] | None = None
+        if settings.ha_configured:
+            ha = bring.BringSync(settings, transport=ha_transport, clock=ha_clock)
+            app.state.bring = ha
+            ha_task = asyncio.create_task(ha.run(), name="stowly-ha")
         try:
             async with _serving(app):
                 yield
         finally:
             # Nicht abbrechen: Ein Takt, der gerade die Datenbank liest, wird fertig; ein laufender
-            # Lauf bekommt ein paar Sekunden (Scheduler.aclose).
+            # Lauf bekommt ein paar Sekunden (Scheduler.aclose), der Abgleich mit HA ebenso.
             jobs.stop()
+            if ha is not None:
+                ha.stop()
             await asyncio.gather(schedule, return_exceptions=True)
-            await jobs.aclose()
+            await asyncio.gather(jobs.aclose(), _stop(ha_task, bring.SHUTDOWN_WAIT_S))
             app.state.scheduler = None
+            app.state.bring = None
             app.state.push = None
             await sender.aclose()
+            if ha is not None:
+                await ha.aclose()
 
     @contextlib.asynccontextmanager
     async def _serving(app: FastAPI) -> AsyncIterator[None]:
@@ -185,9 +207,11 @@ def build_app(
     app.state.off_worker = None
     # Druckdienst (stowly/printing.py); läuft ebenfalls nur, solange die App bedient wird.
     app.state.printing = None
-    # Versand an die Push-Dienste und der Zeitplan (Sicherung); ebenso nur, solange die App läuft.
+    # Versand an die Push-Dienste, der Zeitplan (Sicherung, Tagesnachricht) und der Abgleich mit
+    # Home Assistant; ebenso nur, solange die App läuft.
     app.state.push = None
     app.state.scheduler = None
+    app.state.bring = None
 
     install_error_handlers(app)
     app.add_middleware(BodyLimit)
@@ -205,6 +229,17 @@ def build_app(
     # Muss der letzte Schritt bleiben (siehe stowly/web.py).
     install_web(app, settings.web_dir, csp=settings.csp)
     return app
+
+
+async def _stop(task: "asyncio.Task[None] | None", timeout_s: float) -> None:
+    """Wartet höchstens ``timeout_s`` Sekunden auf eine Aufgabe, die schon gebeten wurde aufzuhören; dann
+    bricht es sie ab."""
+    if task is None:
+        return
+    _done, pending = await asyncio.wait({task}, timeout=timeout_s)
+    if pending:
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 def release_waiting(app: FastAPI) -> None:
@@ -247,6 +282,8 @@ def create_app(
     push_transport: httpx2.AsyncBaseTransport | None = None,
     push_clock: off.Clock | None = None,
     job_clock: off.Clock | None = None,
+    ha_transport: httpx2.AsyncBaseTransport | None = None,
+    ha_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Anwendung für den Betrieb: legt die Datenbank an und migriert sie."""
     settings = settings or Settings.from_env()
@@ -258,4 +295,6 @@ def create_app(
         push_transport=push_transport,
         push_clock=push_clock,
         job_clock=job_clock,
+        ha_transport=ha_transport,
+        ha_clock=ha_clock,
     )

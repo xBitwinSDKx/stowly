@@ -89,8 +89,16 @@ describe("Texte", () => {
     expect(timeAgo("2026-11-13T11:15:00.000Z", now)).toBe("vor 45 Minuten");
     expect(timeAgo("2026-11-13T10:30:00.000Z", now)).toBe("vor einer Stunde");
     expect(timeAgo("2026-11-13T05:00:00.000Z", now)).toBe("vor 7 Stunden");
-    expect(timeAgo("2026-11-12T10:00:00.000Z", now)).toBe("gestern");
-    expect(timeAgo("2026-11-01T12:00:00.000Z", now)).toBe("vor 12 Tagen");
+    // Ab 24 Stunden zählen Kalendertage des Geräts: „gestern" ist nur der Tag davor. Die Zeitpunkte
+    // stehen deshalb in der Zeitzone, in der der Test läuft.
+    const local = (day: number, hour: number, minute = 0) => new Date(2026, 10, day, hour, minute);
+    const at = local(14, 12, 19).getTime();
+    expect(timeAgo(local(13, 10).toISOString(), at)).toBe("gestern");
+    expect(timeAgo(local(2, 12, 19).toISOString(), at)).toBe("vor 12 Tagen");
+    expect(timeAgo(local(12, 19, 19).toISOString(), at)).toBe("vor 2 Tagen");
+    expect(timeAgo(local(13, 11, 0).toISOString(), at)).toBe("gestern");
+    expect(timeAgo(local(13, 0, 5).toISOString(), local(14, 23, 55).getTime())).toBe("gestern");
+    expect(timeAgo(local(13, 23, 0).toISOString(), at)).toBe("vor 13 Stunden");
     // Die Uhr des anderen Geräts geht vor: kein „in der Zukunft"
     expect(timeAgo("2026-11-13T12:05:00.000Z", now)).toBe("gerade eben");
     expect(timeAgo("kein Zeitstempel", now)).toBe("");

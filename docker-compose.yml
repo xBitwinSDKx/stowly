@@ -29,6 +29,9 @@ services:
       # Benutzer des Containers gehören: mkdir -p backups && sudo chown 10001:10001 backups.
       # Er liegt auf derselben Platte und ersetzt keine Kopie außer Haus (docs/betrieb.md, 8.1).
       - ./backups:/backups
+      # Läuft Home Assistant per https mit eigener Zertifizierungsstelle, kommt sie über
+      # docker-compose.override.yml dazu (STOWLY_HA_CA, docs/betrieb.md, 17.4). Hier steht sie nicht:
+      # Fehlt die Datei, legte Docker an ihrer Stelle einen Ordner an.
     # Der Prozess läuft ohne root und braucht keine besonderen Rechte.
     security_opt:
       - no-new-privileges:true

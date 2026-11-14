@@ -20,6 +20,7 @@ export {
   BellRing as BellRingIcon,
   Boxes as StockIcon,
   CalendarClock as CalendarClockIcon,
+  ChartColumn as StatsIcon,
   Check as CheckIcon,
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,

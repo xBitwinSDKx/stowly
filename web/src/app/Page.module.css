@@ -30,6 +30,11 @@
   font-size: var(--text-2xl);
 }
 
+/* Die Überschrift trägt den Fokus nur als Rückfall (focusPageTitle): ohne eigenen Rahmen, wie <main>. */
+.title:focus-visible {
+  box-shadow: none;
+}
+
 .description {
   max-width: 44rem;
   color: var(--color-text-muted);

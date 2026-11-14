@@ -76,8 +76,9 @@ function understood(input: string, today: string): { text: string; valid: boolea
  * beim Scannen nach, wo das geht; einlagern lässt sich trotzdem sofort.
  */
 export function StoreSheet({ request, onCancel, ...rest }: StoreSheetProps) {
+  // Während des Einlagerns (`busy`) schließt das Blatt nicht: ✕ gesperrt, Escape und Tippen daneben ohne Wirkung.
   return (
-    <Dialog open={request !== null} onClose={onCancel} title="Einlagern" variant="sheet" size="sm">
+    <Dialog open={request !== null} onClose={onCancel} title="Einlagern" variant="sheet" size="sm" busy={rest.busy}>
       {request ? <StoreForm key={request.barcode} request={request} {...rest} /> : null}
     </Dialog>
   );

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   formatDate,
@@ -13,7 +13,7 @@ import {
   type RemovalReason,
   type Zone,
 } from "@/contract";
-import { Page, PageLoading } from "@/app/Page";
+import { focusPageTitle, Page, PageLoading } from "@/app/Page";
 import {
   Checkbox,
   EmptyState,
@@ -36,6 +36,12 @@ import styles from "./HistoryPage.module.css";
 import { displacedLines, type DisplacedLine } from "./model";
 
 const REASONS: readonly RemovalReason[] = ["consumed", "discarded", "mistake"];
+
+/** So lange nach einem Wiederherstellen sucht die Ansicht ein neues Ziel für den Fokus, wenn er verloren ging. */
+const FOLLOW_MS = 5000;
+
+/** Attribut der Zeilen (Tabelle) und Karten (Handy): Ziele für den Fokus nach dem Wiederherstellen. */
+const ROW_ATTRIBUTE = "data-removed-row";
 
 /** Der Grund lässt sich nachträglich ändern: So wird aus „verbraucht" noch „entsorgt". */
 function ReasonSelect({ pkg, onChange }: { pkg: Package; onChange: (reason: RemovalReason) => void }) {
@@ -110,6 +116,36 @@ export function HistoryPage() {
   const productById = useMemo(() => new Map((products ?? []).map((product) => [product.id, product])), [products]);
   const zoneById = useMemo(() => new Map((zones ?? []).map((zone) => [zone.id, zone])), [zones]);
 
+  // Wiederhergestellt verschwindet die Zeile samt der Schaltfläche, die den Fokus hatte; nach der
+  // Rückfrage gibt der Dialog ihn an „Auswahl wiederherstellen" zurück, das dann gesperrt ist. Damit
+  // er nicht auf die Seite fällt, bekommt ihn die Zeile, die jetzt an dieser Stelle steht (also die
+  // nächste), sonst die vorige, sonst die Überschrift. Die Zeile selbst, nicht eine ihrer
+  // Schaltflächen: Ein zweites Enter stellt so nicht gleich die nächste Packung wieder her.
+  const acted = useRef<{ index: number; at: number } | null>(null);
+  const removedKey = removed?.map((pkg) => pkg.id).join("|") ?? "";
+  useEffect(() => {
+    const last = acted.current;
+    if (!last || busy !== null || ask !== null) {
+      return;
+    }
+    if (Date.now() - last.at > FOLLOW_MS) {
+      acted.current = null;
+      return;
+    }
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) {
+      return; // Der Fokus ist nicht verloren gegangen.
+    }
+    const rows = Array.from(document.querySelectorAll<HTMLElement>(`[${ROW_ATTRIBUTE}]`));
+    const target = rows[Math.min(last.index, rows.length - 1)];
+    if (target) {
+      target.focus();
+    } else {
+      focusPageTitle();
+    }
+    acted.current = null;
+  }, [removedKey, busy, ask]);
+
   if (!removed || !settings) {
     return (
       <Page title="Lösch-Historie">
@@ -137,6 +173,9 @@ export function HistoryPage() {
 
   /** @param trigger die Schaltfläche, die es auslöst (siehe `busy`) */
   async function restore(ids: string[], applyDisplaced: boolean, trigger: string) {
+    // Wo die erste der Packungen steht: Dorthin geht der Fokus, falls er mit ihrer Zeile verschwindet.
+    const index = removed?.findIndex((pkg) => ids.includes(pkg.id)) ?? -1;
+    acted.current = index === -1 ? null : { index, at: Date.now() };
     setBusy(trigger);
     try {
       await core.stock.restore(ids, { apply_displaced: applyDisplaced });
@@ -251,7 +290,8 @@ export function HistoryPage() {
                   const { product, zone, lines } = details(pkg);
                   return (
                     <tbody key={pkg.id}>
-                      <tr className={table.row}>
+                      {/* tabIndex -1: Verschwindet die Nachbarzeile, kann der Fokus hierher wechseln (siehe oben). */}
+                      <tr className={cx(table.row, styles.row)} data-removed-row="" tabIndex={-1}>
                         <td className={cx(table.td, table.narrow)}>
                           <Checkbox
                             className={styles.check}
@@ -303,7 +343,15 @@ export function HistoryPage() {
               {removed.map((pkg) => {
                 const { product, zone, lines } = details(pkg);
                 return (
-                  <Card as="li" key={pkg.id} padding="none" selected={selected.has(pkg.id)}>
+                  <Card
+                    as="li"
+                    key={pkg.id}
+                    padding="none"
+                    selected={selected.has(pkg.id)}
+                    className={styles.row}
+                    data-removed-row=""
+                    tabIndex={-1}
+                  >
                     <div className={styles.card}>
                       <Checkbox className={styles.cardCheck} checked={selected.has(pkg.id)} onChange={(checked) => toggle(pkg.id, checked)}>
                         <span className={styles.cardHead}>
@@ -357,6 +405,7 @@ export function HistoryPage() {
       <Dialog
         open={ask !== null}
         onClose={() => setAsk(null)}
+        busy={busy === "ask" || busy === "ask-apply"}
         title="Verdrängte Bearbeitungen übernehmen?"
         size="sm"
         variant="sheet"

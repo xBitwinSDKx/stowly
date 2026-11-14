@@ -108,7 +108,8 @@ export function ZoneDialog({ zone, onClose }: ZoneDialogProps) {
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title={zone ? "Zone bearbeiten" : "Zone anlegen"}
       variant="sheet"
       footer={

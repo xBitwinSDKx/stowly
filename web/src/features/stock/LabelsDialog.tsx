@@ -85,7 +85,8 @@ export function LabelsDialog({ stock, packageIds, onClose }: LabelsDialogProps) 
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title={entries.length === 1 ? "Etikett drucken" : "Etiketten drucken"}
       variant="sheet"
       footer={

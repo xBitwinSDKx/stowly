@@ -1,0 +1,233 @@
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* Barcode eines Platzhalters: in gleich breiter Schrift wie überall in der App */
+.code {
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* Zeitraum der gezeigten Zahlen, darunter ein Hinweis zur Zeitzone */
+.period {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin-top: calc(-1 * var(--space-2));
+}
+
+.periodText {
+  font-weight: var(--weight-medium);
+}
+
+.content {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+/* Kennzahlen: am Handy zwei nebeneinander, der Anteil darunter; am Desktop alle drei in einer Reihe */
+.cards {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.cards > :last-child {
+  grid-column: 1 / -1;
+}
+
+/* ---------------------------------------------------------------- Säulen je Monat */
+.chartCard {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-5);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.legend > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.swatch {
+  flex: none;
+}
+
+/* Das Diagramm misst seine Breite selbst; es darf nie breiter werden als die Karte. */
+.chart {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.consumed {
+  fill: var(--color-accent);
+}
+
+/* Entsorgt: rot und schräg gestreift (Muster im SVG), dazu eine Kontur in derselben Farbe */
+.discarded {
+  stroke: var(--color-danger);
+  stroke-width: 1;
+}
+
+.hatchBack {
+  fill: var(--color-danger-soft);
+}
+
+.hatchLine {
+  fill: var(--color-danger);
+}
+
+.grid {
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+
+.base {
+  stroke: var(--color-border-strong);
+  stroke-width: 1;
+}
+
+.tick,
+.year,
+.value {
+  fill: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.year {
+  fill: var(--color-text-faint);
+}
+
+.value {
+  fill: var(--color-text);
+}
+
+/* Fläche je Monat für den Hinweis mit der Maus */
+.hit {
+  fill: transparent;
+}
+
+.hit:hover {
+  fill: var(--color-hover);
+}
+
+/* ---------------------------------------------------------------- Am häufigsten entsorgt */
+.top {
+  display: grid;
+  min-width: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  counter-reset: rank;
+}
+
+.top > li + li {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.topItem {
+  display: grid;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  grid-template-columns: 1.5rem minmax(0, 1fr) auto;
+  grid-template-areas:
+    "rank text count"
+    ". bar bar";
+  padding: var(--space-3) var(--space-4);
+  counter-increment: rank;
+}
+
+/* Der Platz in der Reihenfolge; Screenreader nennen ihn ohnehin (geordnete Liste). */
+.topItem::before {
+  content: counter(rank) ".";
+  grid-area: rank;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.topText {
+  grid-area: text;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  min-width: 0;
+}
+
+.topTitle {
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.topCount {
+  grid-area: count;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.topBar {
+  grid-area: bar;
+  display: block;
+  overflow: visible;
+}
+
+.topFill {
+  fill: var(--color-danger);
+  opacity: 0.55;
+}
+
+/* ---------------------------------------------------------------- Je Zone */
+.zoneCell {
+  font-weight: var(--weight-normal);
+}
+
+/* „Anteil entsorgt" darf am Handy umbrechen: Die Spalte bleibt schmal. */
+.wrapHead {
+  white-space: normal;
+}
+
+@media (min-width: 48rem) {
+  .cards {
+    gap: var(--space-4);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .cards > :last-child {
+    grid-column: auto;
+  }
+
+  .chartCard {
+    padding: var(--space-5);
+  }
+
+  .topItem {
+    padding-right: var(--space-5);
+    padding-left: var(--space-5);
+  }
+}

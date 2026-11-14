@@ -148,7 +148,8 @@ export function RemoveDialog({ stock, packageIds, initialSelection = "all", init
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title={reason === "mistake" ? "Packungen löschen" : "Packungen entnehmen"}
       variant="sheet"
       footer={

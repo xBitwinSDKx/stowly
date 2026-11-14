@@ -240,7 +240,8 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
     <>
       <Dialog
         open
-        onClose={busy ? () => undefined : onClose}
+        onClose={onClose}
+        busy={busy}
         title="Produkt bearbeiten"
         variant="sheet"
         footer={

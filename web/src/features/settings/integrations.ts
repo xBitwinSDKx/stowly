@@ -50,12 +50,3 @@ export function useIntegrations(): { state: IntegrationsState; reload: () => voi
   const reload = useCallback(() => void load(), [load]);
   return { state, reload };
 }
-
-/** Die Zeitzone des Geräts, etwa "Europe/Berlin"; leer, wenn der Browser sie nicht nennt. */
-export function deviceTimeZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-  } catch {
-    return "";
-  }
-}

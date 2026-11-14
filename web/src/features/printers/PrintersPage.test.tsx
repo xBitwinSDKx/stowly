@@ -87,7 +87,8 @@ describe("Drucker", () => {
     expect(cellar).toHaveTextContent("Druckt für");
     expect(cellar).toHaveTextContent("Keller");
     expect(cellar).toHaveTextContent("Gefrierschrank");
-    expect(cellar).toHaveTextContent("Zuletzt gesehen vor 2 Tagen");
+    // 2,2 Tage zurück: nach Kalendertagen des Geräts zwei, kurz nach Mitternacht drei (`timeAgo`).
+    expect(cellar).toHaveTextContent(/Zuletzt gesehen vor [23] Tagen/);
     expect(within(cellar).getByLabelText("Zustand des Druckers")).toHaveTextContent("Etiketteneingelegt");
     const host = within(cellar).getByLabelText("Zustand des Rechners");
     expect(host).toHaveTextContent("Temperatur51 °C");

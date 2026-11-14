@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useCore, useLive, type Zone, type ZoneMode } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
@@ -14,6 +14,23 @@ import { ZoneQrDialog } from "./ZoneQrDialog";
 import styles from "./ZonesPage.module.css";
 
 type DialogState = { kind: "create" } | { kind: "edit"; zone_id: string } | { kind: "delete"; zone_id: string } | { kind: "qr"; zone_ids: string[] } | null;
+
+type Direction = "up" | "down";
+
+/**
+ * Welche Schaltfläche einer verschobenen Zone den Fokus bekommt: dieselbe, mit der verschoben
+ * wurde; steht die Zone danach am Rand der Liste, wo diese gesperrt ist, die andere derselben Zeile.
+ * @param index Platz der Zone nach dem Verschieben
+ */
+function moveFocusTarget(direction: Direction, index: number, count: number): Direction {
+  if (direction === "up" && index === 0) {
+    return "down";
+  }
+  if (direction === "down" && index === count - 1) {
+    return "up";
+  }
+  return direction;
+}
 
 const MODE_TEXT: Record<ZoneMode, string> = {
   primary:
@@ -34,6 +51,32 @@ export function ZonesPage() {
   const printing = usePrinting();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [serial, setSerial] = useState(0);
+  /** Die Schaltflächen „nach oben" und „nach unten" je Zone, für den Fokus nach dem Verschieben. */
+  const moveButtons = useRef(new Map<string, HTMLButtonElement>());
+  /**
+   * Nach dem Verschieben gehört der Fokus wieder an die Schaltfläche, die ihn hatte. React hängt
+   * dafür Zeilen um (`insertBefore`), und der Browser nimmt einer umgehängten Zeile dabei den Fokus.
+   * Gemerkt wird, wohin die Zone wandert; sobald die Liste sie dort zeigt, bekommt die Schaltfläche
+   * den Fokus zurück.
+   */
+  const [refocus, setRefocus] = useState<{ zone_id: string; direction: Direction; index: number } | null>(null);
+
+  useEffect(() => {
+    if (refocus === null || !zones) {
+      return;
+    }
+    const index = zones.findIndex((zone) => zone.id === refocus.zone_id);
+    if (index === -1) {
+      setRefocus(null);
+      return;
+    }
+    if (index !== refocus.index) {
+      return; // Die Liste zeigt die neue Reihenfolge noch nicht.
+    }
+    const target = moveFocusTarget(refocus.direction, index, zones.length);
+    moveButtons.current.get(`${refocus.zone_id}:${target}`)?.focus();
+    setRefocus(null);
+  }, [refocus, zones]);
 
   const counts = useMemo(() => {
     const result = new Map<string, number>();
@@ -75,7 +118,28 @@ export function ZonesPage() {
     }
     ids.splice(from, 1);
     ids.splice(to, 0, zone.id);
-    core.zones.reorder(ids).catch(report);
+    // Nur wenn die Schaltfläche den Fokus hatte (Tastatur, Klick): Dann soll er bei ihr bleiben.
+    const direction: Direction = offset < 0 ? "up" : "down";
+    const focused = document.activeElement === moveButtons.current.get(`${zone.id}:${direction}`);
+    if (focused) {
+      setRefocus({ zone_id: zone.id, direction, index: to });
+    }
+    core.zones.reorder(ids).catch((caught: unknown) => {
+      setRefocus(null);
+      report(caught);
+    });
+  }
+
+  /** Merkt sich die Schaltfläche „nach oben" oder „nach unten" einer Zone. */
+  function moveButton(zoneId: string, direction: Direction) {
+    return (element: HTMLButtonElement | null) => {
+      const key = `${zoneId}:${direction}`;
+      if (element) {
+        moveButtons.current.set(key, element);
+      } else {
+        moveButtons.current.delete(key);
+      }
+    };
   }
 
   const editing = dialog?.kind === "edit" ? byId(dialog.zone_id) : undefined;
@@ -126,10 +190,10 @@ export function ZonesPage() {
               </div>
               {multiZone ? (
                 <div className={styles.order}>
-                  <IconButton label={`${zone.name} nach oben`} disabled={index === 0} onClick={() => move(zone, -1)}>
+                  <IconButton ref={moveButton(zone.id, "up")} label={`${zone.name} nach oben`} disabled={index === 0} onClick={() => move(zone, -1)}>
                     <ArrowUpIcon />
                   </IconButton>
-                  <IconButton label={`${zone.name} nach unten`} disabled={index === zones.length - 1} onClick={() => move(zone, 1)}>
+                  <IconButton ref={moveButton(zone.id, "down")} label={`${zone.name} nach unten`} disabled={index === zones.length - 1} onClick={() => move(zone, 1)}>
                     <ArrowDownIcon />
                   </IconButton>
                 </div>

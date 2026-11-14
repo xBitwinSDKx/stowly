@@ -495,4 +495,45 @@ describe("Nach dem Entnehmen", () => {
     expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Einkaufsliste\./)).not.toBeInTheDocument();
   });
+
+  it("sagt nach der letzten Packung eines Produkts mit Mindestbestand nichts zur Einkaufsliste: Den Eintrag legt der Server an", async () => {
+    const { user, core } = setup();
+    const stored = await core.stock.store({ product: { kind: "new", name: "Senf", min_stock: 1 }, zone_id: ZONE_IDS.shelf, best_before: null, count: 1, labels: false });
+    const mustard = stored.product;
+    // Ein eigener Eintrag steht schon auf der Liste; auch das erwähnt die Ansicht hier nicht.
+    await core.shopping.create({ product_id: mustard.id });
+    await enter(user, stored.packages[0]?.id ?? "");
+    await waitFor(() => expect(toasts()).toHaveTextContent("Senf"));
+    expect(screen.getByText(/Senf \(.+\) entnommen/, { selector: "p" })).toBeInTheDocument();
+    // Der automatische Eintrag kommt vom (nachgespielten) Server, nicht von der Ansicht.
+    await waitFor(() => expect(value(core.data.shoppingItems).filter((item) => item.product_id === mustard.id && item.origin === "min_stock")).toMatchObject([{ quantity: 1, done_at: null }]));
+    expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Einkaufsliste\./)).not.toBeInTheDocument();
+    expect(value(core.data.shoppingItems).filter((item) => item.product_id === mustard.id && item.origin === "manual")).toHaveLength(1);
+
+    // Auch stattdessen als entsorgt gemeldet: nichts.
+    await user.click(screen.getByRole("button", { name: "Entsorgt" }));
+    await waitFor(() => expect(toasts()).toHaveTextContent("als entsorgt gemeldet"));
+    expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Einkaufsliste\./)).not.toBeInTheDocument();
+  });
+
+  it("bietet nach dem Rückgängig des Einlagerns (falsch erfasst) nichts an, auch nicht für die letzte Packung", async () => {
+    const { user, core } = setup();
+    const barcode = sampleBarcode(911);
+    await enter(user, barcode);
+    const dialog = await screen.findByRole("dialog", { name: "Einlagern" });
+    await user.type(within(dialog).getByLabelText("Name (freiwillig)"), "Kresse");
+    await user.click(within(dialog).getByRole("button", { name: "Kein MHD" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Einlagern" })).not.toBeInTheDocument());
+    const product = await core.data.findProductByBarcode(barcode);
+    expect(product?.min_stock).toBeNull();
+
+    await user.click(within(toasts()).getByRole("button", { name: "Rückgängig" }));
+    await waitFor(() => expect(toasts()).toHaveTextContent("Das Einlagern ist rückgängig gemacht."));
+    expect(value(core.data.removedPackages).filter((pkg) => pkg.product_id === product?.id).map((pkg) => pkg.removal_reason)).toEqual(["mistake"]);
+    expect(value(core.data.packages).some((pkg) => pkg.product_id === product?.id)).toBe(false);
+    expect(screen.queryByRole("button", { name: "Auf die Einkaufsliste" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Einkaufsliste\./)).not.toBeInTheDocument();
+  });
 });

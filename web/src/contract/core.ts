@@ -561,7 +561,10 @@ export interface PushApi {
 // Statistik und Zustand der Integrationen: braucht den Server
 // --------------------------------------------------------------------------------------
 
-/** Zeitraum der Statistik in ganzen Monaten "YYYY-MM", beide eingeschlossen. */
+/**
+ * Zeitraum der Statistik in ganzen Monaten "YYYY-MM", beide eingeschlossen. Ohne Angabe heißt
+ * `undefined` (oder der Schlüssel fehlt); ein leerer Text ist eine Angabe und `invalid`.
+ */
 export interface StatsRange {
   /** Erster Monat; ohne Angabe `STATS_DEFAULT_MONTHS` − 1 Monate vor `end`. */
   start?: string;
@@ -575,7 +578,9 @@ export interface StatsApi {
    * Der Server rechnet über alle Packungen der ganzen Zeit; die App behält Entnommenes nur für
    * die Aufbewahrungsdauer. Braucht den Server. „Versehentlich" zählt nicht. Der Kern speichert
    * das Ergebnis nicht: Jeder Aufruf fragt den Server.
-   * @throws CoreError offline | invalid (Zeitraum: Form, start nach end, mehr als `STATS_MAX_MONTHS` Monate)
+   * @throws CoreError offline | invalid (Zeitraum: Form, leer, start nach end, mehr als `STATS_MAX_MONTHS` Monate;
+   *   `details.errors` wie vom Server) | unauthorized (nicht angemeldet oder gesperrt) | not_supported (ein Server
+   *   ohne Statistik, 501)
    */
   load(range?: StatsRange): Promise<Stats>;
 }
@@ -583,7 +588,8 @@ export interface StatsApi {
 export interface IntegrationsApi {
   /**
    * Zustand von Sicherung, Home Assistant und Push für die Einstellungen; nie ein Token.
-   * Braucht den Server. @throws CoreError offline
+   * Braucht den Server.
+   * @throws CoreError offline | unauthorized (nicht angemeldet oder gesperrt) | not_supported (501)
    */
   load(): Promise<IntegrationStatus>;
 }

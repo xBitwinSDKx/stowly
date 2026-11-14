@@ -2,11 +2,12 @@ import { useEffect, useId, useLayoutEffect, useRef, type MouseEvent, type ReactN
 
 import { cx } from "./cx";
 import styles from "./Dialog.module.css";
+import { useButtonLock } from "./lock";
 
 export interface DialogProps {
   /** Der Aufrufer hält den Zustand: Der Dialog ist genau dann sichtbar, wenn `open` wahr ist. */
   open: boolean;
-  /** Wird gerufen, wenn der Anwender schließen will (Escape, Tippen neben den Dialog, ✕). */
+  /** Wird gerufen, wenn der Anwender schließen will (Escape, Tippen neben den Dialog, ✕); nie, solange `busy` gilt. */
   onClose: () => void;
   title: string;
   children: ReactNode;
@@ -22,7 +23,25 @@ export interface DialogProps {
   variant?: "dialog" | "sheet";
   /** false: nur über die Schaltflächen im Inhalt schließbar (kein Escape, kein ✕). Vorgabe true. */
   dismissable?: boolean;
+  /**
+   * Der Dialog arbeitet gerade (er speichert, druckt …) und lässt sich solange nicht schließen: Das ✕
+   * bleibt sichtbar an seinem Platz, ist aber erkennbar gesperrt (`aria-disabled`, ohne den Fokus zu
+   * verlieren), und Escape oder ein Tippen daneben tun nichts. Vorgabe false.
+   */
+  busy?: boolean;
   className?: string;
+}
+
+/** Das ✕ oben rechts. Gesperrt behält es den Fokus und sagt, warum es gerade nicht geht (`useButtonLock`). */
+function CloseButton({ busy, onClose }: { busy: boolean; onClose: () => void }) {
+  const lock = useButtonLock({ busy, onClick: onClose });
+  return (
+    <button type="button" {...lock} className={styles.close} aria-label="Schließen" title={busy ? "Schließen geht wieder, sobald der Vorgang abgeschlossen ist." : undefined}>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+        <path d="M6 6l12 12M18 6L6 18" />
+      </svg>
+    </button>
+  );
 }
 
 const FOCUS_ATTRIBUTE = "data-dialog-focus";
@@ -82,8 +101,11 @@ function showModal(element: HTMLDialogElement): void {
  * offenen Dialog das Element mit dem Fokus, geht er an den Dialog selbst.
  *
  * Offen ist der Dialog genau so lange, wie `open` es sagt: Schließt der Browser ihn auf Escape
- * von sich aus, obwohl der Aufrufer ihn offen hält (`dismissable={false}`, oder `onClose` tut
- * gerade nichts), öffnet er sich sofort wieder.
+ * von sich aus, obwohl der Aufrufer ihn offen hält (`dismissable={false}`, `busy`, oder `onClose`
+ * tut gerade nichts), öffnet er sich sofort wieder.
+ *
+ * Arbeitet der Dialog (`busy`), ruft er `onClose` nicht: Das ✕ ist dann gesperrt, Escape und ein
+ * Tippen daneben bleiben ohne Wirkung. Die Aufrufer brauchen dafür keinen eigenen Leerlauf.
  *
  * Der Inhalt wird nur gerendert, solange der Dialog offen ist. Eingaben darin
  * beginnen also bei jedem Öffnen frisch.
@@ -97,6 +119,7 @@ export function Dialog({
   size = "md",
   variant = "dialog",
   dismissable = true,
+  busy = false,
   className,
 }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -180,7 +203,7 @@ export function Dialog({
   function handleCancel(event: SyntheticEvent<HTMLDialogElement>) {
     // Escape: Der Zustand gehört dem Aufrufer, also nicht selbst schließen.
     event.preventDefault();
-    if (dismissable) {
+    if (dismissable && !busy) {
       onClose();
     }
   }
@@ -201,7 +224,7 @@ export function Dialog({
 
   function handleClick(event: MouseEvent<HTMLDialogElement>) {
     // Ein Klick auf das <dialog> selbst trifft die Fläche neben dem Inhalt.
-    if (dismissable && event.target === event.currentTarget) {
+    if (dismissable && !busy && event.target === event.currentTarget) {
       onClose();
     }
   }
@@ -221,13 +244,7 @@ export function Dialog({
             <h2 id={titleId} className={styles.title}>
               {title}
             </h2>
-            {dismissable ? (
-              <button type="button" className={styles.close} aria-label="Schließen" onClick={onClose}>
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            ) : null}
+            {dismissable ? <CloseButton busy={busy} onClose={onClose} /> : null}
           </header>
           <div className={styles.body}>{children}</div>
           {footer ? <footer className={styles.footer}>{footer}</footer> : null}

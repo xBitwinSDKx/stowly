@@ -34,9 +34,20 @@
  * `push.enable` fragt eine nachgespielte Erlaubnis (`stowlyMock.setPushPermission`), `push.test`
  * liefert, was `stowlyMock.setPushTestResult` vorgibt (Vorgabe "sent"), und lässt wie der Server
  * höchstens eine Testnachricht je `PUSH_TEST_INTERVAL_S` Sekunden zu (nach der Uhr der Attrappe).
+ * Mit "push-rate-limited" gilt die erste Testnachricht als zu früh: als wäre 3 Sekunden vorher eine
+ * hinausgegangen, gleich wann sie kommt. So lässt sich das Warten auch im Browser in Ruhe ansehen.
  * `integrations.load` liefert Beispiele (Sicherung eingerichtet und gelungen, Home Assistant aus);
- * "backup-warning" und "backup-problem" zeigen die anderen Fälle der Sicherung, und
- * `stowlyMock.setIntegrations` ersetzt Teile davon.
+ * "backup-warning" und "backup-problem" zeigen die anderen Fälle der Sicherung, die Ausgangslagen
+ * "ha-…" und `stowlyMock.setHaState` die Zustände von Home Assistant (docs/integrationen.md, 5.6),
+ * und `stowlyMock.setIntegrations` ersetzt Teile davon. `linked` zählt dabei die offenen Einträge
+ * der Einkaufsliste, die nach der Regel des Servers in Bring! stünden: mit Namen und seit
+ * mindestens zwei Minuten offen (5.2).
+ *
+ * Statistik (Stufe 2, src/mock/stats.ts): `stats.load` rechnet wie der Server aus allen Packungen
+ * der Attrappe, auch aus denen jenseits der Aufbewahrungsdauer (die Beispieldaten haben dafür
+ * einen Verlauf über gut ein Jahr), in der Zeitzone aus `integrations.load` (Vorgabe
+ * Europe/Berlin). "stats-empty" beginnt mit einer leeren Statistik: Dann zählt nur, was nach dem
+ * Start der Attrappe entnommen wird.
  */
 import {
   addDays,
@@ -60,6 +71,7 @@ import {
   cleanText,
   compareShoppingItems,
   DEFAULT_DEVICE_PREFS,
+  HA_MIRROR_DELAY_S,
   invalidInput,
   isOpenItem,
   isStoreInternalBarcode,
@@ -84,6 +96,8 @@ import {
   type Device,
   type DevicePrefs,
   type DisplacedChange,
+  type HaState,
+  type HaStatus,
   type IntegrationStatus,
   type NewPrinter,
   type NewProduct,
@@ -111,6 +125,7 @@ import {
   type SettingsChanges,
   type ShoppingItem,
   type ShoppingItemChanges,
+  type StatsRange,
   type StoreInput,
   type StoreResult,
   type SyncProblem,
@@ -123,6 +138,7 @@ import { MOCK_IMAGES, SAMPLE_IMAGE_ID } from "./images";
 import { derived, LiveValue } from "./live";
 import { PREVIEW_PNG_BASE64 } from "./preview";
 import { createEmptyData, createLargeData, createSampleData, createSingleZoneData, DEVICE_IDS, PRINTER_IDS, troubledPrinterStatus, type MockData } from "./sample";
+import { computeStats } from "./stats";
 
 /**
  * Ausgangslagen zum Ausprobieren, im Browser über `?mock=…` wählbar (mehrere mit Komma):
@@ -145,8 +161,15 @@ import { createEmptyData, createLargeData, createSampleData, createSingleZoneDat
  * - "printer-trouble": beide Drucker melden Störungen (Etiketten leer, Pi heiß, SD-Karte)
  * - "push-off", "push-on", "push-denied", "push-not-configured", "push-unsupported":
  *                  Push auf diesem Gerät im genannten Zustand (`PushState`); ohne eine davon "off"
+ * - "push-rate-limited": Push ist an, und eben ging eine Testnachricht hinaus: Die nächste
+ *                  scheitert mit "rate_limited" (`details.retry_after_s` 7), danach geht es wieder.
  * - "backup-warning": die letzte gelungene Sicherung liegt drei Tage zurück, seither scheitert sie
  * - "backup-problem": die automatische Sicherung ist nur halb eingerichtet (ein Schlüssel fehlt)
+ * - "ha-ok":       Home Assistant eingerichtet, der letzte Abgleich gelang eben (mit Sensor)
+ * - "ha-pending":  eingerichtet, seit dem Start des Servers noch kein Abgleich
+ * - "ha-unreachable", "ha-unauthorized": eingerichtet, der letzte Abgleich scheiterte so
+ * - "ha-problem":  Home Assistant ist nur halb eingerichtet (STOWLY_HA_TOKEN fehlt)
+ * - "stats-empty": die Statistik ist leer (es zählt nur, was nach dem Start entnommen wird)
  */
 export type MockScenario =
   | "empty"
@@ -169,8 +192,15 @@ export type MockScenario =
   | "push-denied"
   | "push-not-configured"
   | "push-unsupported"
+  | "push-rate-limited"
   | "backup-warning"
-  | "backup-problem";
+  | "backup-problem"
+  | "ha-ok"
+  | "ha-pending"
+  | "ha-unreachable"
+  | "ha-unauthorized"
+  | "ha-problem"
+  | "stats-empty";
 
 export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "empty",
@@ -193,8 +223,15 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "push-denied",
   "push-not-configured",
   "push-unsupported",
+  "push-rate-limited",
   "backup-warning",
   "backup-problem",
+  "ha-ok",
+  "ha-pending",
+  "ha-unreachable",
+  "ha-unauthorized",
+  "ha-problem",
+  "stats-empty",
 ];
 
 /** Wie ein nachgespielter Druck ausgeht. */
@@ -205,9 +242,6 @@ export type MockPushPermission = "granted" | "denied" | "default";
 
 export const MOCK_PASSWORD = "stowly";
 
-/** Platzhalter bis Runde 2: die Statistik. */
-const STAGE_2_LATER = "In der Attrappe noch nicht umgesetzt.";
-
 /** Ausgangslagen zu Push und der Zustand, den sie ergeben. */
 const PUSH_SCENARIOS: readonly [MockScenario, PushState][] = [
   ["push-off", "off"],
@@ -215,7 +249,44 @@ const PUSH_SCENARIOS: readonly [MockScenario, PushState][] = [
   ["push-denied", "denied"],
   ["push-not-configured", "not_configured"],
   ["push-unsupported", "unsupported"],
+  ["push-rate-limited", "on"],
 ];
+
+/** So lange vor der ersten Testnachricht gilt mit "push-rate-limited" die vorige als hinausgegangen. */
+const RECENT_PUSH_TEST_MS = 3_000;
+
+/** Zeitzone des Servers der Attrappe (`IntegrationStatus.timezone`), solange `setIntegrations` keine andere vorgibt. */
+const SERVER_TIMEZONE = "Europe/Berlin";
+
+/**
+ * Wie Home Assistant eingerichtet ist: ein Zustand des Abgleichs (`HaState`) oder "problem", halb
+ * eingerichtet (dann ist der Abgleich aus und `problem` nennt den Grund).
+ */
+type HaSetup = HaState | "problem";
+
+/** Ausgangslagen zu Home Assistant; ohne eine davon ist es aus. */
+const HA_SCENARIOS: readonly [MockScenario, HaSetup][] = [
+  ["ha-ok", "ok"],
+  ["ha-pending", "pending"],
+  ["ha-unreachable", "unreachable"],
+  ["ha-unauthorized", "unauthorized"],
+  ["ha-problem", "problem"],
+];
+
+/** Die To-do-Liste in Home Assistant, mit der Bring! verbunden ist (STOWLY_HA_TODO_ENTITY). */
+const HA_ENTITY = "todo.einkaufsliste";
+
+/** Der Fehler des letzten Abgleichs je Zustand, wie ihn der Server nennt (docs/integrationen.md, 5.6). */
+const HA_ERRORS: Record<Exclude<HaState, "off" | "pending" | "ok">, string> = {
+  unauthorized: "Home Assistant lehnt den Token ab.",
+  not_found: `Die Liste ${HA_ENTITY} gibt es in Home Assistant nicht.`,
+  unavailable: "Die Liste ist in Home Assistant gerade nicht verfügbar.",
+  unreachable: "Home Assistant ist nicht erreichbar.",
+  error: "Home Assistant antwortet mit 500.",
+};
+
+/** So lange ist ein Eintrag offen, bevor der Server ihn nach Bring! schreibt (docs/integrationen.md, 5.2). */
+const BRING_DELAY_MS = HA_MIRROR_DELAY_S * 1000;
 
 /** Was der nachgespielte Push-Dienst auf eine Testnachricht antwortet (docs/integrationen.md, 4.7 und 4.9). */
 const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
@@ -282,9 +353,16 @@ export interface MockControl {
   setPushTestResult(status: PushTestStatus): void;
   /**
    * Ersetzt Teile des Zustands der Integrationen (`integrations.load`): `backup`, `ha`, `push` oder
-   * `timezone`, jeweils als Ganzes. null kehrt zu den Beispielen der Ausgangslage zurück.
+   * `timezone`, jeweils als Ganzes. null kehrt zu den Beispielen der Ausgangslage zurück, auch beim
+   * Zustand von Home Assistant. Die Zeitzone gilt auch für die Monate der Statistik.
    */
   setIntegrations(changes: Partial<IntegrationStatus> | null): void;
+  /**
+   * Setzt den Zustand des Abgleichs mit Home Assistant (`integrations.load().ha`), mit dem Satz
+   * aus docs/integrationen.md 5.6 als `last_error`: "off" heißt nicht eingerichtet, jeder andere
+   * Zustand eingerichtet, mit Sensor. Ersetzt, was `setIntegrations` für `ha` vorgegeben hat.
+   */
+  setHaState(state: HaState): void;
   /** Aktueller Datenbestand der Attrappe. */
   snapshot(): MockData;
 }
@@ -399,7 +477,14 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   let pushTestStatus: PushTestStatus = "sent";
   /** Zeitpunkt der letzten Testnachricht in Millisekunden (Uhr der Attrappe) oder null. */
   let lastPushTest: number | null = null;
+  /** Mit "push-rate-limited" kommt die erste Testnachricht zu früh (siehe Kopf der Datei). */
+  let rateLimitNextTest = scenarios.has("push-rate-limited");
   let integrationChanges: Partial<IntegrationStatus> = {};
+  /** Wie Home Assistant eingerichtet ist; `setHaState` und `setIntegrations(null)` ändern es. */
+  const initialHa: HaSetup = HA_SCENARIOS.find(([scenario]) => scenarios.has(scenario))?.[1] ?? "off";
+  let haSetup: HaSetup = initialHa;
+  /** Mit "stats-empty" zählt die Statistik nur, was ab dem Start der Attrappe entnommen wird. */
+  const statsSince = scenarios.has("stats-empty") ? stamp() : null;
 
   // Einkaufsliste: was der Server selbst tut (siehe Kopf der Datei und `ServerEffect`).
   const serverEffects: ServerEffect[] = [];
@@ -955,6 +1040,58 @@ export function createMockCore(options: MockOptions = {}): MockCore {
 
   // ---------------------------------------------------------------- Integrationen
 
+  /**
+   * Offene Einträge, die nach der Regel des Servers in Bring! stünden (docs/integrationen.md, 5.2):
+   * mit Namen (Produkt mit Namen oder freier Text) und seit mindestens zwei Minuten offen.
+   */
+  function linkedItems(nowMs: number): number {
+    const data = state.get();
+    const limit = new Date(nowMs - BRING_DELAY_MS).toISOString();
+    return data.shoppingItems.filter((item) => {
+      if (!isOpenItem(item) || (doneClocks.get(item.id) ?? item.created_at) > limit) {
+        return false;
+      }
+      return item.product_id === null ? item.text.trim() !== "" : (resolvedProduct(data, item.product_id)?.name.trim() ?? "") !== "";
+    }).length;
+  }
+
+  /** Der Zustand von Home Assistant nach `haSetup` (siehe Kopf der Datei). */
+  function haStatus(nowMs: number): HaStatus {
+    const setup = haSetup;
+    const off: HaStatus = { configured: false, problem: null, entity: null, state: "off", last_ok_at: null, last_error: null, last_error_at: null, linked: 0, sensor: false };
+    if (setup === "off") {
+      return off;
+    }
+    if (setup === "problem") {
+      // Adresse und Liste stehen in der .env, der Token fehlt: kein Abgleich (5.1).
+      return { ...off, problem: "STOWLY_HA_TOKEN fehlt.", entity: HA_ENTITY };
+    }
+    const at = (msAgo: number) => new Date(nowMs - msAgo).toISOString();
+    const configured: HaStatus = { ...off, configured: true, entity: HA_ENTITY, state: setup, linked: linkedItems(nowMs), sensor: true };
+    if (setup === "pending") {
+      return configured;
+    }
+    if (setup === "ok") {
+      return { ...configured, last_ok_at: at(60_000) };
+    }
+    // Vor drei Stunden ging es noch; der letzte Versuch vor einer Minute scheiterte.
+    return { ...configured, last_ok_at: at(3 * 3_600_000), last_error: HA_ERRORS[setup], last_error_at: at(60_000) };
+  }
+
+  /** Die Zeitzone des Servers der Attrappe: die aus `setIntegrations`, wenn es eine gültige ist. */
+  function serverTimezone(): string {
+    const wanted = integrationChanges.timezone;
+    if (wanted === undefined) {
+      return SERVER_TIMEZONE;
+    }
+    try {
+      new Intl.DateTimeFormat("en-CA", { timeZone: wanted });
+      return wanted;
+    } catch {
+      return SERVER_TIMEZONE;
+    }
+  }
+
   function integrationStatus(): IntegrationStatus {
     const nowMs = clock().getTime();
     const at = (hoursAgo: number) => new Date(nowMs - hoursAgo * 3_600_000).toISOString();
@@ -1021,9 +1158,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     const push = pushState.get();
     const configured = push !== "not_configured";
     return {
-      timezone: "Europe/Berlin",
+      timezone: SERVER_TIMEZONE,
       backup,
-      ha: { configured: false, problem: null, entity: null, state: "off", last_ok_at: null, last_error: null, last_error_at: null, linked: 0, sensor: false },
+      ha: haStatus(nowMs),
       push: {
         configured,
         problem: null,
@@ -2031,6 +2168,11 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           throw new CoreError("not_found", "Der Server kennt kein Abo dieses Geräts.");
         }
         const nowMs = clock().getTime();
+        if (rateLimitNextTest) {
+          // "push-rate-limited": als wäre eben eine Testnachricht hinausgegangen.
+          rateLimitNextTest = false;
+          lastPushTest = nowMs - RECENT_PUSH_TEST_MS;
+        }
         if (lastPushTest !== null && nowMs - lastPushTest < PUSH_TEST_INTERVAL_S * 1000) {
           const retryAfter = Math.max(1, Math.ceil((lastPushTest + PUSH_TEST_INTERVAL_S * 1000 - nowMs) / 1000));
           throw new CoreError("rate_limited", "Zu viele Testnachrichten.", { retry_after_s: retryAfter });
@@ -2045,9 +2187,21 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
     },
 
+    // Statistik (docs/sync-protokoll.md, 11.1; src/mock/stats.ts): braucht den Server.
     stats: {
-      async load() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+      async load(range?: StatsRange) {
+        await wait(0.5);
+        requireOnline();
+        const data = state.get();
+        return computeStats({
+          packages: data.packages,
+          products: data.products,
+          zones: sortZones(data.zones.filter((zone) => zone.deleted_at === null)),
+          range: range ?? {},
+          timezone: serverTimezone(),
+          now: clock(),
+          since: statsSince,
+        });
       },
     },
 
@@ -2113,6 +2267,14 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
       setIntegrations(changes: Partial<IntegrationStatus> | null) {
         integrationChanges = changes === null ? {} : { ...integrationChanges, ...changes };
+        if (changes === null) {
+          haSetup = initialHa;
+        }
+      },
+      setHaState(next: HaState) {
+        haSetup = next;
+        const { ha: _replaced, ...rest } = integrationChanges;
+        integrationChanges = rest;
       },
       snapshot() {
         return state.get();

@@ -62,6 +62,23 @@ describe("Knöpfe", () => {
     expect(within(dialog).getByRole("button", { name: "Kein MHD" })).not.toHaveAttribute("aria-busy");
     expect(within(dialog).getByRole("button", { name: "Kein MHD" })).toBeUnavailable();
   });
+
+  it("schließt nicht, solange es einlagert: ✕ gesperrt, Escape ohne Wirkung", async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn();
+    const { rerender } = render(<StoreSheet {...props({ onCancel, busy: true })} />);
+    const dialog = await screen.findByRole("dialog", { name: "Einlagern" });
+    const close = within(dialog).getByRole("button", { name: "Schließen" });
+    expect(close).toHaveAttribute("aria-disabled", "true");
+    await user.click(close);
+    await user.keyboard("{Escape}");
+    expect(onCancel).not.toHaveBeenCalled();
+
+    // Fertig: Jetzt schließt das ✕ wieder.
+    rerender(<StoreSheet {...props({ onCancel, busy: false })} />);
+    await user.click(within(dialog).getByRole("button", { name: "Schließen" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Nachschlagen beim Scannen", () => {

@@ -12,6 +12,9 @@ nicht. Die Befehle der Einkaufsliste selbst und die Auslöser stehen in ``sync/h
   Einlagern oder einer Änderung des Mindestbestands, die nicht vor ihr geschah.
 * **Erledigen durch Einlagern** (``store_done``): eigene Einträge eines Produkts, die seit dem
   Einlagern oder früher offen sind.
+* **Erledigen durch Bring!** (``bring_done``): Der Abgleich mit Home Assistant (``stowly.bring``)
+  hat einen gebundenen Artikel abgehakt oder gelöscht gesehen. Er läuft außerhalb eines Sync-Aufrufs;
+  ``Cause.command_id`` ist dann ``None``.
 
 Jedes Schreiben an einem Eintrag gibt der Zeile einen neuen ``rev`` und ``updated_at =
 max(updated_at, t)``; so erfahren die Geräte davon mit ihrem nächsten Abgleich, meist schon in der
@@ -32,8 +35,8 @@ ENTITY = "shopping_item"
 AUTO = ShoppingOrigin.MIN_STOCK.value  # automatischer Eintrag, vom Server
 MANUAL = ShoppingOrigin.MANUAL.value  # eigener Eintrag, von einem Gerät
 # Feld-Uhr für abhaken und wieder öffnen (Protokoll 7.1). Sie stellen auch das Erledigen durch
-# Einlagern und, ab Runde 2, durch Bring!; ihr Zeitpunkt ist bei einem offenen Eintrag der
-# Zeitpunkt, seit dem er offen ist.
+# Einlagern und durch Bring!; ihr Zeitpunkt ist bei einem offenen Eintrag der Zeitpunkt, seit dem
+# er offen ist.
 DONE_CLOCK = "done"
 
 # Wodurch ein Eintrag geschlossen wurde (Spalte closed_by, nicht im Sync; docs/integrationen.md 5.4).
@@ -41,6 +44,10 @@ CLOSED_BY_DEVICE = "device"  # ein Gerät hat abgehakt oder gelöscht
 CLOSED_BY_STORE = "store"  # eigener Eintrag, erledigt durch Einlagern
 CLOSED_BY_STOCK = "stock"  # automatischer Eintrag, der Bestand reicht (oder kein Mindestbestand mehr)
 CLOSED_BY_MERGE = "merge"  # automatischer Eintrag, mit einem anderen desselben Produkts zusammengelegt
+CLOSED_BY_BRING = "bring"  # in Bring! abgehakt oder gelöscht (stowly.bring)
+
+# Was Stowly über einen Artikel in Bring! zuletzt geschrieben oder gesehen hat (ha_links.status).
+BRING_OPEN = "needs_action"
 
 
 @dataclass(frozen=True)
@@ -250,6 +257,35 @@ def store_done(cause: Cause, product_id: str, package_id: str) -> None:
             row["id"],
             {"product_id": product_id, "package_id": package_id},
         )
+
+
+# --- Bring! ------------------------------------------------------------------------------------
+
+
+def bring_done(cause: Cause, item: Mapping[str, Any], *, name: str, how: str) -> None:
+    """In Bring! abgehakt (``how = completed``) oder gelöscht (``removed``): Der offene Eintrag ist erledigt.
+
+    ``done_at`` und die Uhr von ``done`` sind der Zeitpunkt des Abgleichs (docs/integrationen.md, 5.4);
+    ein automatischer Eintrag sperrt sein Produkt wie beim Abhaken (Protokoll 7.6).
+    """
+    _write(cause, item["id"], {"done_at": cause.at, "closed_by": CLOSED_BY_BRING})
+    cause.con.execute(
+        "INSERT INTO field_clocks (entity, entity_id, field, at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (entity, entity_id, field) DO UPDATE SET at = excluded.at",
+        (ENTITY, item["id"], DONE_CLOCK, cause.at),
+    )
+    _event(cause, "shopping_item.bring_done", ENTITY, item["id"], {"name": name, "how": how})
+    if item["origin"] == AUTO:
+        lock(cause, item["product_id"])
+
+
+def bring_binding_lost(con: sqlite3.Connection, bring_key: str | None) -> bool:
+    """Wird ein Eintrag wieder geöffnet, dessen Artikel in Bring! erledigt oder entfernt ist (oder den
+    Stowly nicht mehr kennt), verliert er seine Bindung und geht neu nach Bring! (docs/integrationen.md, 5.4)."""
+    if bring_key is None:
+        return False
+    row = con.execute("SELECT status FROM ha_links WHERE name_key = ?", (bring_key,)).fetchone()
+    return row is None or row["status"] != BRING_OPEN
 
 
 # --- Zusammenführen ----------------------------------------------------------------------------

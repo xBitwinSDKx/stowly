@@ -2,7 +2,7 @@
 
 Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar machen, auf den Handys installieren, sichern, aktualisieren. Was Stowly ist und wie es aufgebaut ist, steht in [`../README.md`](../README.md) und [`plan-stufe-1.md`](plan-stufe-1.md).
 
-> **Stand.** `Dockerfile`, `docker-compose.yml` und `docker-compose.usb.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate, Drucker und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst samt Druckdienst mit dem Bild-Treiber (automatische Tests und Durchläufe von Hand unter Windows, die Web-App mit eingeschalteter Content-Security-Policy im Browser). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden. Aus Stufe 2 sind die automatische Sicherung, die Benachrichtigungen und die Zeitzone bisher nur mit automatischen Tests geprüft (Testschlüssel für age, nachgebildete Push-Dienste, eingestellte Uhr); am Gerät und mit `age` prüfen sie D7 bis D13 und I. Für den Raspberry Pi gibt es eine eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
+> **Stand.** `Dockerfile`, `docker-compose.yml` und `docker-compose.usb.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate, Drucker und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst samt Druckdienst mit dem Bild-Treiber (automatische Tests und Durchläufe von Hand unter Windows, die Web-App mit eingeschalteter Content-Security-Policy im Browser). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden. Aus Stufe 2 sind die automatische Sicherung, die Benachrichtigungen samt Tagesnachricht, die Zeitzone, der Abgleich mit Bring! über Home Assistant und der Sensor für Home Assistant bisher nur mit automatischen Tests geprüft (Testschlüssel für age, nachgebildete Push-Dienste, ein nachgebildetes Home Assistant, eingestellte Uhr); am Gerät, mit `age` und am echten Home Assistant prüfen sie D7 bis D13, I, J und K. Für den Raspberry Pi gibt es eine eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
 
 ## 1. Überblick
 
@@ -22,6 +22,7 @@ Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar mach
 | ein Reverse Proxy mit HTTPS: Nginx Proxy Manager **oder** Tailscale | siehe Abschnitte 4 und 5 |
 | im Betrieb optional Internet | für das Nachschlagen bei Open Food Facts und für Benachrichtigungen (die Push-Dienste von Apple, Google, Mozilla und Microsoft, Abschnitt 15) |
 | für die automatische Sicherung: `age` auf einem eigenen Rechner | Schlüssel erzeugen und Sicherungen öffnen (Abschnitt 8.1); auf dem Server nicht nötig |
+| optional Home Assistant mit der Integration Bring! | die Einkaufsliste in Bring! (Abschnitt 17) und der Sensor mit Ansage (Abschnitt 18) |
 
 ## 3. Start mit Docker Compose
 
@@ -53,7 +54,8 @@ Die Einstellungen stehen in `.env` und sind dort beschrieben ([`.env.example`](.
 | `STOWLY_TIMEZONE` | Zeitzone für „heute" und alle Uhrzeiten, Vorgabe `Europe/Berlin` (Abschnitt 16) |
 | `STOWLY_BACKUP_DIR`, `STOWLY_BACKUP_RECIPIENTS`, `STOWLY_BACKUP_TIME` | automatische, verschlüsselte Sicherung: Ordner im Container (`/backups`), öffentliche age-Schlüssel, Uhrzeit (Vorgabe `03:30`) (Abschnitt 8.1) |
 | `STOWLY_PUSH_CONTACT` | Absender für Benachrichtigungen, `mailto:<Adresse>` oder eine `https://`-Adresse; leer = kein Push (Abschnitt 15) |
-| `STOWLY_HA_URL`, `STOWLY_HA_TOKEN`, `STOWLY_HA_TODO_ENTITY`, `STOWLY_HA_CA`, `STOWLY_HA_SUMMARY_TOKEN` | Home Assistant mit Bring! und der Sensor; folgen in der nächsten Runde, werden aber schon beim Start geprüft |
+| `STOWLY_HA_URL`, `STOWLY_HA_TOKEN`, `STOWLY_HA_TODO_ENTITY`, `STOWLY_HA_CA` | Einkaufsliste nach Bring! über Home Assistant: Adresse, Token, To-do-Liste, eigene Zertifizierungsstelle; leer = kein Bring! (Abschnitt 17) |
+| `STOWLY_HA_SUMMARY_TOKEN` | Token des Sensors für Home Assistant, mindestens 32 Zeichen; leer = kein Sensor (Abschnitt 18) |
 | `STOWLY_PUBLISH` | unter welcher Adresse des Rechners der Container erreichbar ist; Vorgabe `127.0.0.1:8010` |
 | `STOWLY_USB_GID` | nur mit `docker-compose.usb.yml`: Gruppe, der der USB-Drucker gehört; Vorgabe `46` (plugdev) (Abschnitt 14.3) |
 | `TZ` | Zeitzone des Containers; Stowly selbst richtet sich nach `STOWLY_TIMEZONE` |
@@ -319,11 +321,11 @@ Wer eine Abhängigkeit ergänzt oder aktualisiert und die Sperrdatei vergisst, m
 
 | Was | Wo |
 |---|---|
-| Datenbank mit allem: Bestand, Einkaufsliste, Produktbilder, Geräte und ihre Abos für Benachrichtigungen, Ereignisprotokoll, der Schlüssel des Servers für Benachrichtigungen | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
+| Datenbank mit allem: Bestand, Einkaufsliste, Produktbilder, Geräte und ihre Abos für Benachrichtigungen, Ereignisprotokoll, der Schlüssel des Servers für Benachrichtigungen, was Stowly zuletzt nach Bring! geschrieben hat (ohne Token) | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
 | Druckdienst des Servers: Auftragsspeicher samt `boot_id`, Bilder des Bild-Treibers | im selben Volume unter `/data/print/` (`jobs.sqlite3`, `images/`). Nicht in den Sicherungen; geht er verloren, fragt die App bei offenen Etiketten nach, statt doppelt zu drucken |
 | automatische Sicherungen, verschlüsselt | Ordner `backups` im Ordner des Repositorys, im Container `/backups` (Abschnitt 8.1); die privaten Schlüssel dazu nur beim Betreiber |
-| Einstellungen des Servers samt Passwort und Tokens | `.env` im Ordner des Repositorys |
-| eigene Anpassung an den Proxy | `docker-compose.override.yml`, falls angelegt |
+| Einstellungen des Servers samt Passwort und Tokens (auch die für Home Assistant und den Sensor) | `.env` im Ordner des Repositorys |
+| eigene Anpassung an den Proxy, die Zertifizierungsstelle für Home Assistant | `docker-compose.override.yml`, falls angelegt; die Zertifizierungsstelle etwa als `ha-ca.pem` im Ordner des Repositorys (Abschnitt 17.4) |
 | lokale Kopie je Gerät, ungesendete Änderungen, Token | im Browser-Speicher des Handys (IndexedDB) |
 
 Das Volume findet `docker volume inspect <ordnername>_stowly-data` (unter Debian üblicherweise `/var/lib/docker/volumes/…/_data`). `docker compose down` lässt es bestehen; erst `docker compose down -v` löscht es und damit den ganzen Haushalt.
@@ -355,6 +357,15 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 | „Benachrichtigungen" fehlen in der App oder melden „nicht eingerichtet" | `STOWLY_PUSH_CONTACT` ist leer (Abschnitt 15). |
 | Die Testnachricht meldet „Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?" | Der Absender ist keine gültige `mailto:`- oder `https:`-Adresse; Apple prüft das streng. |
 | Die Testnachricht meldet „nicht erreichbar" | Der Container kommt nicht ins Internet (die Push-Dienste von Apple, Google, Mozilla und Microsoft). |
+| Die Tagesnachricht kommt nicht | Sie kommt nur, wenn seit der letzten etwas neu bald fällig oder abgelaufen ist, und nur bis 21 Uhr (Abschnitt 15.1). Unter „Einstellungen" nennt die App den letzten Lauf und einen Fehler; im Log steht „Tagesnachricht: nichts Neues." oder „… kein Abo erreicht". |
+| Unter „Home Assistant" steht „Home Assistant lehnt den Token ab." | `STOWLY_HA_TOKEN` ist falsch oder der Token wurde in HA gelöscht: neuen langlebigen Token anlegen (Abschnitt 17.2), eintragen, `docker compose up -d`. |
+| „Die Liste todo.… gibt es in Home Assistant nicht." | `STOWLY_HA_TODO_ENTITY` stimmt nicht: in HA unter „Entwicklerwerkzeuge → Zustände" nach `todo.` suchen. |
+| „Die Liste ist in Home Assistant gerade nicht verfügbar." | HA startet gerade neu, oder die Integration Bring! hat ein Problem (in HA unter „Geräte & Dienste"). Stowly versucht es alle zwei Minuten wieder; die Einkaufsliste in Stowly bleibt, wie sie ist. |
+| „Home Assistant ist nicht erreichbar." | Adresse in `STOWLY_HA_URL` falsch, ein Name auf `.local` (löst im Container nicht auf: IP nehmen), Firewall oder HA aus. Probe aus dem Container: `docker compose exec stowly python -c "import httpx2; print(httpx2.get('http://192.168.1.20:8123/api/').status_code)"` zeigt `401` (erreichbar; ohne Token lehnt HA ab). |
+| „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA." | HA läuft per https mit eigenem Zertifikat: Abschnitt 17.4. |
+| „Home Assistant antwortet mit …" | Ein Fehler in HA; Einzelheiten im Log von HA, bei Stowly steht nur Status und Pfad. „… kennt todo.get_items nicht so (400)": HA liefert über seine Schnittstelle keine Antworten von Diensten (`?return_response`); HA aktualisieren. |
+| Ein Eintrag erscheint nicht in Bring! | Er ist keine zwei Minuten offen, oder er hat keinen Namen (ein Platzhalter, der noch auf Open Food Facts wartet), oder in Bring! steht schon ein Artikel desselben Namens: Dann bindet Stowly den Eintrag an ihn, statt einen zweiten anzulegen (Abschnitt 17.1). |
+| Der Sensor in HA ist „nicht verfügbar", im Log von HA steht 401 | In `secrets.yaml` fehlt `Bearer ` vor dem Token, oder er stimmt nicht mit `STOWLY_HA_SUMMARY_TOKEN` überein (Abschnitt 18). Bei 503: `STOWLY_HA_SUMMARY_TOKEN` ist leer. Bei einem Fehler zum Zertifikat: Abschnitt 18.3. |
 | Die App bleibt nach einer Änderung an `STOWLY_CSP` leer, oder die Konsole des Browsers meldet „Content Security Policy" | Die eigene Policy verbietet etwas, das die App braucht: zurück zur Vorgabe (`STOWLY_CSP` leer) und Abschnitt 13. |
 
 ## 12. Das Repository auf den Server bringen
@@ -482,7 +493,7 @@ Eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
 
 ## 15. Benachrichtigungen (Web-Push)
 
-Stowly schickt selbst Benachrichtigungen an die Handys, über die Push-Dienste der Browser (Apple, Google, Mozilla, Microsoft), ohne fremden Dienst dazwischen. Die tägliche Nachricht „nur Neues" folgt in der nächsten Runde; schon jetzt gibt es das Einschalten je Gerät und die Testnachricht.
+Stowly schickt selbst Benachrichtigungen an die Handys, über die Push-Dienste der Browser (Apple, Google, Mozilla, Microsoft), ohne fremden Dienst dazwischen: einmal am Tag eine Nachricht „nur Neues" (15.1), dazu auf Wunsch eine Testnachricht.
 
 **Einrichten:** In `.env` den Absender setzen, dann `docker compose up -d`:
 
@@ -501,11 +512,207 @@ STOWLY_PUSH_CONTACT=mailto:betrieb@example.org
 - **Android:** in Chrome auch ohne Installation.
 - Wird ein Gerät abgemeldet oder unter „Geräte" gesperrt, endet auch sein Abo.
 
+### 15.1 Die Tagesnachricht
+
+Einmal am Tag schickt Stowly allen Geräten mit Benachrichtigungen eine Nachricht, **aber nur, wenn seit der letzten Nachricht etwas neu bald fällig oder abgelaufen ist**, etwa „Neu bald fällig: Joghurt (16.11.). Insgesamt 3 bald, 1 abgelaufen." Tippen öffnet die Warnungen.
+
+- **Uhrzeit:** Die stellt jeder in der App ein (Einstellungen, Vorgabe 17:00). Sie gilt für den ganzen Haushalt und in der Zeitzone des Servers (`STOWLY_TIMEZONE`, Abschnitt 16), nicht in der des Handys; weicht die ab, nennt die App die Zeitzone des Servers dazu.
+- **Nachholen:** War der Server zur Uhrzeit aus, kommt die Nachricht nach dem Start, aber **nur bis 21 Uhr** (bei einer Uhrzeit ab 21 Uhr: höchstens eine Stunde später, bis Mitternacht). Danach fällt sie für diesen Tag aus; die nächste deckt alles ab, was seither neu ist.
+- **Neu** ist eine Packung, die seit der letzten Nachricht in „bald" oder „abgelaufen" kam, auch eine frisch eingelagerte, die schon so weit ist, und eine, die ein Gerät erst jetzt abgeglichen hat. Je Packung kommen höchstens zwei Nachrichten: einmal „bald", einmal „abgelaufen".
+- Ändert jemand die Uhrzeit, nachdem die Nachricht heute schon kam, kommt heute keine zweite.
+- Ein Handy ohne Netz bekommt nach dem Funkloch nur die neueste Nachricht; älter als einen Tag wird keine.
+- **Zustand** in der App unter „Einstellungen": letzter Lauf, letzte verschickte Nachricht und ein Fehler, wenn sie kein einziges Gerät erreicht hat. Im Log steht je Lauf eine Zeile („Tagesnachricht: …").
+
 ## 16. Zeitzone
 
 „Heute" (für das MHD in Sensor und Tagesnachricht, die Monate der Statistik, die Dateinamen der Sicherungen) und alle Uhrzeiten (`STOWLY_BACKUP_TIME`, die Uhrzeit der Tagesnachricht in den Einstellungen der App) gelten in `STOWLY_TIMEZONE`, Vorgabe `Europe/Berlin`. Erlaubt ist jeder IANA-Name, genau so geschrieben (`Europe/Vienna`, `UTC`); ein unbekannter Name beendet den Start mit einem Konfigurationsfehler. Die Zeitzonendaten bringt Stowly selbst mit; die Variable `TZ` des Containers spielt dafür keine Rolle. Gespeicherte Zeitpunkte sind immer UTC; die App zeigt sie in der Zeitzone des Handys und nennt die Zeitzone des Servers dazu, wenn sie abweicht.
 
 Sommer- und Winterzeit brauchen nichts: Fällt die Uhrzeit einer Aufgabe in die Lücke beim Umstellen auf Sommerzeit (etwa 02:30), läuft sie mit dem Sprung um 03:00; gibt es sie beim Umstellen auf Winterzeit zweimal, läuft sie beim ersten Mal.
+
+## 17. Einkaufsliste nach Bring! über Home Assistant
+
+Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant (HA) in Bring!, und was in Bring! abgehakt oder gelöscht wird, ist in Stowly erledigt. Stowly kennt dafür nur einen Token von HA, nie Zugangsdaten für Bring!. Ohne HA funktioniert die Einkaufsliste genauso, nur ohne Bring!.
+
+### 17.1 Was Stowly tut
+
+| In Stowly | In Bring! |
+|---|---|
+| ein Eintrag, seit zwei Minuten offen, mit Namen | ein Artikel mit dem Namen und der Menge als Spezifikation, etwa „fehlt 2 · Stowly", „3× · Stowly" oder nur „Stowly" |
+| die Menge ändert sich („fehlt 2" → „fehlt 1") | die Spezifikation wird nachgeführt |
+| abgehakt, gelöscht oder durch Einlagern erledigt | abgehakt: Der Artikel wandert zu „zuletzt gekauft" |
+| ein automatischer Eintrag verschwindet, weil der Bestand reicht | Der Artikel wird entfernt, nicht abgehakt: So steht nichts als „gekauft" da, was niemand gekauft hat. |
+| umbenannt | nichts |
+
+| In Bring! | In Stowly |
+|---|---|
+| Artikel abgehakt | Die Einträge dazu sind erledigt (eingekauft); ein automatischer Eintrag kommt erst nach dem nächsten Einlagern wieder. |
+| Artikel gelöscht | ebenso, sobald er zweimal nacheinander fehlt (etwa vier Minuten) |
+| eigener neuer Artikel | nichts: Was ihr selbst in Bring! eintragt, übernimmt Stowly nicht. |
+
+- **Zwei Minuten** wartet ein Eintrag, bevor er nach Bring! geht: Zeit für Rückgängig und Tippfehler. Ein Platzhalter ohne Namen (der Barcode wartet noch auf Open Food Facts) geht erst, wenn er einen Namen hat.
+- **Takt:** Stowly gleicht alle zwei Minuten ab, dazu wenige Sekunden nach jeder Änderung an der Einkaufsliste. Bring! selbst aktualisiert sich in HA etwa alle 90 Sekunden: Ein Haken in der App von Bring! kommt nach einigen Minuten in Stowly an.
+- **Ein Artikel je Name:** Namen gelten als gleich, wenn sie sich nur in Groß- und Kleinschreibung und Leerzeichen unterscheiden. Mehrere Einträge desselben Namens teilen sich einen Artikel; die Spezifikation kommt vom ältesten.
+- **Eure Artikel bleiben unberührt:** Steht ein Artikel desselben Namens schon in Bring!, legt Stowly keinen zweiten an, ändert ihn nicht und hakt ihn nie ab. Hakt ihn jemand ab, gilt der Eintrag in Stowly als eingekauft. Das gilt auch für einen Artikel, den Stowly angelegt und abgehakt hat und den danach jemand aus „zuletzt gekauft" zurückholt: Von da an gehört er euch.
+- **Wieder geöffnet:** Ein Eintrag, dessen Artikel in Bring! schon abgehakt ist, geht neu nach Bring!.
+
+### 17.2 Einrichten
+
+1. In HA die Integration **Bring!** einrichten (Einstellungen → Geräte & Dienste → Integration hinzufügen → Bring!). Jede Liste von Bring! erscheint als To-do-Liste, etwa `todo.einkaufsliste`. Zum Ausprobieren eignet sich eine eigene Testliste in Bring!.
+2. Einen **eigenen HA-Benutzer** für Stowly anlegen (Einstellungen → Personen → Benutzer). Administratorrechte sollte er nicht brauchen (Prüfliste J1). So lässt sich der Zugang später einzeln sperren, und im Verlauf von HA steht, was Stowly geändert hat.
+3. Als dieser Benutzer anmelden, dann Profil → Sicherheit → **Langlebige Zugangs-Token** → Token erstellen (Name „Stowly"). HA zeigt den Token nur einmal.
+4. Den Namen der Liste nachsehen: Entwicklerwerkzeuge → Zustände, nach `todo.` filtern.
+5. In `.env` eintragen und `docker compose up -d`:
+
+   ```
+   STOWLY_HA_URL=http://192.168.1.20:8123
+   STOWLY_HA_TOKEN=…
+   STOWLY_HA_TODO_ENTITY=todo.einkaufsliste
+   ```
+
+   Die Adresse ist die IP von HA oder ein Name aus dem eigenen DNS (Pi-hole); Namen auf `.local` lösen im Container nicht auf. Ohne Pfad, ein `/` am Ende fällt weg. Läuft HA per https mit eigenem Zertifikat: 17.4.
+6. `docker compose logs stowly` zeigt „Einkaufsliste nach Bring! über Home Assistant, Liste todo.einkaufsliste." und kurz danach „Home Assistant: Abgleich mit todo.einkaufsliste läuft." In der App steht unter „Einstellungen → Home Assistant" der Zustand „ok".
+
+Der Token steht nur in `.env`: nie in der Datenbank, einer Sicherung, dem Log oder einer Antwort an die App. Fehlermeldungen nennen den Status und den Pfad des Aufrufs, nie den Token.
+
+### 17.3 Was der Zustand in der App sagt
+
+Die Meldungen schreibt der Server; die App zeigt sie mit dem Zeitpunkt des letzten Erfolgs und des Fehlers.
+
+| Zustand | Meldung | Was tun |
+|---|---|---|
+| `ok` | – (der letzte Abgleich ist gelungen) | – |
+| `pending` | – (eingerichtet, seit dem Start noch kein Abgleich) | einen Moment warten |
+| `unauthorized` | „Home Assistant lehnt den Token ab." | neuen Token anlegen (17.2, Schritt 3) |
+| `not_found` | „Die Liste todo.… gibt es in Home Assistant nicht." | Namen prüfen (17.2, Schritt 4) |
+| `unavailable` | „Die Liste ist in Home Assistant gerade nicht verfügbar." (etwa beim Neustart von HA oder wenn Bring! nicht antwortet) | nichts; es geht von selbst weiter |
+| `unreachable` | „Home Assistant ist nicht erreichbar." (Netz, Zeitüberschreitung nach 10 Sekunden), beim Zertifikat „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA." | Adresse, Firewall, 17.4 |
+| `error` | „Home Assistant antwortet mit 500." oder „… antwortet unerwartet." | Log von HA |
+| `off` | – (nicht eingerichtet; ist nur ein Teil gesetzt, nennt die App, was fehlt) | 17.2, Schritt 5 |
+
+Außerdem nennt die App die Zahl der offenen Einträge, die gerade in Bring! stehen. Solange etwas nicht geht, bleibt die Einkaufsliste in Stowly vollständig; der nächste Versuch kommt nach zwei Minuten. Ins Log schreibt Stowly nur einen Wechsel des Zustands, nicht jeden gescheiterten Versuch.
+
+### 17.4 Eigene Zertifizierungsstelle
+
+Läuft HA im Heimnetz per http, entfällt dieser Schritt. Läuft HA per https mit einem Zertifikat der eigenen Zertifizierungsstelle, muss Stowly ihr vertrauen: die Zertifizierungsstelle (das Wurzelzertifikat im Format PEM, nicht den Schlüssel) als `ha-ca.pem` in den Ordner des Repositorys legen und in `docker-compose.override.yml` einbinden (Compose liest die Datei von selbst mit, siehe Abschnitt 4.3; gibt es sie schon, etwa für das Netz des Proxys, kommt `volumes` dort dazu):
+
+```yaml
+services:
+  stowly:
+    volumes:
+      - ./ha-ca.pem:/config/ha-ca.pem:ro
+```
+
+In `.env`: `STOWLY_HA_URL=https://ha.example:8123` (der Name, auf den das Zertifikat ausgestellt ist) und `STOWLY_HA_CA=/config/ha-ca.pem`, dann `docker compose up -d`. Lässt sich die Datei nicht lesen oder ist sie kein PEM, beendet der Server den Start mit einem Konfigurationsfehler. Stowly vertraut dann dieser Zertifizierungsstelle, zusätzlich zu denen des Systems.
+
+### 17.5 Neustart von HA und andere Ausfälle
+
+- **HA startet neu:** Erst ist HA nicht erreichbar, dann meldet es die Liste eine Weile als `unavailable`. In beiden Fällen schreibt Stowly nichts und zählt kein Fehlen; der Zustand in der App sagt es.
+- **Kurz eine leere Liste:** Als in Bring! gelöscht gilt ein Artikel erst, wenn er **zweimal nacheinander** fehlt, während HA und die Liste erreichbar sind. Ein Neustart, der die Liste einen Abgleich lang leer zeigt, leert so nicht die Liste von Stowly.
+- **Fehlen zählt nur bei Artikeln, die schon einmal in der Liste standen.** Ändert HA oder Bring! beim Anlegen den Namen (etwa gekürzt), sieht Stowly den Artikel nie: Er gilt dann nie als gelöscht oder abgehakt, und nach zehn Minuten steht einmal eine Warnung im Log („… steht zehn Minuten nach dem Anlegen noch nicht in der Liste").
+- **Ohne Antwort von HA auf das Anlegen** (Zeitüberschreitung) gilt der Artikel als angelegt: lieber so als ein zweiter Artikel desselben Namens.
+
+## 18. Sensor für Home Assistant
+
+HA liest über seine `rest`-Integration eine Zusammenfassung: Zustand des Sensors ist die Zahl der Packungen, die bald ablaufen (heute eingeschlossen); dazu abgelaufene, alle, das nächste ablaufende Produkt, die Länge der Einkaufsliste, kurze Listen und ein fertiger Satz zum Vorlesen wie „Heute laufen 2 Packungen ab: Joghurt. 1 Packung ist abgelaufen. Auf der Einkaufsliste stehen 4 Einträge." „Heute" ist der Tag in `STOWLY_TIMEZONE`. Der Endpunkt `/api/ha/summary` liest nur und hat einen eigenen Token, der nirgends sonst gilt; ein Geräte-Token gilt dort nicht. Ansagen und Lichter baut ihr in HA als Automation; Stowly schickt keinen Webhook.
+
+### 18.1 Token
+
+Auf einem beliebigen Rechner einen Token erzeugen, etwa mit `openssl rand -hex 32`, und in `.env` eintragen, dann `docker compose up -d`:
+
+```
+STOWLY_HA_SUMMARY_TOKEN=…
+```
+
+Er muss mindestens 32 Zeichen lang sein und darf nur druckbare Zeichen ohne Leerraum enthalten. Probe, ohne HA (`-k` nur bei eigener Zertifizierungsstelle, die der Rechner nicht kennt):
+
+```
+curl -s -H "Authorization: Bearer …" https://stowly.example/api/ha/summary
+```
+
+zeigt JSON mit `"state"` und `"message"`. Ohne Token antwortet Stowly mit 401, ohne `STOWLY_HA_SUMMARY_TOKEN` mit 503.
+
+### 18.2 In Home Assistant
+
+Den Token mit `Bearer ` davor in die `secrets.yaml` von HA:
+
+```yaml
+# secrets.yaml
+stowly_summary_auth: "Bearer …"
+```
+
+In die `configuration.yaml` (die Adresse ist die HTTPS-Adresse von Stowly, Abschnitt 4 oder 5):
+
+```yaml
+# configuration.yaml
+rest:
+  - resource: https://stowly.example/api/ha/summary
+    headers:
+      Authorization: !secret stowly_summary_auth
+    scan_interval: 300
+    timeout: 10
+    sensor:
+      - name: Stowly
+        unique_id: stowly_summary
+        value_template: "{{ value_json.state }}"
+        unit_of_measurement: Packungen
+        json_attributes:
+          - today
+          - expired
+          - total
+          - next
+          - shopping
+          - soon_list
+          - expired_list
+          - shopping_list
+          - message
+
+template:
+  - sensor:
+      - name: Stowly abgelaufen
+        unique_id: stowly_expired
+        state: "{{ state_attr('sensor.stowly', 'expired') | int(0) }}"
+        unit_of_measurement: Packungen
+      - name: Stowly Einkaufsliste
+        unique_id: stowly_shopping
+        state: "{{ state_attr('sensor.stowly', 'shopping') | int(0) }}"
+        unit_of_measurement: Einträge
+      - name: Stowly Ansage
+        unique_id: stowly_message
+        state: "{{ state_attr('sensor.stowly', 'message') }}"
+```
+
+Danach HA neu starten (oder unter Entwicklerwerkzeuge „REST-Entitäten neu laden"). Der Sensor `sensor.stowly` aktualisiert sich alle fünf Minuten. Der Satz hat höchstens 255 Zeichen, die Listen höchstens fünf Einträge mit je höchstens 40 Zeichen: So passen auch die Vorlagen-Sensoren in die Grenze von HA für den Zustand einer Entität.
+
+Beispiel-Ansage am Morgen, als Automation mit Zeit-Auslöser (`tts.home_assistant_cloud` und `media_player.kueche` durch die eigenen ersetzen):
+
+```yaml
+automation:
+  - alias: Stowly am Morgen
+    triggers:
+      - trigger: time
+        at: "07:30:00"
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ states('sensor.stowly') | int(0) > 0 or state_attr('sensor.stowly', 'expired') | int(0) > 0 }}
+    actions:
+      - action: tts.speak
+        target:
+          entity_id: tts.home_assistant_cloud
+        data:
+          media_player_entity_id: media_player.kueche
+          message: "{{ state_attr('sensor.stowly', 'message') }}"
+```
+
+### 18.3 Zertifikat: HA muss Stowly vertrauen
+
+Die `rest`-Integration kennt nur `verify_ssl: true` (Vorgabe) oder `false`, keine eigene Zertifizierungsstelle. Je nach Aufbau:
+
+- **Stowly mit öffentlich gültigem Zertifikat** (Tailscale, Abschnitt 5, wenn HA im selben Tailnet ist): nichts zu tun.
+- **HA im Container, eigene Zertifizierungsstelle:** HA nimmt statt seiner eingebauten Liste die Datei aus der Umgebungsvariable `REQUESTS_CA_BUNDLE`. Diese Datei muss alle Zertifizierungsstellen enthalten, die HA braucht: die öffentliche Liste (etwa `/etc/ssl/certs/ca-certificates.crt` eines Debian-Rechners) und dahinter das eigene Wurzelzertifikat. Die Datei in den Container von HA einbinden und die Variable dort setzen. Ungeprüft; Prüfliste K6.
+- **Sonst** (etwa Home Assistant OS): `verify_ssl: false` unter `resource` ergänzen. Die Verbindung bleibt verschlüsselt, das Zertifikat wird nicht geprüft; der Token des Sensors erlaubt nur, diese Zusammenfassung zu lesen.
+
+Die andere Richtung, Stowly vertraut HA, steht in 17.4.
 
 ## Prüfliste für die Zielumgebung
 
@@ -639,3 +846,39 @@ Die eigene Prüfliste in [`../pi/README.md`](../pi/README.md#prüfliste-am-gerä
 | I5 | Das Gerät unter „Geräte" abmelden, dann `docker compose exec stowly python -c "import sqlite3; print(sqlite3.connect('/data/stowly.sqlite3').execute('SELECT COUNT(*) FROM push_subscriptions').fetchone())"` | Das Abo des abgemeldeten Geräts ist weg |
 | I6 | `docker compose logs stowly` nach den Testnachrichten | „Push an web.push.apple.com angenommen (201)" o. ä.; nie die volle Adresse eines Abos, nie ein Schlüssel |
 | I7 | `STOWLY_TIMEZONE=Mars/Olympus`, `docker compose up -d`, Log ansehen; danach zurück | „Konfigurationsfehler: STOWLY_TIMEZONE …"; mit gültigem Namen startet der Server und nennt „Zeitzone des Servers: …" |
+| I8 | Die Uhrzeit der Tagesnachricht in der App auf eine Viertelstunde von jetzt stellen; eine Packung einlagern, deren MHD in drei Tagen ist | Zur Uhrzeit (spätestens eine Minute danach) kommt auf jedem Gerät mit Benachrichtigungen „Neu bald fällig: … Insgesamt … bald, … abgelaufen."; Tippen öffnet die Warnungen. Im Log „Tagesnachricht: 1 Packung neu, angenommen bei … von … Abos." |
+| I9 | Danach die Uhrzeit auf eine Viertelstunde später stellen | heute keine zweite Nachricht |
+| I10 | Am nächsten Tag zur Uhrzeit, ohne dass etwas Neues bald fällig wurde | keine Nachricht; im Log „Tagesnachricht: nichts Neues."; in der App ist der letzte Lauf von heute |
+| I11 | iPhone im Flugmodus über die Uhrzeit hinweg, danach wieder ans Netz | die Nachricht kommt nach dem Funkloch, einmal |
+| I12 | Server zur Uhrzeit aus (`docker compose stop`), vor 21 Uhr wieder an, mit etwas Neuem | die Nachricht kommt gleich nach dem Start; nach 21 Uhr gestartet: an diesem Tag keine mehr |
+
+### J. Einkaufsliste nach Bring! über Home Assistant
+
+Zum Ausprobieren eine eigene Testliste in Bring! und deren To-do-Liste in HA (Abschnitt 17.2). Abgeglichen wird alle zwei Minuten; Bring! braucht in HA bis zu 90 Sekunden.
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| J1 | Abschnitt 17.2 durchgehen, mit einem eigenen HA-Benutzer **ohne** Administratorrechte | Log: „Home Assistant: Abgleich mit todo.… läuft."; in der App „ok". Sonst bitte melden, mit der Meldung aus der App. |
+| J2 | In Stowly einen Eintrag „Milch Probe" anlegen | nach zwei bis vier Minuten in Bring! als „Milch Probe" mit der Spezifikation „Stowly" |
+| J3 | Einen Mindestbestand setzen und unterschreiten (automatischer Eintrag „fehlt 2"), dann eine Packung einlagern | in Bring! mit „fehlt 2 · Stowly", danach „fehlt 1 · Stowly" |
+| J4 | „Milch Probe" in Stowly abhaken | in Bring! unter „zuletzt gekauft" |
+| J5 | Den Mindestbestand wieder erreichen (einlagern) | Der automatische Artikel verschwindet aus Bring!, ohne unter „zuletzt gekauft" zu stehen. |
+| J6 | In Bring! einen Artikel „Kaffee Probe" anlegen, in Stowly einen Eintrag „kaffee probe" | Kein zweiter Artikel in Bring!; in der App zählt „in Bring!" den Eintrag mit. Den Eintrag in Stowly abhaken: In Bring! bleibt „Kaffee Probe" stehen. |
+| J7 | Einen gespiegelten Artikel in der App von Bring! abhaken | nach einigen Minuten in Stowly erledigt; ein automatischer Eintrag kommt bis zum nächsten Einlagern nicht wieder |
+| J8 | Einen gespiegelten Artikel in Bring! löschen | in Stowly erledigt, nach zwei Abgleichen (etwa vier bis sechs Minuten) |
+| J9 | Einen in Stowly erledigten Eintrag wieder öffnen | Er geht nach zwei Minuten wieder nach Bring! (zurück aus „zuletzt gekauft" oder als neuer Artikel: bitte notieren, welches) |
+| J10 | HA neu starten, während Einträge in Bring! stehen | In der App zeitweise „nicht erreichbar" oder „nicht verfügbar"; danach „ok". Kein Eintrag in Stowly ist erledigt. |
+| J11 | `STOWLY_HA_TOKEN` absichtlich verfälschen, `docker compose up -d`; danach zurück | „Home Assistant lehnt den Token ab."; die Einkaufsliste in Stowly bleibt unverändert |
+| J12 | Nur bei HA über https mit eigener Zertifizierungsstelle: Abschnitt 17.4; einmal ohne `STOWLY_HA_CA` | ohne: „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA."; mit: „ok" |
+| J13 | `docker compose logs stowly \| grep -i "home assistant"` | Wechsel des Zustands und erledigte Einträge, nie der Token und nie die Adresse von HA |
+
+### K. Sensor für Home Assistant
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| K1 | Token nach 18.1, `curl` wie dort | JSON mit `state`, `today`, `expired`, `total`, `next`, `shopping`, den Listen und `message` |
+| K2 | Dasselbe ohne Token und mit dem Token eines Geräts | beide Male 401 |
+| K3 | Den Sensor-Token an `/api/devices` schicken | 401 |
+| K4 | Schnipsel aus 18.2 in HA, HA neu starten | `sensor.stowly` mit der Zahl der bald ablaufenden Packungen und allen Attributen; die drei Vorlagen-Sensoren mit Werten |
+| K5 | Die Automation „Stowly am Morgen" auf eine Minute von jetzt stellen | Der Satz wird vorgelesen. |
+| K6 | Nur mit eigener Zertifizierungsstelle: 18.3 (`REQUESTS_CA_BUNDLE` im Container von HA, sonst `verify_ssl: false`) | Der Sensor bekommt Werte; im Log von HA kein Fehler zum Zertifikat. Bitte notieren, welcher Weg ging. |

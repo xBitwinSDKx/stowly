@@ -4,9 +4,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { ENDPOINTS, ID_POOL_TARGET, PROTOCOL_VERSION, type SyncResponse } from "@/contract";
+import { ENDPOINTS, ID_POOL_TARGET, PROTOCOL_VERSION, type ErrorBody, type IntegrationStatus, type SyncResponse } from "@/contract";
 
-import fakeApi, { createFakeNetwork, FAKE_PASSWORD, FakeServer, validateCommand, type FakeRequest, type FakeResponse } from "./fake-api";
+import fakeApi, { createFakeNetwork, FAKE_PASSWORD, FakeServer, HA_OFF, validateCommand, type FakeRequest, type FakeResponse } from "./fake-api";
 
 const AT = "2026-11-13T10:00:00.000Z";
 const ID = "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4a5b";
@@ -225,6 +225,54 @@ describe("Sync", () => {
     expect(await status({ ...good, sent_at: "2026-11-13T10:00:00Z" })).toEqual([422, "invalid_request"]);
     expect(await status({ ...good, commands: [{ type: "zone.create" }] })).toEqual([422, "invalid_request"]);
     expect(await status({ ...good, commands: Array.from({ length: 501 }, (_, n) => ({ id: `3f2b8c1e-5a47-4d09-9b6e-${String(n).padStart(12, "0")}`, at: AT, type: "x" })) })).toEqual([413, "payload_too_large"]);
+  });
+});
+
+describe("Statistik und Integrationen", () => {
+  it("antwortet auf GET /api/stats wie der Server: angemeldet, ohne Zwischenspeicher, 400 mit den Stellen", async () => {
+    const server = new FakeServer({ now: () => new Date(AT) });
+    const network = createFakeNetwork(server);
+    expect((await network.fetch(ENDPOINTS.get_stats.path)).status).toBe(401);
+    const token = await login(network);
+    const get = (query: string) => network.fetch(`${ENDPOINTS.get_stats.path}${query}`, { headers: { authorization: `Bearer ${token}` } });
+
+    const ok = await get("?start=2026-11");
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("cache-control")).toBe("no-store");
+    expect(await ok.json()).toMatchObject({ start: "2026-11", end: "2026-11", months: [{ month: "2026-11", consumed: 0, discarded: 0 }], timezone: "Europe/Berlin" });
+
+    const errors = async (query: string) => {
+      const response = await get(query);
+      expect(response.status).toBe(400);
+      return ((await response.json()) as ErrorBody).error;
+    };
+    // Ein Parameter doppelt und ein falscher Monat: beide Stellen auf einmal.
+    expect(await errors("?start=2026-01&start=2026-02&end=13-2026")).toEqual({
+      code: "invalid_request",
+      message: "'start' darf nur einmal angegeben sein.",
+      details: {
+        errors: [
+          { loc: ["query", "start"], msg: "'start' darf nur einmal angegeben sein.", type: "value_error" },
+          { loc: ["query", "end"], msg: "'end' muss ein Monat YYYY-MM sein (Jahre 0001 bis 9999).", type: "value_error" },
+        ],
+      },
+    });
+    expect((await errors("?start=2026-12")).details).toEqual({ errors: [{ loc: ["query", "start"], msg: "'start' liegt nach 'end'.", type: "value_error" }] });
+    expect((await errors("?start=9999-12&end=0001-01")).message).toBe("'start' liegt nach 'end'.");
+    expect((await errors("?start=0001-01&end=9999-12")).message).toBe("Der Zeitraum umfasst mehr als 120 Monate.");
+    // Ohne Anfang nie vor dem Jahr 0001.
+    expect(await (await get("?end=0001-05")).json()).toMatchObject({ start: "0001-01", end: "0001-05" });
+  });
+
+  it("nennt den Zustand von Home Assistant und die Zeitzone so, wie der Test sie vorgibt", async () => {
+    const server = new FakeServer({ now: () => new Date(AT) });
+    const network = createFakeNetwork(server);
+    const token = await login(network);
+    const load = async () => (await (await network.fetch(ENDPOINTS.get_integrations.path, { headers: { authorization: `Bearer ${token}` } })).json()) as IntegrationStatus;
+    expect(await load()).toMatchObject({ timezone: "Europe/Berlin", ha: HA_OFF });
+    server.timezone = "Europe/Vienna";
+    server.haStatus = { ...HA_OFF, configured: true, entity: "todo.einkaufsliste", state: "pending", sensor: true };
+    expect(await load()).toMatchObject({ timezone: "Europe/Vienna", ha: { configured: true, state: "pending", sensor: true } });
   });
 });
 

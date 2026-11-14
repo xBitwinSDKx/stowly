@@ -17,13 +17,17 @@ import {
   stockCount,
   todayLocal,
   warnDaysFor,
+  type HaState,
+  type HaStatus,
   type Live,
+  type Package,
   type Product,
   type PushState,
   type ShoppingItem,
+  type StatsRange,
 } from "@/contract";
 
-import { createMockCore, createSampleData, DEVICE_IDS, MOCK_PASSWORD, PRINTER_IDS, sampleBarcode, sampleUuid, ZONE_IDS, type MockCore, type MockScenario } from ".";
+import { createMockCore, createSampleData, DEVICE_IDS, MOCK_PASSWORD, PRINTER_IDS, sampleBarcode, samplePackageId, sampleUuid, ZONE_IDS, type MockCore, type MockScenario } from ".";
 
 const NOW = new Date("2026-11-13T10:00:00.000Z");
 
@@ -97,8 +101,12 @@ describe("Lesen", () => {
 
     expect(active.every((pkg) => pkg.removed_at === null)).toBe(true);
     expect(removed.every((pkg) => pkg.removed_at !== null)).toBe(true);
-    // eine Packung wurde vor 40 Tagen entnommen, die Aufbewahrung beträgt 30 Tage
-    expect(active.length + removed.length).toBe(all.length - 1);
+    // Eine Packung wurde vor 40 Tagen entnommen, dazu der Verlauf für die Statistik; die Aufbewahrung beträgt 30 Tage.
+    const limit = new Date(NOW.getTime() - 30 * 86_400_000).toISOString();
+    const old = all.filter((pkg) => pkg.removed_at !== null && pkg.removed_at < limit);
+    expect(old.length).toBeGreaterThan(40);
+    expect(active.length + removed.length).toBe(all.length - old.length);
+    expect(removed).toHaveLength(5);
     expect(removed.map((pkg) => pkg.removed_at)).toEqual([...removed.map((pkg) => pkg.removed_at)].sort().reverse());
     expect(removed.some((pkg) => pkg.displaced !== null)).toBe(true);
   });
@@ -788,6 +796,7 @@ describe("Ausgangslagen", () => {
       [["ios"], "ios_install"],
       [["insecure"], "unsupported"],
       [["ios", "push-on"], "on"],
+      [["push-rate-limited"], "on"],
     ];
     for (const [scenarios, state] of cases) {
       expect(value(mock({ scenarios }).push.state), scenarios.join(",")).toBe(state);
@@ -1119,5 +1128,301 @@ describe("Integrationen", () => {
     expect((await core.integrations.load()).timezone).toBe("Europe/Vienna");
     core.control.setIntegrations(null);
     expect((await core.integrations.load()).timezone).toBe("Europe/Berlin");
+  });
+});
+
+// ------------------------------------------------------------------------------------------
+// Stufe 2, Runde 2: Statistik, Home Assistant, Wartezeit der Testnachricht
+// ------------------------------------------------------------------------------------------
+
+/** Der Platzhalter im Kühlschrank (ohne Namen), einer der am häufigsten entsorgten. */
+const PLACEHOLDER_ID = sampleUuid(2, 16);
+
+describe("Statistik", () => {
+  const PLACEHOLDER = PLACEHOLDER_ID;
+
+  it("zählt ohne Zeitraum die 12 Monate bis zum laufenden, aus dem ganzen Verlauf, in der Zeitzone des Servers", async () => {
+    const core = mock();
+    const stats = await core.stats.load();
+    expect(stats).toMatchObject({ start: "2025-12", end: "2026-11", timezone: "Europe/Berlin", consumed: 33, discarded: 18, discarded_share: 0.3529 });
+    expect(stats.months.map((month) => [month.month, month.consumed, month.discarded])).toEqual([
+      ["2025-12", 2, 1],
+      ["2026-01", 2, 2],
+      ["2026-02", 2, 2],
+      ["2026-03", 2, 2],
+      ["2026-04", 3, 1],
+      ["2026-05", 2, 2],
+      ["2026-06", 3, 1],
+      ["2026-07", 3, 1],
+      ["2026-08", 3, 2],
+      ["2026-09", 5, 1],
+      ["2026-10", 3, 2],
+      ["2026-11", 3, 1],
+    ]);
+    // Meiste zuerst; bei Gleichstand nach Name, der Platzhalter ohne Namen zuletzt.
+    expect(stats.top_discarded.map((product) => [product.name, product.discarded])).toEqual([
+      ["H-Milch 3,5 %", 4],
+      ["", 4],
+      ["Butter", 3],
+      ["Haferflocken", 2],
+      ["Lachsfilet (TK)", 2],
+      ["Apfelmus", 1],
+      ["Erbsen (TK)", 1],
+      ["Passierte Tomaten", 1],
+    ]);
+    const placeholder = core.control.snapshot().products.find((product) => product.id === PLACEHOLDER);
+    expect(stats.top_discarded[1]).toEqual({ product_id: PLACEHOLDER, name: "", barcode: placeholder?.barcodes[0], discarded: 4 });
+    expect(stats.zones.map((zone) => [zone.name, zone.consumed, zone.discarded])).toEqual([
+      ["Vorratsregal", 13, 6],
+      ["Keller", 16, 2],
+      ["Kühlschrank", 1, 7],
+      ["Gefrierschrank", 3, 3],
+    ]);
+    expect(stats.zones.map((zone) => zone.zone_id)).toEqual([ZONE_IDS.shelf, ZONE_IDS.cellar, ZONE_IDS.fridge, ZONE_IDS.freezer]);
+    // Die Lösch-Historie zeigt davon nur die letzten 30 Tage.
+    expect(value(core.data.removedPackages)).toHaveLength(5);
+  });
+
+  it("rechnet einen gewählten Zeitraum, auch jenseits der Aufbewahrungsdauer", async () => {
+    const core = mock();
+    const older = await core.stats.load({ start: "2025-10", end: "2025-11" });
+    expect(older).toEqual({
+      start: "2025-10",
+      end: "2025-11",
+      months: [
+        { month: "2025-10", consumed: 3, discarded: 0 },
+        { month: "2025-11", consumed: 2, discarded: 0 },
+      ],
+      consumed: 5,
+      discarded: 0,
+      discarded_share: 0,
+      top_discarded: [],
+      zones: [
+        { zone_id: ZONE_IDS.shelf, name: "Vorratsregal", consumed: 3, discarded: 0 },
+        { zone_id: ZONE_IDS.cellar, name: "Keller", consumed: 1, discarded: 0 },
+        { zone_id: ZONE_IDS.fridge, name: "Kühlschrank", consumed: 1, discarded: 0 },
+        { zone_id: ZONE_IDS.freezer, name: "Gefrierschrank", consumed: 0, discarded: 0 },
+      ],
+      timezone: "Europe/Berlin",
+    });
+    // Nur der Anfang: bis zum laufenden Monat. Nur das Ende: 12 Monate bis dahin.
+    expect(await core.stats.load({ start: "2026-10" })).toMatchObject({ start: "2026-10", end: "2026-11", consumed: 6, discarded: 3, discarded_share: 0.3333 });
+    const year = await core.stats.load({ end: "2026-06" });
+    expect(year).toMatchObject({ start: "2025-07", end: "2026-06" });
+    expect(year.months).toHaveLength(12);
+    // Ein Monat allein, und genau 120 Monate gehen.
+    expect((await core.stats.load({ start: "2026-11", end: "2026-11" })).months).toEqual([{ month: "2026-11", consumed: 3, discarded: 1 }]);
+    expect((await core.stats.load({ start: "2016-12", end: "2026-11" })).months).toHaveLength(120);
+  });
+
+  it("weist einen ungültigen Zeitraum ab wie der Server und braucht den Server", async () => {
+    const core = mock();
+    const where = async (range: StatsRange) => {
+      const error = await expectCoreError(core.stats.load(range), "invalid");
+      expect(error.message).not.toBe("");
+      return (error.details.errors as { loc: string[] }[])[0]?.loc;
+    };
+    expect(await where({ start: "2026-13" })).toEqual(["query", "start"]);
+    expect(await where({ start: "0000-05", end: "0001-02" })).toEqual(["query", "start"]);
+    expect(await where({ end: "26-11" })).toEqual(["query", "end"]);
+    expect(await where({ end: "" })).toEqual(["query", "end"]);
+    expect(await where({ start: "2026-12", end: "2026-11" })).toEqual(["query", "start"]);
+    expect(await where({ start: "2016-11", end: "2026-11" })).toEqual(["query", "start"]);
+    // Ohne Ende gilt der laufende Monat: Ein späterer Anfang liegt danach.
+    expect(await where({ start: "2026-12" })).toEqual(["query", "start"]);
+    // Sind beide falsch geschrieben, nennt der Fehler beide, mit dem Satz des Servers.
+    const both = await expectCoreError(core.stats.load({ start: "2026-1", end: "2026/11" }), "invalid");
+    expect(both.message).toBe("'start' muss ein Monat YYYY-MM sein (Jahre 0001 bis 9999).");
+    expect((both.details.errors as { loc: string[] }[]).map((error) => error.loc)).toEqual([
+      ["query", "start"],
+      ["query", "end"],
+    ]);
+
+    await expectCoreError(mock({ scenarios: ["offline"] }).stats.load(), "offline");
+    // Mit der Verzögerung der Attrappe: Fällt der Server unterwegs weg, fehlt die Antwort.
+    const slow = createMockCore({ latency: 5, now: () => NOW });
+    const pending = slow.stats.load();
+    slow.control.setOnline(false);
+    await expectCoreError(pending, "offline");
+  });
+
+  it("folgt Entnehmen, Rückgängig, geändertem Grund, Zusammenführen und gelöschten Zonen; Versehen zählen nie", async () => {
+    const core = mock();
+    const before = await core.stats.load();
+    const zoneOf = (stats: typeof before, id: string) => stats.zones.find((zone) => zone.zone_id === id);
+    const rice = productNamed(core, "Basmati Reis");
+    const [a = "", b = "", c = ""] = stockOf(core, rice.id);
+    await core.stock.remove([a, b], "discarded");
+    await core.stock.remove([c], "mistake");
+    let stats = await core.stats.load();
+    expect(stats).toMatchObject({ consumed: before.consumed, discarded: before.discarded + 2 });
+    expect(stats.top_discarded.find((product) => product.product_id === rice.id)?.discarded).toBe(2);
+
+    // Rückgängig und ein nachträglich geänderter Grund: Es zählt der heutige Stand jeder Packung.
+    await core.stock.restore([a]);
+    await core.stock.remove([b], "consumed");
+    stats = await core.stats.load();
+    expect(stats).toMatchObject({ consumed: before.consumed + 1, discarded: before.discarded });
+    expect(stats.months.at(-1)?.consumed).toBe((before.months.at(-1)?.consumed ?? 0) + 1);
+    expect(stats.top_discarded.some((product) => product.product_id === rice.id)).toBe(false);
+
+    // Zusammengeführt: Die entsorgten Packungen des Platzhalters zählen bei H-Milch.
+    const milk = productNamed(core, "H-Milch 3,5 %");
+    await core.products.merge(PLACEHOLDER, milk.id);
+    stats = await core.stats.load();
+    expect(stats.top_discarded[0]).toMatchObject({ product_id: milk.id, name: "H-Milch 3,5 %", discarded: 8 });
+    expect(stats.top_discarded.some((product) => product.product_id === PLACEHOLDER)).toBe(false);
+
+    // Eine gelöschte Zone fehlt; ihre Packungen zählen bei der Zone, in die sie gewandert sind.
+    await core.zones.remove(ZONE_IDS.fridge, ZONE_IDS.cellar);
+    stats = await core.stats.load();
+    expect(stats.zones.map((zone) => zone.name)).toEqual(["Vorratsregal", "Keller", "Gefrierschrank"]);
+    expect(zoneOf(stats, ZONE_IDS.cellar)).toMatchObject({
+      consumed: (zoneOf(before, ZONE_IDS.cellar)?.consumed ?? 0) + 1 + (zoneOf(before, ZONE_IDS.fridge)?.consumed ?? 0),
+      discarded: (zoneOf(before, ZONE_IDS.cellar)?.discarded ?? 0) + (zoneOf(before, ZONE_IDS.fridge)?.discarded ?? 0),
+    });
+  });
+
+  it("zählt jeden Monat in der Zeitzone des Servers", async () => {
+    const data = createSampleData(NOW);
+    const late = "2026-10-31T23:30:00.000Z";
+    const pkg: Package = {
+      id: samplePackageId(999),
+      product_id: data.products[0]?.id ?? "",
+      zone_id: ZONE_IDS.cellar,
+      best_before: null,
+      created_at: "2026-10-20T10:00:00.000Z",
+      updated_at: late,
+      removed_at: late,
+      removal_reason: "consumed",
+      displaced: null,
+    };
+    const core = mock({ data: { packages: [pkg] } });
+    // In Berlin ist es schon der 1. November, 00:30.
+    expect((await core.stats.load()).months.slice(-2)).toEqual([
+      { month: "2026-10", consumed: 0, discarded: 0 },
+      { month: "2026-11", consumed: 1, discarded: 0 },
+    ]);
+    core.control.setIntegrations({ timezone: "America/New_York" });
+    const stats = await core.stats.load();
+    expect(stats.timezone).toBe("America/New_York");
+    expect(stats.months.slice(-2)).toEqual([
+      { month: "2026-10", consumed: 1, discarded: 0 },
+      { month: "2026-11", consumed: 0, discarded: 0 },
+    ]);
+  });
+
+  it("beginnt mit stats-empty leer und zählt, was danach entnommen wird", async () => {
+    const core = mock({ scenarios: ["stats-empty"] });
+    const empty = await core.stats.load();
+    expect(empty).toMatchObject({ start: "2025-12", end: "2026-11", consumed: 0, discarded: 0, discarded_share: null, top_discarded: [] });
+    expect(empty.months).toHaveLength(12);
+    expect(empty.months.every((month) => month.consumed === 0 && month.discarded === 0)).toBe(true);
+    expect(empty.zones.map((zone) => [zone.name, zone.consumed, zone.discarded])).toEqual([
+      ["Vorratsregal", 0, 0],
+      ["Keller", 0, 0],
+      ["Kühlschrank", 0, 0],
+      ["Gefrierschrank", 0, 0],
+    ]);
+    // Bestand und Lösch-Historie bleiben, wie sie sind.
+    expect(value(core.data.removedPackages)).toHaveLength(5);
+    const [first] = value(core.data.packages);
+    await core.stock.remove([first?.id ?? ""], "discarded");
+    expect(await core.stats.load()).toMatchObject({ consumed: 0, discarded: 1, discarded_share: 1 });
+
+    // Ein frischer Haushalt hat ebenfalls nichts, mit seiner einen Zone.
+    expect((await mock({ scenarios: ["empty"] }).stats.load()).zones).toEqual([{ zone_id: ZONE_IDS.shelf, name: "Vorrat", consumed: 0, discarded: 0 }]);
+  });
+});
+
+describe("Home Assistant", () => {
+  const OFF: HaStatus = { configured: false, problem: null, entity: null, state: "off", last_ok_at: null, last_error: null, last_error_at: null, linked: 0, sensor: false };
+
+  it("zeigt jeden Zustand einer Ausgangslage; ohne Angabe ist es aus", async () => {
+    const ha = async (scenarios: MockScenario[]) => (await mock({ scenarios }).integrations.load()).ha;
+    expect(await ha([])).toEqual(OFF);
+    // Die Beispieldaten haben vier offene Einträge mit Namen, alle älter als zwei Minuten.
+    expect(await ha(["ha-ok"])).toEqual({ ...OFF, configured: true, entity: "todo.einkaufsliste", state: "ok", last_ok_at: "2026-11-13T09:59:00.000Z", linked: 4, sensor: true });
+    expect(await ha(["ha-pending"])).toEqual({ ...OFF, configured: true, entity: "todo.einkaufsliste", state: "pending", linked: 4, sensor: true });
+    expect(await ha(["ha-unreachable"])).toEqual({
+      ...OFF,
+      configured: true,
+      entity: "todo.einkaufsliste",
+      state: "unreachable",
+      last_ok_at: "2026-11-13T07:00:00.000Z",
+      last_error: "Home Assistant ist nicht erreichbar.",
+      last_error_at: "2026-11-13T09:59:00.000Z",
+      linked: 4,
+      sensor: true,
+    });
+    expect(await ha(["ha-unauthorized"])).toMatchObject({ configured: true, state: "unauthorized", last_error: "Home Assistant lehnt den Token ab." });
+    expect(await ha(["ha-problem"])).toEqual({ ...OFF, problem: "STOWLY_HA_TOKEN fehlt.", entity: "todo.einkaufsliste" });
+  });
+
+  it("setzt jeden Zustand mit dem Satz des Servers und kehrt zur Ausgangslage zurück", async () => {
+    const core = mock({ scenarios: ["ha-ok"] });
+    const messages: Record<HaState, string | null> = {
+      off: null,
+      pending: null,
+      ok: null,
+      unauthorized: "Home Assistant lehnt den Token ab.",
+      not_found: "Die Liste todo.einkaufsliste gibt es in Home Assistant nicht.",
+      unavailable: "Die Liste ist in Home Assistant gerade nicht verfügbar.",
+      unreachable: "Home Assistant ist nicht erreichbar.",
+      error: "Home Assistant antwortet mit 500.",
+    };
+    for (const [state, message] of Object.entries(messages) as [HaState, string | null][]) {
+      core.control.setHaState(state);
+      const ha = (await core.integrations.load()).ha;
+      expect(ha, state).toMatchObject({ state, configured: state !== "off", sensor: state !== "off", last_error: message, last_error_at: message === null ? null : expect.any(String) });
+    }
+    core.control.setHaState("off");
+    expect((await core.integrations.load()).ha).toEqual(OFF);
+
+    // setIntegrations ersetzt das Ganze; setHaState gilt danach wieder; null führt zur Ausgangslage.
+    core.control.setIntegrations({ ha: { ...OFF, problem: "STOWLY_HA_URL fehlt." } });
+    expect((await core.integrations.load()).ha.problem).toBe("STOWLY_HA_URL fehlt.");
+    core.control.setHaState("unavailable");
+    expect((await core.integrations.load()).ha).toMatchObject({ state: "unavailable", problem: null });
+    core.control.setIntegrations(null);
+    expect((await core.integrations.load()).ha).toMatchObject({ state: "ok", last_error: null });
+  });
+
+  it("zählt als verbunden, was nach der Regel des Servers in Bring! stünde", async () => {
+    let now = NOW;
+    const core = mock({ scenarios: ["ha-ok"], now: () => now });
+    const linked = async () => (await core.integrations.load()).ha.linked;
+    expect(await linked()).toBe(4);
+    const yeast = await core.shopping.create({ text: "Hefe" });
+    // Erst nach zwei Minuten offen geht ein Eintrag nach Bring!.
+    expect(await linked()).toBe(4);
+    now = new Date(NOW.getTime() + 120_000);
+    expect(await linked()).toBe(5);
+    await core.shopping.update(yeast.id, { done: true });
+    expect(await linked()).toBe(4);
+    // Ein Platzhalter ohne Namen geht erst mit Namen nach Bring!.
+    await core.shopping.create({ product_id: PLACEHOLDER_ID });
+    now = new Date(NOW.getTime() + 300_000);
+    expect(await linked()).toBe(4);
+    await core.products.update(PLACEHOLDER_ID, { name: "Ziegenkäse" });
+    expect(await linked()).toBe(5);
+  });
+});
+
+describe("Wartezeit der Testnachricht", () => {
+  it("lässt mit push-rate-limited die nächste Testnachricht warten, gleich wann sie kommt; danach geht es wieder", async () => {
+    let now = NOW;
+    const core = mock({ scenarios: ["push-rate-limited"], now: () => now });
+    expect(value(core.push.state)).toBe("on");
+    expect((await core.integrations.load()).push).toMatchObject({ configured: true, this_device: true });
+    now = new Date(NOW.getTime() + 60_000);
+    expect((await expectCoreError(core.push.test(), "rate_limited")).details.retry_after_s).toBe(7);
+    // Nach der Uhr der Attrappe: sechs Sekunden später fehlt noch eine.
+    now = new Date(now.getTime() + 6_000);
+    expect((await expectCoreError(core.push.test(), "rate_limited")).details.retry_after_s).toBe(1);
+    now = new Date(now.getTime() + 1_000);
+    expect(await core.push.test()).toEqual({ status: "sent", http_status: 201, message: "Der Push-Dienst hat die Nachricht angenommen." });
+    // Danach gilt die Regel wie sonst.
+    expect((await expectCoreError(core.push.test(), "rate_limited")).details.retry_after_s).toBe(10);
   });
 });

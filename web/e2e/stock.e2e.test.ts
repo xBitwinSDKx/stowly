@@ -326,5 +326,20 @@ describe("Produkte und Einstellungen", () => {
     expect(value(cellar.core.data.settings)).toMatchObject({ zone_mode: "primary", warn_days: 7, primary_zone_id: second.id });
     await expectSameAsServer(kitchen, raw);
     await expectSameAsServer(cellar, raw);
+
+    // Die Uhrzeit der Tagesnachricht (Protokoll 2): Vorgabe 17:00, gilt nach dem Abgleich auf jedem Gerät.
+    expect(value(kitchen.core.data.settings).notify_time).toBe("17:00");
+    await kitchen.core.settings.update({ notify_time: "18:30" });
+    await expectCoreError(kitchen.core.settings.update({ notify_time: "24:00" }), "invalid");
+    await cellar.core.settings.update({ warn_days: 10 });
+    await kitchen.sync();
+    await cellar.sync();
+    expect(value(cellar.core.data.settings)).toMatchObject({ notify_time: "18:30", warn_days: 10 });
+    await cellar.core.settings.update({ notify_time: "06:45" });
+    await cellar.sync();
+    await kitchen.sync();
+    expect(value(kitchen.core.data.settings)).toMatchObject({ notify_time: "06:45", warn_days: 10, zone_mode: "primary" });
+    await expectSameAsServer(kitchen, raw);
+    await expectSameAsServer(cellar, raw);
   });
 });

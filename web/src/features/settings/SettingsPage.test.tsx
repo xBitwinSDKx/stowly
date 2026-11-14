@@ -1,18 +1,22 @@
 /**
- * Einstellungen auf der Attrappe: Darstellung, dieses Gerät, Haushalt, Geräte, Sicherung, Über, Abmelden.
+ * Einstellungen auf der Attrappe: Darstellung, dieses Gerät, Haushalt (samt Uhrzeit der
+ * Tagesnachricht), Geräte, Sicherung, Home Assistant und Bring!, Über, Abmelden.
  */
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CoreError, formatTimestamp, PUSH_TEST_INTERVAL_S, ROUTES, type Device, type Live } from "@/contract";
+import { CoreError, formatTimestamp, HA_MIRROR_DELAY_S, PUSH_TEST_INTERVAL_S, ROUTES, type Device, type HaState, type HaStatus, type Live } from "@/contract";
 import { renderApp } from "@/app/render.test-setup";
-import { DEVICE_IDS } from "@/mock";
+import { DEVICE_IDS, type MockCore } from "@/mock";
+import { deviceTimeZone } from "@/ui";
 import { resetThemeForTests, THEME_STORAGE_KEY } from "@/ui/theme";
 
 import { describeConnection, describeLookup } from ".";
 import { backupTimeText, backupWarningText } from "./BackupSection";
 import { sortDevices } from "./DevicesSection";
+import { describeHa, durationText, linkedText } from "./HomeAssistantSection";
+import { notifyTimeHint, readTime } from "./NotifyTimeSetting";
 import { describePush, testMessage } from "./PushSetting";
 
 function value<T>(live: Live<T>): T {
@@ -374,7 +378,7 @@ describe("Benachrichtigungen (Push)", () => {
     const core = renderApp({}, ROUTES.settings);
     const enable = vi.spyOn(core.push, "enable");
     await ready();
-    expect(pushRow()).toHaveTextContent("Höchstens eine Nachricht am Tag, und nur, wenn seit der letzten etwas neu bald abläuft oder abgelaufen ist.");
+    expect(pushRow()).toHaveTextContent("Höchstens eine Nachricht am Tag, zur Uhrzeit unter „Haushalt“, und nur, wenn seit der letzten etwas neu bald abläuft oder abgelaufen ist.");
     const button = within(pushRow()).getByRole("button", { name: "Einschalten" });
 
     // Synchron im Klick, ohne vorher zu warten: Sonst fragt der Browser nicht.
@@ -413,8 +417,9 @@ describe("Benachrichtigungen (Push)", () => {
     const core = renderApp({ scenarios: ["push-on"] }, ROUTES.settings);
     const test = vi.spyOn(core.push, "test");
     await ready();
-    // Was der Server weiß: die letzte Tagesnachricht (vor 41 Stunden)
-    expect(await within(pushRow()).findByText(/Letzte Tagesnachricht: gestern/)).toBeInTheDocument();
+    // Was der Server weiß: die letzte Tagesnachricht (vor 41 Stunden). Nach Kalendertagen des
+    // Geräts ist das gestern oder vorgestern, je nach Uhrzeit des Laufs (`timeAgo`).
+    expect(await within(pushRow()).findByText(/Letzte Tagesnachricht: (gestern|vor 2 Tagen) /)).toBeInTheDocument();
 
     const button = within(pushRow()).getByRole("button", { name: "Testnachricht senden" });
     await userEvent.click(button);
@@ -454,6 +459,20 @@ describe("Benachrichtigungen (Push)", () => {
     await userEvent.click(within(pushRow()).getByRole("button", { name: "Testnachricht senden" }));
     expect(await within(pushRow()).findByText("Gerade erst geschickt")).toBeInTheDocument();
     expect(pushRow()).toHaveTextContent("Nächste Testnachricht in 7 s");
+  });
+
+  it("wartet auch mit der Ausgangslage der Attrappe so lange, wie der Server sagt, und schickt danach", async () => {
+    const core = renderApp({ scenarios: ["push-rate-limited"] }, ROUTES.settings);
+    await ready();
+    const button = within(pushRow()).getByRole("button", { name: "Testnachricht senden" });
+    await userEvent.click(button);
+    expect(await within(pushRow()).findByText("Gerade erst geschickt")).toBeInTheDocument();
+    // Eben ging eine hinaus: Es bleiben einige der PUSH_TEST_INTERVAL_S Sekunden.
+    const left = Number(/Nächste Testnachricht in (\d+) s/.exec(pushRow().textContent ?? "")?.[1]);
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThanOrEqual(PUSH_TEST_INTERVAL_S);
+    expect(button).toBeUnavailable();
+    expect(value(core.push.state)).toBe("on");
   });
 
   it("schaltet aus, auch ohne Server", async () => {
@@ -545,7 +564,8 @@ describe("Zustand der automatischen Sicherung", () => {
     expect(alert).toHaveTextContent("Seit mehr als 48 Stunden keine Sicherung");
     expect(backup).toHaveTextContent("Letzter Fehler");
     expect(backup).toHaveTextContent("Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).");
-    expect(backup).toHaveTextContent("vor 3 Tagen");
+    // Drei Läufe um 03:30 zurück: nach Kalendertagen des Geräts drei oder, vor 03:30, vier Tage.
+    expect(backup).toHaveTextContent(/vor [34] Tagen/);
   });
 
   it("sagt, wenn die Sicherung nur halb eingerichtet ist", async () => {
@@ -592,5 +612,264 @@ describe("Ungültige Eingaben in den Einstellungen", () => {
     await userEvent.type(within(dialog).getByLabelText("Name des Geräts"), "n".repeat(61));
     await userEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Der Name des Geräts ist zu lang (höchstens 60 Zeichen).");
+  });
+});
+
+/** Eine Zeitzone, die sicher nicht die des Geräts ist. */
+function otherZone(): string {
+  return deviceTimeZone() === "Pacific/Auckland" ? "America/New_York" : "Pacific/Auckland";
+}
+
+/** Öffnet die Einstellungen vom Bestand aus: So gilt, was der Test vorher am Kern eingerichtet hat, schon für das erste Laden. */
+async function openSettings(): Promise<void> {
+  await screen.findByRole("heading", { name: "Bestand" });
+  await userEvent.click(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Einstellungen" }));
+  await ready();
+}
+
+const HA = "Home Assistant und Bring!";
+
+describe("Home Assistant und Bring!", () => {
+  const base: HaStatus = {
+    configured: true,
+    problem: null,
+    entity: "todo.einkaufsliste",
+    state: "ok",
+    last_ok_at: "2026-11-14T10:00:00.000Z",
+    last_error: null,
+    last_error_at: null,
+    linked: 2,
+    sensor: true,
+  };
+  const now = Date.parse("2026-11-14T10:05:00.000Z");
+
+  it("beschreibt jeden Zustand des Abgleichs in einem Satz", () => {
+    const states: HaState[] = ["pending", "ok", "unauthorized", "not_found", "unavailable", "unreachable", "error"];
+    expect(states.map((state) => describeHa({ ...base, state }, now).value)).toEqual([
+      "eingerichtet",
+      "verbunden",
+      "Token abgelehnt",
+      "Liste fehlt",
+      "Liste nicht verfügbar",
+      "nicht erreichbar",
+      "Fehler",
+    ]);
+    for (const state of states) {
+      expect(describeHa({ ...base, state }, now).hint, state).toMatch(/\.$/);
+    }
+    expect(describeHa(base, now).hint).toBe(`Zuletzt gelungen vor 5 Minuten (${formatTimestamp(base.last_ok_at ?? "")}). Gerade stehen 2 Einträge in Bring!.`);
+    expect(describeHa({ ...base, state: "not_found" }, now).hint).toContain("Die Liste todo.einkaufsliste gibt es in Home Assistant nicht.");
+    expect(describeHa({ ...base, state: "unreachable", last_ok_at: null }, now).hint).toContain("Seit dem Start des Servers ist noch keiner gelungen.");
+    // Störungen bekommen einen Hinweis über der Liste: rot, wo am Server etwas zu ändern ist.
+    expect(describeHa({ ...base, state: "unauthorized" }, now).notice?.tone).toBe("danger");
+    expect(describeHa({ ...base, state: "not_found" }, now).notice?.tone).toBe("danger");
+    expect(describeHa({ ...base, state: "unavailable" }, now).notice?.tone).toBe("warn");
+    expect(describeHa({ ...base, state: "unreachable" }, now).notice?.tone).toBe("warn");
+    expect(describeHa(base, now).notice).toBeNull();
+    expect(describeHa({ ...base, state: "pending", last_ok_at: null }, now).notice).toBeNull();
+
+    const off: HaStatus = { ...base, configured: false, entity: null, state: "off", last_ok_at: null, linked: 0, sensor: false };
+    expect(describeHa(off, now)).toMatchObject({ value: "aus", notice: null });
+    expect(describeHa({ ...off, problem: "STOWLY_HA_TOKEN fehlt." }, now).notice).toEqual({ tone: "warn", title: "Der Abgleich mit Bring! ist aus", text: "STOWLY_HA_TOKEN fehlt." });
+
+    expect(linkedText(0)).toBe("Gerade steht kein Eintrag in Bring!.");
+    expect(linkedText(1)).toBe("Gerade steht 1 Eintrag in Bring!.");
+    expect(linkedText(4)).toBe("Gerade stehen 4 Einträge in Bring!.");
+
+    // Die Zeiten kommen aus dem Vertrag (HA_MIRROR_DELAY_S, HA_SYNC_INTERVAL_S).
+    expect(durationText(HA_MIRROR_DELAY_S)).toBe("zwei Minuten");
+    expect(describeHa({ ...base, state: "unreachable" }, now).hint).toContain("versucht es alle zwei Minuten wieder.");
+    expect([durationText(60), durationText(90), durationText(600)]).toEqual(["eine Minute", "90 Sekunden", "zehn Minuten"]);
+  });
+
+  it("sagt ohne Home Assistant, dass es nicht eingerichtet ist und wie es geht, und erklärt den Abgleich", async () => {
+    renderApp({}, ROUTES.settings);
+    await ready();
+    const ha = section(HA);
+    expect(await within(ha).findByText("Bring! über Home Assistant")).toBeInTheDocument();
+    expect(ha).toHaveTextContent("Nicht eingerichtet. Wer den Server betreibt, richtet es mit STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY ein");
+    expect(ha).toHaveTextContent("Ohne Home Assistant funktioniert die Einkaufsliste genauso, nur ohne Bring!.");
+    expect(ha).toHaveTextContent("Nicht eingerichtet. Wer den Server betreibt, setzt dafür STOWLY_HA_SUMMARY_TOKEN");
+    expect(within(ha).queryByText("Liste in Home Assistant")).not.toBeInTheDocument();
+    expect(within(ha).queryByRole("status")).not.toBeInTheDocument();
+    // Was der Abgleich tut, kurz
+    expect(ha).toHaveTextContent("Ein Eintrag der Einkaufsliste erscheint in Bring!, sobald er zwei Minuten offen ist.");
+    expect(ha).toHaveTextContent("Wer ihn in Bring! abhakt, erledigt ihn in Stowly.");
+    expect(ha).toHaveTextContent("Eigene Artikel in Bring! bleiben unberührt: Stowly übernimmt sie nicht und hakt sie nie ab.");
+  });
+
+  it("zeigt nach einem gelungenen Abgleich Zeit, Einträge in Bring!, Liste und Sensor, aber nie Adresse oder Token", async () => {
+    const core = renderApp({ scenarios: ["ha-ok"] }, ROUTES.settings);
+    await ready();
+    const ha = section(HA);
+    expect(await within(ha).findByText("verbunden")).toBeInTheDocument();
+    const status = await core.integrations.load();
+    expect(ha).toHaveTextContent(`Zuletzt gelungen vor einer Minute (${formatTimestamp(status.ha.last_ok_at ?? "")}).`);
+    expect(ha).toHaveTextContent(linkedText(status.ha.linked));
+    expect(within(ha).getByText("todo.einkaufsliste")).toBeInTheDocument();
+    expect(ha).toHaveTextContent("Home Assistant liest eine Zusammenfassung (bald fällig, abgelaufen, Einkaufsliste)");
+    expect(within(ha).getByText("eingerichtet")).toBeInTheDocument();
+    expect(within(ha).queryByRole("status")).not.toBeInTheDocument();
+    expect(ha).not.toHaveTextContent(/https?:\/\/|Bearer|Token:/);
+  });
+
+  it("sagt, solange seit dem Start des Servers noch kein Abgleich lief", async () => {
+    renderApp({ scenarios: ["ha-pending"] }, ROUTES.settings);
+    await ready();
+    const ha = section(HA);
+    expect(await within(ha).findByText("Seit dem Start des Servers lief noch kein Abgleich; der erste folgt in wenigen Minuten.")).toBeInTheDocument();
+    expect(within(ha).getAllByText("eingerichtet")).toHaveLength(2);
+  });
+
+  it("nennt eine Störung mit Satz, dem Fehler des Servers und seiner Zeit", async () => {
+    const cases: [Parameters<typeof renderApp>[0], string, string][] = [
+      [{ scenarios: ["ha-unreachable"] }, "nicht erreichbar", "Home Assistant ist nicht erreichbar"],
+      [{ scenarios: ["ha-unauthorized"] }, "Token abgelehnt", "Home Assistant lehnt den Token ab"],
+    ];
+    for (const [options, value, title] of cases) {
+      const core = renderApp(options, ROUTES.settings);
+      await ready();
+      const ha = section(HA);
+      expect(await within(ha).findByText(value)).toBeInTheDocument();
+      const notice = within(ha).getByRole("status");
+      expect(notice, value).toHaveTextContent(title);
+      expect(notice, value).toHaveTextContent("Die Einkaufsliste in Stowly bleibt vollständig");
+      const status = await core.integrations.load();
+      expect(ha, value).toHaveTextContent(`Letzter Fehler${status.ha.last_error ?? ""}`);
+      expect(ha, value).toHaveTextContent(formatTimestamp(status.ha.last_error_at ?? ""));
+      expect(ha, value).toHaveTextContent(`Zuletzt gelungen vor 3 Stunden (${formatTimestamp(status.ha.last_ok_at ?? "")}).`);
+      cleanup();
+    }
+  });
+
+  it("sagt, wenn Home Assistant nur halb eingerichtet ist", async () => {
+    renderApp({ scenarios: ["ha-problem"] }, ROUTES.settings);
+    await ready();
+    const ha = section(HA);
+    expect(await within(ha).findByText("Der Abgleich mit Bring! ist aus")).toBeInTheDocument();
+    expect(within(ha).getByRole("status")).toHaveTextContent("STOWLY_HA_TOKEN fehlt.");
+    expect(ha).toHaveTextContent("Nur halb eingerichtet. Für den Abgleich braucht der Server STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY");
+  });
+
+  it("folgt dem Zustand, sobald er neu geladen ist", async () => {
+    const core = renderApp({ scenarios: ["ha-ok"] }, ROUTES.settings);
+    await ready();
+    const ha = section(HA);
+    await within(ha).findByText("verbunden");
+    const states: [HaState, string][] = [
+      ["not_found", "Liste fehlt"],
+      ["unavailable", "Liste nicht verfügbar"],
+      ["error", "Fehler"],
+      ["ok", "verbunden"],
+    ];
+    for (const [state, text] of states) {
+      core.control.setHaState(state);
+      // Kurz ohne Server: Der Zustand fehlt; mit ihm kommt der neue.
+      act(() => core.control.setOnline(false));
+      expect(await within(ha).findByText("Zustand von Home Assistant fehlt")).toBeInTheDocument();
+      expect(ha).toHaveTextContent("Den Zustand kennt nur der Server, und der ist gerade nicht erreichbar.");
+      act(() => core.control.setOnline(true));
+      expect(await within(ha).findByText(text), state).toBeInTheDocument();
+    }
+  });
+});
+
+describe("Uhrzeit der Tagesnachricht", () => {
+  function field(): HTMLElement {
+    return within(section("Haushalt")).getByLabelText("Uhrzeit der Tagesnachricht");
+  }
+
+  it("liest Uhrzeiten, wie sie getippt werden", () => {
+    expect(readTime("17:00")).toBe("17:00");
+    expect(readTime("1700")).toBe("17:00");
+    expect(readTime("17")).toBe("17:00");
+    expect(readTime(" 8 ")).toBe("08:00");
+    expect(readTime("7:30")).toBe("07:30");
+    expect(readTime("730")).toBe("07:30");
+    expect(readTime("17.30")).toBe("17:30");
+    // Keine Uhrzeit: unverändert, die Prüfung lehnt es ab.
+    expect(readTime("25:00")).toBe("25:00");
+    expect(readTime("17:5")).toBe("17:5");
+    expect(readTime("")).toBe("");
+  });
+
+  it("erklärt, wann die Nachricht kommt, und nennt eine abweichende Zeitzone des Servers", () => {
+    expect(notifyTimeHint("17:00", "Europe/Berlin", true, "Europe/Berlin")).toBe(
+      "Täglich um 17:00 an die Geräte mit eingeschalteten Benachrichtigungen, aber nur, wenn seit der letzten Nachricht etwas neu bald abläuft oder abgelaufen ist. War der Server zu dieser Zeit aus, kommt sie später, aber nur bis 21 Uhr.",
+    );
+    expect(notifyTimeHint("17:00", "Europe/Berlin", true, "America/New_York")).toMatch(/^Täglich um 17:00 \(Zeit des Servers, Europe\/Berlin\) an die Geräte/);
+    // Unbekannte Zeitzone des Servers (offline): kein Hinweis darauf.
+    expect(notifyTimeHint("17:00", null, null, "America/New_York")).toMatch(/^Täglich um 17:00 an/);
+    expect(notifyTimeHint("21:00", null, null, "Europe/Berlin")).toContain("kommt sie höchstens eine Stunde später und nicht nach Mitternacht.");
+    expect(notifyTimeHint("20:59", null, null, "Europe/Berlin")).toContain("aber nur bis 21 Uhr.");
+    expect(notifyTimeHint("17:00", null, false, "Europe/Berlin")).toContain("Der Server ist noch nicht für Benachrichtigungen eingerichtet (STOWLY_PUSH_CONTACT): Bis dahin kommt keine.");
+  });
+
+  it("zeigt die Vorgabe 17:00 und ändert sie beim Verlassen des Felds", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    await ready();
+    expect(field()).toHaveValue("17:00");
+    expect(field()).toHaveAttribute("type", "time");
+    // Läuft der Test nicht in der Zeitzone der Attrappe (Europe/Berlin), steht sie dabei.
+    expect(section("Haushalt")).toHaveTextContent(/Täglich um 17:00 (\(Zeit des Servers, Europe\/Berlin\) )?an die Geräte mit eingeschalteten Benachrichtigungen/);
+    expect(section("Haushalt")).toHaveTextContent("kommt sie später, aber nur bis 21 Uhr.");
+
+    await userEvent.clear(field());
+    await userEvent.type(field(), "21:30");
+    expect(value(core.data.settings).notify_time).toBe("17:00");
+    await userEvent.tab();
+    await waitFor(() => expect(value(core.data.settings).notify_time).toBe("21:30"));
+    expect(await screen.findByText("Einstellung gespeichert")).toBeInTheDocument();
+    expect(section("Haushalt")).toHaveTextContent("Täglich um 21:30");
+    expect(section("Haushalt")).toHaveTextContent("kommt sie höchstens eine Stunde später und nicht nach Mitternacht.");
+  });
+
+  it("übernimmt mit Enter und lehnt eine leere Uhrzeit mit dem Satz des Vertrags ab", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    const update = vi.spyOn(core.settings, "update");
+    await ready();
+    await userEvent.clear(field());
+    await userEvent.tab();
+    expect(await within(section("Haushalt")).findByRole("alert")).toHaveTextContent("Die Uhrzeit muss als HH:MM angegeben sein, etwa 17:00.");
+    expect(update).not.toHaveBeenCalled();
+
+    await userEvent.type(field(), "06:45{Enter}");
+    await waitFor(() => expect(value(core.data.settings).notify_time).toBe("06:45"));
+    expect(update).toHaveBeenCalledWith({ notify_time: "06:45" });
+    expect(within(section("Haushalt")).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("ändert sie auch ohne Server: Die Änderung geht mit dem nächsten Abgleich hinaus", async () => {
+    const core = renderApp({ scenarios: ["offline"] }, ROUTES.settings);
+    await ready();
+    const before = value(core.sync.status).pending;
+    await userEvent.clear(field());
+    await userEvent.type(field(), "07:15");
+    await userEvent.tab();
+    await waitFor(() => expect(value(core.data.settings).notify_time).toBe("07:15"));
+    expect(value(core.sync.status).pending).toBe(before + 1);
+    // Ohne Server kennt die App seine Zeitzone nicht: kein Hinweis darauf, aber die Erklärung bleibt.
+    expect(section("Haushalt")).toHaveTextContent("Täglich um 07:15 an die Geräte");
+  });
+
+  it("nennt die Zeitzone des Servers, wenn sie von der des Geräts abweicht", async () => {
+    const core: MockCore = renderApp();
+    const zone = otherZone();
+    core.control.setIntegrations({ timezone: zone });
+    await openSettings();
+    expect(await within(section("Haushalt")).findByText(new RegExp(`^Täglich um 17:00 \\(Zeit des Servers, ${zone.replace("/", "\\/")}\\)`))).toBeInTheDocument();
+  });
+
+  it("sagt, solange der Server nicht für Benachrichtigungen eingerichtet ist", async () => {
+    renderApp({ scenarios: ["push-not-configured"] }, ROUTES.settings);
+    await ready();
+    expect(await within(section("Haushalt")).findByText(/Der Server ist noch nicht für Benachrichtigungen eingerichtet \(STOWLY_PUSH_CONTACT\)/)).toBeInTheDocument();
+  });
+
+  it("folgt einer Änderung von einem anderen Gerät", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    await ready();
+    await act(() => core.settings.update({ notify_time: "18:05" }));
+    await waitFor(() => expect(field()).toHaveValue("18:05"));
   });
 });

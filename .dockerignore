@@ -36,6 +36,8 @@ web/.vite
 *.sqlite3-wal
 *.sqlite3-shm
 *.md
+# Zertifikate, etwa die Zertifizierungsstelle für Home Assistant (./ha-ca.pem): eingebunden, nicht eingebaut
+*.pem
 
 # Was der Bau braucht, bleibt drin, auch wenn ein Muster oben es einmal träfe: die auf Version
 # und Prüfsumme festgelegten Python-Pakete.

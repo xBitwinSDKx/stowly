@@ -179,7 +179,8 @@ export function PrinterDialog({ printer, onClose, onCreated }: PrinterDialogProp
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title={printer ? "Drucker bearbeiten" : "Drucker hinzufügen"}
       variant="sheet"
       footer={

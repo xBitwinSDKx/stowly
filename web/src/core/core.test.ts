@@ -67,8 +67,12 @@ describe("Lesen", () => {
 
     expect(active.every((pkg) => pkg.removed_at === null)).toBe(true);
     expect(removed.every((pkg) => pkg.removed_at !== null)).toBe(true);
-    // eine Packung wurde vor 40 Tagen entnommen, die Aufbewahrung beträgt 30 Tage
-    expect(active.length + removed.length).toBe(sample.packages.length - 1);
+    // Eine Packung wurde vor 40 Tagen entnommen, dazu der Verlauf für die Statistik; die Aufbewahrung beträgt 30 Tage.
+    const limit = new Date(NOW.getTime() - 30 * 86_400_000).toISOString();
+    const old = sample.packages.filter((pkg) => pkg.removed_at !== null && pkg.removed_at < limit);
+    expect(old.length).toBeGreaterThan(40);
+    expect(active.length + removed.length).toBe(sample.packages.length - old.length);
+    expect(removed).toHaveLength(5);
     expect(removed.map((pkg) => pkg.removed_at)).toEqual([...removed.map((pkg) => pkg.removed_at)].sort().reverse());
     expect(removed.some((pkg) => pkg.displaced !== null)).toBe(true);
   });

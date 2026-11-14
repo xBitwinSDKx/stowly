@@ -53,8 +53,14 @@
  *   Längen, nicht, ob `keys.p256dh` auf der Kurve liegt. Eine Testnachricht geht nirgends hin: Die
  *   Nachbildung merkt sich die Nutzlast (`pushMessages`) und antwortet, was `pushTestStatus` sagt.
  *   Die Tagesnachricht gibt es nicht.
- * - `GET /api/integrations`: Sicherung und Home Assistant sind nie eingerichtet; Push zählt die
- *   Abos der Nachbildung.
+ * - `GET /api/integrations`: Die Sicherung ist nie eingerichtet; Push zählt die Abos der
+ *   Nachbildung. Den Zustand von Home Assistant gibt der Test vor (`haStatus`, Vorgabe „aus"),
+ *   samt `linked`: Einen Abgleich mit Bring! gibt es hier nicht, `bring_key` auch nicht.
+ * - `GET /api/stats` (fake-stats.ts) rechnet die Monate in `timezone` der Nachbildung (Vorgabe
+ *   Europe/Berlin) über `Intl`, nicht über `zoneinfo`; Namen vergleicht sie annähernd wie
+ *   `str.casefold()`. Die Sätze bei 400 sind die des Servers (Stand Runde 2).
+ * - `GET /api/ha/summary` gibt es nicht: Der Kern ruft den Sensor nie. Die Nachbildung antwortet
+ *   darauf wie auf jeden unbekannten Aufruf (ohne Geräte-Token 401, sonst 501).
  *
  * Ohne DOM und ohne Node: Die Datei läuft in den Tests (jsdom) und im Entwicklungsserver.
  */
@@ -73,6 +79,7 @@ import {
   type Device,
   type ErrorBody,
   type ErrorCode,
+  type HaStatus,
   type HouseholdSettings,
   type IntegrationStatus,
   type LabelTemplate,
@@ -96,6 +103,7 @@ import { applyCommand } from "../commands/apply";
 import { DAY_MS, isExpiredJob, isExpiredPackage, isExpiredShoppingItem, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
 import { FakePrintService } from "./fake-print";
 import { ShoppingRules } from "./fake-shopping";
+import { fakeStats } from "./fake-stats";
 import { Draft, EMPTY_TABLES, keyOf, TABLE_NAMES, type MutableTables, type TableName, type TableRows, type Tables } from "../tables";
 
 export const FAKE_PASSWORD = "stowly";
@@ -518,6 +526,9 @@ export function pushTestPayload(origin: string): PushPayload {
   };
 }
 
+/** Home Assistant ist nicht eingerichtet (docs/integrationen.md, 5.6): der Zustand ohne Vorgabe. */
+export const HA_OFF: HaStatus = { configured: false, problem: null, entity: null, state: "off", last_ok_at: null, last_error: null, last_error_at: null, linked: 0, sensor: false };
+
 /** Was die Nachbildung auf eine Testnachricht antwortet, je nach Antwort des Push-Dienstes (4.7). */
 const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
   sent: { status: "sent", http_status: 201, message: "Der Push-Dienst hat die Nachricht angenommen." },
@@ -545,6 +556,10 @@ export class FakeServer {
   pushTestStatus: PushTestStatus = "sent";
   /** Die Testnachrichten, die der Server verschickt hätte, in ihrer Reihenfolge. */
   readonly pushMessages: { device_id: string; endpoint: string; payload: PushPayload }[] = [];
+  /** Zeitzone des Servers (STOWLY_TIMEZONE): für die Monate der Statistik und `GET /api/integrations`. */
+  timezone = "Europe/Berlin";
+  /** Zustand von Home Assistant in `GET /api/integrations` (docs/integrationen.md, 5.6 und 8). */
+  haStatus: HaStatus = HA_OFF;
 
   private tables: Tables = EMPTY_TABLES;
   /** Was der Server an der Einkaufsliste selbst schreibt (7.6), samt Sperren und Uhren. */
@@ -1176,12 +1191,12 @@ export class FakeServer {
     return json(200, result);
   }
 
-  /** `GET /api/integrations`: Sicherung und Home Assistant sind hier nie eingerichtet. */
+  /** `GET /api/integrations`: Die Sicherung ist hier nie eingerichtet; Home Assistant gibt `haStatus` vor. */
   private integrations(device: FakeDevice): IntegrationStatus {
     return {
-      timezone: "Europe/Berlin",
+      timezone: this.timezone,
       backup: { configured: false, problem: null, time: null, recipients: [], last_ok_at: null, last_file: null, last_size: null, last_error: null, last_error_at: null, next_at: null, warning: false },
-      ha: { configured: false, problem: null, entity: null, state: "off", last_ok_at: null, last_error: null, last_error_at: null, linked: 0, sensor: false },
+      ha: { ...this.haStatus },
       push: {
         configured: this.pushConfigured,
         problem: null,
@@ -1248,6 +1263,10 @@ export class FakeServer {
     }
     if (method === "GET" && path === "/api/integrations") {
       return json(200, this.integrations(device));
+    }
+    if (method === "GET" && path === "/api/stats") {
+      const answer = fakeStats(this.tables, request.query ?? "", this.timezone, this.now());
+      return answer.ok ? json(200, answer.stats) : failure(400, "invalid_request", answer.problems[0]?.msg ?? "Der Zeitraum ist ungültig.", { errors: answer.problems });
     }
     if (method === "POST" && path === "/api/sync") {
       return this.sync(device, body);

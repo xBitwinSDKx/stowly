@@ -1111,8 +1111,11 @@ class CommandRunner:
             # Abhaken: done_at ist der wirksame Zeitpunkt.
             values.update(done_at=self.at, closed_by=shopping.CLOSED_BY_DEVICE)
         elif was_done and not done:
-            # Wieder öffnen.
+            # Wieder öffnen. Ist sein Artikel in Bring! schon abgehakt oder entfernt, verliert der
+            # Eintrag die Bindung und geht beim nächsten Abgleich neu nach Bring! (integrationen.md 5.4).
             values.update(done_at=None, closed_by=None)
+            if shopping.bring_binding_lost(self.con, row["bring_key"]):
+                values["bring_key"] = None
         self._update("shopping_items", row["id"], values, changed=bool(applied))
         self._field_event("shopping_item.updated", shopping.ENTITY, row["id"], applied, superseded)
 

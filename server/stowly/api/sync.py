@@ -112,6 +112,10 @@ async def sync(request: Request, device: CurrentDevice, con: Db) -> Response:
     worker = getattr(request.app.state, "off_worker", None)
     if worker is not None and outcome.lookup_pending:
         worker.wake()
+    bring = getattr(request.app.state, "bring", None)
+    if bring is not None and outcome.shopping_changed:
+        # Der Abgleich mit Bring! kommt frühestens 5 Sekunden nach der letzten solchen Änderung.
+        bring.changed()
     return Response(
         content=outcome.body, media_type="application/json", headers={"Cache-Control": "no-store"}
     )

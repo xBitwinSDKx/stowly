@@ -54,7 +54,8 @@ export function ZoneQrDialog({ zones, onClose }: ZoneQrDialogProps) {
     <>
       <Dialog
         open
-        onClose={busy ? () => undefined : onClose}
+        onClose={onClose}
+        busy={busy}
         title={single ? `QR-Code: ${single.name}` : "QR-Codes aller Zonen"}
         size={single ? "sm" : "lg"}
         variant="sheet"

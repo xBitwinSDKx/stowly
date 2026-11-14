@@ -249,7 +249,7 @@ Die Aufgabe `push_daily` des Zeitplans (1), fällig ab `notify_time` in ihrem Fe
 - **Neu im Bestand seit `P.at`:** Der Server hat für sie `package.created` oder `package.restored` mit `recorded_at` nach `P.at` verbucht (Ereignisprotokoll). Es zählt, wann der Server davon erfuhr, nicht der wirksame Zeitpunkt: Eine Packung, die ein Gerät vor Tagen offline eingelagert hat und erst heute abgleicht, ist für den Haushalt neu.
 - Ist eine Packung in einem Lauf zugleich neu bald fällig und neu abgelaufen (etwa nach einem Ausfall), zählt sie als abgelaufen und gilt danach für beide Stufen als gemeldet.
 
-**Je Packung höchstens zwei Nachrichten:** Die Tabelle `push_notices` merkt sich je Packung und Stufe (`soon`, `expired`), wann sie in einer Nachricht stand. Was dort steht, ist nie wieder neu, auch nicht nach einem geänderten MHD oder einem Wiederherstellen. Eingetragen wird, sobald die Nachricht an mindestens ein Abo hinausging, gleich was der Push-Dienst antwortet.
+**Je Packung höchstens zwei Nachrichten:** Die Tabelle `push_notices` merkt sich je Packung und Stufe (`soon`, `expired`), wann sie in einer Nachricht stand. Was dort steht, ist nie wieder neu, auch nicht nach einem geänderten MHD oder einem Wiederherstellen. Eingetragen wird, sobald die Nachricht an mindestens ein Abo hinausging, gleich was der Push-Dienst antwortet. **Hinausgegangen** heißt: Ein Push-Dienst hat mit einem HTTP-Status geantwortet, gleich welchem (auch 404, 410 oder 5xx). Kam von keinem eine Antwort (Netzfehler, Zeitüberschreitung), gilt nichts als gemeldet, und `sent_at` fehlt.
 
 **Ist nichts neu, geht keine Nachricht hinaus.** Der Lauf zählt trotzdem.
 
@@ -259,11 +259,11 @@ Die Aufgabe `push_daily` des Zeitplans (1), fällig ab `notify_time` in ihrem Fe
 2. Gibt es neu bald Fälliges: `Neu bald fällig: <Liste>.`
 3. Immer: `Insgesamt <s> bald, <e> abgelaufen.` mit den Zahlen aller Packungen im Bestand in Stufe `soon` bzw. `expired`.
 
-Die `<Liste>` fasst je Produkt und MHD zusammen: `Joghurt (16.11.)`, bei mehreren Packungen `2× Joghurt (16.11.)`; sortiert nach MHD, dann nach dem Anzeigenamen (verglichen nach `str.casefold()` in der Reihenfolge der Unicode-Zeichen), dann nach der Kennung des Produkts; höchstens 3 Einträge, dann `und <n> weitere` („Joghurt (16.11.), Milch (18.11.) und 2 weitere"; bei zwei Einträgen „A und B"). Der Name ist der Anzeigename des Produkts (Name, sonst erster Barcode, sonst „Unbekanntes Produkt"), gekürzt auf 40 Zeichen mit „…". Das Datum ist `TT.MM.`.
+Die `<Liste>` fasst je Produkt und MHD zusammen: `Joghurt (16.11.)`, bei mehreren Packungen `2× Joghurt (16.11.)`; sortiert nach MHD, dann nach dem Anzeigenamen (verglichen nach `str.casefold()` in der Reihenfolge der Unicode-Zeichen), dann nach der Kennung des Produkts. Bis zu drei Einträge stehen alle da („A", „A und B", „A, B und C"); ab vier die ersten zwei und `und <n> weitere` („Joghurt (16.11.), Milch (18.11.) und 2 weitere"), also nie „und 1 weitere". Der Name ist der Anzeigename des Produkts (Name, sonst erster Barcode, sonst „Unbekanntes Produkt"), gekürzt auf 40 Zeichen mit „…". Das Datum ist `TT.MM.`.
 
 Beispiel: `Neu bald fällig: Joghurt (16.11.). Insgesamt 3 bald, 1 abgelaufen.`
 
-`tag` `stowly-daily`, `navigate` `<origin>/warnungen`, Kopfzeilen nach 4.6. Danach `job_runs.state` = `{"sent_at": …, "packages": <Anzahl neu>, "subscriptions": <Anzahl>, "errors": <Anzahl gescheitert>}` (`sent_at` nur, wenn etwas hinausging) und `last_error` = `null` oder ein Satz, wenn kein einziges Abo erreicht wurde.
+`tag` `stowly-daily`, `navigate` `<origin>/warnungen`, Kopfzeilen nach 4.6. Danach `job_runs.state` = `{"sent_at": …, "packages": <Anzahl neu>, "subscriptions": <Abos beim Lauf>, "errors": <Zustellungen ohne 2xx>}` (`sent_at` nur, wenn etwas hinausging) und `last_error` = `null` oder ein Satz, wenn kein einziges Abo erreicht wurde. Erreicht heißt: Der Push-Dienst hat mit 2xx angenommen.
 
 ### 4.9 Testnachricht
 
@@ -294,7 +294,7 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
 
 ### 5.2 Abbildung
 
-- **Gespiegelt** wird ein offener Eintrag, der **seit mindestens zwei Minuten offen** ist und **einen Namen** hat. „Offen seit" ist der Zeitpunkt der letzten Öffnung (Uhr von `done`, sonst `created_at`, `sync-protokoll.md` 7.6), verglichen mit der Serveruhr. Die zwei Minuten lassen Zeit für Rückgängig und Tippfehler.
+- **Gespiegelt** wird ein offener Eintrag, der **seit mindestens zwei Minuten offen** ist (`HA_MIRROR_DELAY_S` = 120 in `server/stowly/contract/api.py` und `api.gen.ts`; die App nimmt ihren Text daraus) und **einen Namen** hat. „Offen seit" ist der Zeitpunkt der letzten Öffnung (Uhr von `done`, sonst `created_at`, `sync-protokoll.md` 7.6), verglichen mit der Serveruhr. Die zwei Minuten lassen Zeit für Rückgängig und Tippfehler.
 - **Name:** bei einem Produkt dessen Name (getrimmt); ein Platzhalter ohne Namen wird erst gespiegelt, wenn er einen hat. Bei freiem Text der Text.
 - **Vergleichsform** eines Namens (`name_key`): getrimmt, Leerraum innen zu einem Leerzeichen, `str.casefold()`. Zwei Namen sind gleich, wenn ihre Vergleichsformen gleich sind (ob Bring! Groß- und Kleinschreibung unterscheidet, klärt die Probe mit dem Anwender).
 - **Beschreibung** (in Bring! die „Spezifikation"): der Text der Menge aus `shoppingQuantityLabel` (`web/src/contract/shopping.ts`), dann ` · Stowly`: `fehlt 2 · Stowly` (automatisch), `3× · Stowly` (eigener mit Menge), sonst nur `Stowly`.
@@ -309,8 +309,8 @@ Eine Zeile je Artikel, den Stowly kennt:
 |---|---|
 | `name_key` | Vergleichsform des Namens (Schlüssel) |
 | `name` | der Name, wie er in der Liste steht |
-| `uid` | Kennung des Artikels in HA aus `todo.get_items`; `null`, solange nicht gesehen |
-| `own` | 1 = Stowly hat ihn angelegt; 0 = er stand schon in der Liste (fremd): Stowly liest ihn nur |
+| `uid` | Kennung des Artikels in HA aus `todo.get_items`; `null`, solange nicht gesehen. Ersetzt ein neuer eigener Artikel die Zeile eines alten, erledigten desselben Namens (5.4, Schritt 4), bleibt die `uid` des alten stehen, bis der neue gesehen ist. |
+| `own` | 1 = Stowly hat ihn angelegt; 0 = er stand schon in der Liste (fremd): Stowly liest ihn nur. Holt jemand einen eigenen Artikel, den Stowly abgehakt oder entfernt hatte, zurück auf die Liste, wird er fremd. |
 | `description` | zuletzt geschriebene Beschreibung (nur eigene) |
 | `status` | was Stowly zuletzt geschrieben (eigene) oder gesehen (fremde) hat: `needs_action`, `completed`, `removed` |
 | `written_at`, `seen_at` | zuletzt geschrieben, zuletzt in der Liste gesehen |
@@ -320,21 +320,22 @@ Eine Zeile je Artikel, den Stowly kennt:
 
 Eine eigene Schleife im Server nach dem Muster von `off.py` (Aufgabe `stowly-ha`, eingereichte Uhr, `wake()`), nur wenn HA eingerichtet ist:
 
-- **Wann:** alle zwei Minuten; dazu geweckt nach jeder Änderung an der Einkaufsliste (nach dem Sync, wie `off.OffWorker.wake`), frühestens 5 Sekunden nach der letzten solchen Änderung; und zu dem Zeitpunkt, an dem der nächste offene Eintrag zwei Minuten offen ist. Bring! selbst aktualisiert sich in HA etwa alle 90 Sekunden.
-- **HTTP:** `httpx2`, `Authorization: Bearer <STOWLY_HA_TOKEN>`, Zeitgrenze 10 Sekunden je Aufruf, keine Weiterleitungen, mit `STOWLY_HA_CA` als vertrauter Zertifizierungsstelle, wenn gesetzt.
+- **Wann:** alle zwei Minuten (`HA_SYNC_INTERVAL_S` = 120); dazu geweckt nach jeder Änderung an der Einkaufsliste (nach dem Sync, wie `off.OffWorker.wake`), frühestens 5 Sekunden nach der letzten solchen Änderung; und zu dem Zeitpunkt, an dem der nächste offene Eintrag zwei Minuten offen ist. Bring! selbst aktualisiert sich in HA etwa alle 90 Sekunden.
+- **HTTP:** `httpx2`, `Authorization: Bearer <STOWLY_HA_TOKEN>`, Zeitgrenze 10 Sekunden je Aufruf, keine Weiterleitungen. `STOWLY_HA_CA` gilt, wenn gesetzt, zusätzlich zu den Zertifizierungsstellen des Systems, nicht statt ihrer.
 
 Ein Lauf:
 
 1. **Liste da?** `GET {STOWLY_HA_URL}/api/states/{entity}`. 401: Zustand `unauthorized`, Ende. 404: `not_found`, Ende. Netzfehler, Zeitüberschreitung, Zertifikat: `unreachable`, Ende. 5xx: `error`, Ende. `state` ist `unavailable` oder `unknown`: `unavailable`, Ende. In allen diesen Fällen schreibt der Server nichts und zählt kein Fehlen. (Der Zustand einer To-do-Entität ist sonst die Zahl ihrer offenen Artikel.)
 2. **Lesen:** `POST {STOWLY_HA_URL}/api/services/todo/get_items?return_response` mit `{"entity_id": "<entity>", "status": ["needs_action", "completed"]}`. Die Artikel stehen in `service_response["<entity>"]["items"]`, je Artikel `summary`, `uid`, `status` (`needs_action` oder `completed`), `description`. Erwartet ist, dass „zuletzt gekauft" in Bring! als `completed` erscheint (klärt die Probe mit dem Anwender). Fehler wie in Schritt 1; 400 heißt `error` („HA kennt todo.get_items nicht so").
 3. **Zurück** (aus Bring! nach Stowly), je Zeile von `ha_links`, gesucht nach `name_key` (steht ein Name als offen und als erledigt in der Liste, gilt der offene):
-   - offen gefunden: `seen_at`, `misses = 0`, `uid` übernehmen; bei fremden `status = needs_action`.
-   - erledigt gefunden, zuletzt aber offen geschrieben oder gesehen: **in Bring! abgehakt.** Alle offenen Einträge, die an diesen Artikel gebunden sind, werden erledigt: `done_at` = jetzt, `closed_by = bring`, Uhr von `done` = jetzt, Ereignis `shopping_item.bring_done` (`how: completed`); bei einem automatischen Eintrag die Sperre (`sync-protokoll.md`, 7.6). `status = completed`.
+   - offen gefunden: `seen_at`, `misses = 0`, `uid` übernehmen; bei fremden `status = needs_action`. Ein eigener Artikel mit `status` `completed` oder `removed`, der wieder offen dasteht, wurde zurückgeholt: Er wird fremd (`own = 0`, `status = needs_action`), Stowly schreibt ihn nie mehr.
+   - erledigt gefunden, zuletzt aber offen geschrieben oder gesehen: **in Bring! abgehakt.** Alle offenen Einträge, die an diesen Artikel gebunden sind, werden erledigt: `done_at` = jetzt, `closed_by = bring`, Uhr von `done` = jetzt, Ereignis `shopping_item.bring_done` (`how: completed`); bei einem automatischen Eintrag die Sperre (`sync-protokoll.md`, 7.6). `status = completed`. Hat Stowly den eigenen Artikel seit dem Anlegen noch nie gesehen, zählt ein erledigter Artikel desselben Namens nur, wenn seine `uid` nicht die des alten Artikels aus „zuletzt gekauft" ist (5.3, `uid`).
    - nicht gefunden: `misses + 1`. Erst beim **zweiten Fehlen in Folge** und nur, wenn er zuletzt offen war: **in Bring! gelöscht**, Folgen wie beim Abhaken (`how: removed`), `status = removed`. Ein Neustart von HA, der die Liste kurz leer zeigt, leert so nicht die Liste von Stowly.
    - **Fehlen zählt erst, wenn der Artikel schon einmal in der Liste stand** (`seen_at` gesetzt). Einen eigenen Artikel, den Stowly angelegt, aber noch nie gesehen hat, hält der Server nie für gelöscht. So erledigt weder ein Bring!, das neue Artikel erst nach einer Weile zeigt, noch ein Name, den HA oder Bring! beim Anlegen verändert (gekürzt, anders geschrieben), Einträge in Stowly. Steht ein eigener Artikel zehn Minuten nach dem Anlegen noch nie in der Liste, schreibt der Server einmal eine Warnung ins Log; der Eintrag bleibt gebunden und offen.
    - Das gilt für eigene **und fremde** Artikel: Hakt jemand einen gleichnamigen fremden Artikel ab, gilt der Eintrag in Stowly als eingekauft.
 4. **Hin** (aus Stowly nach Bring!):
-   - **Neue Einträge** (offen, gespiegelt nach 5.2, noch ohne `bring_key`): Gibt es zu ihrem `name_key` einen Artikel, der gerade offen in der Liste steht, bindet der Server den Eintrag daran. Ist es ein Artikel, den Stowly nicht kennt, legt er dafür eine Zeile mit `own = 0` an: **Stowly legt keinen zweiten an, ändert ihn nie und hakt ihn nie ab.** Sonst `POST /api/services/todo/add_item` mit `{"entity_id", "item": <Name>, "description": <Beschreibung>}`, Zeile mit `own = 1`, `status = needs_action`, `misses = 0` (eine alte Zeile desselben Namens wird ersetzt), dann binden.
+   - **Neue Einträge** (offen, gespiegelt nach 5.2, noch ohne `bring_key`): Gibt es zu ihrem `name_key` einen Artikel, der gerade offen in der Liste steht, bindet der Server den Eintrag daran. Ist es ein Artikel, den Stowly nicht kennt, legt er dafür eine Zeile mit `own = 0` an: **Stowly legt keinen zweiten an, ändert ihn nie und hakt ihn nie ab.** Ebenso bindet er an einen eigenen offenen Artikel, den er angelegt, aber noch nie gesehen hat. Fehlt ein schon gesehener eigener Artikel gerade, wartet er einen Lauf: Erst Schritt 3 entscheidet, ob er gelöscht ist. Sonst `POST /api/services/todo/add_item` mit `{"entity_id", "item": <Name>, "description": <Beschreibung>}`, Zeile mit `own = 1`, `status = needs_action`, `misses = 0` (eine alte Zeile desselben Namens wird ersetzt; deren geschlossene Einträge verlieren ihre Bindung), dann binden.
+   - **Ohne Antwort auf `add_item`** (Netzfehler oder Zeitüberschreitung, nachdem die Anfrage hinaus ist) gilt der Artikel als angelegt: Lieber steht ein Eintrag nie in Bring! als zweimal. Die Warnung nach zehn Minuten (Schritt 3) sagt es dann.
    - **Beschreibung** eines eigenen offenen Artikels nachführen, wenn sie sich geändert hat: `POST /api/services/todo/update_item` mit `{"entity_id", "item": <uid oder Name>, "description": …}`.
    - **Eigene Artikel ohne offenen Eintrag** (alle gebundenen sind erledigt oder gelöscht) mit `status = needs_action`: Entschieden wird nach dem zuletzt geschlossenen gebundenen Eintrag (`closed_by`):
      - `bring`: nichts; in Bring! ist es schon erledigt.
@@ -342,10 +343,12 @@ Ein Lauf:
      - `device` oder `store` (abgehakt, gelöscht, durch Einlagern erledigt): `update_item` mit `"status": "completed"`, `status = completed`. In Bring! wandert er zu „zuletzt gekauft".
      - `closed_by` nennt, was den Eintrag geschlossen hat. Wird ein erledigter Eintrag danach gelöscht, bleibt es dabei: Das ist Aufräumen, wie bei der Sperre (`sync-protokoll.md`, 7.6).
    - **Fremde Artikel** schreibt Stowly nie.
-   - **Wieder geöffnet:** Ein Eintrag, dessen Artikel `completed` oder `removed` ist, verliert beim Wiederöffnen seine Bindung (`bring_key = null`) und geht beim nächsten Lauf neu nach Bring!. Steht der Name dort unter „zuletzt gekauft", holt `todo.add_item` ihn erwartungsgemäß zurück auf die Liste, statt einen zweiten anzulegen (klärt die Probe mit dem Anwender).
+   - **Wieder geöffnet:** Ein Eintrag, dessen Artikel `completed` oder `removed` ist oder zu dessen `bring_key` es keine Zeile in `ha_links` gibt, verliert beim Wiederöffnen seine Bindung (`bring_key = null`) und geht beim nächsten Lauf neu nach Bring!. Steht der Name dort unter „zuletzt gekauft", holt `todo.add_item` ihn erwartungsgemäß zurück auf die Liste, statt einen zweiten anzulegen (klärt die Probe mit dem Anwender).
 5. Zustand `ok`, `last_ok_at` = jetzt.
 
-Für `update_item` und `remove_item` nimmt der Server die `uid`, sobald er sie kennt, sonst den Namen. Was ihr selbst in Bring! eintragt, übernimmt Stowly nie in seine Liste.
+**Schreiben** (`update_item`, `remove_item`) geht nur an eigene Artikel, die in diesem Lauf offen in der Liste stehen, mit ihrer `uid` aus diesem Lauf (ohne `uid` mit dem Namen, wie er dort steht). Steht der Artikel gerade nicht da, wartet der Server bis zu einem Lauf, in dem er ihn sieht. Scheitert das Schreiben eines einzelnen Artikels mit 4xx oder 5xx, schreibt er die übrigen trotzdem; der Lauf endet dann mit `error`, und der nächste versucht es erneut. 401 und Netzfehler beenden den Lauf sofort (`unauthorized`, `unreachable`). Beim Lesen (Schritte 1 und 2) ergibt ein anderer unerwarteter Status, etwa 403, `error`.
+
+Was ihr selbst in Bring! eintragt, übernimmt Stowly nie in seine Liste.
 
 ### 5.5 Übersicht
 
@@ -408,14 +411,14 @@ Alles gilt für „heute" in `STOWLY_TIMEZONE` und für Packungen im Bestand, ge
 - `soon_list`, `expired_list`: je Produkt und MHD ein Eintrag `Name (TT.MM.)`, bei mehreren Packungen `2× Name (TT.MM.)`; nach MHD, dann nach dem Anzeigenamen (verglichen nach `str.casefold()` in der Reihenfolge der Unicode-Zeichen), dann nach der Kennung des Produkts; **höchstens 5**, jeder höchstens 40 Zeichen (der Name wird mit „…" gekürzt).
 - `shopping_list`: offene Einträge in der Reihenfolge der App (älteste zuerst), `Name (fehlt 2)`, `Name (2×)` oder nur `Name`; höchstens 5, je höchstens 40 Zeichen.
 - `message`: ein fertiger Satz zum Vorlesen, **höchstens 255 Zeichen**, aus diesen Teilen, mit Leerzeichen verbunden:
-  1. `today` ≥ 1: `Heute läuft 1 Packung ab: <Namen>.` bzw. `Heute laufen <n> Packungen ab: <Namen>.`; sonst `state` ≥ 1: `Bald läuft 1 Packung ab: <Name> am <TT.MM.>.` bzw. `Bald laufen <n> Packungen ab, als Nächstes <Name> am <TT.MM.>.`; sonst `Nichts läuft bald ab.`
+  1. `today` ≥ 1: `Heute läuft 1 Packung ab: <Namen>.` bzw. `Heute laufen <n> Packungen ab: <Namen>.`; sonst `state` ≥ 1: `Bald läuft 1 Packung ab: <Name> am <TT.MM.>` bzw. `Bald laufen <n> Packungen ab, als Nächstes <Name> am <TT.MM.>` (der Punkt des Datums beendet den Satz, kein zweiter); sonst `Nichts läuft bald ab.`
   2. `expired` ≥ 1: `1 Packung ist abgelaufen.` bzw. `<n> Packungen sind abgelaufen.`
   3. `shopping` ≥ 1: `Auf der Einkaufsliste steht 1 Eintrag.` bzw. `Auf der Einkaufsliste stehen <n> Einträge.`
 
   `<Namen>` sind die Anzeigenamen der verschiedenen Produkte der heute ablaufenden Packungen, sortiert wie die Listen, höchstens drei: „A", „A und B", „A, B und C", bei mehr „A, B, C und weitere". `<Name>` und `<TT.MM.>` in „Bald …" gehören zur nach FIFO ersten Packung in Stufe `soon`; das ist nicht immer `next`, denn `next` kann wegen einer kürzeren Vorlaufzeit eine Packung in Stufe `ok` sein. Wäre der Satz länger als 255 Zeichen, wird er am letzten Wort davor mit „…" gekürzt.
 - `updated_at`: Serverzeit der Antwort.
 
-Home Assistant begrenzt den *Zustand* einer Entität auf 255 Zeichen. Der Zustand des Sensors ist hier eine Zahl; die Grenzen der Listen und des Satzes sorgen dafür, dass auch Vorlagen-Sensoren daraus darunter bleiben.
+Home Assistant begrenzt den *Zustand* einer Entität auf 255 Zeichen. Der Zustand des Sensors ist hier eine Zahl; die Grenzen der Listen und des Satzes sorgen dafür, dass auch Vorlagen-Sensoren daraus darunter bleiben. Sie stehen im Vertrag als `HA_SUMMARY_LIST_MAX` (5), `HA_SUMMARY_ENTRY_MAX` (40) und `HA_SUMMARY_MESSAGE_MAX` (255), in `server/stowly/contract/api.py` und `api.gen.ts`.
 
 ### 6.2 Entwurf für `docs/betrieb.md`
 
@@ -548,3 +551,22 @@ Kurze Probe gegen euer HA mit einer eigenen Testliste in Bring! (Plan, Runde 1).
 7. Wie lange dauert es, bis ein Abhaken in der App von Bring! in HA ankommt (erwartet: bis zu 90 Sekunden)?
 8. Wie lang dürfen Name und Spezifikation in Bring! sein?
 9. Wie bekommt euer HA die eigene CA von Stowly ins Vertrauen (Sensor über https), oder bleibt es bei `verify_ssl: false`?
+10. Darf ein HA-Benutzer ohne Administratorrechte die Dienste `todo.*` über die Schnittstelle aufrufen?
+
+**Bis zur Probe angenommen** (Vorgaben des nachgebildeten HA, `Behaviour()` in `server/tests/ha_fake.py`; jede Annahme ist dort umschaltbar, und die Tests prüfen, dass die Regeln aus 5.4 in jeder Variante gelten):
+
+| Frage | angenommen | auch geprüft |
+|---|---|---|
+| 1 | `get_items` liefert erledigte Artikel mit | ohne erledigte: Abhaken in Bring! gilt nach zweimal Fehlen als gelöscht |
+| 2 | `add_item` mit offenem Namen legt einen zweiten Artikel an; mit einem Namen aus „zuletzt gekauft" wandert dieser zurück | Spezifikation aktualisiert, Fehler 400; neuer Artikel statt Zurückwandern |
+| 3 | Groß- und Kleinschreibung und Leerzeichen am Rand gelten als gleich | als verschieden |
+| 5 | die `uid` bleibt stabil | neue `uid` nach einem Neustart |
+| 6 | nach einem Neustart meldet HA die Liste zuerst als `unavailable` | kurz leere Liste, gleich vollständig |
+| 7 | neue Artikel sind sofort sichtbar | erst nach einem oder zwei Abgleichen |
+| 8 | Namen werden nicht gekürzt | gekürzt auf wenige Zeichen |
+
+Grenzen, solange die Probe aussteht:
+
+- Kürzt Bring! Namen, sieht Stowly den eigenen Artikel nie: Er gilt nie als gelöscht oder abgehakt, und die Warnung nach zehn Minuten (5.4, Schritt 3) sagt es. Kennt die Probe die Länge, kürzt Stowly die Namen vor `add_item` selbst.
+- Liefert `get_items` keine erledigten Artikel und zeigt HA neue Artikel erst verzögert, bleibt ein Eintrag offen, den jemand in Bring! abhakt, bevor Stowly den Artikel je gesehen hat.
+- Zeigt ein Neustart von HA die Liste zwei Abgleiche lang leer, also länger als zwei Minuten, gelten ihre Artikel als gelöscht. Sonst bräuchte „gelöscht" mehr Abgleiche oder eine Zeitspanne.

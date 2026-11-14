@@ -26,6 +26,18 @@ export const QR_ZONE_PREFIX = "STOWLY/Z/";
 export const STATS_DEFAULT_MONTHS = 12;
 /** Höchstens so viele Monate umfasst ein Zeitraum der Statistik. */
 export const STATS_MAX_MONTHS = 120;
+/** Höchstens so viele Produkte stehen in `Stats.top_discarded`. */
+export const STATS_TOP_PRODUCTS = 10;
+/** Sensor für Home Assistant: höchstens so viele Einträge je Liste. */
+export const HA_SUMMARY_LIST_MAX = 5;
+/** Sensor für Home Assistant: höchstens so viele Zeichen je Eintrag einer Liste. */
+export const HA_SUMMARY_ENTRY_MAX = 40;
+/** Sensor für Home Assistant: höchstens so viele Zeichen im Satz `message`. */
+export const HA_SUMMARY_MESSAGE_MAX = 255;
+/** Ein offener Eintrag geht erst nach Bring!, wenn er so viele Sekunden offen ist. */
+export const HA_MIRROR_DELAY_S = 120;
+/** Der Abgleich mit Home Assistant läuft spätestens nach so vielen Sekunden wieder. */
+export const HA_SYNC_INTERVAL_S = 120;
 /** Höchstens eine Testnachricht je Gerät in so vielen Sekunden. */
 export const PUSH_TEST_INTERVAL_S = 10;
 /** Wohin eine Push-Nachricht führt; der Server setzt den Ursprung der App davor. */

@@ -118,8 +118,6 @@ export interface CoreOptions {
 const BLOCKED_TIMEOUT_MS = 8_000;
 
 const SUPERSEDED_MESSAGE = "Ein anderer Tab läuft schon mit einer neueren Version von Stowly. Diese Seite muss neu geladen werden.";
-/** Platzhalter bis Runde 2: die Statistik. */
-const STAGE_2_LATER = "In diesem Kern noch nicht umgesetzt.";
 const BLOCKED_MESSAGE = "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest. Schließe ihn, dann geht es hier weiter.";
 const NO_STORAGE_MESSAGE = "Die lokale Datenbank ist nicht verfügbar.";
 const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
@@ -973,9 +971,10 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       test: () => push.test(),
     },
 
+    // Statistik (Protokoll 11.1): Jeder Aufruf fragt den Server; gespeichert wird sie nie.
     stats: {
-      async load() {
-        throw new CoreError("not_supported", STAGE_2_LATER);
+      load(range) {
+        return runtime.server((token) => api.stats(token, range));
       },
     },
 

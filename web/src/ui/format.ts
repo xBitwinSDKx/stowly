@@ -2,7 +2,7 @@
  * Texte, die mehrere Ansichten gleich schreiben: Mengen, Abstände in Tagen, Gründe.
  * Reine Funktionen ohne React.
  */
-import type { ExpiryState, RemovalReason } from "@/contract";
+import { daysBetween, toLocalDate, type ExpiryState, type RemovalReason } from "@/contract";
 
 /** "1 Packung", "3 Packungen". */
 export function plural(count: number, one: string, many: string): string {
@@ -63,9 +63,10 @@ export function expiryText(state: ExpiryState, days: number | null): string {
 }
 
 /**
- * Wie lange ein Zeitpunkt her ist: "gerade eben", "vor 5 Minuten", "vor 3 Stunden", "vor 2 Tagen".
- * Für „zuletzt gesehen" und „letzter Abgleich"; liegt der Zeitpunkt in der Zukunft
- * (Uhren gehen verschieden), gilt er als "gerade eben".
+ * Wie lange ein Zeitpunkt her ist: "gerade eben", "vor 5 Minuten", "vor 3 Stunden", "gestern",
+ * "vor 2 Tagen". Für „zuletzt gesehen" und „letzter Abgleich"; liegt der Zeitpunkt in der Zukunft
+ * (Uhren gehen verschieden), gilt er als "gerade eben". Ab 24 Stunden zählen Kalendertage des
+ * Geräts: „gestern" ist nur der Tag davor, vorgestern um 19 Uhr ist „vor 2 Tagen".
  * @param timestamp Vertrags-Zeitstempel
  * @param now       jetzt, in Millisekunden
  */
@@ -82,10 +83,11 @@ export function timeAgo(timestamp: string, now: number): string {
     return minutes === 1 ? "vor einer Minute" : `vor ${String(minutes)} Minuten`;
   }
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
+  // Ein Tag mit Zeitumstellung hat 25 Stunden: Dann bleibt es bei Stunden, solange es derselbe Tag ist.
+  const days = hours < 24 ? 0 : daysBetween(toLocalDate(new Date(then)), toLocalDate(new Date(now)));
+  if (days < 1) {
     return hours === 1 ? "vor einer Stunde" : `vor ${String(hours)} Stunden`;
   }
-  const days = Math.floor(hours / 24);
   if (days === 1) {
     return "gestern";
   }
@@ -107,6 +109,24 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${sizeFormat(value < 10 ? 1 : 0).format(value)} ${units[unit] ?? ""}`;
+}
+
+/** Die Zeitzone des Geräts, etwa "Europe/Berlin"; leer, wenn der Browser sie nicht nennt. */
+export function deviceTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Die Zeitzone des Servers, wenn sie von der des Geräts abweicht; sonst null. Uhrzeiten und Monate
+ * des Servers gelten in seiner Zeitzone (docs/integrationen.md, Abschnitt 2): Weicht sie ab, sagt
+ * die Oberfläche das dazu. Ist eine der beiden unbekannt, sagt sie nichts.
+ */
+export function otherTimeZone(serverZone: string | null | undefined, deviceZone: string = deviceTimeZone()): string | null {
+  return serverZone && deviceZone !== "" && serverZone !== deviceZone ? serverZone : null;
 }
 
 /** Entnahmegründe, wie sie in Sätzen stehen: „3 Packungen verbraucht". */

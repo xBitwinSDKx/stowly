@@ -6,6 +6,18 @@ import styles from "./Page.module.css";
 
 const APP_TITLE = "Stowly";
 
+/**
+ * Kennung der Überschrift einer Ansicht. Sie lässt sich fokussieren (nicht über die Tabulatortaste):
+ * Verschwindet mit einer Aktion alles, was den Fokus hätte bekommen können, geht er dorthin
+ * (`focusPageTitle`).
+ */
+export const PAGE_TITLE_ID = "seitentitel";
+
+/** Gibt den Fokus an die Überschrift der Ansicht. */
+export function focusPageTitle(): void {
+  document.getElementById(PAGE_TITLE_ID)?.focus({ preventScroll: true });
+}
+
 /** Setzt den Titel des Browser-Tabs auf die Ansicht („Zonen · Stowly"), solange sie gezeigt wird. */
 export function usePageTitle(title: string): void {
   useEffect(() => {
@@ -34,7 +46,9 @@ export function Page({ title, description, actions, narrow = false, children }: 
     <div className={narrow ? `${styles.page} ${styles.narrow}` : styles.page}>
       <header className={styles.header}>
         <div className={styles.heading}>
-          <h1 className={styles.title}>{title}</h1>
+          <h1 id={PAGE_TITLE_ID} className={styles.title} tabIndex={-1}>
+            {title}
+          </h1>
           {description ? <p className={styles.description}>{description}</p> : null}
         </div>
         {actions ? <div className={styles.actions}>{actions}</div> : null}

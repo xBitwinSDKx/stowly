@@ -1,11 +1,11 @@
 import { useState } from "react";
 
 import { formatTimestamp, useCore, type BackupStatus } from "@/contract";
-import { errorText, formatBytes, List, ListRow, Notice, Section, timeAgo, useNow } from "@/ui";
+import { deviceTimeZone, errorText, formatBytes, List, ListRow, Notice, otherTimeZone, Section, timeAgo, useNow } from "@/ui";
 import { Badge, Button, Spinner, useToast } from "@/ui/base";
 import { CloudOffIcon, DownloadIcon, WarningIcon } from "@/ui/icons";
 
-import { deviceTimeZone, type IntegrationsState } from "./integrations";
+import type { IntegrationsState } from "./integrations";
 import styles from "./SettingsPage.module.css";
 
 /** Speichert eine Datei, die der Kern als Blob liefert. */
@@ -26,7 +26,8 @@ function saveBlob(blob: Blob, filename: string): void {
  * dabei (docs/integrationen.md, Abschnitt 2).
  */
 export function backupTimeText(time: string, serverZone: string, deviceZone: string = deviceTimeZone()): string {
-  return serverZone !== "" && deviceZone !== "" && serverZone !== deviceZone ? `täglich um ${time} (Zeit des Servers, ${serverZone})` : `täglich um ${time}`;
+  const other = otherTimeZone(serverZone, deviceZone);
+  return other !== null ? `täglich um ${time} (Zeit des Servers, ${other})` : `täglich um ${time}`;
 }
 
 /** Die Warnung nach 48 Stunden (docs/integrationen.md, 3.6), in Worten. */

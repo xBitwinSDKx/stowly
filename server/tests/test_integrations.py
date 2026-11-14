@@ -5,12 +5,15 @@ Nie darin: ein Token, ein privater Schlüssel, die Adresse von Home Assistant, `
 
 import dataclasses
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx2
 import pyrage
 import pytest
 from fastapi.testclient import TestClient
+from ha_fake import FakeHA
 from support import Device
 
 from stowly import db, push, scheduler
@@ -108,8 +111,16 @@ class Early:
 
 def test_everything_set_up_and_never_a_secret(everything, monkeypatch):
     monkeypatch.setattr(endpoint, "server_now", lambda: datetime(2026, 11, 14, 9, 0, tzinfo=UTC))
-    with TestClient(create_app(everything, job_clock=Early())) as client:
+    home = FakeHA()
+    home.token = HA_TOKEN
+    app = create_app(everything, job_clock=Early(), ha_transport=httpx2.MockTransport(home))
+    with TestClient(app) as client:
         phone, tablet = Device(client, "Handy"), Device(client, "Tablet")
+        # Der Abgleich mit HA läuft gleich nach dem Start einmal.
+        for _ in range(300):
+            if app.state.bring.status()["state"] != "pending":
+                break
+            time.sleep(0.01)
         browser = push.b64url(b"\x04" + b"\x00" * 64)  # Form egal: direkt in die Datenbank
         con = db.connect(everything.database_path)
         try:
@@ -135,12 +146,13 @@ def test_everything_set_up_and_never_a_secret(everything, monkeypatch):
     )
     assert backup["recipients"] == [f"{key[:8]}…{key[-4:]}" for key in everything.backup_recipients]
     assert backup["next_at"] == "2026-11-14T09:00:00.000Z"  # 04:15 ist vorbei, noch nichts gelaufen: jetzt
+    assert mine["ha"]["last_ok_at"] is not None
     assert mine["ha"] == {
         "configured": True,
         "problem": None,
         "entity": "todo.einkaufsliste",
-        "state": "pending",
-        "last_ok_at": None,
+        "state": "ok",
+        "last_ok_at": mine["ha"]["last_ok_at"],
         "last_error": None,
         "last_error_at": None,
         "linked": 0,

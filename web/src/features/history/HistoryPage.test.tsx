@@ -291,6 +291,90 @@ describe("Verdrängte Bearbeitung", () => {
   });
 });
 
+describe("Fokus nach dem Wiederherstellen", () => {
+  it("geht an die nächste Zeile, und nach der letzten an die vorige", async () => {
+    const core = renderApp({}, ROUTES.history);
+    await ready();
+    const removed = value(core.data.removedPackages);
+    const [first, second] = removed;
+    const last = removed.at(-1);
+    const beforeLast = removed.at(-2);
+    if (!first || !second || !last || !beforeLast) {
+      throw new Error("Beispieldaten mit zu wenigen entnommenen Packungen");
+    }
+
+    await userEvent.click(screen.getByRole("button", { name: `Wiederherstellen: ${first.id}` }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: `Wiederherstellen: ${first.id}` })).not.toBeInTheDocument());
+    // Die Zeile selbst, nicht ihre Schaltfläche: Ein zweites Enter stellt nicht gleich die nächste wieder her.
+    await waitFor(() => expect(rowOf(second.id)).toHaveFocus());
+
+    await userEvent.click(screen.getByRole("button", { name: `Wiederherstellen: ${last.id}` }));
+    await waitFor(() => expect(rowOf(beforeLast.id)).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("geht nach der Rückfrage an die Zeile, die jetzt an der Stelle steht, und ohne Zeilen an die Überschrift", async () => {
+    const core = renderApp({}, ROUTES.history);
+    await ready();
+    const removed = value(core.data.removedPackages);
+    const edited = removed.find((pkg) => pkg.displaced !== null);
+    const plain = removed.find((pkg) => pkg.displaced === null);
+    if (!edited || !plain) {
+      throw new Error("Beispieldaten ohne passende entnommene Packungen");
+    }
+    for (const pkg of [plain, edited]) {
+      await userEvent.click(screen.getByRole("checkbox", { name: `${pkg.id} auswählen` }));
+    }
+    await userEvent.click(screen.getByRole("button", { name: "2 wiederherstellen" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Verdrängte Bearbeitungen übernehmen?" })).getByRole("button", { name: "Nur wiederherstellen" }));
+    await waitFor(() => expect(value(core.data.removedPackages)).toHaveLength(removed.length - 2));
+
+    // „Auswahl wiederherstellen“ ist danach gesperrt; der Fokus geht an die Zeile an der Stelle der ersten.
+    const left = removed.filter((pkg) => pkg.id !== plain.id && pkg.id !== edited.id);
+    const index = Math.min(
+      removed.findIndex((pkg) => pkg.id === plain.id || pkg.id === edited.id),
+      left.length - 1,
+    );
+    await waitFor(() => expect(rowOf(left[index]?.id ?? "")).toHaveFocus());
+
+    // Alles Übrige: Danach gibt es keine Zeile mehr, der Fokus geht an die Überschrift.
+    await userEvent.click(screen.getByRole("checkbox", { name: "Alle auswählen" }));
+    await userEvent.click(screen.getByRole("button", { name: `${String(left.length)} wiederherstellen` }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Noch nichts entnommen" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Lösch-Historie", level: 1 })).toHaveFocus());
+  });
+
+  it("lässt den Fokus an „Auswahl wiederherstellen“, solange es dasteht", async () => {
+    const core = renderApp({}, ROUTES.history);
+    await ready();
+    const plain = value(core.data.removedPackages)
+      .filter((pkg) => pkg.displaced === null)
+      .slice(0, 2);
+    for (const pkg of plain) {
+      await userEvent.click(screen.getByRole("checkbox", { name: `${pkg.id} auswählen` }));
+    }
+    const bulk = screen.getByRole("button", { name: "2 wiederherstellen" });
+    await userEvent.click(bulk);
+    await waitFor(() => expect(bulk).toHaveTextContent("Auswahl wiederherstellen"));
+    // Gesperrt, aber mit dem Fokus (useButtonLock): Er ist nicht verloren gegangen.
+    expect(bulk).toHaveFocus();
+    expect(bulk).toBeUnavailable();
+  });
+
+  it("geht am Handy an die nächste Karte", async () => {
+    setTestViewport(375);
+    const core = renderApp({}, ROUTES.history);
+    await ready();
+    const [first, second] = value(core.data.removedPackages);
+    if (!first || !second) {
+      throw new Error("Beispieldaten mit zu wenigen entnommenen Packungen");
+    }
+    const card = (id: string) => screen.getByRole("button", { name: `Wiederherstellen: ${id}` }).closest("li");
+    await userEvent.click(screen.getByRole("button", { name: `Wiederherstellen: ${first.id}` }));
+    await waitFor(() => expect(card(second.id)).toHaveFocus());
+  });
+});
+
 describe("Lösch-Historie am Handy", () => {
   it("zeigt Karten mit denselben Angaben und Aktionen", async () => {
     setTestViewport(375);

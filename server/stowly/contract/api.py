@@ -41,6 +41,12 @@ HA_SUMMARY_LIST_MAX = 5
 HA_SUMMARY_ENTRY_MAX = 40
 HA_SUMMARY_MESSAGE_MAX = 255
 
+# Einkaufsliste nach Bring! über Home Assistant (docs/integrationen.md, 5.2 und 5.4): Ein offener
+# Eintrag geht erst nach Bring!, wenn er so viele Sekunden offen ist (Zeit für Rückgängig und
+# Tippfehler); der Abgleich läuft spätestens nach so vielen Sekunden wieder.
+HA_MIRROR_DELAY_S = 120
+HA_SYNC_INTERVAL_S = 120
+
 # Testnachricht (POST /api/push/test): höchstens eine je Gerät in diesem Abstand.
 PUSH_TEST_INTERVAL_S = 10
 

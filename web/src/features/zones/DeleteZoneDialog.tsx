@@ -58,7 +58,8 @@ export function DeleteZoneDialog({ zone, zones, packageCount, primary, onClose }
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title={`Zone „${zone.name}“ löschen`}
       size="sm"
       variant="sheet"

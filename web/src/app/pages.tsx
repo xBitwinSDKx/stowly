@@ -100,6 +100,7 @@ export const PrintersPage = lazyPage(() => import("@/features/printers").then((m
 export const SettingsPage = lazyPage(() => import("@/features/settings").then((module) => module.SettingsPage));
 export const SyncPage = lazyPage(() => import("@/features/sync").then((module) => module.SyncPage));
 export const ShoppingPage = lazyPage(() => import("@/features/shopping").then((module) => module.ShoppingPage));
+export const StatsPage = lazyPage(() => import("@/features/stats").then((module) => module.StatsPage));
 
 const BY_PATH: Readonly<Record<string, LazyPage>> = {
   [ROUTES.stock]: StockPage,
@@ -110,6 +111,7 @@ const BY_PATH: Readonly<Record<string, LazyPage>> = {
   [ROUTES.settings]: SettingsPage,
   [ROUTES.sync]: SyncPage,
   [ROUTES.shopping]: ShoppingPage,
+  [ROUTES.stats]: StatsPage,
 };
 
 const ALL: readonly LazyPage[] = Object.values(BY_PATH);

@@ -11,20 +11,23 @@ Winterzeit keinen Sonderfall (``localtime``), und was der Server verpasst hat, h
 Takt nach dem Start nach.
 
 Was blockiert (Datenbank, Packen, Verschlüsseln, Schreiben), läuft in einem eigenen Thread, damit
-der Sync nicht wartet; jeder Zugriff auf die Datenbank öffnet eine eigene Verbindung. Je Aufgabe
-läuft höchstens ein Lauf zugleich. Ein Fehler in einer Aufgabe beendet die Schleife nie; er steht im
-Log und in ``job_runs``.
+der Sync nicht wartet; jeder Zugriff auf die Datenbank öffnet eine eigene Verbindung. Eine Aufgabe,
+die selbst ins Netz spricht (die Tagesnachricht über ``push.PushService``), läuft als Koroutine in
+der Ereignisschleife und gibt ihre Datenbankarbeit selbst an einen Thread ab. Je Aufgabe läuft
+höchstens ein Lauf zugleich. Ein Fehler in einer Aufgabe beendet die Schleife nie; er steht im Log
+und in ``job_runs``.
 
-Aufgaben: ``backup`` (``stowly.autobackup``) und ab Runde 2 ``push_daily`` (Abschnitt 4.8); für sie
-steht das Fenster der Tagesnachricht schon hier (``push_window``, ``push_daily_due``).
+Aufgaben: ``backup`` (``stowly.autobackup``) und ``push_daily`` (``stowly.daily``, Abschnitt 4.8) mit
+dem Fenster der Tagesnachricht aus ``push_window`` und ``push_daily_due``.
 """
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -84,15 +87,40 @@ def load_run(con: sqlite3.Connection, job: str) -> JobRun:
     )
 
 
+def save_success(
+    con: sqlite3.Connection,
+    job: str,
+    *,
+    day: str,
+    at: str,
+    state: dict[str, Any],
+    error: str | None = None,
+) -> None:
+    """Wie ``record_success``, aber in der Transaktion des Aufrufers.
+
+    ``error`` ist für einen Lauf, der abgeschlossen ist und trotzdem nichts erreicht hat (die
+    Tagesnachricht an kein einziges Abo): Er zählt für den Tag, der Satz steht als ``last_error``.
+    """
+    con.execute(
+        "INSERT INTO job_runs (job, last_date, last_at, last_error, last_error_at, state) "
+        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (job) DO UPDATE SET last_date = excluded.last_date, "
+        "last_at = excluded.last_at, last_error = excluded.last_error, "
+        "last_error_at = excluded.last_error_at, state = excluded.state",
+        (
+            job,
+            day,
+            at,
+            error,
+            None if error is None else at,
+            json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+        ),
+    )
+
+
 def record_success(con: sqlite3.Connection, job: str, *, day: str, at: str, state: dict[str, Any]) -> None:
     """Ein abgeschlossener Lauf: ``last_date`` = sein Tag, ``last_at``, kein Fehler, ``state``."""
     with db.transaction(con):
-        con.execute(
-            "INSERT INTO job_runs (job, last_date, last_at, last_error, last_error_at, state) "
-            "VALUES (?, ?, ?, NULL, NULL, ?) ON CONFLICT (job) DO UPDATE SET last_date = excluded.last_date, "
-            "last_at = excluded.last_at, last_error = NULL, last_error_at = NULL, state = excluded.state",
-            (job, day, at, json.dumps(state, ensure_ascii=False, separators=(",", ":"))),
-        )
+        save_success(con, job, day=day, at=at, state=state)
 
 
 def record_failure(con: sqlite3.Connection, job: str, *, at: str, error: str) -> None:
@@ -163,8 +191,12 @@ class Job(Protocol):
         """Fällig? Liest nur; ``run`` ist der Stand aus ``job_runs``."""
         ...
 
-    def run(self, now: datetime) -> None:
-        """Ein Lauf, im eigenen Thread. Hält Erfolg und Fehler selbst in ``job_runs`` fest."""
+    def run(self, now: datetime) -> None | Awaitable[None]:
+        """Ein Lauf. Hält Erfolg und Fehler selbst in ``job_runs`` fest.
+
+        Eine gewöhnliche Funktion läuft im eigenen Thread; eine Koroutine (``async def``) in der
+        Ereignisschleife, und was dort blockiert, gibt sie selbst an einen Thread ab.
+        """
         ...
 
 
@@ -179,6 +211,8 @@ class Scheduler:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running: dict[str, asyncio.Task[None]] = {}
         self._stopping = False
+        # ``wake`` kam, während ein Lauf noch lief: nach seinem Ende noch einmal prüfen.
+        self._again = False
 
     @property
     def jobs(self) -> list[str]:
@@ -202,7 +236,12 @@ class Scheduler:
         loop = self._loop
         if loop is None or loop.is_closed():
             return
-        loop.call_soon_threadsafe(self._wake.set)
+        loop.call_soon_threadsafe(self._woken)
+
+    def _woken(self) -> None:
+        self._wake.set()
+        if self._running:
+            self._again = True
 
     def stop(self) -> None:
         """Die Schleife endet nach dem laufenden Takt; neue Läufe beginnen nicht mehr.
@@ -232,9 +271,21 @@ class Scheduler:
                 continue
             task = asyncio.create_task(self._execute(job, now), name=f"stowly-job-{job.name}")
             self._running[job.name] = task
-            task.add_done_callback(lambda _task, name=job.name: self._running.pop(name, None))
+            task.add_done_callback(lambda _task, name=job.name: self._finished(name))
             started.append(task)
         return started
+
+    def _finished(self, name: str) -> None:
+        """Ein Lauf ist zu Ende. Kam ``wake`` währenddessen, wird gleich noch einmal geprüft.
+
+        Der Takt nach ``wake`` hat die Aufgabe übergangen, weil sie noch lief; ohne diesen Schritt
+        bliebe es bis zur nächsten vollen Minute dabei. Sonst bleibt es beim Takt: Eine Aufgabe, die
+        immer wieder scheitert, versucht es so höchstens einmal je Minute.
+        """
+        self._running.pop(name, None)
+        if self._again:
+            self._again = False
+            self._wake.set()
 
     async def run_once(self) -> list[str]:
         """Ein Takt, der wartet, bis die gestarteten Läufe fertig sind. Für Tests."""
@@ -269,7 +320,10 @@ class Scheduler:
 
     async def _execute(self, job: Job, now: datetime) -> None:
         try:
-            await asyncio.to_thread(job.run, now)
+            if inspect.iscoroutinefunction(job.run):
+                await job.run(now)
+            else:
+                await asyncio.to_thread(job.run, now)
         except asyncio.CancelledError:
             raise
         except Exception:

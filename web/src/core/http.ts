@@ -22,9 +22,11 @@ import {
   type PushTestResult,
   type PushTestStatus,
   type ServerHealth,
+  type Stats,
   type SyncRequest,
   type SyncResponse,
 } from "@/contract/api.gen";
+import type { StatsRange } from "@/contract/core";
 import { CoreError, type CoreErrorCode } from "@/contract/errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -265,6 +267,27 @@ export class ApiClient {
     return answer;
   }
 
+  /**
+   * Die Statistik (`GET /api/stats?start=&end=`, Protokoll 11.1). Gesendet wird nur, was angegeben
+   * ist, so wie es ist: Den Zeitraum prüft der Server (400, als "invalid" mit seinem Satz).
+   */
+  async stats(token: string, range?: StatsRange | null): Promise<Stats> {
+    const query = new URLSearchParams();
+    for (const field of ["start", "end"] as const) {
+      const given = range?.[field];
+      if (given !== undefined) {
+        query.set(field, String(given));
+      }
+    }
+    const search = query.toString();
+    const path = search === "" ? ENDPOINTS.get_stats.path : `${ENDPOINTS.get_stats.path}?${search}`;
+    const answer = await this.json<Stats>(ENDPOINTS.get_stats, path, { token, timeoutMs: REQUEST_TIMEOUT_MS });
+    if (!isStats(answer)) {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return answer;
+  }
+
   /** Lädt die Kopie der Datenbank. Der Name steht in `Content-Disposition`. */
   async backup(token: string): Promise<{ blob: Blob; filename: string | null }> {
     return this.call(ENDPOINTS.download_backup, ENDPOINTS.download_backup.path, { token, timeoutMs: 8 * REQUEST_TIMEOUT_MS }, async (response) => {
@@ -274,6 +297,37 @@ export class ApiClient {
       return { blob, filename: match?.[1]?.trim() || null };
     });
   }
+}
+
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+/** Prüfung der Form einer Statistik: Was nicht so aussieht, stammt nicht vom Stowly-Server. */
+function isStats(value: unknown): value is Stats {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const share = value.discarded_share;
+  return (
+    typeof value.start === "string" &&
+    typeof value.end === "string" &&
+    typeof value.timezone === "string" &&
+    isCount(value.consumed) &&
+    isCount(value.discarded) &&
+    (share === null || (typeof share === "number" && share >= 0 && share <= 1)) &&
+    Array.isArray(value.months) &&
+    value.months.every((month) => isRecord(month) && typeof month.month === "string" && isCount(month.consumed) && isCount(month.discarded)) &&
+    Array.isArray(value.top_discarded) &&
+    value.top_discarded.every(
+      (product) =>
+        isRecord(product) &&
+        typeof product.product_id === "string" &&
+        typeof product.name === "string" &&
+        (product.barcode === null || typeof product.barcode === "string") &&
+        isCount(product.discarded),
+    ) &&
+    Array.isArray(value.zones) &&
+    value.zones.every((zone) => isRecord(zone) && typeof zone.zone_id === "string" && typeof zone.name === "string" && isCount(zone.consumed) && isCount(zone.discarded))
+  );
 }
 
 /** Grobe Prüfung der Form, bevor eine Antwort die lokale Kopie verändern darf. */

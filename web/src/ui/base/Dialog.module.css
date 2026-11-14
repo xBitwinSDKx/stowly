@@ -65,6 +65,14 @@
   color: var(--color-text);
 }
 
+/* Der Dialog arbeitet: Das ✕ bleibt an seinem Platz, ist aber erkennbar gesperrt (busy). */
+.close[aria-disabled="true"],
+.close[aria-disabled="true"]:hover {
+  background: transparent;
+  color: var(--color-text-muted);
+  opacity: 0.4;
+}
+
 .body {
   flex: 1;
   min-height: 0;

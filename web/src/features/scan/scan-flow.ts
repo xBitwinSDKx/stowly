@@ -8,8 +8,9 @@
  *
  * Dazu die Eingabe von Hand, die dieselben Ergebnisse liefert wie die Kamera, und was nach dem
  * Entnehmen dazukommt: der FIFO-Hinweis auf eine ältere Packung (Plan von Stufe 2,
- * Entscheidung 5) und das Angebot „Auf die Einkaufsliste" nach der letzten Packung. Ohne React
- * und ohne den Kern selbst: Nachgeschlagen wird über das, was hereingereicht wird.
+ * Entscheidung 5) und das Angebot „Auf die Einkaufsliste" nach der letzten Packung eines Produkts
+ * ohne Mindestbestand. Ohne React und ohne den Kern selbst: Nachgeschlagen wird über das, was
+ * hereingereicht wird.
  */
 import {
   formatDate,
@@ -151,6 +152,18 @@ export function wasLastPackage(removed: Pick<Package, "id" | "product_id">, stoc
     stock.filter((pkg) => pkg.id !== removed.id),
     removed.product_id,
   ) === 0;
+}
+
+/**
+ * Kommt nach dem Entnehmen die Einkaufsliste zur Sprache (das Angebot „Auf die Einkaufsliste" oder
+ * der Satz, dass das Produkt schon darauf steht)? Nur nach der letzten Packung eines bekannten
+ * Produkts ohne Mindestbestand. Für ein Produkt mit Mindestbestand legt der Server den Eintrag
+ * selbst an (docs/sync-protokoll.md, 7.6); die Bestandsansicht hält es ebenso
+ * (features/stock/RemoveDialog.tsx). Nach einem Entnehmen als „falsch erfasst" fragt die Ansicht
+ * gar nicht erst: Was es nie gab, fehlt auch nicht.
+ */
+export function offersShoppingList(removed: Pick<Package, "id" | "product_id">, product: Pick<Product, "min_stock"> | undefined, stock: readonly Package[]): boolean {
+  return product !== undefined && product.min_stock === null && wasLastPackage(removed, stock);
 }
 
 /** Steht das Produkt offen auf der Einkaufsliste (eigener oder automatischer Eintrag)? */

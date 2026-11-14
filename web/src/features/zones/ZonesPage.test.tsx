@@ -97,6 +97,44 @@ describe("Zonen verwalten", () => {
     expect(value(core.data.zones).map((zone) => zone.name)).toEqual(["Keller", "Vorratsregal", "Gefrierschrank", "Kühlschrank"]);
   });
 
+  it("lässt den Fokus beim Umsortieren mit der Tastatur an derselben Schaltfläche", async () => {
+    const core = renderApp({}, ROUTES.zones);
+    await ready();
+    screen.getByRole("button", { name: "Keller nach unten" }).focus();
+
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(listedZones()).toEqual(["Vorratsregal", "Kühlschrank", "Keller", "Gefrierschrank"]));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Keller nach unten" })).toHaveFocus());
+
+    // Noch einmal: Jetzt steht der Keller unten, „nach unten“ ist gesperrt. Der Fokus geht an „nach oben“ derselben Zone.
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(listedZones()).toEqual(["Vorratsregal", "Kühlschrank", "Gefrierschrank", "Keller"]));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Keller nach oben" })).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Keller nach unten" })).toBeUnavailable();
+
+    // Und mit der Leertaste wieder hinauf, bis ganz nach oben: Dort übernimmt „nach unten“.
+    await userEvent.keyboard(" ");
+    await waitFor(() => expect(listedZones()).toEqual(["Vorratsregal", "Kühlschrank", "Keller", "Gefrierschrank"]));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Keller nach oben" })).toHaveFocus());
+    await userEvent.keyboard(" ");
+    await waitFor(() => expect(listedZones()).toEqual(["Vorratsregal", "Keller", "Kühlschrank", "Gefrierschrank"]));
+    await userEvent.keyboard(" ");
+    await waitFor(() => expect(value(core.data.zones).map((zone) => zone.name)).toEqual(["Keller", "Vorratsregal", "Kühlschrank", "Gefrierschrank"]));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Keller nach unten" })).toHaveFocus());
+    expect(screen.getByRole("button", { name: "Keller nach oben" })).toBeUnavailable();
+  });
+
+  it("nimmt einer Schaltfläche ohne Fokus beim Umsortieren nichts weg", async () => {
+    renderApp({}, ROUTES.zones);
+    await ready();
+    const search = screen.getByRole("searchbox", { name: "Bestand durchsuchen" });
+    search.focus();
+    // Ein Klick, der den Fokus nicht verschiebt (wie in Safari): Der Fokus bleibt, wo er ist.
+    screen.getByRole("button", { name: "Gefrierschrank nach oben" }).click();
+    await waitFor(() => expect(listedZones()).toEqual(["Vorratsregal", "Keller", "Gefrierschrank", "Kühlschrank"]));
+    expect(search).toHaveFocus();
+  });
+
   it("löscht eine Zone und verschiebt ihre Packungen in die gewählte Zielzone", async () => {
     const core = renderApp({}, ROUTES.zones);
     await ready();

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { zoneQr, type Package, type Product, type ShoppingItem, type Zone } from "@/contract";
 
-import { evaluateScan, fifoHint, isOnShoppingList, parseManualInput, shortDate, wasLastPackage, type ScanLookups } from "./scan-flow";
+import { evaluateScan, fifoHint, isOnShoppingList, offersShoppingList, parseManualInput, shortDate, wasLastPackage, type ScanLookups } from "./scan-flow";
 
 const AT = "2026-11-13T10:00:00.000Z";
 const ZONE_A: Zone = { id: "10000000-0000-4000-8000-000000000001", name: "Vorrat", icon: "box", color: null, sort: 0, printer_id: null, created_at: AT, updated_at: AT, deleted_at: null, moved_to: null };
@@ -116,5 +116,16 @@ describe("Nach dem Entnehmen", () => {
     expect(isOnShoppingList(RICE.id, [item({ origin: "min_stock", quantity: 1 })])).toBe(true);
     expect(isOnShoppingList(RICE.id, [item({ done_at: AT }), item({ deleted_at: AT })])).toBe(false);
     expect(isOnShoppingList(RICE.id, [item({ product_id: null, text: "Reis" })])).toBe(false);
+  });
+
+  it("spricht die Einkaufsliste nur nach der letzten Packung eines Produkts ohne Mindestbestand an", () => {
+    const taken = pkg("TAKEN");
+    expect(offersShoppingList(taken, RICE, [taken])).toBe(true);
+    expect(offersShoppingList(taken, RICE, [taken, pkg("OTHER")])).toBe(false);
+    // Mit Mindestbestand legt der Server den Eintrag an: weder Angebot noch Satz.
+    expect(offersShoppingList(taken, { ...RICE, min_stock: 2 }, [taken])).toBe(false);
+    expect(offersShoppingList(taken, { ...RICE, min_stock: 1 }, [])).toBe(false);
+    // Ein Produkt, das die lokale Kopie nicht kennt, ließe sich nicht auf die Liste setzen.
+    expect(offersShoppingList(taken, undefined, [taken])).toBe(false);
   });
 });

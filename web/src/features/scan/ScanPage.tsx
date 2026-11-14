@@ -28,7 +28,7 @@ import { Button, cx, Dialog, IconButton, Spinner, useToast } from "@/ui/base";
 import { ManualEntry } from "./ManualEntry";
 import { QuantityStepper } from "./QuantityStepper";
 import { labelStatus, labelStatusText } from "./label-status";
-import { evaluateScan, fifoHint, isOnShoppingList, wasLastPackage } from "./scan-flow";
+import { evaluateScan, fifoHint, isOnShoppingList, offersShoppingList } from "./scan-flow";
 import styles from "./ScanPage.module.css";
 import { StoreSheet, type StoreDecision, type StoreLookup, type StoreRequest } from "./StoreSheet";
 import { CAMERA_PROBLEMS, CLOSER_HINT, MANUAL_HINT, RESCAN_HINT, SHOPPING_TEXTS } from "./texts";
@@ -58,7 +58,10 @@ type LastAction =
       product_id: string;
       /** FIFO-Hinweis auf eine ältere Packung desselben Produkts; nur nach „verbraucht". */
       fifo: string | null;
-      /** Es war die letzte Packung des Produkts: Die Ansicht bietet die Einkaufsliste an. */
+      /**
+       * Es war die letzte Packung eines Produkts ohne Mindestbestand: Die Ansicht bietet die
+       * Einkaufsliste an (`offersShoppingList`). Mit Mindestbestand legt der Server den Eintrag an.
+       */
       empty: boolean;
       /** Eben über „Auf die Einkaufsliste" dazugekommen. */
       listed: boolean;
@@ -249,7 +252,8 @@ export function ScanPage() {
       signal("success");
       const text = `${describePackage(pkg, product)} ${reason === "discarded" ? "als entsorgt gemeldet" : "entnommen"}`;
       const fifo = reason === "consumed" ? fifoHint(pkg, before, zones) : null;
-      setLast({ kind: "removed", text, id: pkg.id, reason, product_id: pkg.product_id, fifo, empty: wasLastPackage(pkg, before), listed: false });
+      const empty = offersShoppingList(pkg, product, before);
+      setLast({ kind: "removed", text, id: pkg.id, reason, product_id: pkg.product_id, fifo, empty, listed: false });
       // Der Hinweis steht neben „Rückgängig": Wer tauschen will, nimmt zurück und scannt die ältere.
       toast.show({
         id: TOAST_ACTION,
@@ -553,8 +557,9 @@ export function ScanPage() {
   const problem = state.status === "error" && state.error ? CAMERA_PROBLEMS[state.error] : null;
   // Was aus den Etiketten des letzten Einlagerns geworden ist: Der Halbsatz folgt dem Zustellen.
   const labels = last?.kind === "stored" ? labelStatus(printJobs, last.jobIds) : null;
-  // Nach der letzten Packung eines Produkts: anbieten oder sagen, dass es schon auf der Liste steht.
-  // Ein automatischer Eintrag des Servers kommt mit dem Abgleich und ersetzt das Angebot von selbst.
+  // Nach der letzten Packung eines Produkts ohne Mindestbestand: anbieten oder sagen, dass es schon
+  // auf der Liste steht. Mit Mindestbestand weder das eine noch das andere: Den Eintrag legt der
+  // Server an (Protokoll 7.6). Nach dem Rückgängig des Einlagerns ("mistake") steht hier nichts.
   const removed = last?.kind === "removed" ? last : null;
   const listed = removed !== null && removed.empty && isOnShoppingList(removed.product_id, shoppingItems);
   const zoom = state.zoom;

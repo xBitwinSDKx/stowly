@@ -178,7 +178,8 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
     return (
       <Dialog
         open
-        onClose={busy ? () => undefined : onClose}
+        onClose={onClose}
+        busy={busy}
         title="Eingelagert"
         variant="sheet"
         footer={
@@ -237,7 +238,8 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title="Von Hand einlagern"
       variant="sheet"
       footer={

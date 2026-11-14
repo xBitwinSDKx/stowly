@@ -7,7 +7,7 @@
  */
 import Dexie from "dexie";
 
-import { CoreError, type CoreErrorCode, type Live, type SessionDevice, type SyncRequest, type SyncResponse, type SyncStatus } from "@/contract";
+import { CoreError, type CoreErrorCode, type Live, type Package, type SessionDevice, type SyncRequest, type SyncResponse, type SyncStatus } from "@/contract";
 import { createCore, type StowlyCore } from "@/core";
 import type { FetchLike } from "@/core/http";
 import type { SchedulerTimers } from "@/core/sync/scheduler";
@@ -191,6 +191,21 @@ export class Network {
   /** Alle Ergebnisse, die der Server diesem Gerät seit `from` (Index in `syncs`) gemeldet hat. */
   resultsSince(from: number): SyncResponse["results"] {
     return this.syncs.slice(from).flatMap((exchange) => exchange.response?.results ?? []);
+  }
+
+  /**
+   * Die Packungen, wie der Server sie diesem Gerät zuletzt gemeldet hat (die spätere Antwort gilt),
+   * mit seinen wirksamen Zeitpunkten. Auch die, die der Kern jenseits der Aufbewahrungsdauer nicht
+   * mehr zeigt.
+   */
+  serverPackages(): Map<string, Package> {
+    const result = new Map<string, Package>();
+    for (const exchange of this.syncs) {
+      for (const pkg of exchange.response?.changes.packages ?? []) {
+        result.set(pkg.id, pkg);
+      }
+    }
+    return result;
   }
 }
 

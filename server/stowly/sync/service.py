@@ -51,6 +51,13 @@ class Frame:
 class Outcome:
     body: bytes  # die Antwort als JSON
     lookup_pending: bool  # ein Produkt wartet auf Open Food Facts
+    # Die Befehle haben die Einkaufsliste geschrieben: Der Abgleich mit Bring! wird geweckt.
+    shopping_changed: bool = False
+
+
+def _shopping_rev(con: sqlite3.Connection) -> int:
+    """Der höchste Stand der Änderungsfolge in der Einkaufsliste; steigt mit jedem Schreiben dort."""
+    return int(con.execute("SELECT COALESCE(MAX(rev), 0) FROM shopping_items").fetchone()[0])
 
 
 def _problem(loc: tuple[Any, ...], msg: str, type_: str) -> dict[str, Any]:
@@ -396,7 +403,9 @@ def run(
         dataset_id = db.get_meta(con, "dataset_id")
         reset = request.dataset_id != dataset_id or request.cursor > db.current_rev(con)
 
+        shopping_before = _shopping_rev(con) if frame.commands else 0
         results = [batch.process(raw) for raw in frame.commands]
+        shopping_changed = bool(frame.commands) and _shopping_rev(con) != shopping_before
         if batch.floor != device["last_command_at"]:
             # Gemerkt in derselben Transaktion wie die Befehle: Die nächste Anfrage des Geräts
             # beginnt mit dieser Untergrenze.
@@ -428,4 +437,4 @@ def run(
         # Gerät liefe bei jedem Abgleich wieder in denselben Fehler. Also laut melden und liefern.
         log.exception("Die Sync-Antwort verletzt den Vertrag und wird trotzdem ausgeliefert")
         body = json.dumps(response, ensure_ascii=True, separators=(",", ":")).encode("ascii")
-    return Outcome(body=body, lookup_pending=runner.lookup_pending)
+    return Outcome(body=body, lookup_pending=runner.lookup_pending, shopping_changed=shopping_changed)

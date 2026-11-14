@@ -54,16 +54,16 @@ export function ConfirmDialog({
   }
 
   function close() {
-    if (!busy) {
-      setError(null);
-      onClose();
-    }
+    setError(null);
+    onClose();
   }
 
   return (
     <Dialog
       open={open}
       onClose={close}
+      // Solange die Aktion läuft, schließen weder ✕ noch Escape; „Abbrechen" ist gesperrt.
+      busy={busy}
       title={title}
       size="sm"
       variant="sheet"

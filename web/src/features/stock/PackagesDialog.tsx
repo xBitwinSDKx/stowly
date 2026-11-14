@@ -113,7 +113,8 @@ export function PackagesDialog({ stock, packageIds, onClose }: PackagesDialogPro
   return (
     <Dialog
       open
-      onClose={busy ? () => undefined : onClose}
+      onClose={onClose}
+      busy={busy}
       title={entries.length === 1 ? "Packung bearbeiten" : "Packungen bearbeiten"}
       variant="sheet"
       footer={
