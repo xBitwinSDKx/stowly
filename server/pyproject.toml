@@ -13,6 +13,12 @@ dependencies = [
     # httpx2 ist der Nachfolger von httpx: für den Abruf bei Open Food Facts und für
     # den Test-Client von Starlette (der mit dem alten httpx nur noch unter Warnung läuft).
     "httpx2>=2.16,<3",
+    # Web-Push: Verschlüsselung (RFC 8291) und Absender (RFC 8292), selbst geschrieben darauf.
+    "cryptography>=50,<51",
+    # Sicherungen: verschlüsselt im Format age an öffentliche Schlüssel.
+    "pyrage>=1.4,<2",
+    # Zeitzonendaten für zoneinfo: Windows und das schlanke Image bringen keine eigenen mit.
+    "tzdata>=2026.6",
     "stowly-print",
 ]
 
