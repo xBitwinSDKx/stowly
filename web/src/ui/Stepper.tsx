@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from "react";
 
-import { cx } from "./base";
+import { cx, useButtonLock } from "./base";
 import styles from "./Field.module.css";
 import { MinusIcon, PlusIcon } from "./icons";
 
@@ -23,11 +23,14 @@ function clamp(value: number, min: number, max: number): number {
 /**
  * Mengenwähler: Minus, Zahl, Plus. Die Zahl lässt sich auch direkt eintippen;
  * beim Verlassen des Felds wird sie auf den erlaubten Bereich gebracht.
+ * An der Grenze ist Minus bzw. Plus gesperrt; wer dorthin zählt, behält den Fokus (`useButtonLock`).
  */
 export function Stepper({ label, value, onChange, min = 1, max, hint, className }: StepperProps) {
   const inputId = useId();
   const hintId = useId();
   const [text, setText] = useState(String(value));
+  const less = useButtonLock({ disabled: value <= min, onClick: () => onChange(clamp(value - 1, min, max)) });
+  const more = useButtonLock({ disabled: value >= max, onClick: () => onChange(clamp(value + 1, min, max)) });
 
   // Wert von außen geändert (Plus, Minus, Zurücksetzen): Text nachziehen.
   useEffect(() => {
@@ -49,7 +52,7 @@ export function Stepper({ label, value, onChange, min = 1, max, hint, className 
         {label}
       </label>
       <div className={styles.stepper}>
-        <button type="button" className={styles.step} aria-label="Weniger" disabled={value <= min} onClick={() => onChange(clamp(value - 1, min, max))}>
+        <button type="button" className={styles.step} aria-label="Weniger" {...less}>
           <MinusIcon size={20} aria-hidden="true" />
         </button>
         <input
@@ -70,7 +73,7 @@ export function Stepper({ label, value, onChange, min = 1, max, hint, className 
           onBlur={(event) => commit(event.target.value)}
           onFocus={(event) => event.target.select()}
         />
-        <button type="button" className={styles.step} aria-label="Mehr" disabled={value >= max} onClick={() => onChange(clamp(value + 1, min, max))}>
+        <button type="button" className={styles.step} aria-label="Mehr" {...more}>
           <PlusIcon size={20} aria-hidden="true" />
         </button>
       </div>

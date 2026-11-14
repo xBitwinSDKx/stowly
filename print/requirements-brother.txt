@@ -3,18 +3,21 @@
 #
 # Einspielen (Container und Raspberry Pi gleich):
 #
-#   pip install --no-deps --require-hashes -r requirements-brother.txt
+#   pip install --no-deps --no-build-isolation --require-hashes -r requirements-brother.txt
 #
 # --no-deps: Es kommt genau das hier Genannte, nichts wird aufgelöst. click und pillow,
-# die die Bibliothek ebenfalls verlangt, bringt Stowly schon mit (Systempakete oder Server).
+# die die Bibliothek ebenfalls verlangt, bringt Stowly schon mit (Systempakete oder Server,
+# server/requirements.lock).
 #
 # Herkunft: pypi.org, geprüft am 13.11.2026. Lizenzen: brother_ql_next GPL-3.0-only,
 # pyusb BSD-3-Clause, alle übrigen MIT.
 #
 # - jsons und typish braucht nur das Kommandozeilenwerkzeug der Bibliothek (brother_ql ...),
 #   nicht der Treiber; sie stehen hier, damit die Installation vollständig ist.
-# - packbits gibt es nur als Quellpaket: pip baut es beim Einspielen und holt sich dafür
-#   setuptools in eine eigene Bau-Umgebung.
+# - packbits gibt es nur als Quellpaket: pip baut es beim Einspielen. --no-build-isolation
+#   lässt es mit dem vorhandenen setuptools bauen (ab 70.1, ohne das Paket wheel): im Image das
+#   aus server/requirements.lock, auf dem Pi python3-setuptools aus Debian. Ohne die Angabe
+#   holte pip sich setuptools ungeprüft in eine eigene Bau-Umgebung.
 # - pyusb braucht zur Laufzeit die Systembibliothek libusb-1.0 (Debian: libusb-1.0-0).
 
 brother-ql-next==0.12.0 \

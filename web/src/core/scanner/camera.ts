@@ -313,6 +313,31 @@ export async function setTorch(track: MediaStreamTrack, on: boolean): Promise<bo
   }
 }
 
+/**
+ * Mit diesem Zoom beginnt der Scanner am iPhone und iPad. Die feste Rückkamera (Mehrfachkameras
+ * werden gemieden, WebKit 262416) stellt bei den Pro-Modellen erst ab etwa 15 bis 20 cm scharf;
+ * wer einen Barcode bildfüllend vor die Kamera hält, ist näher dran und bekommt ein unscharfes
+ * Bild. Apple rät für das Scannen von Codes deshalb, so weit zu zoomen, dass der Anwender von
+ * selbst weiter weg geht (WWDC21 „What's new in camera capture", Beispiel AVCamBarcode). Nach
+ * dessen Rechnung braucht ein Barcode von 37 mm, der den halben Auswertungsausschnitt füllen soll,
+ * bei 15 bis 20 cm Nahgrenze einen Zoom von etwa 1,5 bis 2. Safari meldet `zoom` seit 2023
+ * (WebKit 253646); wo er fehlt, bleibt es bei 1.
+ */
+export const APPLE_START_ZOOM = 2;
+
+/**
+ * Der Zoom, mit dem eine eben geöffnete Kamera beginnen soll, oder null, wenn er bleiben soll.
+ * Nur am iPhone und iPad, nur bei einer festen Kamera (kleinster Zoom 1) und nur, wenn sie den
+ * Zoom so weit kann.
+ */
+export function startZoom(capabilities: CameraCapabilities, appleMobile: boolean): number | null {
+  const zoom = capabilities.zoom;
+  if (!appleMobile || typeof zoom?.min !== "number" || typeof zoom.max !== "number" || zoom.min < 1 || zoom.max < APPLE_START_ZOOM) {
+    return null;
+  }
+  return APPLE_START_ZOOM;
+}
+
 /** Setzt den Zoom innerhalb der gemeldeten Grenzen. Liefert den gesetzten Wert oder null. */
 export async function setZoom(track: MediaStreamTrack, value: number, range: Range): Promise<number | null> {
   const clamped = Math.min(range.max ?? value, Math.max(range.min ?? value, value));

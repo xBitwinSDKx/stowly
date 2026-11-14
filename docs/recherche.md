@@ -16,10 +16,10 @@ Vom Anwender geliefert (liegen nicht im Repository; die Briefings nennen den Abl
 - **iPhone-Kamera:**
   - Mehrlinsen-Kameras sind seit iOS 16.4 sichtbar; die Gerätenamen sind lokalisiert, deshalb nach `getCapabilities()` auswählen, nicht nach Namen.
   - WebKit 262416 (offen): Die „Back Triple Camera" wechselt selbstständig die Linse. Eine feste Rückkamera wählen und die Wahl speichern.
-  - Pro-Modelle fokussieren mit der Hauptlinse erst ab 15–20 cm. Für kleine Codes 1920×1080 anfordern oder `zoom` setzen.
+  - Pro-Modelle fokussieren mit der Hauptlinse erst ab 12–20 cm. Für kleine Codes 1920×1080 anfordern oder `zoom` setzen. Stowly startet auf iPhone und iPad mit 2× Zoom, wenn die feste Kamera ihn anbietet: So hält man das Gerät von selbst weit genug weg (Apple, WWDC21 „What's new in camera capture"). Am Gerät noch nicht geprüft.
   - `torch`, `zoom`, `focusDistance` nur nutzen, wenn `getCapabilities()` sie meldet. `getSettings()` lieferte bis Ende 2024 veraltete Werte für `torch` (WebKit 280970).
 - **Android-Kamera:** `facingMode: "environment"` kann die Weitwinkel-Linse liefern. Kamera mit Dauerfokus und Taschenlampe bevorzugen, Wahl speichern, Umschalt-Knopf anbieten.
-- **Ablauf:** mittleren Bildausschnitt etwa zehnmal pro Sekunde auswerten, denselben Wert zwei Sekunden lang ignorieren, die gesuchten Formate je Schritt einschränken.
+- **Ablauf:** mittleren Bildausschnitt etwa zehnmal pro Sekunde auswerten, denselben Wert zwei Sekunden lang ignorieren, die gesuchten Formate je Schritt einschränken. Ausnahme nach dem Dialog zum Einlagern: Ein Produkt-Barcode, der danach noch im Bild ist, öffnet ihn nicht von selbst wieder, zählt aber, sobald er 0,8 Sekunden lang nicht zu sehen war (kurz wegschwenken); bis dahin sagt die Ansicht genau das. Etiketten buchen ohne Rückfrage und behalten die zwei Sekunden. Steht das Kamerabild nach einem Dialog (das Video angehalten, keine neuen Bilder), startet der Scanner es wieder und öffnet die Kamera notfalls neu.
 
 Am Gerät zu prüfen: QR-Code von 12–15 mm und kleiner EAN auf einem iPhone Pro; Linsenwahl auf dem Android-Gerät; native Erkennung beim ersten Einsatz ohne Netz.
 

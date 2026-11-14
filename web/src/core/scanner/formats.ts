@@ -102,14 +102,19 @@ export const MIN_LABEL_SIDE_RATIO = 0.07;
  * eingebauten Erkennung und bei der mitgelieferten gleich. Für Produkt-Barcodes und fremde
  * Codes gilt die Grenze nicht; ohne Eckpunkte lässt sich nichts messen, dann zählt das Etikett.
  *
+ * Mit Zoom erscheint alles größer: Bei 2× füllt das Etikett im Regal dahinter doppelt so viel
+ * vom Bild. Die Schwelle wächst deshalb mit dem Zoom; sie meint immer denselben Abstand.
+ *
  * @param frameSide Kantenlänge des ausgewerteten Quadrats in denselben Bildpunkten wie `code.side`
+ * @param zoom      Zoom der Kamera (1 = ohne)
  */
-export function isLabelTooSmall(code: Pick<DetectedCode, "rawValue" | "format" | "side">, frameSide: number): boolean {
+export function isLabelTooSmall(code: Pick<DetectedCode, "rawValue" | "format" | "side">, frameSide: number, zoom = 1): boolean {
   if (code.side === null || frameSide <= 0) {
     return false;
   }
   const kind = classifyDetected(code).kind;
-  return (kind === "package" || kind === "zone") && code.side / frameSide < MIN_LABEL_SIDE_RATIO;
+  const factor = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  return (kind === "package" || kind === "zone") && code.side / frameSide < MIN_LABEL_SIDE_RATIO * factor;
 }
 
 /** Wählt aus mehreren Codes im Bild den, der der Mitte am nächsten liegt. */

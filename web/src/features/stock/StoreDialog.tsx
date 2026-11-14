@@ -161,6 +161,10 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
     }
   }
 
+  // Die Schaltflächen der Fußzeile tragen Schlüssel, damit React sie beim Wechsel zum Ergebnis nicht
+  // weiterverwendet: Sonst stünde der Fokus von „Einlagern" danach auf „Fertig", und ein schnelles
+  // zweites Enter schlösse das Ergebnis samt Packungs-IDs, bevor jemand sie gesehen hat. So geht der
+  // Fokus an den Dialog selbst.
   if (result) {
     const zoneName = stock.zones.find((candidate) => candidate.id === result.packages[0]?.zone_id)?.name;
     const date = result.packages[0]?.best_before ?? null;
@@ -172,10 +176,10 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
         variant="sheet"
         footer={
           <>
-            <Button onClick={again} disabled={busy}>
+            <Button key="again" onClick={again} disabled={busy}>
               Weitere einlagern
             </Button>
-            <Button variant="primary" onClick={onClose} disabled={busy}>
+            <Button key="done" variant="primary" onClick={onClose} disabled={busy}>
               Fertig
             </Button>
           </>
@@ -192,7 +196,7 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
                 {[stock.multiZone ? zoneName : null, date ? `MHD ${formatDate(date)}` : "ohne MHD"].filter(Boolean).join(" · ")}
               </div>
             </div>
-            <Button size="sm" variant="ghost" icon={<UndoIcon />} onClick={() => void undo(result)} disabled={busy}>
+            <Button size="sm" variant="ghost" icon={<UndoIcon />} onClick={() => void undo(result)} busy={busy}>
               Rückgängig
             </Button>
           </div>
@@ -231,10 +235,10 @@ export function StoreDialog({ stock, productId, zoneId, onClose }: StoreDialogPr
       variant="sheet"
       footer={
         <>
-          <Button onClick={onClose} disabled={busy}>
+          <Button key="cancel" onClick={onClose} disabled={busy}>
             Abbrechen
           </Button>
-          <Button type="submit" form={formId} variant="primary" busy={busy}>
+          <Button key="store" type="submit" form={formId} variant="primary" busy={busy}>
             {count === 1 ? "Einlagern" : `${String(count)} Packungen einlagern`}
           </Button>
         </>

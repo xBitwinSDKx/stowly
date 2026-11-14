@@ -163,3 +163,36 @@ it("sagt dem Gerät, ob nachgeschlagen wird, und das Gerät verspricht nur dann 
     await plain.dispose();
   }
 });
+
+it("schlägt gleich beim Scannen nach: Name, Marke und Größe sind sofort da, und das Produkt entsteht damit", async () => {
+  const device = await signedIn(server.url, "Küche");
+  const raw = await RawClient.login(server.url);
+  const zone = firstZone(device);
+  const [beans, unknown] = [freshBarcode(), freshBarcode()] as [string, string];
+  const internalBody = `22${String(process.pid % 100_000).padStart(5, "0")}00002`;
+  const internal = internalBody + String(gtinCheckDigit(internalBody));
+  known.set(beans, { product_name_de: "Weiße Bohnen", product_name: "White beans", brands: "Feldhof", quantity: "400 g" });
+  const asked = lookups.length;
+
+  // Der Server fragt Open Food Facts (hier den Ersatz), während das Gerät wartet.
+  const found = await device.core.products.lookup(beans);
+  expect(found).toEqual({ barcode: beans, state: "found", name: "Weiße Bohnen", brand: "Feldhof", quantity: "400 g", image_id: null });
+  expect(await device.core.products.lookup(unknown)).toEqual({ barcode: unknown, state: "not_found", name: "", brand: "", quantity: "", image_id: null });
+  // Ladenintern: gar nicht erst gefragt.
+  expect(await device.core.products.lookup(internal)).toMatchObject({ state: "skipped" });
+  expect(lookups.slice(asked).map((lookup) => lookup.path.split("?")[0])).toEqual([`/api/v3/product/${beans}`, `/api/v3/product/${unknown}`]);
+
+  // Eingelagert mit dem Ergebnis: Das Produkt hat Name, Marke und Größe von Anfang an.
+  const stored = await device.core.stock.store({
+    product: { kind: "barcode", barcode: beans, name: found.name, brand: found.brand, quantity: found.quantity },
+    zone_id: zone.id,
+    best_before: null,
+    count: 1,
+    labels: false,
+  });
+  expect(stored.product).toMatchObject({ name: "Weiße Bohnen", brand: "Feldhof", quantity: "400 g", lookup: "pending" });
+  expect(await untilSettled(device, stored.product.id)).toMatchObject({ name: "Weiße Bohnen", brand: "Feldhof", quantity: "400 g", lookup: "found", barcodes: [beans] });
+  await expectSameAsServer(device, raw);
+  // Das Ergebnis von eben liegt beim Server: Open Food Facts wurde nicht noch einmal gefragt.
+  expect(lookups.slice(asked).filter((lookup) => lookup.path.startsWith(`/api/v3/product/${beans}`))).toHaveLength(1);
+});

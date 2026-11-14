@@ -777,7 +777,9 @@ export class DeliveryEngine {
 
   /**
    * Reicht den Zustand eines direkten Druckers weiter (`printer.report`): höchstens einmal je
-   * Minute und Drucker, außer es hat sich etwas geändert oder der Anwender hat abgefragt.
+   * Minute und Drucker, außer es hat sich etwas geändert oder der Anwender hat abgefragt. Eine
+   * neue Meldung ersetzt eine ältere, die noch ungesendet in der Outbox wartet
+   * (`Mutation.reportPrinter`): Im Keller ohne Server steht je Drucker höchstens eine dort.
    * Für Drucker am Server meldet kein Gerät; der Server schreibt selbst.
    */
   private async reportPrinter(connection: Connection, force: boolean): Promise<void> {
@@ -802,7 +804,7 @@ export class DeliveryEngine {
         if (!mutation.draft.get("printers", printerId)) {
           return;
         }
-        mutation.emit({ type: "printer.report", printer_id: printerId, boot_id: boot, status, host: connection.health.host ?? null });
+        mutation.reportPrinter({ printer_id: printerId, boot_id: boot, status, host: connection.health.host ?? null });
       });
       this.reportedAt.set(printerId, nowMs);
       this.deps.onChange();

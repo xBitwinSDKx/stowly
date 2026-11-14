@@ -6,13 +6,35 @@ Ohne Angaben gelten die Umgebungsvariablen ``STOWLY_*`` (siehe .env.example).
 import argparse
 import dataclasses
 import logging
+import socket
 import sys
 
 import uvicorn
+from fastapi import FastAPI
 
 from stowly import __version__, db
-from stowly.app import create_app, prepare_database
+from stowly.app import create_app, prepare_database, release_waiting
 from stowly.config import DEV_PASSWORD, Settings
+
+# Exit-Code, wenn der Server nicht starten konnte (wie bei uvicorn.run, etwa Port belegt).
+STARTUP_FAILURE = 3
+
+
+class Server(uvicorn.Server):
+    """uvicorn mit einem Schritt vor dem Herunterfahren.
+
+    uvicorn wartet beim Beenden zuerst auf laufende Anfragen und fährt erst danach die App
+    herunter. Wer gerade beim Nachschlagen wartet (``GET /api/lookup/…?wait=8``), bekommt
+    deshalb vorher seine Antwort (``release_waiting``) und hält das Beenden nicht auf.
+    """
+
+    def __init__(self, config: uvicorn.Config, app: FastAPI) -> None:
+        super().__init__(config)
+        self.stowly_app = app
+
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        release_waiting(self.stowly_app)
+        await super().shutdown(sockets=sockets)
 
 
 def configure_logging(level: str) -> None:
@@ -99,14 +121,19 @@ def main(argv: list[str] | None = None) -> int:
     app = create_app(settings)
     # Beim Beenden höchstens 5 Sekunden auf laufende Anfragen warten: Eine Abfrage mit ?wait=30 am
     # Druckdienst hielte das Herunterfahren sonst auf, und Docker beendet nach 10 Sekunden hart.
-    uvicorn.run(
+    config = uvicorn.Config(
         app,
         host=settings.host,
         port=settings.port,
         log_level=settings.log_level,
         timeout_graceful_shutdown=5,
     )
-    return 0
+    server = Server(config, app)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    return 0 if server.started else STARTUP_FAILURE
 
 
 if __name__ == "__main__":

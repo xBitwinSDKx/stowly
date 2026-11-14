@@ -1,6 +1,7 @@
 import type { KeyboardEvent, ReactNode } from "react";
 
 import { cx } from "./cx";
+import { useButtonLock } from "./lock";
 import styles from "./SegmentedControl.module.css";
 
 /** Pfeiltasten wie bei einer Gruppe von Optionsfeldern: wohin sie führen. */
@@ -30,6 +31,23 @@ export interface SegmentedControlProps<T extends string> {
   /** "lg" für Daumenbedienung. Vorgabe "md". */
   size?: "md" | "lg";
   className?: string;
+}
+
+/** Ein Segment. Gesperrt verliert es den Fokus nicht: siehe `useButtonLock`. */
+function Segment({ selected, disabled, onSelect, children }: { selected: boolean; disabled: boolean; onSelect: () => void; children: ReactNode }) {
+  const lock = useButtonLock({
+    disabled,
+    onClick: () => {
+      if (!selected) {
+        onSelect();
+      }
+    },
+  });
+  return (
+    <button type="button" role="radio" aria-checked={selected} {...lock} className={cx(styles.segment, selected && styles.selected)}>
+      {children}
+    </button>
+  );
 }
 
 /**
@@ -79,26 +97,11 @@ export function SegmentedControl<T extends string>({
 
   return (
     <div role="radiogroup" aria-label={label} className={cx(styles.group, styles[size], block && styles.block, className)} onKeyDown={handleKeyDown}>
-      {options.map((option) => {
-        const selected = option.value === value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            disabled={option.disabled}
-            className={cx(styles.segment, selected && styles.selected)}
-            onClick={() => {
-              if (!selected) {
-                onChange(option.value);
-              }
-            }}
-          >
-            {option.label}
-          </button>
-        );
-      })}
+      {options.map((option) => (
+        <Segment key={option.value} selected={option.value === value} disabled={option.disabled ?? false} onSelect={() => onChange(option.value)}>
+          {option.label}
+        </Segment>
+      ))}
     </div>
   );
 }

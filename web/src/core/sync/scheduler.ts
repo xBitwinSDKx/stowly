@@ -1,12 +1,22 @@
 /**
- * Wann abgeglichen wird (docs/sync-protokoll.md, 9.4):
+ * Wann abgeglichen wird (docs/sync-protokoll.md, 9.4) und wann nebenbei geprüft wird, ob der
+ * Server erreichbar ist (9.5):
  *
  * - beim Start und nach der Anmeldung, wenn der Browser `online` meldet, wenn die App
  *   wieder sichtbar wird und auf Wunsch des Anwenders: sofort
  * - nach jeder lokalen Änderung, zusammengefasst über höchstens 2 Sekunden
- * - alle 60 Sekunden, solange die App sichtbar ist
+ * - alle 60 Sekunden, solange die App sichtbar und der Server erreichbar ist
  * - solange ein Produkt noch nachgeschlagen wird: zusätzlich nach 3, 10 und 30 Sekunden
- * - nach einem Fehlschlag nach 2, 5, 15, dann alle 60 Sekunden
+ * - nach einem Fehlschlag nach 2, 5, 15, dann alle 60 Sekunden; war der Server nicht
+ *   erreichbar, übernimmt nach den 15 Sekunden die Prüfung nebenbei
+ * - sobald die Prüfung nebenbei (oder ein anderer Kontakt) den Server nach einem Ausfall
+ *   wieder erreicht: sofort
+ *
+ * Die Prüfung nebenbei: Solange die App sichtbar und das Gerät angemeldet ist, fragt der
+ * Zeitplan `GET /api/health`, sobald 15 Sekunden lang kein Kontakt zum Server bestand (kein
+ * Abgleich, keine Prüfung, kein anderer Aufruf, auch keiner eines anderen Tabs, den
+ * `notifyContact` meldet). So merkt die App Ausfall und Rückkehr binnen etwa 15 Sekunden, mit
+ * höchstens einer kleinen Anfrage je 15 Sekunden.
  *
  * Es läuft nie mehr als ein Abgleich dieses Tabs zugleich; ein Anlass während eines
  * laufenden Abgleichs führt zu genau einem weiteren danach. Diese Klasse kennt weder
@@ -21,6 +31,8 @@ export const CHANGE_DEBOUNCE_MS = 2_000;
 export const INTERVAL_MS = 60_000;
 export const RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 15_000, 60_000];
 export const LOOKUP_DELAYS_MS: readonly number[] = [3_000, 10_000, 30_000];
+/** So lange darf es ohne Kontakt zum Server bleiben, bevor nebenbei geprüft wird (9.5). */
+export const CHECK_INTERVAL_MS = 15_000;
 
 export interface SchedulerTimers {
   set(callback: () => void, delayMs: number): unknown;
@@ -34,6 +46,14 @@ export interface SchedulerDeps {
   isVisible(): boolean;
   /** Kennungen der Produkte, deren Nachschlagen noch aussteht. */
   pendingLookups(): readonly string[];
+  /**
+   * Prüft nebenbei, ob der Server erreichbar ist (9.5): true oder false; null, wenn die
+   * Prüfung entfiel (gerade gleicht jemand ab, auch ein anderer Tab oder der Service Worker).
+   * Wirft nicht. Ohne diese Funktion prüft der Zeitplan nie nebenbei.
+   */
+  check?(): Promise<boolean | null>;
+  /** Darf jetzt nebenbei geprüft werden? Nur, solange das Gerät angemeldet ist. Vorgabe: ja. */
+  canCheck?(): boolean;
   timers?: SchedulerTimers;
   /** false: Es wird nie von selbst abgeglichen, nur auf ausdrücklichen Wunsch (`request(true)`). Vorgabe true. */
   auto?: boolean;
@@ -44,6 +64,8 @@ const DEFAULT_TIMERS: SchedulerTimers = {
   clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
+type TimerName = "changeTimer" | "intervalTimer" | "retryTimer" | "checkTimer";
+
 export class SyncScheduler {
   private readonly timers: SchedulerTimers;
   private readonly automatic: boolean;
@@ -53,9 +75,15 @@ export class SyncScheduler {
   private changeTimer: unknown = null;
   private intervalTimer: unknown = null;
   private retryTimer: unknown = null;
+  /** Wartezeit des vorgemerkten neuen Versuchs. */
+  private retryDelay = 0;
+  private checkTimer: unknown = null;
+  private checking = false;
   private lookupTimers: unknown[] = [];
   private readonly polledLookups = new Set<string>();
   private retryLevel = 0;
+  /** Was der letzte Kontakt über den Server gesagt hat; null = noch nichts. */
+  private reachable: boolean | null = null;
   private blocked = false;
   private stopped = false;
 
@@ -75,6 +103,7 @@ export class SyncScheduler {
     this.clear("changeTimer");
     this.clear("intervalTimer");
     this.clear("retryTimer");
+    this.clear("checkTimer");
     this.clearLookupTimers();
   }
 
@@ -134,11 +163,43 @@ export class SyncScheduler {
   notifyVisibility(visible: boolean): void {
     if (visible) {
       this.auto();
+      if (this.running === null) {
+        this.armCheck();
+      }
     } else {
-      // Im Hintergrund wird nicht nach der Uhr abgeglichen; eine noch wartende Änderung geht trotzdem raus.
+      // Im Hintergrund wird nicht nach der Uhr abgeglichen und nicht nebenbei geprüft; eine noch
+      // wartende Änderung geht trotzdem raus.
       this.clear("intervalTimer");
       this.clear("retryTimer");
+      this.clear("checkTimer");
     }
+  }
+
+  /**
+   * Der Server wurde außerhalb dieses Zeitplans erreicht oder nicht: ein anderer Aufruf an ihn,
+   * oder ein anderer Tab hat es erfahren. Die Prüfung nebenbei wartet wieder volle 15 Sekunden;
+   * kommt der Server nach einem Ausfall wieder, wird sofort abgeglichen.
+   */
+  notifyContact(reachable: boolean): void {
+    if (this.stopped || !this.automatic) {
+      return;
+    }
+    this.observe(reachable);
+    if (this.running === null) {
+      this.armCheck();
+    }
+  }
+
+  /**
+   * Ein Abgleich außerhalb dieses Zeitplans ist zu Ende (die Anmeldung): Danach geht es weiter
+   * wie nach einem eigenen. Läuft gerade ein eigener, legt der das Weitere fest.
+   */
+  notifySynced(outcome: SyncOutcome): void {
+    if (this.stopped || !this.automatic || this.running !== null) {
+      return;
+    }
+    this.clear("retryTimer");
+    this.afterRun(outcome);
   }
 
   private auto(): void {
@@ -151,6 +212,8 @@ export class SyncScheduler {
   private async execute(): Promise<SyncOutcome> {
     this.clear("changeTimer");
     this.clear("retryTimer");
+    // Der Abgleich ist selbst ein Kontakt; danach wartet die Prüfung nebenbei wieder von vorn.
+    this.clear("checkTimer");
     let outcome: SyncOutcome;
     try {
       outcome = await this.deps.run();
@@ -165,22 +228,30 @@ export class SyncScheduler {
 
   private afterRun(outcome: SyncOutcome): void {
     this.clear("intervalTimer");
+    // Jede Antwort des Servers, auch eine Fehlermeldung, zeigt: Er ist erreichbar.
+    this.reachable = outcome.ok || outcome.error.code !== "offline";
     if (outcome.ok) {
       this.retryLevel = 0;
       this.scheduleInterval();
       this.pollLookups();
-      return;
-    }
-    if (outcome.error.code === "protocol_mismatch") {
+    } else if (outcome.error.code === "protocol_mismatch") {
       // Erst eine neue Version der App kann wieder abgleichen (6.5).
       this.blocked = true;
-      return;
+    } else if (this.deps.isVisible()) {
+      this.scheduleRetry(outcome.error.code === "offline");
     }
-    if (!this.deps.isVisible()) {
+    this.armCheck();
+  }
+
+  private scheduleRetry(offline: boolean): void {
+    if (offline && this.retryLevel >= RETRY_DELAYS_MS.length - 1 && this.canCheck()) {
+      // Nicht erreichbar, und die schnellen Versuche sind vorbei: Ab jetzt prüft die Uhr alle
+      // 15 Sekunden nebenbei und gleicht ab, sobald der Server wieder antwortet.
       return;
     }
     const delay = RETRY_DELAYS_MS[Math.min(this.retryLevel, RETRY_DELAYS_MS.length - 1)] as number;
     this.retryLevel += 1;
+    this.retryDelay = delay;
     this.retryTimer = this.timers.set(() => {
       this.retryTimer = null;
       this.auto();
@@ -197,6 +268,65 @@ export class SyncScheduler {
         this.auto();
       }
     }, INTERVAL_MS);
+  }
+
+  /** Wird nebenbei geprüft? Nur mit einer Prüfung, von selbst, und solange das Gerät angemeldet ist. */
+  private canCheck(): boolean {
+    return this.deps.check !== undefined && this.automatic && !this.stopped && !this.blocked && (this.deps.canCheck?.() ?? true);
+  }
+
+  /** Die Prüfung nebenbei: 15 Sekunden nach dem letzten Kontakt, solange die App sichtbar ist. */
+  private armCheck(): void {
+    this.clear("checkTimer");
+    if (!this.canCheck() || !this.deps.isVisible()) {
+      return;
+    }
+    if (this.retryTimer !== null && this.retryDelay <= CHECK_INTERVAL_MS) {
+      // Der nächste Versuch kommt ohnehin früher, und er ist selbst ein Kontakt.
+      return;
+    }
+    this.checkTimer = this.timers.set(() => {
+      this.checkTimer = null;
+      void this.checkNow();
+    }, CHECK_INTERVAL_MS);
+  }
+
+  private async checkNow(): Promise<void> {
+    const check = this.deps.check;
+    // Ein laufender Abgleich ist selbst ein Kontakt; an seinem Ende beginnt die Uhr von vorn.
+    if (!check || this.checking || this.running !== null || !this.canCheck() || !this.deps.isVisible()) {
+      return;
+    }
+    this.checking = true;
+    let result: boolean | null;
+    try {
+      result = await check();
+    } catch {
+      result = null;
+    } finally {
+      this.checking = false;
+    }
+    if (this.stopped) {
+      return;
+    }
+    if (result !== null) {
+      this.observe(result);
+    }
+    if (this.running === null) {
+      this.armCheck();
+    }
+  }
+
+  /** Was ein Kontakt über den Server sagt. Kommt er nach einem Ausfall wieder, wird sofort abgeglichen. */
+  private observe(reachable: boolean): void {
+    const returned = reachable && this.reachable === false;
+    this.reachable = reachable;
+    if (!reachable) {
+      // Solange er nicht erreichbar ist, lohnt der Takt nicht; die Prüfung nebenbei merkt die Rückkehr.
+      this.clear("intervalTimer");
+    } else if (returned && this.running === null && this.deps.isVisible()) {
+      this.auto();
+    }
   }
 
   /** Neue Platzhalter: Der Server ergänzt sie binnen Sekunden; dreimal früher nachsehen als sonst. */
@@ -231,7 +361,7 @@ export class SyncScheduler {
     this.lookupTimers = [];
   }
 
-  private clear(name: "changeTimer" | "intervalTimer" | "retryTimer"): void {
+  private clear(name: TimerName): void {
     const handle = this[name];
     if (handle !== null) {
       this.timers.clear(handle);

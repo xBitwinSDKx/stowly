@@ -105,7 +105,10 @@ if [ "$REMOVE" -eq 1 ]; then
   note "Der Pi ist danach nicht mehr unter seiner festen Adresse im eigenen WLAN zu erreichen,"
   note "sondern wie vor dem Einrichten über das Heim-WLAN (sofern NetworkManager es kennt)."
   confirm
-  systemctl disable hostapd.service dnsmasq.service stowly-ap-address.service 2>/dev/null || true
+  # Je für sich: Fehlt eine Einheit (zweiter Lauf), bleiben die anderen nicht eingeschaltet.
+  for unit in hostapd.service dnsmasq.service stowly-ap-address.service; do
+    systemctl disable "$unit" 2>/dev/null || true
+  done
   rm -f "$NM_CONF" "$DNSMASQ_CONF" "$ADDRESS_UNIT" "$SYSCTL_CONF"
   systemctl daemon-reload
   note "Entfernt. $HOSTAPD_CONF bleibt liegen (enthält das WLAN-Passwort; bei Bedarf löschen)."
@@ -184,6 +187,10 @@ rfkill unblock wlan 2>/dev/null || true
 
 # ---------------------------------------------------------------- NetworkManager
 step "NetworkManager lässt $INTERFACE ab dem Neustart in Ruhe ($NM_CONF)"
+# NetworkManager liest conf.d beim Start; ohne Neustart (oder nmcli general reload) bleibt die
+# jetzige Verbindung, wie sie ist. keyfile.unmanaged-devices ist strikt: Weder eine udev-Regel
+# noch ein [device]-Abschnitt (etwa von netplan, über das Raspberry Pi OS das WLAN aus dem
+# Imager einrichtet) macht die Schnittstelle wieder verwaltet (NetworkManager.conf(5), 1.52).
 install -d -m 755 "$(dirname "$NM_CONF")"
 cat >"$NM_CONF" <<EOF
 # Stowly: $INTERFACE ist der Access Point (hostapd, dnsmasq). Entfernen: pi/access-point.sh --remove
@@ -195,6 +202,9 @@ chmod 644 "$NM_CONF"
 # ---------------------------------------------------------------- Feste Adresse
 step "Feste Adresse $IP/$PREFIX auf $INTERFACE ($ADDRESS_UNIT)"
 install -d -m 755 "$(dirname "$ADDRESS_UNIT")" "$(dirname "$SYSCTL_CONF")"
+# Die Adresse kommt vor hostapd und dnsmasq. Die Schnittstelle schaltet hostapd selbst ein; das
+# "up" hier darf scheitern: Raspberry Pi OS sperrt den Funk beim Start, bis systemd-rfkill den
+# gespeicherten Zustand zurückholt (raspberrypi-sys-mods: rfkill default_state=0).
 cat >"$ADDRESS_UNIT" <<EOF
 # Stowly: feste Adresse für das WLAN des Druckers. Entfernen: pi/access-point.sh --remove
 [Unit]
@@ -206,7 +216,8 @@ Before=hostapd.service dnsmasq.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'ip address replace $IP/$PREFIX dev $INTERFACE && ip link set $INTERFACE up'
+ExecStart=/usr/sbin/ip address replace $IP/$PREFIX dev $INTERFACE
+ExecStart=-/usr/sbin/ip link set $INTERFACE up
 
 [Install]
 WantedBy=multi-user.target
@@ -267,10 +278,14 @@ chmod 644 "$DNSMASQ_CONF"
 # ---------------------------------------------------------------- Dienste
 step "Dienste einschalten (wirksam ab dem Neustart)"
 systemctl daemon-reload
+# Debian maskiert hostapd beim Installieren, solange es keine Konfiguration gibt.
 systemctl unmask hostapd.service 2>/dev/null || true
 systemctl enable stowly-ap-address.service hostapd.service dnsmasq.service
 # hostapd hat keine Probe der Konfiguration; ob es läuft, zeigt nach dem Neustart: journalctl -u hostapd
-dnsmasq --test --conf-file="$DNSMASQ_CONF" || fail "dnsmasq lehnt $DNSMASQ_CONF ab."
+# dnsmasq: dieselbe Probe wie beim Start des Dienstes, also mit /etc/dnsmasq.conf und allem in
+# /etc/dnsmasq.d (Debian: /etc/default/dnsmasq, CONFIG_DIR).
+dnsmasq --test --conf-dir=/etc/dnsmasq.d,.dpkg-dist,.dpkg-old,.dpkg-new \
+  || fail "dnsmasq lehnt die Konfiguration ab ($DNSMASQ_CONF, Meldung oben)."
 
 # ---------------------------------------------------------------- WLAN-QR-Code
 step "WLAN-QR-Code für den Kellereingang"

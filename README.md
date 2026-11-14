@@ -125,9 +125,11 @@ docker compose up -d --build
 
 Der Container spricht nur HTTP auf Port 8010 und gehört hinter einen Reverse Proxy, der HTTPS bereitstellt (Nginx Proxy Manager mit eigener Zertifizierungsstelle oder Tailscale). **Offline-Betrieb, Installation als App und Kamera funktionieren nur über die HTTPS-Adresse**: Das verlangen die Browser. Über `http://<LAN-IP>:8010` läuft Stowly nur als Online-Webseite ohne Scan.
 
+**Abhängigkeiten.** Die Python-Pakete im Image sind auf Version und Prüfsumme festgelegt: `server/requirements.lock` für Server und Druckdienst, `print/requirements-brother.txt` für die Brother-Bibliothek. Es sind die Versionen, mit denen die Tests laufen. Wer in einer `pyproject.toml` eine Abhängigkeit ergänzt oder in der Entwicklungsumgebung eine aktualisiert, erneuert die Sperrdatei: im Ordner `server` `python tests/test_requirements_lock.py`. Sonst schlägt genau dieser Test fehl. Anleitung: [`docs/betrieb.md`](docs/betrieb.md), Abschnitt 9.1.
+
 `Dockerfile` und `docker-compose.yml` sind in der Zielumgebung noch nicht gebaut und gestartet worden: Auf dem Entwicklungsrechner gibt es kein Docker.
 
 ## Hinweise
 
-- Produktdaten und Vorschaubilder stammen von [Open Food Facts](https://world.openfoodfacts.org) (ODbL). Dabei gehen die Barcodes unbekannter Produkte an deren Server; abschaltbar mit `STOWLY_OFF_ENABLED=0`.
+- Produktdaten und Vorschaubilder stammen von [Open Food Facts](https://world.openfoodfacts.org) (ODbL). Dabei gehen die Barcodes unbekannter Produkte an deren Server, schon beim Scannen (damit der Name gleich im Dialog steht), auch wenn danach nichts eingelagert wird; abschaltbar mit `STOWLY_OFF_ENABLED=0`.
 - Bezeichner im Code sind englisch, Oberfläche, Kommentare und Dokumentation deutsch.

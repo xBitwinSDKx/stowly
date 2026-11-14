@@ -686,7 +686,8 @@ def test_a_stored_result_is_reused_without_asking_again(bench):
     bench.drain()
     assert len(bench.service.calls) == 2
 
-    # Der Barcode wandert zu einem neuen Produkt: Das Ergebnis kommt aus off_lookups.
+    # Der Barcode wandert zu einem neuen Produkt: Das Ergebnis kommt aus off_lookups, gleich
+    # im selben Abgleich, ohne den Hintergrund-Ablauf.
     second = bench.create()
     bench.device.sync(
         [
@@ -694,11 +695,10 @@ def test_a_stored_result_is_reused_without_asking_again(bench):
             bench.device.cmd("product.add_barcode", product_id=second, barcode=EAN_A),
         ]
     )
-    assert bench.device.products[second]["lookup"] == "pending"
-    bench.drain()
-    product = bench.product(second)
+    product = bench.device.products[second]
     assert (product["lookup"], product["name"]) == ("found", "Reis")
     assert product["image"] == bench.device.products[first]["image"] is not None
+    assert bench.drain() == 0
     assert len(bench.service.calls) == 2  # kein weiterer Abruf
 
 
@@ -712,10 +712,9 @@ def test_a_known_not_found_is_reused_too(bench):
             bench.device.cmd("product.add_barcode", product_id=second, barcode=EAN_A),
         ]
     )
-    # Wie jedes Ergebnis führt auch dieses über pending; der Ablauf übernimmt es ohne Abruf.
-    assert bench.device.products[second]["lookup"] == "pending"
-    assert bench.drain() == 1
-    assert bench.product(second)["lookup"] == "not_found"
+    # Wie jedes gespeicherte Ergebnis gilt auch dieses gleich im selben Abgleich, ohne Abruf.
+    assert bench.device.products[second]["lookup"] == "not_found"
+    assert bench.drain() == 0
     assert bench.service.lookups == [EAN_A]
     log = events_of(bench.client, bench.device, entity="product", entity_id=second)
     assert log[-1]["data"] == {"barcode": EAN_A, "result": "not_found", "filled": []}

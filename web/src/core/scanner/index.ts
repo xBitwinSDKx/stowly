@@ -5,7 +5,7 @@
  * andere geht über die Schnittstelle `Core`.
  */
 export { CameraError, isMultiLensCamera, scoreCamera, shouldLookForBetterCamera, type CameraCapabilities, type CameraErrorKind, type CameraInfo } from "./camera";
-export { SAME_VALUE_WINDOW_MS, ScanDeduper } from "./dedupe";
+export { RESCAN_GAP_MS, SAME_VALUE_WINDOW_MS, ScanDeduper } from "./dedupe";
 export type { DetectorKind } from "./detector";
 export { canVibrate, installAudioUnlock, isAudioUnlocked, playFeedback, setFeedbackActive, unlockAudio, type FeedbackPrefs, type FeedbackTone } from "./feedback";
 export { classifyDetected, isLabelTooSmall, MIN_LABEL_SIDE_RATIO, normalizeFormat, type DetectedCode } from "./formats";

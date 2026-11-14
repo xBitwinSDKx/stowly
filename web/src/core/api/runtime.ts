@@ -8,6 +8,12 @@ import type { PrintServiceClient } from "../print/client";
 import type { DeliveryEngine, DeliveryOutcome } from "../print/engine";
 import type { Mutation, Store } from "../store";
 
+/**
+ * So lange warten „Jetzt drucken" und „Verbindung prüfen" höchstens auf den Abgleich davor
+ * (`PrintRuntime.syncFirst`, docs/etiketten.md, 4.1).
+ */
+export const SYNC_FIRST_MAX_WAIT_MS = 10_000;
+
 /** Was `printers` und `print` vom Zustellen brauchen (src/core/print). */
 export interface PrintRuntime {
   readonly engine: DeliveryEngine;
@@ -18,8 +24,9 @@ export interface PrintRuntime {
   afterProbe(): void;
   /**
    * Gleicht jetzt ab, bevor ein Aufruf den Druckdienst des Servers anspricht, der einen Drucker
-   * oder ein Etikett erst nach dem Abgleich kennt. Wirft nicht; scheitert der Abgleich, geht es
-   * trotzdem weiter.
+   * oder ein Etikett erst nach dem Abgleich kennt. Wartet darauf höchstens
+   * `SYNC_FIRST_MAX_WAIT_MS`; dauert er länger, läuft er weiter, und es geht trotzdem weiter.
+   * Wirft nicht; scheitert der Abgleich, geht es ebenso weiter.
    */
   syncFirst(): Promise<void>;
 }

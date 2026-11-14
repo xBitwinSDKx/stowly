@@ -106,6 +106,7 @@ export const ENDPOINTS = {
   list_events: { method: "GET", path: "/api/events" },
   login: { method: "POST", path: "/api/auth/login" },
   logout: { method: "POST", path: "/api/auth/logout" },
+  lookup_barcode: { method: "GET", path: "/api/lookup/{barcode}" },
   revoke_device: { method: "DELETE", path: "/api/devices/{device_id}" },
   sync: { method: "POST", path: "/api/sync" },
   update_device: { method: "PATCH", path: "/api/devices/{device_id}" },
@@ -531,6 +532,23 @@ export interface LoginResponse {
   token: string;
   device: Device;
 }
+
+/** Antwort von `GET /api/lookup/{barcode}`. Leere Felder sind `""`, nie `null` (außer `image_id`). */
+export interface LookupResult {
+  barcode: string;
+  state: LookupResultState;
+  /** Wie beim Füllen eines Produkts aufbereitet; leer, wenn unbekannt. */
+  name: string;
+  /** Der erste Eintrag von brands; leer, wenn unbekannt. */
+  brand: string;
+  /** Packungsgröße ohne Schätzzeichen; leer, wenn unbekannt. */
+  quantity: string;
+  /** Bild-ID für GET /api/images/{id}, wenn das Bild schon beim Server liegt; sonst null. */
+  image_id: string | null;
+}
+
+/** Ergebnis von `GET /api/lookup/{barcode}` (docs/sync-protokoll.md, Abschnitt 10). */
+export type LookupResultState = "found" | "not_found" | "pending" | "skipped" | "disabled";
 
 /** Stand des Nachschlagens bei Open Food Facts. */
 export type LookupState = "none" | "pending" | "found" | "not_found";

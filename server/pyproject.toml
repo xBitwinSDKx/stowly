@@ -20,6 +20,8 @@ dependencies = [
 dev = [
     "pytest>=9",
     "ruff>=0.17",
+    # Für den Test der Sperrdatei (tests/test_requirements_lock.py): Anforderungen und Marker lesen.
+    "packaging>=24",
 ]
 
 [project.scripts]

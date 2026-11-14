@@ -603,6 +603,35 @@ describe("Etiketten", () => {
     await waitFor(() => expect(within(labelRow(packageOf(2))).getByRole("button", { name: /^Erneut drucken/ })).toHaveFocus());
   });
 
+  it("zeigt den Spinner an der gedrückten Schaltfläche einer Zeile, die dabei den Fokus behält", async () => {
+    const core = renderApp({}, ROUTES.printers);
+    await ready();
+    // Das Verwerfen wartet, bis der Test es freigibt.
+    let release: () => void = () => undefined;
+    const cancel = core.print.cancel.bind(core.print);
+    vi.spyOn(core.print, "cancel").mockImplementation(async (id) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return cancel(id);
+    });
+    const row = labelRow(packageOf(6));
+    const discard = within(row).getByRole("button", { name: /^Verwerfen/ });
+    const takeOver = within(row).getByRole("button", { name: /^Hier drucken/ });
+    await userEvent.click(discard);
+    expect(discard).toHaveFocus();
+    expect(discard).toHaveAttribute("aria-busy", "true");
+    expect(discard).toBeUnavailable();
+    // Die andere Handlung derselben Zeile ist gesperrt, arbeitet aber nicht.
+    expect(takeOver).toBeUnavailable();
+    expect(takeOver).not.toHaveAttribute("aria-busy");
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => expect(job(core, sampleUuid(4, 6)).state).toBe("cancelled"));
+  });
+
   it("lässt den Fokus nach „Verwerfen“ und „Hier drucken“ bei den ausstehenden Etiketten, nicht an „Erneut drucken“", async () => {
     const core = renderApp({}, ROUTES.printers);
     await ready();

@@ -1,13 +1,25 @@
 """Open Food Facts: Name, Marke, Packungsgröße und Vorschaubild zu einem Barcode.
 
-Unbekannte Barcodes werden nie im Vordergrund nachgeschlagen (docs/sync-protokoll.md,
-Abschnitt 10): Das Produkt entsteht sofort als Platzhalter mit ``lookup = pending``.
-Dieser Hintergrund-Ablauf arbeitet die Wartenden ab:
+Alle Abfragen macht ein einziger Hintergrund-Ablauf (docs/sync-protokoll.md, Abschnitt 10).
+Er hat zwei Quellen:
+
+* **Produkte, die warten.** Ein Produkt mit unbekanntem Barcode entsteht sofort als
+  Platzhalter mit ``lookup = pending``; der Ablauf fragt nach und füllt es.
+* **Wünsche aus dem Vordergrund.** Scannt jemand einen unbekannten Barcode, fragt die App
+  ``GET /api/lookup/{barcode}?wait=…``. Der Barcode kommt vorn in die Warteschlange, und die
+  Anfrage wartet höchstens ``wait`` Sekunden auf das Ergebnis. Mehrere Anfragen zum selben
+  Barcode teilen sich eine Abfrage. Wünsche zu Barcodes ohne Produkt sind begrenzt
+  (``MAX_WISHES_WITHOUT_PRODUCT``); darüber wird nichts eingereiht.
+
+Für beide gilt dasselbe:
 
 * höchstens ``LOOKUPS_PER_MINUTE`` Abfragen je Minute (Open Food Facts erlaubt 15),
 * Netzfehler, 429 und 5xx: neuer Versuch nach 1 Minute, 5 Minuten, 30 Minuten,
-  3 Stunden, danach täglich,
-* jedes Ergebnis steht dauerhaft in ``off_lookups`` und wird nie erneut abgefragt,
+  3 Stunden, danach täglich; nach 429 ruht der ganze Ablauf,
+* jedes Ergebnis steht dauerhaft in ``off_lookups`` und wird nie erneut abgefragt, auch das
+  zu einem Barcode, der (noch) keinem Produkt gehört: Ein später angelegtes Produkt bekommt
+  die Daten gleich in dem Abgleich, der es anlegt (``settle``, gerufen aus
+  ``stowly/sync/handlers.py``),
 * die Daten füllen **nur leere Felder** des Produkts; die Uhren der Felder bleiben
   unberührt, jede Eingabe eines Anwenders gewinnt, davor wie danach,
 * ladeninterne Codes (Präfix 2) werden nie abgefragt.
@@ -26,7 +38,8 @@ import re
 import sqlite3
 import time
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -37,6 +50,7 @@ from starlette.concurrency import run_in_threadpool
 
 from stowly import __version__, db, events
 from stowly.config import Settings
+from stowly.contract.api import LookupResultState
 from stowly.contract.ids import is_store_internal_barcode
 from stowly.contract.timeutil import format_timestamp, parse_timestamp
 
@@ -70,6 +84,10 @@ TIMEOUT_S = 10.0
 IDLE_MAX_S = 300.0
 # Pause nach einem unerwarteten Fehler im Ablauf selbst.
 ERROR_PAUSE_S = 30.0
+# So viele Wünsche aus dem Vordergrund zu Barcodes ohne Produkt warten höchstens zugleich.
+# Darüber antwortet der Server ``pending``, ohne einzureihen: Sonst könnte ein Gerät mit
+# erfundenen Barcodes die Warteschlange füllen.
+MAX_WISHES_WITHOUT_PRODUCT = 20
 
 
 class Clock:
@@ -120,6 +138,30 @@ class Job:
     barcode: str
     state: str  # 'pending' = nachschlagen, 'found' = nur noch das Bild holen
     image_url: str | None
+
+
+@dataclass(frozen=True)
+class Answer:
+    """Was ``GET /api/lookup/{barcode}`` antwortet; leere Felder sind ``""`` (Abschnitt 10)."""
+
+    state: LookupResultState
+    name: str = ""
+    brand: str = ""
+    quantity: str = ""
+    image_id: str | None = None
+
+
+PENDING = Answer(LookupResultState.PENDING)
+
+
+@dataclass(eq=False)
+class _Wish:
+    """Ein Barcode, auf den im Vordergrund jemand wartet (``GET /api/lookup/{barcode}``)."""
+
+    orphan: bool  # gehört keinem Produkt: zählt gegen MAX_WISHES_WITHOUT_PRODUCT
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    answer: Answer | None = None  # sobald Open Food Facts geantwortet hat, auch schon vor dem Bild
+    waiting: int = 0  # so viele Anfragen warten gerade darauf
 
 
 # --- Reine Funktionen --------------------------------------------------------------------
@@ -293,6 +335,43 @@ def _stored_image(con: sqlite3.Connection, url: str | None) -> str | None:
     return None if row is None else str(row["id"])
 
 
+def stored_answer(con: sqlite3.Connection, barcode: str) -> Answer | None:
+    """Das gespeicherte Ergebnis zu einem Barcode als Antwort; ``None``, solange es keines gibt.
+
+    Die Texte sind dieselben, mit denen ``settle`` ein Produkt füllt. Das Bild nur, wenn es
+    schon in der Datenbank liegt.
+    """
+    row = con.execute(
+        "SELECT state, name, brand, quantity, image_url FROM off_lookups WHERE barcode = ?", (barcode,)
+    ).fetchone()
+    if row is None or row["state"] == "pending":
+        return None
+    if row["state"] == "not_found":
+        return Answer(LookupResultState.NOT_FOUND)
+    return Answer(
+        LookupResultState.FOUND,
+        name=(row["name"] or "")[:NAME_LIMIT],
+        brand=(row["brand"] or "")[:BRAND_LIMIT],
+        quantity=(row["quantity"] or "")[:QUANTITY_LIMIT],
+        image_id=_stored_image(con, row["image_url"]),
+    )
+
+
+def stored_answer_at(path: Path, barcode: str) -> Answer | None:
+    """``stored_answer`` mit eigener Verbindung, für den Endpunkt, wenn der Ablauf nicht läuft."""
+    con = db.connect(path)
+    try:
+        return stored_answer(con, barcode)
+    finally:
+        con.close()
+
+
+def _answer_of(outcome: Found | NotFound, image_id: str | None = None) -> Answer:
+    if isinstance(outcome, NotFound):
+        return Answer(LookupResultState.NOT_FOUND)
+    return Answer(LookupResultState.FOUND, outcome.name, outcome.brand, outcome.quantity, image_id)
+
+
 def ensure_queued(con: sqlite3.Connection, barcode: str, now: str) -> None:
     """Stellt einen Barcode in die Warteschlange, falls er dort noch nicht steht."""
     con.execute(
@@ -428,7 +507,11 @@ def reconcile(con: sqlite3.Connection, *, enabled: bool) -> None:
 class OffWorker:
     """Arbeitet die Warteschlange ab. Läuft als eine asyncio-Aufgabe im ``lifespan`` der App.
 
-    ``transport`` ist der Ersatz für Tests; im Betrieb bleibt er ``None``.
+    Nur dieser Ablauf fragt Open Food Facts; auch der Endpunkt ``GET /api/lookup/{barcode}``
+    stellt seinen Barcode nur hier ein (``look_up``). Die Wünsche aus dem Vordergrund leben im
+    Arbeitsspeicher und gehören zur Ereignisschleife der App.
+
+    ``transport`` und ``clock`` sind der Ersatz für Tests; im Betrieb bleiben sie ``None``.
     """
 
     def __init__(
@@ -451,6 +534,9 @@ class OffWorker:
         self._paused_until = 0.0
         self._wake = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Wünsche aus dem Vordergrund je Barcode, in der Reihenfolge ihres Eintreffens.
+        self._wishes: dict[str, _Wish] = {}
+        self._closing = False
 
     # ------------------------------------------------------------------ Lebenslauf
 
@@ -476,6 +562,16 @@ class OffWorker:
             return
         loop.call_soon_threadsafe(self._wake.set)
 
+    def release(self) -> None:
+        """Beim Herunterfahren: Wer auf ein Nachschlagen wartet, bekommt sofort, was bekannt ist.
+
+        Danach wartet keine Anfrage mehr. Sonst hielte ein ``?wait=8`` das Beenden auf.
+        """
+        self._closing = True
+        wishes, self._wishes = self._wishes, {}
+        for wish in wishes.values():
+            wish.done.set()
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -497,33 +593,122 @@ class OffWorker:
     async def run_once(self) -> bool:
         """Ein Schritt: gespeicherte Ergebnisse anwenden, dann höchstens ein Abruf.
 
-        Liefert ``False``, wenn nichts zu tun war.
+        Wünsche aus dem Vordergrund kommen vor allem anderen dran. Liefert ``False``, wenn
+        nichts zu tun war.
         """
         settled = await run_in_threadpool(self._settle_pending)
-        job = await run_in_threadpool(self._next_job)
+        job = await self._pick()
         if job is None:
             return settled > 0
-        if job.state == "pending":
-            await self._lookup(job.barcode)
-        else:
-            await self._retry_image(job.barcode, job.image_url)
+        if (
+            job.state == "pending"
+            and not is_store_internal_barcode(job.barcode)
+            and await self._wait_for_slot()
+        ):
+            # Während des Wartens auf die Rate kann ein Wunsch gekommen sein: Er bekommt den Platz.
+            job = await self._pick()
+            if job is None:
+                return True
+        try:
+            if job.state == "pending":
+                await self._lookup(job.barcode)
+            else:
+                await self._retry_image(job.barcode, job.image_url)
+        finally:
+            # Wer auf diesen Barcode wartet, erfährt spätestens jetzt, was bekannt ist, auch
+            # nach einem Fehler und beim Herunterfahren.
+            self._finish(job.barcode, None)
         return True
+
+    async def _pick(self) -> Job | None:
+        """Der nächste Abruf. Wünsche, deren Antwort ohne Abruf feststeht, bekommen sie gleich."""
+        job, known = await run_in_threadpool(self._next_job, list(self._wishes))
+        for barcode, answer in known.items():
+            self._finish(barcode, answer)
+        return job
+
+    # ------------------------------------------------------------------ Vordergrund
+
+    async def look_up(self, barcode: str, wait_s: float) -> Answer:
+        """Antwort für ``GET /api/lookup/{barcode}`` zu einem gültigen, nachschlagbaren Barcode.
+
+        Ein gespeichertes Ergebnis kommt sofort, ebenso ``pending``, solange nach einem
+        Fehlversuch die Wartezeit läuft. Sonst kommt der Barcode vorn in die Warteschlange, und
+        die Anfrage wartet höchstens ``wait_s`` Sekunden. Abgefragt wird nur im Ablauf selbst.
+        """
+        known, owned = await run_in_threadpool(self._known, barcode)
+        if known is not None:
+            return known
+        wish = self._wish(barcode, orphan=not owned)
+        if wish is None:
+            return PENDING
+        if wait_s > 0:
+            wish.waiting += 1
+            try:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(wish.done.wait(), wait_s)
+            finally:
+                wish.waiting -= 1
+        return wish.answer or PENDING
+
+    def waiting(self) -> dict[str, int]:
+        """Die Wünsche aus dem Vordergrund als ``{barcode: wartende_anfragen}``, älteste zuerst.
+
+        Für Tests; nur in der Ereignisschleife der App aufrufen.
+        """
+        return {barcode: wish.waiting for barcode, wish in self._wishes.items()}
+
+    def _wish(self, barcode: str, *, orphan: bool) -> _Wish | None:
+        """Stellt den Barcode vorn in die Warteschlange. ``None``: nicht eingereiht.
+
+        Gibt es schon einen Wunsch zu dem Barcode, teilen sich die Anfragen diesen.
+        """
+        if self._closing:
+            return None
+        wish = self._wishes.get(barcode)
+        if wish is None:
+            if orphan and sum(w.orphan for w in self._wishes.values()) >= MAX_WISHES_WITHOUT_PRODUCT:
+                return None
+            wish = self._wishes[barcode] = _Wish(orphan=orphan)
+            self._wake.set()
+        elif not orphan:
+            wish.orphan = False
+        return wish
+
+    def _finish(self, barcode: str, answer: Answer | None) -> None:
+        """Gibt allen Bescheid, die auf diesen Barcode warten: ``answer`` oder was bis dahin bekannt ist."""
+        wish = self._wishes.pop(barcode, None)
+        if wish is None:
+            return
+        if answer is not None:
+            wish.answer = answer
+        wish.done.set()
 
     # ------------------------------------------------------------------ Netz
 
-    async def _throttle(self) -> None:
-        """Höchstens ``LOOKUPS_PER_MINUTE`` Abfragen in jedem Fenster von 60 Sekunden."""
+    async def _wait_for_slot(self) -> bool:
+        """Wartet, bis eine Abfrage erlaubt ist (Rate, Pause nach 429), ohne den Platz zu belegen.
+
+        Liefert, ob gewartet werden musste.
+        """
+        waited = False
         while True:
             now = self._clock.monotonic()
             if now < self._paused_until:
                 await self._clock.sleep(self._paused_until - now)
+                waited = True
                 continue
             while self._calls and self._calls[0] <= now - RATE_WINDOW_S:
                 self._calls.popleft()
             if len(self._calls) < LOOKUPS_PER_MINUTE:
-                self._calls.append(now)
-                return
+                return waited
             await self._clock.sleep(self._calls[0] + RATE_WINDOW_S - now)
+            waited = True
+
+    async def _throttle(self) -> None:
+        """Höchstens ``LOOKUPS_PER_MINUTE`` Abfragen in jedem Fenster von 60 Sekunden."""
+        await self._wait_for_slot()
+        self._calls.append(self._clock.monotonic())
 
     def _api_redirect_allowed(self, target: httpx2.URL) -> bool:
         """Weiterleitungen der Abfrage: nur per https zu Open Food Facts und den Schwesterprojekten."""
@@ -597,6 +782,10 @@ class OffWorker:
             return
         await self._throttle()
         outcome = await self._query(barcode)
+        wish = self._wishes.get(barcode)
+        if wish is not None and not isinstance(outcome, Failed):
+            # Name und Marke sind da. Wer nicht länger warten kann, bekommt sie schon vor dem Bild.
+            wish.answer = _answer_of(outcome)
         image: Image | None = None
         image_retry = False
         if isinstance(outcome, Found) and outcome.image_url is not None:
@@ -609,7 +798,8 @@ class OffWorker:
             log.info(
                 "Open Food Facts: %s %s", barcode, "gefunden" if isinstance(outcome, Found) else "unbekannt"
             )
-        await run_in_threadpool(self._store_lookup, barcode, outcome, image, image_retry)
+        answer = await run_in_threadpool(self._store_lookup, barcode, outcome, image, image_retry)
+        self._finish(barcode, answer)
 
     async def _retry_image(self, barcode: str, url: str | None) -> None:
         image: Image | None = None
@@ -647,15 +837,60 @@ class OffWorker:
         finally:
             con.close()
 
-    def _next_job(self) -> Job | None:
+    def _next_job(self, wished: Sequence[str] = ()) -> tuple[Job | None, dict[str, Answer]]:
+        """Der nächste fällige Abruf und die Antworten auf Wünsche, die ohne Abruf feststehen.
+
+        Zuerst die Wünsche aus dem Vordergrund in der Reihenfolge ihres Eintreffens, dann, was
+        sonst fällig ist. Die Wartezeit nach einem Fehlversuch gilt für beide.
+        """
         con = db.connect(self._path)
         try:
+            now = self._stamp()
+            known: dict[str, Answer] = {}
+            for barcode in wished:
+                row = con.execute(
+                    "SELECT state, next_attempt_at FROM off_lookups WHERE barcode = ?", (barcode,)
+                ).fetchone()
+                if row is None or (row["state"] == "pending" and (row["next_attempt_at"] or now) <= now):
+                    return Job(barcode, "pending", None), known
+                known[barcode] = stored_answer(con, barcode) or PENDING
             row = con.execute(
                 f"SELECT l.barcode, l.state, l.image_url {_OPEN_WORK} AND l.next_attempt_at <= ? "
                 "ORDER BY l.next_attempt_at, l.barcode LIMIT 1",
-                (self._stamp(),),
+                (now,),
             ).fetchone()
-            return None if row is None else Job(row["barcode"], row["state"], row["image_url"])
+            job = None if row is None else Job(row["barcode"], row["state"], row["image_url"])
+            return job, known
+        finally:
+            con.close()
+
+    def _known(self, barcode: str) -> tuple[Answer | None, bool]:
+        """``(antwort, hat_produkt)``: ``antwort``, wenn sie ohne Abruf feststeht, sonst ``None``.
+
+        Fest steht sie bei einem gespeicherten Ergebnis und solange nach einem Fehlversuch die
+        Wartezeit läuft (``pending``): Die gilt auch, wenn jemand wartet. ``hat_produkt`` zählt
+        nur ohne Antwort: Gehört der Barcode einem Produkt, zählt sein Wunsch nicht gegen
+        ``MAX_WISHES_WITHOUT_PRODUCT``.
+        """
+        con = db.connect(self._path)
+        try:
+            row = con.execute(
+                "SELECT state, next_attempt_at FROM off_lookups WHERE barcode = ?", (barcode,)
+            ).fetchone()
+            if row is not None and row["state"] != "pending":
+                return stored_answer(con, barcode), True
+            if (
+                row is not None
+                and row["next_attempt_at"] is not None
+                and row["next_attempt_at"] > self._stamp()
+            ):
+                return PENDING, True
+            owner = con.execute(
+                "SELECT 1 FROM product_barcodes b JOIN products p ON p.id = b.product_id "
+                "WHERE b.barcode = ? AND p.deleted_at IS NULL",
+                (barcode,),
+            ).fetchone()
+            return None, owner is not None
         finally:
             con.close()
 
@@ -687,17 +922,26 @@ class OffWorker:
 
     def _store_lookup(
         self, barcode: str, outcome: Found | NotFound | Failed, image: Image | None, image_retry: bool
-    ) -> None:
-        """Hält das Ergebnis dauerhaft fest und entscheidet das Produkt, dem der Barcode gehört."""
+    ) -> Answer | None:
+        """Hält das Ergebnis dauerhaft fest und entscheidet das Produkt, dem der Barcode gehört.
+
+        Liefert die Antwort für Wartende im Vordergrund; ``None`` nach einem Fehlversuch.
+        """
         con = db.connect(self._path)
         try:
             with db.transaction(con):
+                now = self._stamp()
                 row = con.execute("SELECT attempts FROM off_lookups WHERE barcode = ?", (barcode,)).fetchone()
                 if row is None:
-                    return
-                now = self._stamp()
-                attempts = int(row["attempts"]) + 1
+                    if is_store_internal_barcode(barcode):
+                        return None
+                    # Ein Wunsch aus dem Vordergrund: Der Barcode gehört (noch) keinem Produkt.
+                    ensure_queued(con, barcode, now)
+                attempts = (0 if row is None else int(row["attempts"])) + 1
+                answer: Answer | None = None
                 if isinstance(outcome, Found):
+                    stored = image.id if image is not None else _stored_image(con, outcome.image_url)
+                    answer = _answer_of(outcome, stored)
                     if image is not None:
                         self._save_image(con, image, outcome.image_url, now)
                     # Fehlt nur noch das Bild, zählt ``attempts`` ab hier dessen Fehlversuche.
@@ -717,6 +961,7 @@ class OffWorker:
                         ),
                     )
                 elif isinstance(outcome, NotFound):
+                    answer = _answer_of(outcome)
                     con.execute(
                         "UPDATE off_lookups SET state = 'not_found', attempts = ?, next_attempt_at = NULL, "
                         "fetched_at = ?, raw = ? WHERE barcode = ?",
@@ -727,7 +972,7 @@ class OffWorker:
                         "UPDATE off_lookups SET attempts = ?, next_attempt_at = ? WHERE barcode = ?",
                         (attempts, self._stamp(retry_delay_s(attempts)), barcode),
                     )
-                    return
+                    return None
                 owner = con.execute(
                     "SELECT product_id FROM product_barcodes WHERE barcode = ?", (barcode,)
                 ).fetchone()
@@ -736,6 +981,7 @@ class OffWorker:
                     if isinstance(outcome, Found) and image is not None and outcome.image_url is not None:
                         fresh[outcome.image_url] = image.id
                     settle(con, owner["product_id"], now, fresh)
+                return answer
         finally:
             con.close()
 

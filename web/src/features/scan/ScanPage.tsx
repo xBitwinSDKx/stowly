@@ -11,6 +11,7 @@ import {
   ROUTES,
   useCore,
   useLive,
+  willLookUp,
   type HouseholdSettings,
   type Package,
   type PrintJob,
@@ -26,8 +27,8 @@ import { QuantityStepper } from "./QuantityStepper";
 import { labelStatus, labelStatusText } from "./label-status";
 import { evaluateScan } from "./scan-flow";
 import styles from "./ScanPage.module.css";
-import { StoreSheet, type StoreDecision, type StoreRequest } from "./StoreSheet";
-import { CAMERA_PROBLEMS, CLOSER_HINT, MANUAL_HINT } from "./texts";
+import { StoreSheet, type StoreDecision, type StoreLookup, type StoreRequest } from "./StoreSheet";
+import { CAMERA_PROBLEMS, CLOSER_HINT, MANUAL_HINT, RESCAN_HINT } from "./texts";
 import { useScanner } from "./useScanner";
 import { ZoneBar } from "./ZoneBar";
 import { afterStore, chooseZone, currentZoneId, isTemporary, neighbourZoneId, primaryZoneId, showsZones, type ZoneContext, type ZoneOverride } from "./zone-logic";
@@ -72,6 +73,7 @@ export function ScanPage() {
   const [quantity, setQuantity] = useState(1);
   const [override, setOverride] = useState<ZoneOverride>(null);
   const [storeRequest, setStoreRequest] = useState<StoreRequest | null>(null);
+  const [lookup, setLookup] = useState<StoreLookup | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<LastAction | null>(null);
@@ -241,6 +243,32 @@ export function ScanPage() {
 
   // ---------------------------------------------------------------- Einlagern
 
+  // Ein unbekanntes Produkt wird gleich beim Scannen nachgeschlagen, wenn der Server das tut und
+  // erreichbar ist (docs/sync-protokoll.md, Abschnitt 10). Der Dialog ist da schon offen.
+  const statusRef = useRef(syncStatus);
+  useEffect(() => {
+    statusRef.current = syncStatus;
+  });
+  useEffect(() => {
+    const request = storeRequest;
+    const status = statusRef.current;
+    const unknown = request !== null && (request.product === undefined || isPlaceholder(request.product));
+    if (!request || !unknown || !willLookUp(request.barcode, status?.lookup_enabled ?? null) || status?.online === false) {
+      setLookup(null);
+      return undefined;
+    }
+    let current = true;
+    setLookup({ state: "loading" });
+    void core.products.lookup(request.barcode).then((result) => {
+      if (current) {
+        setLookup(result);
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [core, storeRequest]);
+
   const confirmStore = useCallback(
     async (decision: StoreDecision) => {
       const request = storeRequest;
@@ -254,15 +282,25 @@ export function ScanPage() {
       setBusy(true);
       try {
         const name = decision.name.trim();
+        const brand = decision.brand.trim();
+        const size = decision.quantity.trim();
+        // Name, Marke und Größe gelten als Eingabe des Anwenders, auch die nachgeschlagenen.
         const stored = await core.stock.store({
-          product: name === "" ? { kind: "barcode", barcode: request.barcode } : { kind: "barcode", barcode: request.barcode, name },
+          product: { kind: "barcode", barcode: request.barcode, ...(name !== "" ? { name } : {}), ...(brand !== "" ? { brand } : {}), ...(size !== "" ? { quantity: size } : {}) },
           zone_id: zoneId,
           best_before: decision.best_before,
           count: quantity,
         });
-        // Ein Platzhalter, den es schon gab, bekommt den eingetippten Namen nachträglich.
-        if (name !== "" && isPlaceholder(stored.product)) {
-          await core.products.update(stored.product.id, { name });
+        // Ein Platzhalter, den es schon gab, bekommt sie nachträglich, soweit seine Felder leer sind.
+        if (isPlaceholder(stored.product)) {
+          const changes = {
+            ...(name !== "" ? { name } : {}),
+            ...(brand !== "" && stored.product.brand === "" ? { brand } : {}),
+            ...(size !== "" && stored.product.quantity === "" ? { quantity: size } : {}),
+          };
+          if (Object.keys(changes).length > 0) {
+            await core.products.update(stored.product.id, changes);
+          }
         }
         const ids = stored.packages.map((pkg) => pkg.id);
         const title = name !== "" && isPlaceholder(stored.product) ? name : productTitle(stored.product);
@@ -441,7 +479,10 @@ export function ScanPage() {
         {state.status === "running" ? (
           <>
             <div className={styles.frame} style={frameSize ? { ["--frame-size" as string]: `${frameSize}px` } : undefined} aria-hidden="true" />
-            {state.too_small ? (
+            {state.rescan ? (
+              // Der Barcode von eben ist seit dem Dialog im Bild: Er öffnet ihn nicht von selbst wieder.
+              <p className={cx(styles.hint, styles.closer)}>{RESCAN_HINT}</p>
+            ) : state.too_small ? (
               // Ein Etikett ist erkannt, aber zu weit weg: nichts buchen, nur sagen, was hilft.
               <p className={cx(styles.hint, styles.closer)}>{CLOSER_HINT}</p>
             ) : (
@@ -511,6 +552,8 @@ export function ScanPage() {
         onQuantity={setQuantity}
         zoneName={zonesVisible && zone ? zone.name : null}
         lookupEnabled={syncStatus?.lookup_enabled ?? null}
+        lookup={lookup}
+        imageUrl={core.data.imageUrl}
         busy={busy}
         onConfirm={(decision) => void confirmStore(decision)}
         onCancel={() => setStoreRequest(null)}

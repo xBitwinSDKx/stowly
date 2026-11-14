@@ -17,6 +17,9 @@ const HISTORY_STEP = 12;
 /** So lange nach einem Klick an einer Zeile zieht der Fokus mit, wenn die Zeile ihren Platz wechselt. */
 const FOLLOW_MS = 5000;
 
+/** Die Handlungen an einer Zeile, nach ihrer Schaltfläche: „Hier drucken", „Verwerfen", „Ja", „Nein". */
+type RowAction = "retry" | "cancel" | "yes" | "no";
+
 export interface LabelsProps {
   printing: Printing;
   actions: LabelActions;
@@ -85,8 +88,8 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
     setReport(await actions.flush());
   }
 
-  // Während des Versuchs ist „Jetzt drucken" gesperrt und verliert dabei den Fokus (oder ist danach
-  // ganz weg). Der Fokus geht dann an das Ergebnis, das der Versuch gebracht hat.
+  // Während des Versuchs behält „Jetzt drucken" den Fokus. Steht danach nichts mehr aus, ist die
+  // Schaltfläche weg und mit ihr der Fokus: Er geht dann an das Ergebnis, das der Versuch gebracht hat.
   const reportRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const active = document.activeElement;
@@ -128,13 +131,19 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
     acted.current = null;
   }, [jobsKey, idle]);
 
+  /** Die zuletzt gedrückte Schaltfläche einer Zeile, "<Aktion>:<Etikett>". */
+  const [pressed, setPressed] = useState<string | null>(null);
+  /** Ob die Schaltfläche `action` an diesem Etikett gerade arbeitet: Sie zeigt dann den Spinner, die anderen der Zeile sind gesperrt. */
+  const running = (action: RowAction, id: string) => actions.busy === id && pressed === `${action}:${id}`;
+
   /**
-   * Merkt sich, an welcher Zeile gehandelt wurde, und führt die Handlung aus.
+   * Merkt sich, an welcher Zeile und mit welcher Schaltfläche gehandelt wurde, und führt die Handlung aus.
    * @param follow danach der Zeile an ihren neuen Platz folgen (nach einem Nein)
    */
-  function act(view: JobView, run: () => Promise<void>, follow = false) {
+  function act(view: JobView, action: RowAction, run: () => Promise<void>, follow = false) {
     const list = view.group === "ask" ? printing.asking : view.group === "waiting" ? printing.waiting : done;
     acted.current = { id: view.job.id, group: view.group, index: Math.max(0, list.indexOf(view)), follow, at: Date.now() };
+    setPressed(`${action}:${view.job.id}`);
     void run();
   }
 
@@ -181,12 +190,26 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
             </Button>
           ) : null}
           {foreign ? (
-            <Button size="sm" icon={<PrinterIcon />} busy={busy} aria-label={`Hier drucken: ${view.label}`} onClick={() => act(view, () => actions.retry(view))}>
+            <Button
+              size="sm"
+              icon={<PrinterIcon />}
+              busy={running("retry", job.id)}
+              disabled={busy}
+              aria-label={`Hier drucken: ${view.label}`}
+              onClick={() => act(view, "retry", () => actions.retry(view))}
+            >
               Hier drucken
             </Button>
           ) : null}
           {job.state === "pending" || job.state === "queued" ? (
-            <Button size="sm" variant="ghost" disabled={busy} aria-label={`Verwerfen: ${view.label}`} onClick={() => act(view, () => actions.cancel(view))}>
+            <Button
+              size="sm"
+              variant="ghost"
+              busy={running("cancel", job.id)}
+              disabled={busy}
+              aria-label={`Verwerfen: ${view.label}`}
+              onClick={() => act(view, "cancel", () => actions.cancel(view))}
+            >
               Verwerfen
             </Button>
           ) : null}
@@ -295,14 +318,22 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
                   {view.job.error ? <div className={styles.reason}>{jobErrorText(view.job.error)}</div> : null}
                 </div>
                 <div className={styles.jobActions} role="group" aria-label={`Wurde das Etikett gedruckt? ${view.label}`}>
-                  <Button size="sm" variant="primary" disabled={actions.busy !== null} aria-label={`Ja, gedruckt: ${view.label}`} onClick={() => act(view, () => actions.resolve(view, true))}>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    busy={running("yes", view.job.id)}
+                    disabled={actions.busy !== null}
+                    aria-label={`Ja, gedruckt: ${view.label}`}
+                    onClick={() => act(view, "yes", () => actions.resolve(view, true))}
+                  >
                     Ja
                   </Button>
                   <Button
                     size="sm"
+                    busy={running("no", view.job.id)}
                     disabled={actions.busy !== null}
                     aria-label={`Nein, nicht gedruckt: ${view.label}`}
-                    onClick={() => act(view, () => actions.resolve(view, false), true)}
+                    onClick={() => act(view, "no", () => actions.resolve(view, false), true)}
                   >
                     Nein
                   </Button>

@@ -82,7 +82,8 @@ export function createPrintersApi(runtime: CoreRuntime, print: PrintRuntime): Pr
       const unsynced = state.outbox.some(({ command }) => (command.type === "printer.create" || command.type === "printer.update") && command.printer_id === id);
       if (printer?.connection === "server" && unsynced) {
         // Einen eben angelegten oder geänderten Drucker kennt der Server erst nach dem Abgleich;
-        // sonst hieße es gleich nach dem Anlegen „Der Server kennt diesen Drucker nicht".
+        // sonst hieße es gleich nach dem Anlegen „Der Server kennt diesen Drucker nicht". Ein
+        // langsamer Abgleich hält die Abfrage höchstens 10 Sekunden auf.
         await print.syncFirst();
       }
       let result;
@@ -236,7 +237,9 @@ export function createPrintApi(runtime: CoreRuntime, print: PrintRuntime): Print
       try {
         await runtime.ready;
         // An einen Drucker am Server geht ein Etikett erst, wenn seine Anforderung abgeglichen ist
-        // (docs/etiketten.md, 4.1). Wer „jetzt drucken" sagt, meint das mit: erst abgleichen.
+        // (docs/etiketten.md, 4.1). Wer „jetzt drucken" sagt, meint das mit: erst abgleichen, aber
+        // höchstens 10 Sekunden lang. Was der Server danach noch nicht kennt, bleibt ausstehend und
+        // geht hinaus, sobald der Abgleich fertig ist.
         const state = runtime.store.snapshot;
         const deviceId = state.session?.status === "signed_in" ? state.session.device?.id : undefined;
         const waitsForSync = state.outbox.some(({ command }) => {

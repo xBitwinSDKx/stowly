@@ -87,8 +87,8 @@ describe("Zonen verwalten", () => {
   it("ändert die Reihenfolge", async () => {
     const core = renderApp({}, ROUTES.zones);
     await ready();
-    expect(screen.getByRole("button", { name: "Vorratsregal nach oben" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Gefrierschrank nach unten" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Vorratsregal nach oben" })).toBeUnavailable();
+    expect(screen.getByRole("button", { name: "Gefrierschrank nach unten" })).toBeUnavailable();
 
     await userEvent.click(screen.getByRole("button", { name: "Gefrierschrank nach oben" }));
     await waitFor(() => expect(listedZones()).toEqual(["Vorratsregal", "Keller", "Gefrierschrank", "Kühlschrank"]));
@@ -131,7 +131,7 @@ describe("Zonen verwalten", () => {
   it("lässt die letzte Zone nicht löschen und zeigt mit der zweiten wieder alles zu Zonen", async () => {
     renderApp({ scenarios: ["single-zone"] }, ROUTES.zones);
     await ready();
-    expect(screen.getByRole("button", { name: "Löschen: Vorrat" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Löschen: Vorrat" })).toBeUnavailable();
     expect(screen.queryByRole("button", { name: "Vorrat nach oben" })).not.toBeInTheDocument();
     // Der Modus ist mit einer Zone bedeutungslos.
     expect(screen.queryByRole("radiogroup", { name: "Zonenmodus" })).not.toBeInTheDocument();
@@ -142,7 +142,7 @@ describe("Zonen verwalten", () => {
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Anlegen" }));
 
     await waitFor(() => expect(screen.queryByText("Es gibt nur eine Zone")).not.toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Löschen: Vorrat" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Löschen: Vorrat" })).toBeAvailable();
     expect(screen.getByRole("radiogroup", { name: "Zonenmodus" })).toBeInTheDocument();
     expect(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Zonen" })).toBeInTheDocument();
   });

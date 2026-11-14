@@ -14,10 +14,10 @@ import { MAX_COMMANDS_PER_SYNC, PROTOCOL_VERSION, type ServerHealth, type SyncRe
 import type { SessionDevice } from "@/contract/core";
 import { CoreError } from "@/contract/errors";
 
-import type { StoredSession } from "../db";
+import type { OutboxEntry, StoredSession } from "../db";
 import type { ApiClient } from "../http";
-import type { Store, SyncApplyReport } from "../store";
-import { withLock } from "./lock";
+import type { Store, StoreState, SyncApplyReport } from "../store";
+import { LOCK_BUSY, withLock, withLockIfFree } from "./lock";
 
 export type SyncOutcome =
   /** `synced` ist false, wenn das Gerät nicht angemeldet ist: Dann wurde nur die Erreichbarkeit geprüft. */
@@ -51,6 +51,11 @@ interface RoundResult {
   report: SyncApplyReport;
   /** Zahl der in dieser Runde gesendeten Befehle. */
   sent: number;
+  /**
+   * Wie viele davon der Server beantwortet hat. Gezählt wird gegen das Gesendete, nicht gegen die
+   * Outbox: Ein Befehl kann sie inzwischen verlassen haben, ohne dass etwas falsch ist.
+   */
+  answered: number;
 }
 
 /** Der Server hat mitten im Blättern den Bestand gewechselt: Die Runde beginnt von vorn. */
@@ -76,11 +81,24 @@ export class SyncEngine {
   /** Prüft nur, ob der Server erreichbar ist (docs/sync-protokoll.md, 9.5). */
   async checkHealth(): Promise<ServerHealth | null> {
     const health = await this.deps.api.health();
-    if (health) {
-      this.lastContactMs = this.deps.now().getTime();
-    }
+    // Antwortet er nicht, geht dem nächsten Abgleich wieder eine Prüfung voraus.
+    this.lastContactMs = health ? this.deps.now().getTime() : null;
     this.deps.onHealth?.(health);
     return health;
+  }
+
+  /**
+   * Die Prüfung nebenbei (9.5): nur, wenn gerade niemand abgleicht, auch kein anderer Tab und
+   * nicht der Service Worker. Dafür nimmt sie die Sperre, ohne auf sie zu warten; ist sie
+   * belegt, fragt sie nicht und liefert "busy". Wirft nicht.
+   */
+  async checkIfIdle(): Promise<ServerHealth | null | "busy"> {
+    try {
+      const result = await withLockIfFree(this.deps.lockName, () => this.checkHealth());
+      return result === LOCK_BUSY ? "busy" : result;
+    } catch {
+      return "busy";
+    }
   }
 
   private async runLocked(options: SyncRunOptions): Promise<SyncOutcome> {
@@ -106,7 +124,7 @@ export class SyncEngine {
 
       let login: StoredSession | undefined = options.login ? { status: "signed_in", token: options.login.token, device: options.login.device } : undefined;
       for (let round = 0; round < MAX_ROUNDS; round += 1) {
-        const { report, sent } = await this.round(token, login);
+        const { report, sent, answered } = await this.round(token, login);
         this.lastContactMs = this.deps.now().getTime();
         if (!report.applied) {
           // Inzwischen abgemeldet oder gesperrt: Die Antwort gehört zu keiner Sitzung mehr.
@@ -114,7 +132,7 @@ export class SyncEngine {
         }
         login = undefined;
         const after = store.snapshot;
-        if (sent > 0 && report.confirmed === 0) {
+        if (sent > 0 && answered === 0) {
           throw new CoreError("internal", "Der Server hat die gesendeten Änderungen nicht bestätigt.");
         }
         // Auch nach einem unerwarteten Abzug (`reset`) genügt die eine Runde: Der Server teilt dann
@@ -128,6 +146,11 @@ export class SyncEngine {
       return { ok: true, synced: true };
     } catch (error) {
       const failure = toCoreError(error);
+      if (failure.code === "offline") {
+        // Der nächste Versuch fragt erst, ob der Server überhaupt da ist (9.5): Das dauert
+        // höchstens 3 Sekunden statt der 45 eines Abgleichs.
+        this.lastContactMs = null;
+      }
       if (failure.code === "unauthorized" && token !== null && !options.login) {
         // Token unbekannt oder gesperrt: abgemeldet, Daten und Outbox bleiben (9.2).
         await store.markRevoked(token).catch(() => undefined);
@@ -149,13 +172,22 @@ export class SyncEngine {
   }
 
   private async roundOnce(token: string, login: StoredSession | undefined): Promise<RoundResult> {
+    const { store } = this.deps;
+    // Die Befehle dieser Runde. Solange sie unterwegs sind, ersetzt keiner einen von ihnen (9.1);
+    // danach gibt die Runde sie wieder frei, auch wenn sie scheitert.
+    const { state, batch } = await store.beginSend(MAX_COMMANDS_PER_SYNC);
+    try {
+      return await this.send(token, login, state, batch);
+    } finally {
+      await store.endSend().catch(() => undefined);
+    }
+  }
+
+  private async send(token: string, login: StoredSession | undefined, state: StoreState, batch: readonly OutboxEntry[]): Promise<RoundResult> {
     const { store, api, now } = this.deps;
-    await store.refreshIfStale();
-    const state = store.snapshot;
     const basedOn = { dataset_id: state.meta.dataset_id, cursor: state.meta.cursor };
     // Vollständig neu holen: beim ersten Abgleich und nach einer längeren Aufbewahrungsdauer (6.4).
     const full = state.meta.full_resync || state.meta.dataset_id === null;
-    const batch = state.outbox.slice(0, MAX_COMMANDS_PER_SYNC);
     const request: SyncRequest = {
       protocol: PROTOCOL_VERSION,
       dataset_id: full ? null : state.meta.dataset_id,
@@ -195,7 +227,8 @@ export class SyncEngine {
       granted += response.id_pool.grant.length;
     }
 
+    const answeredIds = new Set(pages.flatMap((page) => page.results.map((result) => result.id)));
     const report = await store.applySync({ basedOn, token, full, pages, receivedAt: now(), login });
-    return { report, sent: batch.length };
+    return { report, sent: batch.length, answered: batch.filter((entry) => answeredIds.has(entry.id)).length };
   }
 }

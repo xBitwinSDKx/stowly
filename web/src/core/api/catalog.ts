@@ -28,7 +28,8 @@ import {
   requiredText,
 } from "./validate";
 
-export function createProductsApi(runtime: CoreRuntime): ProductsApi {
+/** Alles an `Core.products`, was ohne Server auskommt; `lookup` setzt src/core/index.ts dazu. */
+export function createProductsApi(runtime: CoreRuntime): Omit<ProductsApi, "lookup"> {
   return {
     create(input: NewProduct) {
       return runtime.change((mutation) => {

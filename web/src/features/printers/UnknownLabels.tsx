@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useLocation } from "react-router";
 
 import { ROUTES } from "@/contract";
@@ -27,16 +28,25 @@ export function UnknownLabelsBanner() {
   const printing = usePrinting();
   const actions = useLabelActions();
   const location = useLocation();
+  /** Die zuletzt gegebene Antwort: Solange sie vermerkt wird, zeigt ihre Schaltfläche den Spinner. */
+  const [answered, setAnswered] = useState<boolean | null>(null);
   const asking = printing.asking;
   const first = asking[0];
   if (!first || location.pathname === ROUTES.printers) {
     return null;
   }
   const busy = actions.busy !== null;
+  /** Die Antwort zum ersten Etikett, die gerade vermerkt wird; sonst null. */
+  const answering = actions.busy === first.job.id ? answered : null;
 
   /** Antwortet; danach schließt sich der Hinweis, und der Fokus geht an den Inhalt der Ansicht. */
   function answer(run: () => Promise<void>) {
     void run().then(refocusContent);
+  }
+
+  function answerOne(view: JobView, printed: boolean) {
+    setAnswered(printed);
+    answer(() => actions.resolve(view, printed));
   }
 
   if (asking.length === 1) {
@@ -49,10 +59,10 @@ export function UnknownLabelsBanner() {
         title="Wurde das Etikett gedruckt?"
         action={
           <div className={styles.bannerActions} role="group" aria-label="Wurde das Etikett gedruckt?">
-            <Button size="sm" variant="primary" disabled={busy} onClick={() => answer(() => actions.resolve(first, true))}>
+            <Button size="sm" variant="primary" busy={answering === true} disabled={busy} onClick={() => answerOne(first, true)}>
               Ja
             </Button>
-            <Button size="sm" disabled={busy} onClick={() => answer(() => actions.resolve(first, false))}>
+            <Button size="sm" busy={answering === false} disabled={busy} onClick={() => answerOne(first, false)}>
               Nein
             </Button>
           </div>

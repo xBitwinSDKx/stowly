@@ -2,12 +2,16 @@
  * Der Scanner: Kamera, Erkennung und Auswertung in einem Ablauf (docs/recherche.md, Abschnitt 1).
  *
  * - wertet den mittleren Bildausschnitt etwa zehnmal je Sekunde aus,
- * - ignoriert denselben Wert zwei Sekunden lang,
+ * - ignoriert denselben Wert zwei Sekunden lang; einen Produkt-Barcode, der nach einem Dialog
+ *   noch im Bild ist, bis er kurz nicht zu sehen war (src/core/scanner/dedupe.ts),
  * - ordnet jeden Code selbst ein (`classifyScan`): Etikett einer Packung, Etikett einer Zone,
  *   Produkt-Barcode oder unbekannt,
  * - meldet von mehreren Codes im Bild nur den, auf den gezielt wird (siehe `report`),
  * - gibt die Kamera frei, sobald `stop()` gerufen wird oder die App in den Hintergrund geht,
- *   und nimmt sie bei der Rückkehr wieder.
+ *   und nimmt sie bei der Rückkehr wieder,
+ * - hält das Kamerabild am Laufen: Steht das Video (iOS hält es an, wenn sich über einem Dialog
+ *   die Tastatur öffnet), startet er es wieder; kommen trotzdem keine neuen Bilder mehr, öffnet
+ *   er die Kamera neu. Sonst sähe die Erkennung immer dasselbe stehende Bild.
  *
  * Start und Stopp dürfen sich überholen: React ruft Effekte im Entwicklungsmodus doppelt,
  * und `getUserMedia` braucht seine Zeit. Jeder Start bekommt deshalb eine Nummer; kommt
@@ -16,6 +20,7 @@
 import type { ScanResult } from "@/contract";
 
 import { Signal } from "../live";
+import { isAppleMobile } from "../pwa/install";
 import {
   CameraError,
   findBestBackCamera,
@@ -24,6 +29,7 @@ import {
   setTorch,
   setZoom,
   shouldLookForBetterCamera,
+  startZoom,
   stopStream,
   type CameraErrorKind,
   type CameraInfo,
@@ -48,6 +54,18 @@ export const UNKNOWN_PATIENCE_MS = 500;
 const UNKNOWN_GAP_MS = 1_000;
 /** So lange bleibt der Hinweis „Näher ran" stehen, nachdem das zu kleine Etikett zuletzt zu sehen war. */
 export const TOO_SMALL_LINGER_MS = 600;
+/** So lange bleibt der Hinweis „Zum erneuten Scannen kurz wegschwenken" stehen, nachdem der Code zuletzt zu sehen war. */
+export const RESCAN_HINT_LINGER_MS = 600;
+/** Steht das Video, wird es höchstens so oft wieder gestartet. */
+const PLAY_RETRY_MS = 1_000;
+/**
+ * Kommen so lange keine neuen Kamerabilder, obwohl ausgewertet werden soll, öffnet der Scanner
+ * die Kamera neu. Eine laufende Kamera liefert 15 bis 30 Bilder je Sekunde; drei Sekunden ohne
+ * eines heißen: Sie steht. Neu geöffnet wird nur, wenn seit dem letzten Öffnen schon Bilder kamen.
+ */
+export const STALL_RESTART_MS = 3_000;
+/** Neu geöffnet wird höchstens so oft: Jedes Öffnen kann am iPhone nach der Kamera fragen. */
+export const STALL_RESTART_SPACING_MS = 15_000;
 
 export type ScannerStatus =
   /** Die Kamera ist aus. */
@@ -84,6 +102,12 @@ export interface ScannerState {
    * Die Ansicht zeigt „Näher ran". Gebucht wird nichts.
    */
   too_small: boolean;
+  /**
+   * Gezielt wird auf einen Produkt-Barcode, der seit dem letzten Dialog durchgehend im Bild ist:
+   * Er zählt erst wieder, wenn er kurz nicht zu sehen war (`RESCAN_GAP_MS`). Die Ansicht sagt,
+   * dass kurzes Wegschwenken genügt.
+   */
+  rescan: boolean;
 }
 
 const INITIAL_STATE: ScannerState = {
@@ -96,7 +120,20 @@ const INITIAL_STATE: ScannerState = {
   zoom: null,
   wake_lock: false,
   too_small: false,
+  rescan: false,
 };
+
+/** Ein Videoelement mit `requestVideoFrameCallback` (Safari 15.4, Chrome 83, Firefox 132). */
+type FrameVideo = HTMLVideoElement & {
+  requestVideoFrameCallback?: (callback: () => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+};
+
+/** Ist der Schlüssel eines Codes (`<Format>:<Inhalt>`) ein Produkt-Barcode? */
+function isProductKey(key: string): boolean {
+  const split = key.indexOf(":");
+  return split > 0 && classifyDetected({ format: key.slice(0, split), rawValue: key.slice(split + 1) }).kind === "product";
+}
 
 /** Was der Scanner von außen braucht; in Tests durch Nachbildungen ersetzbar. */
 export interface ScannerDeps {
@@ -107,6 +144,8 @@ export interface ScannerDeps {
   createZxingFallback: () => Promise<CodeDetector>;
   /** Uhr in Millisekunden. */
   now: () => number;
+  /** Läuft die App auf einem iPhone oder iPad? Dann beginnt die Kamera gezoomt (`startZoom`). */
+  appleMobile: () => boolean;
 }
 
 export interface ScannerOptions {
@@ -150,6 +189,17 @@ export class Scanner {
   private unknownPending: { key: string; since: number; last: number } | null = null;
   /** Wann zuletzt auf ein zu kleines Etikett gezielt wurde. */
   private tooSmallAt = 0;
+  /** Wann zuletzt auf einen Produkt-Barcode gezielt wurde, der seit dem Dialog im Bild ist. */
+  private rescanAt = 0;
+  /** Wann zuletzt ein neues Kamerabild kam (Uhr des Scanners). */
+  private lastFrameAt = 0;
+  /** Seit dem letzten Öffnen der Kamera kam schon ein neues Bild. */
+  private framesFlowing = false;
+  /** Ohne `requestVideoFrameCallback`: die zuletzt gesehene Abspielposition. */
+  private lastVideoTime = -1;
+  private frameCallback: number | null = null;
+  private lastPlayAttempt = Number.NEGATIVE_INFINITY;
+  private lastRestart = Number.NEGATIVE_INFINITY;
 
   private readonly onVisibility = () => {
     if (document.visibilityState === "hidden") {
@@ -172,6 +222,7 @@ export class Scanner {
       createDetector,
       createZxingFallback,
       now: () => performance.now(),
+      appleMobile: () => isAppleMobile(globalThis.navigator),
       ...options.deps,
     };
   }
@@ -224,10 +275,19 @@ export class Scanner {
     }
   }
 
+  /**
+   * Wertet wieder aus. Was beim Anhalten im Bild war, zählt nicht sofort: ein Produkt-Barcode
+   * erst, wenn er kurz nicht zu sehen war, ein Etikett (es bucht ohne Rückfrage) erst nach zwei
+   * Sekunden. Steht das Video inzwischen, läuft es wieder an.
+   */
   resume(): void {
     if (this.paused) {
       this.paused = false;
-      this.deduper.refresh(this.deps.now(), this.pausedAt);
+      const now = this.deps.now();
+      this.deduper.refresh(now, this.pausedAt, isProductKey);
+      // Ob noch Bilder kommen, zählt ab jetzt.
+      this.lastFrameAt = now;
+      this.ensurePlaying(now);
     }
   }
 
@@ -294,6 +354,7 @@ export class Scanner {
       }
       this.camera = camera;
       await this.attach(camera);
+      this.watchFrames(run);
       let detector: CodeDetector;
       try {
         detector = await this.ensureDetector();
@@ -306,13 +367,25 @@ export class Scanner {
       }
       const zoom = camera.capabilities.zoom;
       const zoomUsable = zoom !== undefined && typeof zoom.min === "number" && typeof zoom.max === "number" && zoom.max > zoom.min;
+      let zoomValue = zoomUsable ? Math.max(1, zoom.min as number) : 1;
+      // Am iPhone beginnt der Scanner gezoomt: Dann hält man es weit genug weg, um scharf zu sehen.
+      const wanted = zoomUsable ? startZoom(camera.capabilities, this.deps.appleMobile()) : null;
+      if (zoomUsable && wanted !== null) {
+        const applied = await setZoom(camera.track, wanted, zoom);
+        if (!current()) {
+          return;
+        }
+        if (applied !== null) {
+          zoomValue = applied;
+        }
+      }
       this.patch({
         status: "running",
         error: null,
         engine: detector.kind,
         cameraId: camera.deviceId,
         torch: { available: camera.capabilities.torch === true, on: false },
-        zoom: zoomUsable ? { min: zoom.min as number, max: zoom.max as number, step: zoom.step ?? 0.1, value: Math.max(1, zoom.min as number) } : null,
+        zoom: zoomUsable ? { min: zoom.min as number, max: zoom.max as number, step: zoom.step ?? 0.1, value: zoomValue } : null,
       });
       camera.track.addEventListener("ended", () => {
         // Das System hat die Kamera entzogen (anderer Tab, Anruf).
@@ -349,9 +422,89 @@ export class Scanner {
   private halt(): void {
     this.generation += 1;
     this.unknownPending = null;
+    if (this.frameCallback !== null) {
+      (this.video as FrameVideo).cancelVideoFrameCallback?.(this.frameCallback);
+      this.frameCallback = null;
+    }
     this.releaseCamera();
     this.wakeLock.release();
-    this.patch({ status: "idle", error: null, torch: { available: false, on: false }, zoom: null, wake_lock: false, too_small: false });
+    this.patch({ status: "idle", error: null, torch: { available: false, on: false }, zoom: null, wake_lock: false, too_small: false, rescan: false });
+  }
+
+  /**
+   * Merkt jedes neue Kamerabild: über `requestVideoFrameCallback`, wo es das gibt, sonst in der
+   * Schleife über die Abspielposition (`stalled`).
+   */
+  private watchFrames(run: number): void {
+    const video = this.video as FrameVideo;
+    this.framesFlowing = false;
+    this.lastFrameAt = this.deps.now();
+    // Erst eine Abspielposition, die weiterläuft, heißt: Es kam ein neues Bild.
+    this.lastVideoTime = video.currentTime;
+    const request = video.requestVideoFrameCallback;
+    if (typeof request !== "function") {
+      return;
+    }
+    const next = () => {
+      if (run !== this.generation) {
+        return;
+      }
+      this.noteFrame();
+      this.frameCallback = request.call(video, next);
+    };
+    this.frameCallback = request.call(video, next);
+  }
+
+  private noteFrame(): void {
+    this.framesFlowing = true;
+    this.lastFrameAt = this.deps.now();
+  }
+
+  /** Steht das Video, wird es wieder gestartet, höchstens einmal je Sekunde. */
+  private ensurePlaying(now: number): void {
+    const video = this.video;
+    if (!video.paused || video.srcObject === null || now - this.lastPlayAttempt < PLAY_RETRY_MS) {
+      return;
+    }
+    this.lastPlayAttempt = now;
+    try {
+      const played = video.play() as Promise<void> | undefined;
+      played?.catch(() => undefined);
+    } catch {
+      // Der Browser verweigert es gerade; der nächste Versuch kommt mit der nächsten Runde.
+    }
+  }
+
+  /**
+   * Kommen noch neue Bilder? Steht das Video, läuft es wieder an. true heißt: Seit dem letzten
+   * Öffnen kamen schon Bilder, jetzt aber `STALL_RESTART_MS` lang keine mehr; die Kamera wird neu
+   * geöffnet, höchstens alle 15 Sekunden.
+   */
+  private stalled(now: number): boolean {
+    const video = this.video as FrameVideo;
+    if (typeof video.requestVideoFrameCallback !== "function") {
+      const time = video.currentTime;
+      if (time !== this.lastVideoTime) {
+        this.lastVideoTime = time;
+        this.noteFrame();
+      }
+    }
+    const quiet = now - this.lastFrameAt;
+    if (quiet < PLAY_RETRY_MS) {
+      return false;
+    }
+    this.ensurePlaying(now);
+    return this.framesFlowing && quiet >= STALL_RESTART_MS && now - this.lastRestart >= STALL_RESTART_SPACING_MS;
+  }
+
+  /** Die Kamera liefert keine Bilder mehr: neu öffnen, wie beim Umschalten. Was gesperrt ist, bleibt gesperrt. */
+  private async restartCamera(run: number): Promise<void> {
+    if (run !== this.generation || !this.wanted || this.disposed) {
+      return;
+    }
+    this.lastRestart = this.deps.now();
+    this.halt();
+    await this.begin();
   }
 
   private releaseCamera(): void {
@@ -436,9 +589,16 @@ export class Scanner {
     let failures = 0;
     while (run === this.generation) {
       const started = this.deps.now();
-      // Der Hinweis „Näher ran" verschwindet kurz nachdem das Etikett nicht mehr zu sehen ist.
+      // Die Hinweise verschwinden kurz nachdem ihr Code nicht mehr zu sehen ist.
       if (this.state.get().too_small && (this.paused || started - this.tooSmallAt > TOO_SMALL_LINGER_MS)) {
         this.patch({ too_small: false });
+      }
+      if (this.state.get().rescan && (this.paused || started - this.rescanAt > RESCAN_HINT_LINGER_MS)) {
+        this.patch({ rescan: false });
+      }
+      if (!this.paused && this.stalled(started)) {
+        void this.restartCamera(run);
+        return;
       }
       if (!this.paused) {
         const frame = this.grabFrame();
@@ -565,7 +725,7 @@ export class Scanner {
       } else if (aimed === null) {
         aimed = key;
       }
-      (isLabelTooSmall(code, frame.width) ? tooSmall : entries).set(key, result);
+      (isLabelTooSmall(code, frame.width, this.state.get().zoom?.value ?? 1) ? tooSmall : entries).set(key, result);
     }
     for (const key of tooSmall.keys()) {
       // Ein eben gescanntes Etikett, das weggezogen wird, bleibt gesperrt, solange es zu sehen ist.
@@ -622,7 +782,17 @@ export class Scanner {
       this.deduper.hold(key, now);
     }
     if (sighting === "repeat") {
+      if (this.deduper.waitsForGap(targetKey)) {
+        // Seit dem Dialog durchgehend im Bild: sagen, was hilft, statt still nichts zu tun.
+        this.rescanAt = now;
+        if (!this.state.get().rescan) {
+          this.patch({ rescan: true });
+        }
+      }
       return;
+    }
+    if (this.state.get().rescan) {
+      this.patch({ rescan: false });
     }
     try {
       this.options.onScan(targetResult);

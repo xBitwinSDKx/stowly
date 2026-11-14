@@ -27,11 +27,17 @@ UDEV_RULE=/etc/udev/rules.d/99-stowly-brother.rules
 JOURNALD_CONF=/etc/systemd/journald.conf.d/stowly.conf
 AP_MARKER=/etc/dnsmasq.d/stowly-ap.conf
 
+# Alle gibt es in Trixie für arm64 (Debian) und armhf (Raspbian, Zero W); geprüft am 14.11.2026
+# in den Paketlisten von Debian (qa.debian.org/madison.php), raspbian.raspberrypi.com und
+# archive.raspberrypi.com. python3-setuptools (78.1.1) baut Druckdienst und packbits
+# (--no-build-isolation), ohne dass pip etwas ungeprüft lädt. overlayroot braucht erst
+# overlay.sh, ganz am Ende, wenn es im WLAN des Pi kein Internet mehr gibt; raspi-config holte es
+# sonst aus dem Netz.
 PACKAGES=(
   python3-pil python3-usb python3-segno python3-starlette python3-uvicorn
   python3-venv python3-setuptools
   fonts-dejavu-core libusb-1.0-0 openssl qrencode
-  hostapd dnsmasq
+  hostapd dnsmasq overlayroot
 )
 
 ORIGINS=()
@@ -129,10 +135,6 @@ if [ "$OFFLINE" -eq 0 ]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y --no-install-recommends "${PACKAGES[@]}"
-  # Das Overlay (overlay.sh, ganz am Ende) braucht overlayroot. Jetzt gibt es noch Internet.
-  step "Paket overlayroot für den späteren Schreibschutz"
-  apt-get install -y --no-install-recommends overlayroot \
-    || note "overlayroot ließ sich nicht installieren; raspi-config holt es beim Einschalten des Overlays nach (dann mit Internet)."
 else
   step "Pakete: übersprungen (--offline)"
   missing=()
@@ -145,8 +147,12 @@ fi
 if [ -f "$AP_MARKER" ]; then
   step "Access Point ist eingerichtet: hostapd und dnsmasq bleiben, wie sie sind"
 else
+  # Debian maskiert hostapd beim Installieren, solange es keine Konfiguration gibt; dnsmasq
+  # startet dagegen gleich, mit der Vorgabe von Debian als DNS-Weiterleitung. Je für sich, damit
+  # das eine das andere nicht aufhält.
   step "hostapd und dnsmasq ruhen, bis access-point.sh sie einrichtet"
-  systemctl disable --now hostapd.service dnsmasq.service 2>/dev/null || true
+  systemctl disable --now hostapd.service 2>/dev/null || true
+  systemctl disable --now dnsmasq.service 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------- Benutzer
@@ -174,9 +180,11 @@ PIP_CONFIG_FILE=/dev/null "$PREFIX/venv/bin/pip" install --no-cache-dir --no-dep
 
 if [ "$WITH_BROTHER" -eq 1 ] && [ "$OFFLINE" -eq 0 ]; then
   step "Brother-Bibliothek von PyPI, auf Version und Prüfsumme festgelegt (print/requirements-brother.txt)"
-  # Nur PyPI, nicht piwheels: Dessen Dateien haben andere Prüfsummen.
-  PIP_CONFIG_FILE=/dev/null "$PREFIX/venv/bin/pip" install --no-cache-dir --no-deps --require-hashes \
-    --index-url https://pypi.org/simple -r "$REPO_DIR/print/requirements-brother.txt"
+  # Nur PyPI, nicht piwheels: Dessen Dateien haben andere Prüfsummen. packbits gibt es nur als
+  # Quellpaket; --no-build-isolation baut es mit python3-setuptools, statt setuptools ungeprüft
+  # in eine eigene Bau-Umgebung zu laden.
+  PIP_CONFIG_FILE=/dev/null "$PREFIX/venv/bin/pip" install --no-cache-dir --no-deps --no-build-isolation \
+    --require-hashes --index-url https://pypi.org/simple -r "$REPO_DIR/print/requirements-brother.txt"
 elif [ "$WITH_BROTHER" -eq 1 ]; then
   step "Brother-Bibliothek: übersprungen (--offline), die vorhandene bleibt"
 else

@@ -66,8 +66,9 @@ function resolveProductRef(mutation: Mutation, ref: ProductRef): string {
     if (known) {
       return known.id;
     }
-    // Unbekannter Barcode: sofort ein Platzhalter. Name und Bild ergänzt der Server später.
-    return createProduct(mutation, { name: ref.name ?? "", barcodes: [ref.barcode] }, { placeholder: true });
+    // Unbekannter Barcode: sofort ein Platzhalter. Was der Server nicht schon gesagt hat (Name,
+    // Marke, Größe aus `products.lookup`), ergänzt er später, ebenso das Bild.
+    return createProduct(mutation, { name: ref.name ?? "", brand: ref.brand, quantity: ref.quantity, barcodes: [ref.barcode] }, { placeholder: true });
   }
   if (ref?.kind === "new") {
     return createProduct(mutation, ref, { placeholder: false });

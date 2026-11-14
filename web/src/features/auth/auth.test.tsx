@@ -117,7 +117,7 @@ describe("Anmeldung", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Zu viele Fehlversuche");
     expect(screen.getByRole("alert")).toHaveTextContent("Nächster Versuch in 42 Sekunden.");
-    expect(screen.getByRole("button", { name: "Anmelden" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Anmelden" })).toBeUnavailable();
 
     act(() => {
       vi.advanceTimersByTime(30_000);
@@ -127,7 +127,7 @@ describe("Anmeldung", () => {
     act(() => {
       vi.advanceTimersByTime(13_000);
     });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Anmelden" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Anmelden" })).toBeAvailable());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 

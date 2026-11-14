@@ -39,6 +39,7 @@ import type {
   Device,
   DirectPrinterConfig,
   HouseholdSettings,
+  LookupResultState,
   Package,
   PackageChanges,
   Printer,
@@ -139,14 +140,20 @@ export interface SessionApi {
 export interface SyncStatus {
   /**
    * Ist der Server erreichbar? Das prüft der Kern selbst (GET /api/health), weil der Browser
-   * im WLAN des Pi „online" meldet. null = noch nicht geprüft.
+   * im WLAN des Pi „online" meldet. null = noch nicht geprüft. Solange die App sichtbar und das
+   * Gerät angemeldet ist, merkt der Kern Ausfall und Rückkehr binnen etwa 15 Sekunden, auch wenn
+   * niemand etwas ändert (docs/sync-protokoll.md, 9.5). Ein Ausfall steht dann hier wie nach
+   * einem gescheiterten Abgleich (`phase: "error"`, `last_error.code: "offline"`); kommt der
+   * Server zurück, gleicht der Kern sofort ab.
    */
   online: boolean | null;
   /** "syncing" während eines laufenden Abgleichs, "error" wenn der letzte Versuch scheiterte. */
   phase: "idle" | "syncing" | "error";
   /**
    * Änderungen, die noch nicht beim Server angekommen sind. Gezählt werden Befehle, nicht
-   * Vorgänge: Drei Packungen eines neuen Produkts einzulagern sind vier.
+   * Vorgänge: Drei Packungen eines neuen Produkts einzulagern sind vier. Vom Zustand eines
+   * direkten Druckers zählt höchstens eine ungesendete Meldung je Drucker: Eine neue ersetzt die
+   * ältere (docs/sync-protokoll.md, 9.1).
    */
   pending: number;
   /** Letzter erfolgreicher Abgleich (Vertrags-Zeitstempel) oder null. */
@@ -251,9 +258,11 @@ export type ProductRef =
    * Produkt verwendet. Sonst entsteht sofort ein Platzhalter; Name und Bild ergänzt der
    * Server später aus Open Food Facts, wenn er diesen Barcode nachschlägt (`willLookUp`:
    * nicht bei ladeninternen Codes, nicht bei abgeschaltetem Nachschlagen; das Produkt hat
-   * dann von Anfang an `lookup: "none"`). `name` setzt den Namen gleich von Hand.
+   * dann von Anfang an `lookup: "none"`). `name`, `brand` und `quantity` setzen die Felder
+   * eines neuen Produkts gleich mit, als Eingabe des Anwenders (etwa aus `products.lookup`);
+   * bei einem schon bekannten Produkt gelten sie nicht.
    */
-  | { kind: "barcode"; barcode: string; name?: string }
+  | { kind: "barcode"; barcode: string; name?: string; brand?: string; quantity?: string }
   /** Ein neues Produkt ohne Scan. */
   | {
       kind: "new";
@@ -331,6 +340,33 @@ export interface NewProduct {
   barcodes?: string[];
 }
 
+/** So lange wartet der Server bei `products.lookup` höchstens auf Open Food Facts (`?wait=`). */
+export const PRODUCT_LOOKUP_WAIT_S = 4;
+
+/**
+ * Was Open Food Facts über einen Barcode weiß, gefragt über den Server (`products.lookup`,
+ * docs/sync-protokoll.md, Abschnitt 10). Leere Felder sind "".
+ */
+export interface ProductLookup {
+  barcode: string;
+  /**
+   * - "found": gefunden; `name`, `brand`, `quantity` und `image_id`, soweit bekannt
+   * - "not_found": Open Food Facts kennt den Barcode nicht: Der Name kommt von Hand.
+   * - "pending": In der Wartezeit kam keine Antwort; der Server fragt weiter. Name und Bild
+   *   kommen später mit dem Abgleich, wenn das Produkt angelegt ist.
+   * - "skipped": ladeninterner Code (Präfix 2): wird nie nachgeschlagen (`willLookUp`)
+   * - "disabled": Der Server schlägt nicht nach (`sync.status.lookup_enabled`).
+   * - "offline": Der Server ist nicht erreichbar oder antwortete nicht rechtzeitig.
+   * - "failed": Der Server hat mit einem Fehler geantwortet, oder das Gerät ist nicht angemeldet.
+   */
+  state: LookupResultState | "offline" | "failed";
+  name: string;
+  brand: string;
+  quantity: string;
+  /** Bild-ID für `data.imageUrl`, wenn das Bild schon beim Server liegt; sonst null. */
+  image_id: string | null;
+}
+
 export interface ProductsApi {
   /** @throws CoreError invalid | barcode_taken */
   create(input: NewProduct): Promise<Product>;
@@ -347,6 +383,14 @@ export interface ProductsApi {
    * `targetId` über, `sourceId` verschwindet aus `data.products`. Nicht umkehrbar.
    */
   merge(sourceId: string, targetId: string): Promise<void>;
+  /**
+   * Schlägt einen Barcode gleich beim Scannen nach: fragt den Server, der Open Food Facts bis zu
+   * `PRODUCT_LOOKUP_WAIT_S` Sekunden fragt (insgesamt höchstens etwa 6 Sekunden). Ändert nichts
+   * am Bestand. Ohne Anfrage kommt die Antwort, wenn der Barcode nie nachgeschlagen wird
+   * ("skipped"), der Server nicht nachschlägt ("disabled") oder als nicht erreichbar gilt
+   * (`sync.status.online === false`: "offline"). Wirft nicht: Fehler stehen in `state`.
+   */
+  lookup(barcode: string): Promise<ProductLookup>;
 }
 
 export interface NewZone {
@@ -491,7 +535,10 @@ export interface PrintersApi {
    * Kann die Nachfrage kommen (Erlaubnis noch offen), wartet die Abfrage bis zu 15 Sekunden auf
    * die Antwort des Anwenders, über alle Adressen eines Druckers zusammen höchstens 20 Sekunden.
    * Einen Drucker am Server, der noch nicht abgeglichen ist (eben angelegt oder geändert),
-   * gleicht der Kern vorher ab: Sonst kennte ihn der Server noch nicht.
+   * gleicht der Kern vorher ab: Sonst kennte ihn der Server noch nicht. Darauf wartet er
+   * höchstens 10 Sekunden; dauert der Abgleich länger, läuft er weiter, und die Abfrage geht
+   * trotzdem hin. Kennt der Server den Drucker dann noch nicht, steht im Ergebnis
+   * `problem: "unknown_printer"`; nach dem Abgleich kennt er ihn.
    * @throws CoreError not_found
    */
   probe(id: string): Promise<PrinterProbe>;
@@ -574,7 +621,10 @@ export interface PrintApi {
    * danach im Hintergrund weiter, sein Ergebnis kommt über `data.printJobs`. Wirft nicht. Darf
    * die Nachfrage des Browsers nach dem lokalen Netzwerk auslösen (wie `printers.probe`).
    * Wartet die Anforderung eines Etiketts für einen Drucker am Server noch in der Outbox, gleicht
-   * der Kern vorher ab: Ein Drucker am Server nimmt nur Etiketten an, die er schon kennt.
+   * der Kern vorher ab: Ein Drucker am Server nimmt nur Etiketten an, die er schon kennt. Darauf
+   * wartet er höchstens 10 Sekunden; dauert der Abgleich länger, läuft er weiter, und das
+   * Zustellen beginnt trotzdem. Was der Server dann noch nicht kennt, bleibt ausstehend (zählt in
+   * `pending`, ohne Eintrag in `problems`) und geht hinaus, sobald der Abgleich fertig ist.
    */
   flush(): Promise<PrintFlushReport>;
   /**

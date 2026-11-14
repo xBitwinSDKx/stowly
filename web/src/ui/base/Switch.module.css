@@ -41,7 +41,8 @@
   inset: calc((1.625rem - var(--touch-target)) / 2 - var(--border-width)) calc(-1 * var(--space-1));
 }
 
-.switch:disabled {
+.switch:disabled,
+.switch[aria-disabled="true"] {
   opacity: 0.5;
 }
 

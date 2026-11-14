@@ -17,12 +17,14 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { PrintJob, ServiceJob } from "@/contract";
+import { SYNC_FIRST_MAX_WAIT_MS } from "@/core/api/runtime";
 
 import { firstZone } from "./support/data";
-import { disposeDevices, expectCoreError, signedIn, until, value, type Device } from "./support/device";
+import { Device, disposeDevices, expectCoreError, signedIn, until, value } from "./support/device";
 import { printedIn, serverImageDir, simulateIn, startPrintService, type PrintServiceHandle } from "./support/print";
 import { expectSameAsServer, RawClient } from "./support/raw";
 import { freePort, startServer, type ServerHandle } from "./support/server";
+import { ManualTimers } from "./support/timers";
 
 let server: ServerHandle;
 let pi: PrintServiceHandle;
@@ -224,6 +226,73 @@ describe("Direkter Drucker (eigenständiger Druckdienst)", () => {
       expect(jobOf(cellar, id).state).toBe("printed");
     }
     await expectSameAsServer(cellar, raw);
+  });
+});
+
+describe("Langsamer Server", () => {
+  it("wartet bei „Jetzt drucken“ höchstens 10 Sekunden auf den Abgleich und druckt danach genau einmal", async () => {
+    const clock = new ManualTimers();
+    const kitchen = new Device(server.url, "Küche", { timers: clock.timers });
+    await kitchen.login();
+    const printer = await serverPrinter(kitchen);
+    await kitchen.core.settings.update({ default_printer_id: printer.id });
+    await kitchen.sync();
+    const [id] = (await storeWithLabels(kitchen, "Linsen L1")) as [string];
+
+    // Der Abgleich hängt; nach 10 Sekunden beginnt das Zustellen trotzdem.
+    let release: () => void = () => undefined;
+    kitchen.net.holdSyncs = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      const flushing = kitchen.core.print.flush();
+      await until(() => clock.delays().includes(SYNC_FIRST_MAX_WAIT_MS), "die Frist vor dem Zustellen läuft");
+      clock.fire(SYNC_FIRST_MAX_WAIT_MS);
+      // Der Server kennt das Etikett noch nicht: Es bleibt ausstehend, nichts geht hinaus.
+      expect(await flushing).toEqual({ delivered: 0, pending: 1, problems: [] });
+      expect(kitchen.net.submits(id)).toEqual([]);
+      expect(jobOf(kitchen, id).state).toBe("pending");
+    } finally {
+      kitchen.net.holdSyncs = null;
+      release();
+    }
+
+    // Der Abgleich läuft zu Ende; danach geht das Etikett hinaus, genau einmal.
+    await until(() => kitchen.status.pending === 0 && kitchen.status.phase === "idle", "der Abgleich ist fertig");
+    expect(await kitchen.core.print.flush()).toEqual({ delivered: 1, pending: 0, problems: [] });
+    await settled(kitchen, id, "printed");
+    expect(serverPrinted().filter((entry) => entry.startsWith(id))).toEqual([id]);
+    expect(kitchen.net.submits(id)).toHaveLength(1);
+  });
+});
+
+describe("Zustand des Pi im Keller", () => {
+  it("ersetzt ältere Meldungen, solange sie warten; beim Server kommt nur die jüngste an", async () => {
+    const kitchen = await signedIn(server.url, "Küche");
+    const raw = await RawClient.login(server.url);
+    const printer = await directPrinter(kitchen);
+    await kitchen.sync();
+
+    // Kein Server, aber der Pi. Jede Abfrage meldet seinen Zustand; dazwischen startet er neu.
+    kitchen.net.online = false;
+    await kitchen.core.printers.probe(printer.id);
+    await kitchen.core.printers.probe(printer.id);
+    await pi.stop();
+    await pi.start();
+    const boot = (await pi.health()).boot_id;
+    expect(await kitchen.core.printers.probe(printer.id)).toMatchObject({ reachable: true, health: { boot_id: boot } });
+    expect(kitchen.status.pending).toBe(1);
+    expect(value(kitchen.core.data.printerStatus).find((status) => status.printer_id === printer.id)?.boot_id).toBe(boot);
+
+    kitchen.net.online = true;
+    const from = kitchen.net.syncs.length;
+    await kitchen.sync();
+    const reports = kitchen.net.syncs.slice(from).flatMap((exchange) => exchange.request.commands.filter((command) => command.type === "printer.report"));
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ printer_id: printer.id, boot_id: boot });
+    const snapshot = await raw.snapshot();
+    expect(snapshot.printer_status.find((status) => status.printer_id === printer.id)).toMatchObject({ boot_id: boot, host: expect.any(Object) });
+    await expectSameAsServer(kitchen, raw);
   });
 });
 

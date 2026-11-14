@@ -10,6 +10,7 @@ import Dexie from "dexie";
 import { CoreError, type CoreErrorCode, type Live, type SessionDevice, type SyncRequest, type SyncResponse, type SyncStatus } from "@/contract";
 import { createCore, type StowlyCore } from "@/core";
 import type { FetchLike } from "@/core/http";
+import type { SchedulerTimers } from "@/core/sync/scheduler";
 
 /** Das Passwort von `python -m stowly --dev`. */
 export const PASSWORD = "stowly";
@@ -86,6 +87,8 @@ export class Network {
   loseSubmitResponses = 0;
   /** Die nächste Anfrage eines Abgleichs ist so lange unterwegs, bevor sie beim Server ankommt. */
   delayNextSyncMs = 0;
+  /** Ein langsamer Server: Jede Anfrage eines Abgleichs wartet darauf, bevor sie beim Server ankommt. */
+  holdSyncs: Promise<void> | null = null;
   /** Verändert den Rumpf jeder Sync-Anfrage, bevor sie hinausgeht (z. B. eine andere Protokollversion). */
   rewriteSyncRequest: ((body: Record<string, unknown>) => void) | null = null;
   /** Alle Abgleiche dieses Geräts in ihrer Reihenfolge. */
@@ -114,6 +117,9 @@ export class Network {
       const delay = this.delayNextSyncMs;
       this.delayNextSyncMs = 0;
       await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    if (input === "/api/sync" && this.holdSyncs) {
+      await this.holdSyncs;
     }
     if (input === "/api/sync" && this.rewriteSyncRequest && typeof init?.body === "string") {
       const body = JSON.parse(init.body) as Record<string, unknown>;
@@ -230,6 +236,16 @@ export async function expectCoreError(action: Promise<unknown>, code: CoreErrorC
 let counter = 0;
 const devices: Device[] = [];
 
+export interface DeviceOptions {
+  /**
+   * true: Der Kern gleicht von selbst ab wie in der App (nach Änderungen, alle 60 Sekunden) und
+   * prüft nebenbei, ob der Server erreichbar ist. Vorgabe false.
+   */
+  autoSync?: boolean;
+  /** Zeitgeber von Hand für die Wartezeiten des Kerns (`ManualTimers`); Vorgabe: die echten. */
+  timers?: SchedulerTimers;
+}
+
 export class Device {
   readonly clock = new DeviceClock();
   readonly net: Network;
@@ -240,8 +256,7 @@ export class Device {
   constructor(
     readonly baseUrl: string,
     readonly name: string,
-    /** true: Der Kern gleicht von selbst ab wie in der App (nach Änderungen, alle 60 Sekunden). Vorgabe false. */
-    private readonly autoSync = false,
+    private readonly options: DeviceOptions = {},
   ) {
     counter += 1;
     this.dbName = `stowly-e2e-${process.pid}-${counter}`;
@@ -251,7 +266,7 @@ export class Device {
   }
 
   private open(): StowlyCore {
-    return createCore({ fetch: this.net.fetch, now: this.clock.now, dbName: this.dbName, autoSync: this.autoSync });
+    return createCore({ fetch: this.net.fetch, now: this.clock.now, dbName: this.dbName, autoSync: this.options.autoSync ?? false, timers: this.options.timers });
   }
 
   /** Meldet das Gerät mit dem Entwicklungs-Passwort an; erfüllt sich nach dem ersten Abgleich. */

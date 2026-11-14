@@ -30,6 +30,7 @@ import {
   StowlyDb,
   type DeliveryEntry,
   type OutboxEntry,
+  type SendingMark,
   type StoredProblem,
   type StoredSession,
   type SyncMeta,
@@ -89,6 +90,16 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 /** Ein Befehl ohne Kennung und Zeitpunkt; beides setzt `Mutation.emit`. */
 export type CommandInput = DistributiveOmit<Command, "id" | "at">;
 
+/** Die Nutzlast eines `printer.report` (`Mutation.reportPrinter`). */
+export type PrinterReportInput = Omit<Extract<CommandInput, { type: "printer.report" }>, "type">;
+
+/**
+ * So lange gilt eine Markierung „wird gerade gesendet" (`SendingMark`) höchstens. Ein Abgleich
+ * räumt sie selbst wieder ab; diese Grenze greift nur, wenn sein Tab mittendrin beendet wurde.
+ * Sie liegt weit über der Zeitgrenze einer Anfrage (45 Sekunden, src/core/http.ts).
+ */
+export const SENDING_MARK_TTL_MS = 2 * 60_000;
+
 const REJECT_TO_ERROR: Record<RejectCode, CoreErrorCode> = {
   invalid: "invalid",
   not_found: "not_found",
@@ -114,13 +125,20 @@ export class Mutation {
   fullResync = false;
   /** Einträge der Zustell-Buchführung, die dieser Vorgang schreibt (null = löschen). */
   readonly deliveryChanges = new Map<string, DeliveryEntry | null>();
+  /** Wartende Befehle, die dieser Vorgang ersetzt: Sie fallen aus der Outbox. */
+  readonly superseded: OutboxEntry[] = [];
 
   private poolIndex = 0;
   private readonly usedIds = new Set<string>();
 
+  /**
+   * @param sentUpto Befehle der Outbox bis zu dieser laufenden Nummer können gerade unterwegs
+   *                 sein (`SendingMark`); 0, wenn nichts gesendet wird.
+   */
   constructor(
     readonly state: StoreState,
     now: Date,
+    private readonly sentUpto = 0,
   ) {
     this.draft = new Draft(state.view);
     this.at = now.toISOString();
@@ -148,6 +166,22 @@ export class Mutation {
       throw new CoreError(REJECT_TO_ERROR[outcome.code], `Die Änderung ist nicht möglich (${command.type}: ${outcome.code}).`);
     }
     this.commands.push(command);
+    return command;
+  }
+
+  /**
+   * Meldet den Zustand eines Druckers (`printer.report`). Die Meldung ersetzt eine ältere desselben
+   * Druckers, die noch in der Outbox wartet (docs/sync-protokoll.md, 9.1): Es gilt ohnehin die
+   * jüngste, und so wächst die Outbox ohne Server nicht mit jeder Minute. Was ein Abgleich gerade
+   * sendet, bleibt stehen, auch der eines anderen Tabs oder des Service Workers.
+   */
+  reportPrinter(report: PrinterReportInput): Command {
+    const command = this.emit({ type: "printer.report", ...report });
+    for (const entry of this.state.outbox) {
+      if (entry.seq > this.sentUpto && entry.command.type === "printer.report" && entry.command.printer_id === report.printer_id && !this.superseded.includes(entry)) {
+        this.superseded.push(entry);
+      }
+    }
     return command;
   }
 
@@ -473,12 +507,19 @@ export class Store {
    */
   async mutate<R>(build: (mutation: Mutation) => R): Promise<R> {
     const outcome = await this.write<{ ok: true; value: R } | { ok: false; error: unknown }>(async (current) => {
-      const mutation = new Mutation(current, this.now());
+      // Was gerade gesendet wird, steht in der Datenbank, nicht im Arbeitsspeicher: Es kann ein
+      // anderer Tab oder der Service Worker sein.
+      const now = this.now();
+      const mutation = new Mutation(current, now, sentUpto(await this.db.readKv("sending"), now));
       let value: R;
       try {
         value = build(mutation);
       } catch (error) {
         return { next: null, value: { ok: false, error } };
+      }
+      const replaced = new Set(mutation.superseded);
+      if (replaced.size > 0) {
+        await this.db.outbox.bulkDelete([...replaced].map((entry) => entry.seq));
       }
       const entries: OutboxEntry[] = [];
       if (mutation.commands.length > 0) {
@@ -501,11 +542,15 @@ export class Store {
         await this.db.writeKv("sync", meta);
       }
       const deliveries = await this.writeDeliveries(current.deliveries, mutation.deliveryChanges);
-      const view = entries.length > 0 ? mutation.draft.commit() : current.view;
+      const kept = replaced.size > 0 ? current.outbox.filter((entry) => !replaced.has(entry)) : current.outbox;
+      const outbox = entries.length > 0 ? [...kept, ...entries] : kept;
+      // Fällt ein ersetzter Befehl heraus, rechnet die Anzeige neu: Stand des Servers plus Outbox (9.1).
+      const view = replaced.size > 0 ? this.project(current.view, current.base, outbox, current.session, current.meta) : entries.length > 0 ? mutation.draft.commit() : current.view;
       // Ein „verdrängt" erledigt sich, sobald seine Packung die Bearbeitung nicht mehr trägt.
       const problems = entries.length > 0 ? await this.settleProblems(current.problems, view) : current.problems;
       const changed =
         entries.length > 0 ||
+        replaced.size > 0 ||
         mutation.takenIds.length > 0 ||
         mutation.prefsChanged ||
         meta !== current.meta ||
@@ -518,7 +563,7 @@ export class Store {
       const next: StoreState = {
         ...current,
         view,
-        outbox: entries.length > 0 ? [...current.outbox, ...entries] : current.outbox,
+        outbox,
         pool: taken.size > 0 ? current.pool.filter((id) => !taken.has(id)) : current.pool,
         prefs: mutation.prefs,
         meta,
@@ -534,9 +579,37 @@ export class Store {
   }
 
   /**
+   * Nimmt die nächsten höchstens `limit` Befehle der Outbox zum Senden und hält in derselben
+   * Transaktion fest, dass sie unterwegs sind (`SendingMark`): Bis `endSend` ersetzt keiner einen
+   * von ihnen (`Mutation.reportPrinter`), auch kein anderer Tab und nicht der Service Worker.
+   * Liefert dazu den Stand, auf dem die Anfrage beruht, frisch aus der Datenbank.
+   */
+  beginSend(limit: number): Promise<{ state: StoreState; batch: readonly OutboxEntry[] }> {
+    return this.write(async (current) => {
+      const batch = current.outbox.slice(0, limit);
+      const last = batch.at(-1);
+      if (last) {
+        await this.db.writeKv("sending", { upto: last.seq, at: this.now().getTime() });
+      } else {
+        await this.db.kv.delete("sending");
+      }
+      return { next: null, value: { state: current, batch } };
+    });
+  }
+
+  /** Was `beginSend` genommen hat, ist nicht mehr unterwegs: beantwortet und verbucht, oder gescheitert. */
+  endSend(): Promise<void> {
+    return this.write(async () => {
+      await this.db.kv.delete("sending");
+      return { next: null, value: undefined };
+    });
+  }
+
+  /**
    * Wendet die Antwort des Servers an (docs/sync-protokoll.md, 9.2 und 9.3): Ergebnisse
    * verbuchen, alle Seiten gemeinsam übernehmen, Altes verwerfen, die verbliebenen Befehle
-   * erneut anwenden. Alles in einer Transaktion.
+   * erneut anwenden. Alles in einer Transaktion. Ein Ergebnis zu einem Befehl, der nicht mehr in
+   * der Outbox steht (inzwischen ersetzt, oder schon von einem anderen Tab verbucht), zählt nicht.
    */
   applySync(input: SyncApplyInput): Promise<SyncApplyReport> {
     return this.write<SyncApplyReport>(async (current) => {
@@ -966,6 +1039,15 @@ export class Store {
       return { next: { ...current, problems: current.problems.filter((problem) => problem.id !== id) }, value: undefined };
     });
   }
+}
+
+/** Bis zu welcher laufenden Nummer Befehle gerade unterwegs sein können; 0 = keiner. */
+function sentUpto(mark: SendingMark | undefined, now: Date): number {
+  if (!mark || typeof mark.upto !== "number" || typeof mark.at !== "number") {
+    return 0;
+  }
+  // Ein Tab, der mitten im Abgleich beendet wurde, räumt seine Markierung nicht mehr ab.
+  return Math.abs(now.getTime() - mark.at) <= SENDING_MARK_TTL_MS ? mark.upto : 0;
 }
 
 function grewRetention(before: Tables, after: Tables): boolean {

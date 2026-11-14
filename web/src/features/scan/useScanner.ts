@@ -13,6 +13,7 @@ const IDLE: ScannerState = {
   zoom: null,
   wake_lock: false,
   too_small: false,
+  rescan: false,
 };
 
 /** Ein `Live`, das nie etwas meldet: der Zustand, solange es noch keinen Scanner gibt. */

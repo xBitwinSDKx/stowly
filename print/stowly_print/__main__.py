@@ -133,6 +133,10 @@ def serve(config: ServiceConfig) -> int:
                     server_header=False,
                     lifespan="off",
                     timeout_graceful_shutdown=5,
+                    # Fest wie in den Tests: Debian zieht zu uvicorn auch uvloop (und womöglich
+                    # httptools) nach, und „auto" nähme auf dem Pi dann eine ungeprüfte Schleife.
+                    loop="asyncio",
+                    http="h11",
                     **options,
                 )
             )

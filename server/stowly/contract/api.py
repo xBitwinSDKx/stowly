@@ -1,12 +1,26 @@
-"""Alle weiteren Endpunkte: Anmeldung, Geräte, Ereignisprotokoll, Fehlerformat."""
+"""Alle weiteren Endpunkte: Anmeldung, Geräte, Nachschlagen, Ereignisprotokoll, Fehlerformat."""
 
 from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import Field
 
-from stowly.contract.entities import DeviceName, Model, Timestamp, Uuid
+from stowly.contract.entities import (
+    Barcode,
+    BrandName,
+    DeviceName,
+    Model,
+    ProductName,
+    QuantityText,
+    Timestamp,
+    Uuid,
+)
 from stowly.contract.limits import LIMITS
+
+# Wartezeit von GET /api/lookup/{barcode} in Sekunden: ?wait=0 bis LOOKUP_WAIT_MAX_S,
+# ohne Angabe LOOKUP_WAIT_DEFAULT_S.
+LOOKUP_WAIT_MAX_S = 8
+LOOKUP_WAIT_DEFAULT_S = 4
 
 
 class ErrorCode(StrEnum):
@@ -77,6 +91,29 @@ class DeviceList(Model):
 
 class DeviceUpdate(Model):
     name: DeviceName
+
+
+class LookupResultState(StrEnum):
+    """Ergebnis von ``GET /api/lookup/{barcode}`` (docs/sync-protokoll.md, Abschnitt 10)."""
+
+    FOUND = "found"  # Open Food Facts kennt den Barcode (gespeichert oder eben abgefragt)
+    NOT_FOUND = "not_found"  # Open Food Facts kennt ihn nicht
+    PENDING = "pending"  # in der Wartezeit keine Antwort; der Server fragt im Hintergrund weiter
+    SKIPPED = "skipped"  # ladeninterner Code (Präfix 2): wird nie nachgeschlagen
+    DISABLED = "disabled"  # Nachschlagen ist am Server ausgeschaltet (STOWLY_OFF_ENABLED)
+
+
+class LookupResult(Model):
+    """Antwort von ``GET /api/lookup/{barcode}``. Leere Felder sind ``""``, nie ``null`` (außer ``image_id``)."""
+
+    barcode: Barcode
+    state: LookupResultState
+    name: ProductName = Field(description="Wie beim Füllen eines Produkts aufbereitet; leer, wenn unbekannt.")
+    brand: BrandName = Field(description="Der erste Eintrag von brands; leer, wenn unbekannt.")
+    quantity: QuantityText = Field(description="Packungsgröße ohne Schätzzeichen; leer, wenn unbekannt.")
+    image_id: str | None = Field(
+        description="Bild-ID für GET /api/images/{id}, wenn das Bild schon beim Server liegt; sonst null."
+    )
 
 
 class EventRecord(Model):

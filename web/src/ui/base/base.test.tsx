@@ -1,6 +1,6 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { StrictMode, useState } from "react";
+import { StrictMode, useState, type FormEvent } from "react";
 import { createMemoryRouter } from "react-router";
 import { RouterProvider } from "react-router/dom";
 import { describe, expect, it, vi } from "vitest";
@@ -36,18 +36,138 @@ describe("Button", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
-  it("sperrt sich, solange eine Aktion läuft", async () => {
+  it("sperrt sich, solange eine Aktion läuft, und sagt Screenreadern „beschäftigt, nicht verfügbar“", async () => {
     const onClick = vi.fn();
+    const outside = vi.fn();
     render(
+      <div onClick={outside}>
+        <Button busy onClick={onClick}>
+          Speichern
+        </Button>
+      </div>,
+    );
+    // Der Name bleibt: Der Spinner ist für Screenreader unsichtbar.
+    const button = screen.getByRole("button", { name: "Speichern" });
+    expect(button).toBeUnavailable();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveAttribute("aria-busy", "true");
+    // Gesperrt nur über aria-disabled: Mit `disabled` verlöre sie im Browser den Fokus.
+    expect(button).not.toBeDisabled();
+    await userEvent.click(button);
+    expect(onClick).not.toHaveBeenCalled();
+    // Wie bei `disabled` erreicht der Klick auch die Umgebung nicht.
+    expect(outside).not.toHaveBeenCalled();
+  });
+
+  it("behält den Fokus beim Wechsel zu „beschäftigt“ und zurück", async () => {
+    const { rerender } = render(<Button>Speichern</Button>);
+    const button = screen.getByRole("button", { name: "Speichern" });
+    await userEvent.tab();
+    expect(button).toHaveFocus();
+
+    // jsdom nimmt einer gesperrten Schaltfläche den Fokus nicht, der Browser schon: Deshalb zählt auch, dass `disabled` fehlt.
+    rerender(<Button busy>Speichern</Button>);
+    expect(button).toHaveFocus();
+    expect(button).not.toBeDisabled();
+    expect(button).toBeUnavailable();
+
+    rerender(<Button>Speichern</Button>);
+    expect(button).toHaveFocus();
+    expect(button).toBeAvailable();
+    expect(button).not.toHaveAttribute("aria-disabled");
+    expect(button).not.toHaveAttribute("aria-busy");
+  });
+
+  it("löst mit Klick, Enter und Leertaste nichts aus, solange sie arbeitet", async () => {
+    const onClick = vi.fn();
+    const { rerender } = render(<Button onClick={onClick}>Speichern</Button>);
+    await userEvent.tab();
+    await userEvent.keyboard("{Enter}");
+    expect(onClick).toHaveBeenCalledTimes(1);
+
+    rerender(
       <Button busy onClick={onClick}>
         Speichern
       </Button>,
     );
+    await userEvent.keyboard("{Enter}");
+    await userEvent.keyboard(" ");
+    await userEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("sendet als Formular-Knopf nichts ab, solange sie arbeitet, auch nicht mit Enter in einem Feld", async () => {
+    const onSubmit = vi.fn((event: FormEvent) => event.preventDefault());
+    function Example({ busy }: { busy: boolean }) {
+      return (
+        <form onSubmit={onSubmit}>
+          <TextField label="Name" />
+          <Button type="submit" busy={busy}>
+            Anlegen
+          </Button>
+        </form>
+      );
+    }
+    const { rerender } = render(<Example busy={false} />);
+    const field = screen.getByLabelText("Name");
+    // Enter im Feld sendet das Formular ab: Der Browser klickt dafür den Formular-Knopf.
+    await userEvent.type(field, "Keller{Enter}");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    rerender(<Example busy />);
+    await userEvent.type(field, "{Enter}");
+    await userEvent.click(screen.getByRole("button", { name: "Anlegen" }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("lässt `disabled` ruhen, solange sie arbeitet", () => {
+    const { rerender } = render(
+      <Button busy disabled>
+        Speichern
+      </Button>,
+    );
     const button = screen.getByRole("button", { name: "Speichern" });
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+
+    rerender(<Button disabled>Speichern</Button>);
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("aria-busy", "true");
-    await userEvent.click(button);
+    expect(button).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("behält den Fokus, wenn sie gesperrt wird, während sie ihn hat, und ist erst nach dem Verlassen ganz gesperrt", async () => {
+    const onClick = vi.fn();
+    function Example({ locked }: { locked: boolean }) {
+      return (
+        <>
+          <Button disabled={locked} onClick={onClick}>
+            Anlegen
+          </Button>
+          <Button>Weiter</Button>
+        </>
+      );
+    }
+    const { rerender } = render(<Example locked={false} />);
+    const button = screen.getByRole("button", { name: "Anlegen" });
+    await userEvent.tab();
+
+    rerender(<Example locked />);
+    expect(button).toHaveFocus();
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await userEvent.keyboard("{Enter}");
     expect(onClick).not.toHaveBeenCalled();
+
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Weiter" })).toHaveFocus();
+    expect(button).toBeDisabled();
+    expect(button).not.toHaveAttribute("aria-disabled");
+    expect(button).toBeUnavailable();
+  });
+
+  it("reicht ein eigenes aria-disabled durch, solange keine Sperre gilt", () => {
+    render(<Button aria-disabled="false">Speichern</Button>);
+    expect(screen.getByRole("button", { name: "Speichern" })).toHaveAttribute("aria-disabled", "false");
   });
 
   it("kennt Varianten, Größen und die Formular-Typen", () => {
@@ -68,6 +188,27 @@ describe("Button", () => {
       </IconButton>,
     );
     expect(screen.getByRole("button", { name: "Taschenlampe" })).toHaveAttribute("title", "Taschenlampe");
+  });
+
+  it("behält auch als IconButton den Fokus, wenn sie gesperrt wird, während sie ihn hat", async () => {
+    const onClick = vi.fn();
+    const { rerender } = render(
+      <IconButton label="Nach oben" onClick={onClick}>
+        <svg />
+      </IconButton>,
+    );
+    const button = screen.getByRole("button", { name: "Nach oben" });
+    await userEvent.tab();
+    rerender(
+      <IconButton label="Nach oben" disabled onClick={onClick}>
+        <svg />
+      </IconButton>,
+    );
+    expect(button).toHaveFocus();
+    expect(button).not.toBeDisabled();
+    expect(button).toBeUnavailable();
+    await userEvent.keyboard("{Enter}");
+    expect(onClick).not.toHaveBeenCalled();
   });
 });
 
@@ -396,6 +537,51 @@ describe("Eingaben", () => {
     expect(screen.getByRole("radio", { name: "Wie das Gerät" })).toHaveFocus();
     await userEvent.keyboard("{Home}");
     expect(screen.getByRole("radio", { name: "Dunkel" })).toBeChecked();
+  });
+
+  it("Switch und SegmentedControl behalten den Fokus, wenn sie gesperrt werden, während sie ihn haben", async () => {
+    const onSwitch = vi.fn();
+    const onChoice = vi.fn();
+    function Example({ locked }: { locked: boolean }) {
+      return (
+        <>
+          <Switch label="Etiketten" checked={false} onChange={onSwitch} disabled={locked} />
+          <SegmentedControl
+            label="Thema"
+            value="dark"
+            onChange={onChoice}
+            options={[
+              { value: "dark", label: "Dunkel" },
+              { value: "light", label: "Hell", disabled: locked },
+            ]}
+          />
+        </>
+      );
+    }
+    const { rerender } = render(<Example locked={false} />);
+    const control = screen.getByRole("switch", { name: "Etiketten" });
+    await userEvent.tab();
+    rerender(<Example locked />);
+    expect(control).toHaveFocus();
+    expect(control).not.toBeDisabled();
+    expect(control).toBeUnavailable();
+    await userEvent.click(control);
+    expect(onSwitch).not.toHaveBeenCalled();
+
+    // Ohne Fokus ganz gesperrt; die freie Wahl daneben bleibt bedienbar.
+    rerender(<Example locked={false} />);
+    await userEvent.tab();
+    await userEvent.tab();
+    const light = screen.getByRole("radio", { name: "Hell" });
+    expect(light).toHaveFocus();
+    rerender(<Example locked />);
+    expect(control).toBeDisabled();
+    expect(light).toHaveFocus();
+    expect(light).not.toBeDisabled();
+    expect(light).toBeUnavailable();
+    await userEvent.click(light);
+    expect(onChoice).not.toHaveBeenCalled();
+    expect(screen.getByRole("radio", { name: "Dunkel" })).toBeAvailable();
   });
 
   it("TextField verbindet Beschriftung, Hinweis und Fehler mit dem Feld", async () => {

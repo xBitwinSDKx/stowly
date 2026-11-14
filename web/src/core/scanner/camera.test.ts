@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { findBestBackCamera, isMultiLensCamera, scoreCamera, shouldLookForBetterCamera, type CameraCapabilities, type CameraInfo, type OpenCamera } from "./camera";
+import { APPLE_START_ZOOM, findBestBackCamera, isMultiLensCamera, scoreCamera, shouldLookForBetterCamera, startZoom, type CameraCapabilities, type CameraInfo, type OpenCamera } from "./camera";
 
 const back = ["environment"];
 
@@ -114,5 +114,22 @@ describe("Suche nach der besten Rückkamera", () => {
     const opened = await devices.open("triple");
     expect(await findBestBackCamera(opened, () => false, devices.open, devices.list)).toBe(opened);
     expect(devices.opened).toEqual(["triple"]);
+  });
+});
+
+describe("Zoom beim Start", () => {
+  it("beginnt am iPhone mit der festen Kamera gezoomt, damit man weit genug weg bleibt, um scharf zu sehen", () => {
+    expect(APPLE_START_ZOOM).toBe(2);
+    expect(startZoom(IPHONE_WIDE, true)).toBe(2);
+    expect(startZoom(IPHONE_ULTRA_WIDE, true)).toBe(2);
+  });
+
+  it("lässt den Zoom anderswo, bei der Mehrfachkamera und ohne genug Zoom, wie er ist", () => {
+    expect(startZoom(IPHONE_WIDE, false)).toBeNull();
+    expect(startZoom(ANDROID_MAIN, false)).toBeNull();
+    expect(startZoom(IPHONE_TRIPLE, true)).toBeNull();
+    expect(startZoom({ facingMode: back, zoom: { min: 1, max: 1.5 } }, true)).toBeNull();
+    expect(startZoom({ facingMode: back }, true)).toBeNull();
+    expect(startZoom(WEBCAM, true)).toBeNull();
   });
 });

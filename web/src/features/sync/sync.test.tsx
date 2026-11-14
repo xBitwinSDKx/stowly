@@ -188,7 +188,7 @@ describe("Sync-Ansicht", () => {
 
     // Ein Versuch ohne Server scheitert, ohne dass die Ansicht etwas verliert.
     await userEvent.click(screen.getByRole("button", { name: "Jetzt abgleichen" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Jetzt abgleichen" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Jetzt abgleichen" })).toBeAvailable());
     expect(value(core.sync.status).pending).toBe(4);
 
     core.control.setOnline(true);

@@ -50,6 +50,7 @@ def test_openapi_lists_every_endpoint_and_command():
         ("PATCH", "/api/devices/{device_id}"),
         ("DELETE", "/api/devices/{device_id}"),
         ("POST", "/api/sync"),
+        ("GET", "/api/lookup/{barcode}"),
         ("GET", "/api/images/{image_id}"),
         ("GET", "/api/backup"),
         ("GET", "/api/events"),

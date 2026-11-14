@@ -1,6 +1,7 @@
 import { useId } from "react";
 
 import { cx } from "./cx";
+import { useButtonLock } from "./lock";
 import styles from "./Switch.module.css";
 
 export interface SwitchProps {
@@ -15,10 +16,11 @@ export interface SwitchProps {
   className?: string;
 }
 
-/** Schalter für An/Aus, wie in den Zeilen der Einstellungen. */
+/** Schalter für An/Aus, wie in den Zeilen der Einstellungen. Gesperrt verliert er den Fokus nicht: siehe `useButtonLock`. */
 export function Switch({ checked, onChange, label, hideLabel = false, hint, disabled = false, className }: SwitchProps) {
   const labelId = useId();
   const hintId = useId();
+  const lock = useButtonLock({ disabled, onClick: () => onChange(!checked) });
   return (
     <span className={cx(styles.row, className)}>
       <span className={cx(styles.text, hideLabel && "sr-only")}>
@@ -37,9 +39,8 @@ export function Switch({ checked, onChange, label, hideLabel = false, hint, disa
         aria-checked={checked}
         aria-labelledby={labelId}
         aria-describedby={hint ? hintId : undefined}
-        disabled={disabled}
+        {...lock}
         className={cx(styles.switch, checked && styles.on)}
-        onClick={() => onChange(!checked)}
       >
         <span className={styles.thumb} />
       </button>

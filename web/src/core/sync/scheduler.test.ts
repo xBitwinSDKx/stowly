@@ -1,13 +1,14 @@
 /**
- * Wann abgeglichen wird (docs/sync-protokoll.md, 9.4): Anlässe, Zusammenfassen, Wartezeiten.
- * Geprüft mit einer Uhr von Hand, ohne Browser und ohne Datenbank.
+ * Wann abgeglichen wird (docs/sync-protokoll.md, 9.4) und wann nebenbei geprüft wird, ob der
+ * Server erreichbar ist (9.5): Anlässe, Zusammenfassen, Wartezeiten. Geprüft mit einer Uhr von
+ * Hand, ohne Browser und ohne Datenbank.
  */
 import { describe, expect, it } from "vitest";
 
 import { CoreError } from "@/contract";
 
 import type { SyncOutcome } from "./engine";
-import { CHANGE_DEBOUNCE_MS, INTERVAL_MS, LOOKUP_DELAYS_MS, RETRY_DELAYS_MS, SyncScheduler, type SchedulerTimers } from "./scheduler";
+import { CHANGE_DEBOUNCE_MS, CHECK_INTERVAL_MS, INTERVAL_MS, LOOKUP_DELAYS_MS, RETRY_DELAYS_MS, SyncScheduler, type SchedulerTimers } from "./scheduler";
 
 const OK: SyncOutcome = { ok: true, synced: true };
 const OFFLINE: SyncOutcome = { ok: false, error: new CoreError("offline") };
@@ -62,10 +63,23 @@ async function settle(): Promise<void> {
   }
 }
 
-function setup(options: { visible?: boolean; auto?: boolean } = {}) {
+/**
+ * Ein Zeitplan mit nachgebautem Abgleich. Mit `checks` prüft er auch nebenbei; `state.server`
+ * sagt, was die Prüfung findet (null: Sie entfällt, weil gerade jemand anderes abgleicht).
+ */
+function setup(options: { visible?: boolean; auto?: boolean; checks?: boolean } = {}) {
   const clock = manualTimers();
   const runs: number[] = [];
-  const state = { visible: options.visible ?? true, outcome: OK as SyncOutcome, lookups: [] as string[], gate: null as Promise<void> | null };
+  const checks: number[] = [];
+  const state = {
+    visible: options.visible ?? true,
+    outcome: OK as SyncOutcome,
+    lookups: [] as string[],
+    gate: null as Promise<void> | null,
+    server: true as boolean | null,
+    signedIn: true,
+    checkGate: null as Promise<void> | null,
+  };
   const scheduler = new SyncScheduler({
     async run() {
       runs.push(clock.now);
@@ -76,10 +90,31 @@ function setup(options: { visible?: boolean; auto?: boolean } = {}) {
     },
     isVisible: () => state.visible,
     pendingLookups: () => state.lookups,
+    ...(options.checks
+      ? {
+          async check() {
+            checks.push(clock.now);
+            if (state.checkGate) {
+              await state.checkGate;
+            }
+            return state.server;
+          },
+          canCheck: () => state.signedIn,
+        }
+      : {}),
     timers: clock.timers,
     auto: options.auto,
   });
-  return { clock, runs, state, scheduler };
+  return { clock, runs, checks, state, scheduler };
+}
+
+/** Ein Versprechen, das der Test selbst erfüllt. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open: () => void = () => undefined;
+  const promise = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
 }
 
 describe("Anlässe", () => {
@@ -225,6 +260,196 @@ describe("Fehlschläge", () => {
     await clock.advance(10 * INTERVAL_MS);
     expect(runs).toEqual([0]);
     expect(clock.count).toBe(0);
+  });
+});
+
+describe("Prüfung nebenbei (9.5)", () => {
+  it("prüft 15 Sekunden nach dem letzten Kontakt; der Abgleich alle 60 Sekunden ist selbst einer", async () => {
+    const { clock, runs, checks, scheduler } = setup({ checks: true });
+    await scheduler.request();
+    await clock.advance(2 * INTERVAL_MS);
+    expect(CHECK_INTERVAL_MS).toBe(15_000);
+    expect(runs).toEqual([0, 60_000, 120_000]);
+    // Höchstens eine kleine Anfrage je 15 Sekunden, und keine, wenn ohnehin abgeglichen wird.
+    expect(checks).toEqual([15_000, 30_000, 45_000, 75_000, 90_000, 105_000]);
+  });
+
+  it("merkt einen Ausfall binnen 15 Sekunden und gleicht sofort ab, sobald der Server wieder antwortet", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    await scheduler.request();
+    // Der Server fällt aus, während niemand etwas ändert.
+    state.server = false;
+    state.outcome = OFFLINE;
+    await clock.advance(15_000);
+    expect(checks).toEqual([15_000]);
+
+    // Solange er fehlt: kein Abgleich nach der Uhr, nur die Prüfung alle 15 Sekunden.
+    await clock.advance(INTERVAL_MS);
+    expect(runs).toEqual([0]);
+    expect(checks).toEqual([15_000, 30_000, 45_000, 60_000, 75_000]);
+
+    // Er ist wieder da: Die nächste Prüfung merkt es, und es wird sofort abgeglichen.
+    state.server = true;
+    state.outcome = OK;
+    await clock.advance(15_000);
+    expect(checks.at(-1)).toBe(90_000);
+    expect(runs).toEqual([0, 90_000]);
+    // Danach gilt wieder der gewohnte Takt.
+    await clock.advance(INTERVAL_MS);
+    expect(runs).toEqual([0, 90_000, 150_000]);
+  });
+
+  it("wartet nach jedem anderen Kontakt wieder 15 Sekunden; ein anderer Tab meldet Ausfall und Rückkehr", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    await scheduler.request();
+    await clock.advance(10_000);
+    // Ein anderer Aufruf hat den Server erreicht (etwa die Geräteliste).
+    scheduler.notifyContact(true);
+    await clock.advance(10_000);
+    expect(checks).toEqual([]);
+    await clock.advance(5_000);
+    expect(checks).toEqual([25_000]);
+
+    // Ein anderer Tab hat den Ausfall bemerkt: hier kein Abgleich mehr nach der Uhr.
+    state.server = false;
+    state.outcome = OFFLINE;
+    await clock.advance(5_000);
+    scheduler.notifyContact(false);
+    await clock.advance(INTERVAL_MS - 30_000);
+    expect(runs).toEqual([0]);
+    expect(checks).toEqual([25_000, 45_000, 60_000]);
+
+    // Er meldet die Rückkehr: sofort abgleichen.
+    state.server = true;
+    state.outcome = OK;
+    scheduler.notifyContact(true);
+    await settle();
+    expect(runs).toEqual([0, 60_000]);
+  });
+
+  it("versucht es ohne Server nach 2, 5 und 15 Sekunden erneut und prüft danach alle 15 Sekunden", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    state.server = false;
+    state.outcome = OFFLINE;
+    await scheduler.request();
+    await clock.advance(2_000 + 5_000 + 15_000 + 45_000);
+    expect(runs).toEqual([0, 2_000, 7_000, 22_000]);
+    expect(checks).toEqual([37_000, 52_000, 67_000]);
+
+    state.server = true;
+    state.outcome = OK;
+    await clock.advance(15_000);
+    expect(runs).toEqual([0, 2_000, 7_000, 22_000, 82_000]);
+  });
+
+  it("versucht es nach einem Fehler des Servers weiter alle 60 Sekunden; daneben läuft die Prüfung", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    state.outcome = { ok: false, error: new CoreError("internal") };
+    await scheduler.request();
+    await clock.advance(2_000 + 5_000 + 15_000 + 60_000);
+    expect(runs).toEqual([0, 2_000, 7_000, 22_000, 82_000]);
+    // Der Server antwortet ja: Die Prüfung findet ihn, ohne einen Abgleich auszulösen.
+    expect(checks).toEqual([37_000, 52_000, 67_000]);
+  });
+
+  it("prüft im Hintergrund nicht, auch nicht nach einem Kontakt", async () => {
+    const { clock, checks, state, scheduler } = setup({ checks: true });
+    await scheduler.request();
+    state.visible = false;
+    scheduler.notifyVisibility(false);
+    scheduler.notifyContact(true);
+    await clock.advance(5 * INTERVAL_MS);
+    expect(checks).toEqual([]);
+    expect(clock.count).toBe(0);
+
+    // Wieder sichtbar: sofort abgleichen, danach wieder prüfen.
+    state.visible = true;
+    scheduler.notifyVisibility(true);
+    await settle();
+    const back = clock.now;
+    await clock.advance(CHECK_INTERVAL_MS);
+    expect(checks).toEqual([back + CHECK_INTERVAL_MS]);
+  });
+
+  it("prüft nur angemeldet; abgemeldet bleibt es ohne Server bei 60 Sekunden, nach der Anmeldung beginnt die Prüfung", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    state.signedIn = false;
+    state.server = false;
+    state.outcome = OFFLINE;
+    await scheduler.request();
+    await clock.advance(2_000 + 5_000 + 15_000 + 60_000);
+    expect(checks).toEqual([]);
+    expect(runs).toEqual([0, 2_000, 7_000, 22_000, 82_000]);
+
+    // Die Anmeldung gleicht außerhalb des Zeitplans ab; danach geht es weiter wie nach einem eigenen Abgleich.
+    state.signedIn = true;
+    state.server = true;
+    state.outcome = OK;
+    scheduler.notifySynced(OK);
+    const at = clock.now;
+    await clock.advance(INTERVAL_MS);
+    expect(checks).toEqual([at + 15_000, at + 30_000, at + 45_000]);
+    expect(runs.slice(5)).toEqual([at + INTERVAL_MS]);
+  });
+
+  it("versucht es 15 Sekunden später wieder, wenn die Prüfung entfiel", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    await scheduler.request();
+    // Ein anderer Tab oder der Service Worker gleicht gerade ab: Die Prüfung fragt nicht.
+    state.server = null;
+    await clock.advance(30_000);
+    expect(checks).toEqual([15_000, 30_000]);
+    expect(runs).toEqual([0]);
+  });
+
+  it("prüft nie, während dieser Tab abgleicht, und gleicht nach einer Prüfung nicht doppelt ab", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    await scheduler.request();
+    // Ein Abgleich nach einer Änderung dauert länger als 15 Sekunden.
+    const slow = gate();
+    state.gate = slow.promise;
+    scheduler.notifyChange();
+    await clock.advance(2_000 + 30_000);
+    expect(runs).toEqual([0, 2_000]);
+    expect(checks).toEqual([]);
+    state.gate = null;
+    slow.open();
+    await settle();
+    await clock.advance(CHECK_INTERVAL_MS);
+    expect(checks).toEqual([32_000 + CHECK_INTERVAL_MS]);
+
+    // Der Server fällt aus; die nächste Prüfung hängt, während eine Änderung abgeglichen wird.
+    state.server = false;
+    await clock.advance(CHECK_INTERVAL_MS);
+    const hanging = gate();
+    state.checkGate = hanging.promise;
+    state.server = true;
+    await clock.advance(CHECK_INTERVAL_MS);
+    expect(checks).toHaveLength(3);
+    scheduler.notifyChange();
+    await clock.advance(CHANGE_DEBOUNCE_MS);
+    const before = runs.length;
+    expect(runs.at(-1)).toBe(clock.now);
+    // Die Prüfung kommt erst danach zurück und findet den Server: kein zweiter Abgleich.
+    state.checkGate = null;
+    hanging.open();
+    await settle();
+    expect(runs).toHaveLength(before);
+  });
+
+  it("ein Abgleich außerhalb des Zeitplans ändert nichts, solange ein eigener läuft", async () => {
+    const { clock, runs, checks, state, scheduler } = setup({ checks: true });
+    const slow = gate();
+    state.gate = slow.promise;
+    const running = scheduler.request();
+    await settle();
+    scheduler.notifySynced(OK);
+    await clock.advance(CHECK_INTERVAL_MS);
+    expect(checks).toEqual([]);
+    state.gate = null;
+    slow.open();
+    await running;
+    expect(runs).toEqual([0]);
   });
 });
 

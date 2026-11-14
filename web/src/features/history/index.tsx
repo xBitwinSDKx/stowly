@@ -60,14 +60,14 @@ function ReasonSelect({ pkg, onChange }: { pkg: Package; onChange: (reason: Remo
 }
 
 /** Was eine verdrängte Bearbeitung ändern wollte, und die Schaltfläche, sie mit zu übernehmen. */
-function DisplacedNote({ pkg, lines, onApply }: { pkg: Package; lines: DisplacedLine[]; onApply: () => void }) {
+function DisplacedNote({ pkg, lines, onApply, busy, disabled }: { pkg: Package; lines: DisplacedLine[]; onApply: () => void; busy: boolean; disabled: boolean }) {
   return (
     <Notice
       tone="info"
       icon={<InfoIcon />}
       title="Verdrängte Bearbeitung"
       action={
-        <Button size="sm" aria-label={`Mit Bearbeitung wiederherstellen: ${pkg.id}`} onClick={onApply}>
+        <Button size="sm" aria-label={`Mit Bearbeitung wiederherstellen: ${pkg.id}`} busy={busy} disabled={disabled} onClick={onApply}>
           Mit Bearbeitung wiederherstellen
         </Button>
       }
@@ -99,7 +99,11 @@ export function HistoryPage() {
   const zones = useLive(core.data.zones);
   const settings = useLive(core.data.settings);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [busy, setBusy] = useState(false);
+  /**
+   * Die Schaltfläche, deren Wiederherstellen gerade läuft: "chosen", "ask", "ask-apply",
+   * "row:<ID>" oder "apply:<ID>"; sonst null. Sie zeigt den Spinner, alle anderen sind solange gesperrt.
+   */
+  const [busy, setBusy] = useState<string | null>(null);
   /** Rückfrage beim Wiederherstellen mehrerer Packungen, von denen einige eine verdrängte Bearbeitung haben. */
   const [ask, setAsk] = useState<string[] | null>(null);
 
@@ -131,8 +135,9 @@ export function HistoryPage() {
     });
   }
 
-  async function restore(ids: string[], applyDisplaced: boolean) {
-    setBusy(true);
+  /** @param trigger die Schaltfläche, die es auslöst (siehe `busy`) */
+  async function restore(ids: string[], applyDisplaced: boolean, trigger: string) {
+    setBusy(trigger);
     try {
       await core.stock.restore(ids, { apply_displaced: applyDisplaced });
       setSelected((current) => new Set([...current].filter((id) => !ids.includes(id))));
@@ -146,7 +151,7 @@ export function HistoryPage() {
     } catch (caught) {
       toast.show({ message: errorText(caught, { not_found: "Mindestens eine der Packungen gibt es nicht mehr." }), tone: "danger" });
     } finally {
-      setBusy(false);
+      setBusy(null);
       setAsk(null);
     }
   }
@@ -156,9 +161,12 @@ export function HistoryPage() {
     if (withEdit) {
       setAsk(chosen);
     } else {
-      void restore(chosen, false);
+      void restore(chosen, false, "chosen");
     }
   }
+
+  /** Die Schaltfläche für `trigger`: arbeitet sie, zeigt sie den Spinner; läuft etwas anderes, ist sie gesperrt. */
+  const lock = (trigger: string) => ({ busy: busy === trigger, disabled: busy !== null });
 
   function changeReason(pkg: Package, reason: RemovalReason) {
     // Für eine entnommene Packung ändert `remove` nur den Grund.
@@ -208,7 +216,7 @@ export function HistoryPage() {
                   Auswahl aufheben
                 </Button>
               ) : null}
-              <Button variant="primary" icon={<RestoreIcon />} disabled={chosen.length === 0 || busy} onClick={restoreChosen}>
+              <Button variant="primary" icon={<RestoreIcon />} busy={busy === "chosen"} disabled={chosen.length === 0 || busy !== null} onClick={restoreChosen}>
                 {chosen.length === 0 ? "Auswahl wiederherstellen" : `${String(chosen.length)} wiederherstellen`}
               </Button>
             </div>
@@ -271,7 +279,7 @@ export function HistoryPage() {
                         </td>
                         <td className={cx(table.td, table.narrow)}>
                           <div className={table.actions}>
-                            <Button size="sm" aria-label={`Wiederherstellen: ${pkg.id}`} disabled={busy} onClick={() => void restore([pkg.id], false)}>
+                            <Button size="sm" aria-label={`Wiederherstellen: ${pkg.id}`} {...lock(`row:${pkg.id}`)} onClick={() => void restore([pkg.id], false, `row:${pkg.id}`)}>
                               Wiederherstellen
                             </Button>
                           </div>
@@ -281,7 +289,7 @@ export function HistoryPage() {
                         <tr>
                           <td className={styles.noteCell} />
                           <td className={styles.noteCell} colSpan={multiZone ? 7 : 6}>
-                            <DisplacedNote pkg={pkg} lines={lines} onApply={() => void restore([pkg.id], true)} />
+                            <DisplacedNote pkg={pkg} lines={lines} {...lock(`apply:${pkg.id}`)} onApply={() => void restore([pkg.id], true, `apply:${pkg.id}`)} />
                           </td>
                         </tr>
                       ) : null}
@@ -329,11 +337,11 @@ export function HistoryPage() {
                       </dl>
                       {lines.length > 0 ? (
                         <div className={styles.cardNote}>
-                          <DisplacedNote pkg={pkg} lines={lines} onApply={() => void restore([pkg.id], true)} />
+                          <DisplacedNote pkg={pkg} lines={lines} {...lock(`apply:${pkg.id}`)} onApply={() => void restore([pkg.id], true, `apply:${pkg.id}`)} />
                         </div>
                       ) : null}
                       <div className={styles.cardAction}>
-                        <Button block aria-label={`Wiederherstellen: ${pkg.id}`} disabled={busy} onClick={() => void restore([pkg.id], false)}>
+                        <Button block aria-label={`Wiederherstellen: ${pkg.id}`} {...lock(`row:${pkg.id}`)} onClick={() => void restore([pkg.id], false, `row:${pkg.id}`)}>
                           Wiederherstellen
                         </Button>
                       </div>
@@ -354,10 +362,10 @@ export function HistoryPage() {
         variant="sheet"
         footer={
           <>
-            <Button disabled={busy} onClick={() => ask && void restore(ask, false)}>
+            <Button {...lock("ask")} onClick={() => ask && void restore(ask, false, "ask")}>
               Nur wiederherstellen
             </Button>
-            <Button variant="primary" disabled={busy} onClick={() => ask && void restore(ask, true)}>
+            <Button variant="primary" {...lock("ask-apply")} onClick={() => ask && void restore(ask, true, "ask-apply")}>
               Mit Bearbeitungen
             </Button>
           </>

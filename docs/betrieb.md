@@ -17,7 +17,7 @@ Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar mach
 |---|---|
 | Rechner mit Debian 13, ohne Bildschirm | Zielsystem; jedes Linux mit Docker sollte genauso gehen |
 | Docker Engine mit Compose-Plugin (`docker compose version` zeigt Version 2 oder neuer) | Bau und Betrieb des Containers |
-| Internet beim Bauen | lädt die Basis-Images und die Pakete von npm und PyPI |
+| Internet beim Bauen | lädt die Basis-Images und die Pakete von npm und PyPI (von PyPI nur Dateien, die auf Version und Prüfsumme festgelegt sind, Abschnitt 9.1) |
 | etwa 1 GB Plattenplatz für den Bau, danach wenige hundert MB | Images; die Datenbank selbst bleibt klein |
 | ein Reverse Proxy mit HTTPS: Nginx Proxy Manager **oder** Tailscale | siehe Abschnitte 4 und 5 |
 | im Betrieb optional Internet | nur für das Nachschlagen bei Open Food Facts |
@@ -235,6 +235,18 @@ docker compose logs --tail 50 stowly
 
 Alte Images räumt `docker image prune` weg.
 
+### 9.1 Python-Pakete im Image, Abhängigkeiten erneuern
+
+Das Image installiert die Python-Pakete aus zwei Dateien, in denen jede Datei von PyPI auf Version und Prüfsumme festgelegt ist: `server/requirements.lock` (alles, was Server und Druckdienst zur Laufzeit brauchen, dazu setuptools für den Bau) und `print/requirements-brother.txt` (die Brother-Bibliothek). pip löst dabei nichts auf und lädt nichts ungeprüft nach; weicht eine Datei auf PyPI von ihrer Prüfsumme ab, bricht der Bau ab. Ein Bau in einem Jahr bekommt so dieselben Versionen wie heute, und es sind die, mit denen die Tests liefen. Neuere Versionen kommen nur mit einer neuen Sperrdatei ins Repository. Der Raspberry Pi nimmt Pillow, Starlette und uvicorn aus Debian; für ihn gilt nur `print/requirements-brother.txt` ([`../pi/README.md`](../pi/README.md)).
+
+**Abhängigkeiten erneuern** am Entwicklungsrechner (dieselbe Anleitung steht am Kopf von `server/requirements.lock`):
+
+1. Die gewünschten Versionen in der Entwicklungsumgebung einspielen, etwa `python -m pip install -U -e "./print[dev]" -e "./server[dev]"`, und alle Prüfungen laufen lassen: `python -m pytest` in `server` und `print`, `npm run test:e2e` in `web`.
+2. Im Ordner `server`: `python tests/test_requirements_lock.py`. Das schreibt `requirements.lock` neu: Pakete und Versionen aus den Metadaten der Umgebung, die Prüfsummen aller Dateien jeder Version von PyPI.
+3. `git diff server/requirements.lock` lesen (neue Pakete, neue Versionen, Lizenzen), dann `python -m pytest tests/test_requirements_lock.py` und das Image bauen (Prüfliste F1).
+
+Wer eine Abhängigkeit ergänzt oder aktualisiert und die Sperrdatei vergisst, merkt es an `server/tests/test_requirements_lock.py`: Der Test nennt, was fehlt oder abweicht. `print/requirements-brother.txt` wird von Hand gepflegt (Versionen und Prüfsummen aus `https://pypi.org/pypi/<name>/<version>/json`); der Test prüft, dass der Brother-Bibliothek zusammen mit der Sperrdatei nichts fehlt.
+
 ## 10. Wo die Daten liegen
 
 | Was | Wo |
@@ -390,7 +402,7 @@ Eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
 ### 14.5 Schriften und Brother-Bibliothek
 
 - Die Etiketten werden mit DejaVu gesetzt. Die drei Schriftdateien liefert Stowly selbst mit (Paket `stowly_print`, Ordner `fonts`: DejaVu 2.37 samt Lizenztext `DejaVu-LICENSE.txt`); so sehen die Etiketten am Server und am Pi gleich aus. Das Image enthält sie zusätzlich als Systempaket `fonts-dejavu-core`, als Rückfall. Beim Start nennt der Druckdienst im Log, welche Schrift er nimmt („Schriften der Etiketten: regular: …/stowly_print/fonts/DejaVuSans.ttf, …“). Fehlt die Schrift an beiden Stellen, druckt Stowly mit einer Ersatzschrift ohne Umlaute („ü“ wird „ue“) und meldet das im Log. Die Lizenz von DejaVu erlaubt das Weitergeben, solange ihr Text dabei bleibt.
-- Die Brother-Bibliothek `brother_ql_next` steht unter der GPL-3.0. Sie gehört nicht zum Quelltext von Stowly: Das Image lädt sie beim Bau auf Version und Prüfsumme festgelegt von PyPI nach (`print/requirements-brother.txt`), und nur der Brother-Treiber lädt sie, erst beim Benutzen. Wer ein Image mit ihr an andere weitergibt, muss deren GPL-Bedingungen einhalten.
+- Die Brother-Bibliothek `brother_ql_next` steht unter der GPL-3.0. Sie gehört nicht zum Quelltext von Stowly: Das Image lädt sie beim Bau auf Version und Prüfsumme festgelegt von PyPI nach (`print/requirements-brother.txt`; `packbits` gibt es nur als Quellpaket und wird mit dem setuptools aus der Sperrdatei gebaut, Abschnitt 9.1), und nur der Brother-Treiber lädt sie, erst beim Benutzen. Wer ein Image mit ihr an andere weitergibt, muss deren GPL-Bedingungen einhalten.
 
 ## Prüfliste für die Zielumgebung
 
@@ -413,7 +425,7 @@ Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe
 | A11 | `docker compose restart`, danach A5 | antwortet wieder; das Gerät „Prüfung" steht noch in der Geräteliste (Daten überleben den Neustart) |
 | A12 | `docker compose down`, `docker compose up -d`, danach A5 | wie A11: Das Volume bleibt |
 | A13 | Vom Netz aus, ohne Proxy: `curl http://<IP des Rechners>:8010/api/health` von einem anderen Rechner | **keine** Verbindung, solange `STOWLY_PUBLISH` nicht gesetzt ist |
-| A14 | In der App ein Produkt mit echtem Barcode einlagern, dann `docker compose logs stowly \| grep "Open Food Facts"` | Zeile mit „gefunden" oder „unbekannt"; das Produkt bekommt Name und Bild. „fehlgeschlagen (ConnectError)" hieße: Der Container kommt nicht ins Internet. |
+| A14 | In der Scan-Ansicht einen echten, noch unbekannten Barcode scannen (oder von Hand eingeben), dann `docker compose logs stowly \| grep "Open Food Facts"` | Im Dialog stehen nach ein, zwei Sekunden Name, Marke und Größe; im Log eine Zeile mit „gefunden" oder „unbekannt". Nach dem Einlagern hat das Produkt Name und Bild. „fehlgeschlagen (ConnectError)" hieße: Der Container kommt nicht ins Internet. |
 | A15 | `docker compose stop` | endet binnen weniger Sekunden, ohne dass Docker nach 15 Sekunden (`stop_grace_period`) hart beendet |
 
 ### B. Reverse Proxy
@@ -476,7 +488,7 @@ Je einmal auf dem Android-Gerät und dem iPhone, über die HTTPS-Adresse:
 
 | # | Schritt | Erwartet |
 |---|---|---|
-| F1 | `docker compose build` | Im zweiten Teil laufen `apt-get install fonts-dejavu-core libusb-1.0-0` und `pip install --require-hashes -r …/requirements-brother.txt` durch (packbits wird dabei gebaut) |
+| F1 | `docker compose build` | Im zweiten Teil laufen `apt-get install fonts-dejavu-core libusb-1.0-0` und die drei `pip install` durch: die Sperrdatei (nur Wheels, darunter `pillow` und `pydantic_core` für `manylinux…_x86_64` bzw. `…_aarch64`), Druckdienst und Server („Successfully built stowly-print stowly-server", ohne Download), die Brother-Bibliothek („Building wheel for packbits", aber nirgends „Installing build dependencies"). Danach „Successfully uninstalled setuptools-78.1.1" und „No broken requirements found." |
 | F2 | `docker compose exec stowly python -c "import stowly_print, pathlib; print(sorted(p.name for p in (pathlib.Path(stowly_print.__file__).parent / 'fonts').iterdir()))"` | `DejaVu-LICENSE.txt`, `DejaVuSans-Bold.ttf`, `DejaVuSans.ttf`, `DejaVuSansMono-Bold.ttf`; dieselben drei Schriften liegen als Rückfall unter `/usr/share/fonts/truetype/dejavu/` |
 | F3 | `docker compose exec stowly python -c "import brother_ql, usb; print('ok')"` | `ok` |
 | F4 | `docker compose logs stowly` nach dem Start | „Druckdienst unter /print bereit (boot_id …)"; „Schriften der Etiketten:“ nennt dreimal eine Datei unter `…/stowly_print/fonts/` (die mitgelieferten DejaVu-Schriften), nicht „eingebaut“; keine Meldung „Schrift … fehlt" |

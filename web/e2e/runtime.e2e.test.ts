@@ -1,17 +1,19 @@
 /**
  * Die Umgebung des Kerns gegen den echten Server: zwei Tabs eines Geräts, der Abgleich
- * im Hintergrund (so, wie ihn der Service Worker ausführt), mehrere Geräte gleichzeitig
- * und eine App mit anderer Protokollversion.
+ * im Hintergrund (so, wie ihn der Service Worker ausführt), mehrere Geräte gleichzeitig,
+ * eine App mit anderer Protokollversion und ein Server, der ausfällt und wiederkommt.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { CoreError } from "@/contract";
 import { runBackgroundSync } from "@/core/background";
+import { CHECK_INTERVAL_MS } from "@/core/sync/scheduler";
 
 import { firstZone, stockedOf } from "./support/data";
-import { Device, disposeDevices, signedIn, value } from "./support/device";
+import { Device, disposeDevices, signedIn, until, value } from "./support/device";
 import { expectSameAsServer, RawClient } from "./support/raw";
 import { startServer, type ServerHandle } from "./support/server";
+import { ManualTimers } from "./support/timers";
 
 let server: ServerHandle;
 
@@ -23,7 +25,12 @@ afterAll(async () => {
   await server?.dispose();
 });
 
-afterEach(disposeDevices);
+afterEach(async () => {
+  await disposeDevices();
+  if (!server.running) {
+    await server.start();
+  }
+});
 
 describe("Zwei Tabs eines Geräts", () => {
   it("teilen sich Bestand, Outbox und ID-Vorrat; jeder Befehl kommt genau einmal an", async () => {
@@ -128,7 +135,7 @@ describe("Mehrere Geräte gleichzeitig", () => {
 
 describe("Selbsttätiger Abgleich", () => {
   it("sendet eine Änderung ohne Zutun wenige Sekunden später", async () => {
-    const device = new Device(server.url, "Küche", true);
+    const device = new Device(server.url, "Küche", { autoSync: true });
     const other = await signedIn(server.url, "Keller");
     await device.login();
 
@@ -144,6 +151,40 @@ describe("Selbsttätiger Abgleich", () => {
 
     await other.sync();
     expect(stockedOf(other, stored.product.id)).toHaveLength(1);
+  });
+});
+
+describe("Prüfung nebenbei (Protokoll 9.5)", () => {
+  it("merkt Ausfall und Rückkehr des Servers binnen 15 Sekunden, auch wenn niemand etwas ändert", async () => {
+    const clock = new ManualTimers();
+    const device = new Device(server.url, "Küche", { autoSync: true, timers: clock.timers });
+    await device.login();
+    expect(device.status).toMatchObject({ online: true, phase: "idle", pending: 0 });
+    expect(clock.delays()).toContain(CHECK_INTERVAL_MS);
+
+    // 15 Sekunden ohne Kontakt: eine kleine Anfrage, der Server antwortet, sonst geschieht nichts.
+    const syncs = device.net.syncs.length;
+    clock.fire(CHECK_INTERVAL_MS);
+    await until(() => clock.delays().includes(CHECK_INTERVAL_MS), "die nächste Prüfung ist vorgemerkt");
+    expect(device.status).toMatchObject({ online: true, phase: "idle" });
+    expect(device.net.syncs).toHaveLength(syncs);
+
+    // Der Server fällt aus: Die nächste Prüfung zeigt es wie einen gescheiterten Abgleich.
+    await server.stop();
+    clock.fire(CHECK_INTERVAL_MS);
+    await until(() => device.status.online === false, "„nicht erreichbar“");
+    expect(device.status).toMatchObject({ phase: "error", last_error: { code: "offline" } });
+    // Solange er fehlt, kein Abgleich nach der Uhr, nur die Prüfung.
+    await until(() => clock.delays().includes(CHECK_INTERVAL_MS), "die nächste Prüfung ist vorgemerkt");
+    expect(clock.delays()).not.toContain(60_000);
+
+    // Er kommt zurück: Die nächste Prüfung merkt es, und der Kern gleicht sofort ab.
+    await server.start();
+    clock.fire(CHECK_INTERVAL_MS);
+    await until(() => device.status.online === true && device.status.phase === "idle", "wieder „Aktuell“");
+    expect(device.status.last_error).toBeNull();
+    expect(device.net.syncs.length).toBe(syncs + 1);
+    expect(device.net.lastSync.status).toBe(200);
   });
 });
 

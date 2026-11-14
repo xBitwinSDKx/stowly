@@ -13,6 +13,7 @@ export { Button, ButtonLink, IconButton, type ButtonLinkProps, type ButtonProps,
 export { Card, type CardPadding, type CardProps, type CardTone } from "./Card";
 export { cx } from "./cx";
 export { Dialog, dialogFocus, dialogFocusAlways, type DialogProps } from "./Dialog";
+export { useButtonLock, type ButtonLockOptions, type ButtonLockProps } from "./lock";
 export { SegmentedControl, type SegmentedControlProps, type SegmentedOption } from "./SegmentedControl";
 export { Spinner, type SpinnerProps } from "./Spinner";
 export { Switch, type SwitchProps } from "./Switch";

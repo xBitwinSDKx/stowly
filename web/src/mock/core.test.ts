@@ -277,6 +277,29 @@ describe("Einlagern und Entnehmen", () => {
 });
 
 describe("Produkte", () => {
+  it("schlägt beim Scannen nach wie der Kern: gefunden, unbekannt, ausgelassen, abgeschaltet, ohne Server", async () => {
+    const core = mock();
+    // Die Attrappe findet Barcodes mit gerader Prüfziffer.
+    expect(await core.products.lookup("96385074")).toEqual({
+      barcode: "96385074",
+      state: "found",
+      name: "Beispielprodukt 5074",
+      brand: "Beispielmarke",
+      quantity: "500 g",
+      image_id: expect.any(String),
+    });
+    expect(await core.products.lookup("4006381333931")).toMatchObject({ state: "not_found", name: "", image_id: null });
+    expect(await core.products.lookup("2000000000015")).toMatchObject({ state: "skipped" });
+    expect(await core.products.lookup("123")).toMatchObject({ state: "failed" });
+    core.control.setLookupEnabled(false);
+    expect(await core.products.lookup("96385074")).toMatchObject({ state: "disabled" });
+    core.control.setLookupEnabled(true);
+    core.control.setOnline(false);
+    expect(await core.products.lookup("96385074")).toMatchObject({ state: "offline" });
+    // Am Bestand ändert das Nachschlagen nichts.
+    expect(await core.data.findProductByBarcode("96385074")).toBeUndefined();
+  });
+
   it("meldet einen schon vergebenen Barcode mit dem Besitzer", async () => {
     const core = mock();
     const [first, second] = value(core.data.products);
@@ -652,6 +675,26 @@ describe("Drucker und Etiketten", () => {
     expect(kitchen.health?.printers[0]?.name).toBe(PRINTER_IDS.kitchen);
     core.control.setOnline(false);
     expect(await core.printers.probe(PRINTER_IDS.kitchen)).toMatchObject({ reachable: false, problem: "offline" });
+  });
+
+  it("zählt ohne Server je direktem Drucker höchstens eine ungesendete Meldung seines Zustands", async () => {
+    const core = mock({ scenarios: ["offline", "at-pi"] });
+    // Die erste Abfrage meldet den Zustand (und der Pi druckt, was für ihn aussteht).
+    expect(await core.printers.probe(PRINTER_IDS.cellar)).toMatchObject({ reachable: true });
+    const afterFirst = value(core.sync.status).pending;
+    // Jede weitere ersetzt nur die Meldung davor.
+    for (let probe = 0; probe < 3; probe += 1) {
+      expect(await core.printers.probe(PRINTER_IDS.cellar)).toMatchObject({ reachable: true });
+    }
+    expect(value(core.sync.status).pending).toBe(afterFirst);
+
+    // Der Abgleich bringt sie zum Server; danach zählt die nächste wieder.
+    core.control.setOnline(true);
+    expect(value(core.sync.status).pending).toBe(0);
+    core.control.setOnline(false);
+    await core.printers.probe(PRINTER_IDS.cellar);
+    await core.printers.probe(PRINTER_IDS.cellar);
+    expect(value(core.sync.status).pending).toBe(1);
   });
 
   it("zeigt gestörte Drucker", async () => {

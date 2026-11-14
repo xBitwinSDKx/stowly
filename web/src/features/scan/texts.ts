@@ -60,12 +60,23 @@ export const MANUAL_ERRORS = {
 /** Ein Etikett ist erkannt, im Bild aber zu klein, um zu zählen (das Etikett im Regal dahinter). */
 export const CLOSER_HINT = "Näher ran";
 
+/** Der Barcode von eben ist nach dem Dialog noch im Bild: Er zählt erst wieder, wenn er kurz weg war. */
+export const RESCAN_HINT = "Zum erneuten Scannen kurz wegschwenken";
+
 /** Was beim Einlagern eines unbekannten Barcodes über Name und Bild gesagt wird. */
 export const STORE_HINTS = {
   /** Der Server schlägt diesen Barcode nach. */
   lookup: "Name und Bild ergänzt Stowly, sobald der Server den Barcode nachgeschlagen hat.",
   /** Ladeninterner Code oder abgeschaltetes Nachschlagen: Es kommt nichts von selbst. */
   manual: "Diesen Barcode schlägt Stowly nicht nach. Trag den Namen am besten gleich ein; später geht es auch am Produkt.",
+  /** Gerade wird nachgeschlagen (`products.lookup`); einlagern geht trotzdem schon. */
+  looking: "Wird bei Open Food Facts nachgeschlagen …",
+  /** Im leeren Namensfeld, solange nachgeschlagen wird. */
+  looking_placeholder: "wird nachgeschlagen …",
+  /** Open Food Facts kennt den Barcode nicht. */
+  not_found: "Open Food Facts kennt diesen Barcode nicht. Trag den Namen am besten gleich ein.",
+  /** Die Quelle eines gefundenen Namens (docs/sync-protokoll.md, Abschnitt 10). */
+  source: "Von Open Food Facts (ODbL)",
 } as const;
 
 /** Halbsätze zum Stand der Etiketten nach dem Einlagern; Einzahl und Mehrzahl. */

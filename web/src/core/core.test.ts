@@ -9,7 +9,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 
-import { addDays, APP_VERSION, expiryState, isPackageId, isValidBarcode, todayLocal, warnDaysFor, type Core, type SyncRequest } from "@/contract";
+import { addDays, APP_VERSION, expiryState, gtinCheckDigit, isPackageId, isValidBarcode, PRODUCT_LOOKUP_WAIT_S, todayLocal, warnDaysFor, type Core, type SyncRequest } from "@/contract";
 import { createEmptyData, createSampleData, createSingleZoneData, PRINTER_IDS, sampleBarcode, ZONE_IDS, type MockData } from "@/mock";
 
 import { FAKE_PASSWORD, validateCommand } from "./testing/fake-api";
@@ -499,6 +499,86 @@ describe("Produkte", () => {
 
     await syncClean(harness);
     expect(commandsOf(server.syncRequests.at(-1)).map((command) => command.changes)).toEqual([{ warn_days: null }, { name: "Lachs", brand: "" }]);
+  });
+});
+
+describe("Nachschlagen beim Scannen (products.lookup)", () => {
+  /** Ein EAN-8 mit gerader Prüfziffer: Die Nachbildung von Open Food Facts kennt ihn. */
+  const KNOWN = "96385074";
+  /** Ungerade Prüfziffer: unbekannt. */
+  const UNKNOWN = "4006381333931";
+  const INTERNAL = `200000000001${String(gtinCheckDigit("200000000001"))}`;
+
+  const lookups = (harness: Harness) => harness.network.calls.filter((call) => call.path.startsWith("/api/lookup/"));
+
+  it("fragt den Server, der Open Food Facts bis zu 4 Sekunden fragt, und liefert, was er weiß", async () => {
+    const harness = await household("empty");
+    const { core } = harness;
+    expect(await core.products.lookup(KNOWN)).toEqual({ barcode: KNOWN, state: "found", name: "Beispielprodukt 5074", brand: "Beispielmarke", quantity: "500 g", image_id: null });
+    expect(await core.products.lookup(UNKNOWN)).toEqual({ barcode: UNKNOWN, state: "not_found", name: "", brand: "", quantity: "", image_id: null });
+    const calls = lookups(harness);
+    expect(calls.map((call) => [call.method, call.path, call.query])).toEqual([
+      ["GET", `/api/lookup/${KNOWN}`, `wait=${String(PRODUCT_LOOKUP_WAIT_S)}`],
+      ["GET", `/api/lookup/${UNKNOWN}`, `wait=${String(PRODUCT_LOOKUP_WAIT_S)}`],
+    ]);
+    expect(calls.every((call) => call.token !== null)).toBe(true);
+    // Am Bestand ändert das nichts.
+    expect(value(core.data.products)).toEqual([]);
+    expect(value(core.sync.status).pending).toBe(0);
+  });
+
+  it("fragt gar nicht erst, wo es nichts zu fragen gibt: ladeninterner Code, Nachschlagen aus, Server nicht erreichbar", async () => {
+    const harness = await household("empty");
+    expect(await harness.core.products.lookup(INTERNAL)).toMatchObject({ state: "skipped", name: "" });
+    expect(await harness.core.products.lookup("123")).toMatchObject({ state: "failed" });
+    harness.network.offline = true;
+    // Der erste Versuch merkt, dass der Server fehlt; danach wird nicht mehr gefragt.
+    expect(await harness.core.products.lookup(KNOWN)).toMatchObject({ state: "offline" });
+    expect(value(harness.core.sync.status).online).toBe(false);
+    harness.network.offline = false;
+    expect(await harness.core.products.lookup(KNOWN)).toMatchObject({ state: "offline" });
+    expect(lookups(harness)).toEqual([]);
+
+    const disabled = await start({ server: { lookupEnabled: false } });
+    await disabled.core.session.login(FAKE_PASSWORD, "Dieses Gerät");
+    expect(await disabled.core.products.lookup(KNOWN)).toMatchObject({ state: "disabled" });
+    expect(lookups(disabled)).toEqual([]);
+  });
+
+  it("liefert bei einem Fehler des Servers ein Ergebnis statt einer Ausnahme", async () => {
+    const harness = await household("empty");
+    harness.network.respondWith = (call) =>
+      call.path.startsWith("/api/lookup/")
+        ? new Response(JSON.stringify({ error: { code: "internal", message: "kaputt", details: null } }), { status: 500, headers: { "content-type": "application/json" } })
+        : null;
+    expect(await harness.core.products.lookup(KNOWN)).toMatchObject({ state: "failed", name: "" });
+    // Eine Antwort, die nicht so aussieht wie die des Servers, gilt als „nicht erreichbar".
+    harness.network.respondWith = (call) => (call.path.startsWith("/api/lookup/") ? new Response(JSON.stringify({ state: "gefunden" }), { status: 200 }) : null);
+    expect(await harness.core.products.lookup(KNOWN)).toMatchObject({ state: "offline" });
+
+    // Abgemeldet: nichts zu fragen.
+    const other = await household("empty");
+    await other.core.session.logout({ discard_pending: true });
+    expect(await other.core.products.lookup(KNOWN)).toMatchObject({ state: "failed" });
+    expect(lookups(other)).toEqual([]);
+  });
+
+  it("legt ein neues Produkt mit Name, Marke und Größe aus dem Nachschlagen an, als Eingabe des Anwenders", async () => {
+    const harness = await household();
+    const { core } = harness;
+    const stored = await core.stock.store({
+      product: { kind: "barcode", barcode: KNOWN, name: "Beispielprodukt 5074", brand: "Beispielmarke", quantity: "500 g" },
+      zone_id: ZONE_IDS.shelf,
+      best_before: null,
+      count: 1,
+      labels: false,
+    });
+    expect(stored.product).toMatchObject({ name: "Beispielprodukt 5074", brand: "Beispielmarke", quantity: "500 g", barcodes: [KNOWN], lookup: "pending" });
+    await syncClean(harness);
+    const sent = harness.server.syncRequests.flatMap((request) => commandsOf(request)).find((command) => command.type === "product.create");
+    expect(sent).toMatchObject({ name: "Beispielprodukt 5074", brand: "Beispielmarke", quantity: "500 g", barcodes: [KNOWN] });
+    // Zu lang ist zu lang, wie bei jeder Eingabe.
+    await expectCoreError(core.stock.store({ product: { kind: "barcode", barcode: "4006381333948", brand: "x".repeat(81) }, zone_id: ZONE_IDS.shelf, best_before: null, count: 1 }), "invalid");
   });
 });
 

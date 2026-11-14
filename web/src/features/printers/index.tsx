@@ -127,7 +127,10 @@ export function PrintersPage() {
     return entry && (entry.version === printer.updated_at || entry.state.status === "busy") ? entry.state : undefined;
   }
 
-  /** Fragt den Druckdienst jetzt ab. Nur auf eine Handlung des Anwenders hin: Der Browser darf dabei nach dem lokalen Netzwerk fragen. */
+  /**
+   * Fragt den Druckdienst jetzt ab. Nur auf eine Handlung des Anwenders hin: Der Browser darf dabei nach dem lokalen Netzwerk fragen.
+   * „Verbindung prüfen" behält dabei den Fokus (`busy` sperrt nur über aria-disabled).
+   */
   async function probe(printer: Printer) {
     setProbe(printer, { status: "busy" });
     try {
@@ -135,13 +138,6 @@ export function PrintersPage() {
     } catch (error) {
       setProbe(printer, { status: "failed", message: errorText(error, { not_found: "Diesen Drucker gibt es nicht mehr." }) });
     }
-    // Solange die Abfrage lief, war die Schaltfläche gesperrt und hat dabei den Fokus verloren.
-    setTimeout(() => {
-      const active = document.activeElement;
-      if (active === null || active === document.body) {
-        document.querySelector<HTMLElement>(`[data-printer="${printer.id}"] [data-probe]`)?.focus({ preventScroll: true });
-      }
-    }, 0);
   }
 
   async function remove(printer: Printer) {

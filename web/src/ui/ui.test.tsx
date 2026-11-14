@@ -196,12 +196,31 @@ describe("Stepper", () => {
 
   it("zählt mit Plus und Minus innerhalb der Grenzen", async () => {
     render(<Example />);
-    expect(screen.getByRole("button", { name: "Weniger" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Weniger" })).toBeUnavailable();
     await userEvent.click(screen.getByRole("button", { name: "Mehr" }));
     await userEvent.click(screen.getByRole("button", { name: "Mehr" }));
     expect(screen.getByLabelText("Menge")).toHaveValue("3");
     await userEvent.click(screen.getByRole("button", { name: "Weniger" }));
     expect(screen.getByRole("status")).toHaveTextContent("2");
+  });
+
+  it("lässt den Fokus auf Minus, wenn es bis an die Grenze zählt", async () => {
+    render(<Example />);
+    const less = screen.getByRole("button", { name: "Weniger" });
+    // Ohne Fokus ganz gesperrt: Die Tabulatortaste überspringt Minus.
+    expect(less).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Mehr" }));
+    await userEvent.tab({ shift: true });
+    await userEvent.tab({ shift: true });
+    expect(less).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("status")).toHaveTextContent("1");
+    // An der Grenze gesperrt, aber mit dem Fokus: Ein weiteres Enter tut nichts.
+    expect(less).toHaveFocus();
+    expect(less).not.toBeDisabled();
+    expect(less).toBeUnavailable();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("status")).toHaveTextContent("1");
   });
 
   it("nimmt getippte Zahlen und bringt sie beim Verlassen in den erlaubten Bereich", async () => {
@@ -218,7 +237,7 @@ describe("Stepper", () => {
     await userEvent.tab();
     expect(input).toHaveValue("50");
     expect(screen.getByRole("status")).toHaveTextContent("50");
-    expect(screen.getByRole("button", { name: "Mehr" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Mehr" })).toBeUnavailable();
 
     await userEvent.clear(input);
     await userEvent.type(input, "abc");
@@ -368,7 +387,7 @@ describe("ConfirmDialog", () => {
     render(<Example action={action} />);
     await userEvent.click(screen.getByRole("button", { name: "Löschen" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Die letzte Zone lässt sich nicht löschen.");
-    expect(screen.getByRole("button", { name: "Löschen" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Löschen" })).toBeAvailable();
 
     await userEvent.click(screen.getByRole("button", { name: "Abbrechen" }));
     expect(screen.queryByText("Das lässt sich nicht rückgängig machen.")).not.toBeInTheDocument();

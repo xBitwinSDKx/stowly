@@ -3,6 +3,7 @@ import { Link, type LinkProps } from "react-router";
 
 import styles from "./Button.module.css";
 import { cx } from "./cx";
+import { useButtonLock } from "./lock";
 import { Spinner } from "./Spinner";
 
 /**
@@ -26,12 +27,19 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   iconRight?: ReactNode;
   /** Volle Breite des Behälters. */
   block?: boolean;
-  /** Zeigt einen Spinner und sperrt die Schaltfläche, solange eine Aktion läuft. */
+  /**
+   * Zeigt einen Spinner und sperrt die Schaltfläche, solange eine Aktion läuft. Sie behält dabei
+   * den Fokus und sagt Screenreadern „beschäftigt, nicht verfügbar" (`aria-busy`, `aria-disabled`).
+   * Solange `busy` gilt, bleibt `disabled` ohne Wirkung: Gesperrt ist sie ohnehin.
+   */
   busy?: boolean;
   ref?: Ref<HTMLButtonElement>;
 }
 
-/** Schaltfläche. `type` ist "button", solange nichts anderes angegeben wird. */
+/**
+ * Schaltfläche. `type` ist "button", solange nichts anderes angegeben wird.
+ * Gesperrt (`busy`, `disabled`) verliert sie den Fokus nicht: siehe `useButtonLock`.
+ */
 export function Button({
   variant = "secondary",
   size = "md",
@@ -39,20 +47,25 @@ export function Button({
   iconRight,
   block = false,
   busy = false,
-  disabled,
+  disabled = false,
   className,
   children,
   type = "button",
   ref,
+  "aria-disabled": ariaDisabled,
+  onClick,
+  onFocus,
+  onBlur,
   ...rest
 }: ButtonProps) {
+  const lock = useButtonLock({ busy, disabled, "aria-disabled": ariaDisabled, onClick, onFocus, onBlur });
   return (
     <button
       {...rest}
+      {...lock}
       ref={ref}
       type={type}
       className={cx(styles.button, styles[variant], styles[size], block && styles.block, className)}
-      disabled={disabled || busy}
       aria-busy={busy || undefined}
     >
       {busy ? <Spinner size={16} /> : icon ? <span className={styles.icon}>{icon}</span> : null}
@@ -103,7 +116,7 @@ export interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   ref?: Ref<HTMLButtonElement>;
 }
 
-/** Quadratische Schaltfläche nur mit Symbol. */
+/** Quadratische Schaltfläche nur mit Symbol. Gesperrt verliert sie den Fokus nicht: siehe `useButtonLock`. */
 export function IconButton({
   label,
   children,
@@ -112,11 +125,18 @@ export function IconButton({
   className,
   type = "button",
   ref,
+  disabled = false,
+  "aria-disabled": ariaDisabled,
+  onClick,
+  onFocus,
+  onBlur,
   ...rest
 }: IconButtonProps) {
+  const lock = useButtonLock({ disabled, "aria-disabled": ariaDisabled, onClick, onFocus, onBlur });
   return (
     <button
       {...rest}
+      {...lock}
       ref={ref}
       type={type}
       aria-label={label}

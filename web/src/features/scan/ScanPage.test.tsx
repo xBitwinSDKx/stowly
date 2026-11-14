@@ -11,6 +11,8 @@ import { describe, expect, it } from "vitest";
 import { CoreProvider, gtinCheckDigit, ROUTES, zoneQr, type Live } from "@/contract";
 import { createMockCore, sampleBarcode, ZONE_IDS, type MockCore, type MockOptions } from "@/mock";
 import { ToastProvider } from "@/ui/base";
+// Die Prüfungen toBeUnavailable() und toBeAvailable() für Schaltflächen.
+import "@/ui/base/testing";
 
 import { ScanPage } from ".";
 
@@ -103,13 +105,13 @@ describe("Einlagern", () => {
     // Schnelle Eingabe: sechs Ziffern; das verstandene Datum erscheint beim Tippen.
     const date = within(dialog).getByLabelText("Mindesthaltbarkeitsdatum");
     const submit = within(dialog).getByRole("button", { name: "Einlagern" });
-    expect(submit).toBeDisabled();
+    expect(submit).toBeUnavailable();
     await user.type(date, "2503");
     expect(within(dialog).getByText(/Verstanden: 25\.03\.2027/)).toBeInTheDocument();
     // Fünf Ziffern sind kein Datum.
     await user.type(date, "2");
     expect(within(dialog).getByRole("alert")).toHaveTextContent("Noch kein gültiges Datum");
-    expect(submit).toBeDisabled();
+    expect(submit).toBeUnavailable();
     await user.clear(date);
     await user.type(date, "250327");
     expect(within(dialog).getByText("Verstanden: 25.03.2027")).toBeInTheDocument();
@@ -326,7 +328,7 @@ describe("Menge", () => {
     const { user } = setup();
     const less = await screen.findByRole("button", { name: "Eine Packung weniger" });
     const more = screen.getByRole("button", { name: "Eine Packung mehr" });
-    expect(less).toBeDisabled();
+    expect(less).toBeUnavailable();
     await user.click(more);
     await user.click(more);
     expect(screen.getByRole("status", { name: "Menge für das nächste Einlagern: 3" })).toBeInTheDocument();
@@ -351,9 +353,12 @@ describe("Was die Ansicht verspricht und meldet", () => {
 
   it("sagt nur dann, dass Name und Bild nachkommen, wenn der Server diesen Barcode nachschlägt", async () => {
     const { user, core } = setup();
+    // Ohne Server wird beim Scannen nicht nachgeschlagen: Es bleibt beim Versprechen für später.
+    core.control.setOnline(false);
     let dialog = await openStoreSheet(user, sampleBarcode(905));
     expect(within(dialog).getByText(/Name und Bild ergänzt Stowly/)).toBeInTheDocument();
     await closeSheet(user, dialog);
+    core.control.setOnline(true);
 
     // Ein ladeninterner Code wird nie nachgeschlagen: nichts versprechen, zum Namen einladen.
     dialog = await openStoreSheet(user, INTERNAL_BARCODE);
@@ -367,6 +372,20 @@ describe("Was die Ansicht verspricht und meldet", () => {
     dialog = await openStoreSheet(user, sampleBarcode(907));
     expect(within(dialog).queryByText(/Name und Bild ergänzt Stowly/)).not.toBeInTheDocument();
     expect(within(dialog).getByText(/schlägt Stowly nicht nach/)).toBeInTheDocument();
+  });
+
+  it("schlägt einen unbekannten Barcode gleich nach und legt das Produkt mit Name, Marke und Größe an", async () => {
+    const { user, core } = setup({ latency: 50 });
+    // Gerade Prüfziffer: Die Attrappe findet ihn.
+    const barcode = ["96385074", sampleBarcode(906), sampleBarcode(908)].find((code) => Number(code.at(-1)) % 2 === 0) ?? "96385074";
+    const dialog = await openStoreSheet(user, barcode);
+    // Der Dialog ist sofort da; nachgeschlagen wird im Hintergrund.
+    expect(within(dialog).getByText("Wird bei Open Food Facts nachgeschlagen …")).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByLabelText("Name (freiwillig)")).toHaveValue(`Beispielprodukt ${barcode.slice(-4)}`));
+    expect(within(dialog).getByText(/Beispielmarke · 500 g · Von Open Food Facts/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Kein MHD" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Einlagern" })).not.toBeInTheDocument());
+    expect(await core.data.findProductByBarcode(barcode)).toMatchObject({ name: `Beispielprodukt ${barcode.slice(-4)}`, brand: "Beispielmarke", quantity: "500 g" });
   });
 
   it("gibt dem MHD-Feld beim Öffnen den Fokus; Enter ohne Datum schließt nichts", async () => {

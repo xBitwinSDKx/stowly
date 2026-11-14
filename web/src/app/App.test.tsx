@@ -265,7 +265,7 @@ describe("Nur eine Zone", () => {
     expect(await screen.findByRole("heading", { name: "Zonen" })).toBeInTheDocument();
     expect(screen.getByText("Es gibt nur eine Zone")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Zone anlegen" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Löschen: Vorrat" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Löschen: Vorrat" })).toBeUnavailable();
   });
 
   it("zeigt mit mehreren Zonen Navigationspunkt, Spalte und Zonen-Karten", async () => {
@@ -435,6 +435,33 @@ describe("Etiketten im Rahmen", () => {
     expect(screen.queryByText("Wurde das Etikett gedruckt?")).not.toBeInTheDocument();
     // Mit dem Hinweis ist die Schaltfläche fort: Der Fokus geht an den Inhalt, nicht verloren.
     await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+  });
+
+  it("zeigt beim Antworten den Spinner an der gedrückten Antwort, die den Fokus behält, und sperrt die andere", async () => {
+    const core = renderApp();
+    const banner = (await screen.findByText("Wurde das Etikett gedruckt?")).closest('[role="status"]') as HTMLElement;
+    // Das Vermerken wartet, bis der Test es freigibt.
+    let release: () => void = () => undefined;
+    const resolveUnknown = core.print.resolveUnknown.bind(core.print);
+    vi.spyOn(core.print, "resolveUnknown").mockImplementation(async (id, printed) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return resolveUnknown(id, printed);
+    });
+    const no = within(banner).getByRole("button", { name: "Nein" });
+    await userEvent.click(no);
+    expect(no).toHaveFocus();
+    expect(no).toHaveAttribute("aria-busy", "true");
+    expect(no).toBeUnavailable();
+    const yes = within(banner).getByRole("button", { name: "Ja" });
+    expect(yes).toBeUnavailable();
+    expect(yes).not.toHaveAttribute("aria-busy");
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => expect(screen.queryByText("Wurde das Etikett gedruckt?")).not.toBeInTheDocument());
   });
 
   it("bietet nach einem Nein an, erneut zu drucken", async () => {

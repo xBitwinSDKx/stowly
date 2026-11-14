@@ -2,7 +2,7 @@
  * Bestand auf der Attrappe: Liste, Chargen-Ansicht, Filter und die Dialoge
  * (Produkt bearbeiten, Packungen bearbeiten, entnehmen, von Hand einlagern).
  */
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -133,7 +133,7 @@ describe("Bestandsliste", () => {
     expect(listedProducts()).toEqual(["Unbekanntes Produkt"]);
     const row = screen.getByRole("button", { name: "Details: Unbekanntes Produkt" }).closest<HTMLElement>('[role="row"]');
     expect(row).toHaveTextContent("Unbekannte Zone");
-    expect(screen.getByRole("button", { name: "Bearbeiten: Unbekanntes Produkt" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Bearbeiten: Unbekanntes Produkt" })).toBeUnavailable();
 
     await userEvent.click(screen.getByRole("button", { name: "Details: Unbekanntes Produkt" }));
     expect(screen.getByRole("region", { name: "Bestand im Detail: Unbekanntes Produkt" })).toHaveTextContent(first.id);
@@ -440,7 +440,7 @@ describe("Entnehmen und löschen", () => {
     await userEvent.click(screen.getByRole("button", { name: "Löschen: Butter" }));
     const dialog = screen.getByRole("dialog", { name: "Packungen entnehmen" });
     // Bei mehreren Packungen ist nichts vorgewählt: Welche es ist, steht auf dem Etikett.
-    expect(within(dialog).getByRole("button", { name: "Auswahl fehlt" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Auswahl fehlt" })).toBeUnavailable();
 
     await userEvent.click(within(dialog).getByRole("checkbox", { name: "Alle 2 Packungen" }));
     await userEvent.click(within(dialog).getByRole("radio", { name: "Entsorgt" }));
@@ -656,6 +656,44 @@ describe("Von Hand einlagern", () => {
     expect(within(dialog).getByRole("radio", { name: "Vorhandenes Produkt" })).toBeChecked();
     expect(dialog).toHaveTextContent("Butter");
     expect(dialog).toHaveTextContent("Almhof · 250 g");
+  });
+
+  it("lagert bei mehrfachem Drücken genau einmal ein und lässt den Fokus danach nicht auf „Fertig“", async () => {
+    const core = renderApp();
+    await ready();
+    const before = packagesOf(core, "Kidneybohnen").length;
+    // Das Einlagern wartet, bis der Test es freigibt.
+    let release: () => void = () => undefined;
+    const store = core.stock.store.bind(core.stock);
+    const spy = vi.spyOn(core.stock, "store").mockImplementation(async (request) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return store(request);
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Details: Kidneybohnen" }));
+    await userEvent.click(within(screen.getByRole("region", { name: "Bestand im Detail: Kidneybohnen" })).getByRole("button", { name: "Weitere einlagern" }));
+    const dialog = screen.getByRole("dialog", { name: "Von Hand einlagern" });
+    const submit = within(dialog).getByRole("button", { name: "Einlagern" });
+    await userEvent.click(submit);
+
+    // Es läuft: Die Schaltfläche behält den Fokus, weiteres Drücken löst nichts aus.
+    expect(submit).toHaveFocus();
+    expect(submit).toHaveAttribute("aria-busy", "true");
+    expect(submit).toBeUnavailable();
+    await userEvent.keyboard("{Enter}");
+    await userEvent.keyboard(" ");
+    await userEvent.click(submit);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release();
+    });
+    const done = await screen.findByRole("dialog", { name: "Eingelagert" });
+    expect(packagesOf(core, "Kidneybohnen")).toHaveLength(before + 1);
+    // Der Fokus geht an den Dialog, nicht an „Fertig“: Ein schnelles weiteres Enter schließt das Ergebnis nicht.
+    expect(within(done).getByRole("button", { name: "Fertig" })).not.toHaveFocus();
+    expect(done).toContainElement(document.activeElement as HTMLElement);
   });
 
   it("öffnet aus der Chargen-Ansicht mit dem Produkt vorgewählt", async () => {

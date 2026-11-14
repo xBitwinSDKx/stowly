@@ -15,18 +15,34 @@
  *   commands/apply.ts  die Wirkung jedes Befehls auf einen Datenbestand
  *   store.ts           Zustand: Anzeige = Stand des Servers + wartende Befehle
  *   http.ts            Aufrufe an den Server, Fehler als CoreError
- *   sync/              Abgleich (engine), Anlässe und Wartezeiten (scheduler), Sperre, Aufbewahrung
+ *   sync/              Abgleich (engine), Anlässe, Wartezeiten und die Prüfung nebenbei
+ *                      (scheduler), Kontakt zum Server über Tabs hinweg (contact), Sperre,
+ *                      Aufbewahrung
  *   api/               die Teile der Schnittstelle `Core`
  *   images.ts          Produktbilder vorab laden
  *   background.ts      Abgleich im Service Worker
  *   scanner/           Kamera, Erkennung, Ton und Vibration
  */
-import { APP_VERSION, CoreError, type AppState, type Core, type Device, type SessionState, type SyncProblem, type SyncStatus } from "@/contract";
+import {
+  APP_VERSION,
+  CoreError,
+  isStoreInternalBarcode,
+  isValidBarcode,
+  PRODUCT_LOOKUP_WAIT_S,
+  type AppState,
+  type Core,
+  type CoreErrorCode,
+  type Device,
+  type ProductLookup,
+  type SessionState,
+  type SyncProblem,
+  type SyncStatus,
+} from "@/contract";
 
 import { createProductsApi, createPrefsUpdate, createSettingsApi, createZonesApi } from "./api/catalog";
 import { createDataApi } from "./api/data";
 import { createPrintApi, createPrintersApi } from "./api/printing";
-import { toCoreError, type CoreRuntime, type PrintRuntime } from "./api/runtime";
+import { SYNC_FIRST_MAX_WAIT_MS, toCoreError, type CoreRuntime, type PrintRuntime } from "./api/runtime";
 import { createStockApi } from "./api/stock";
 import { checkDeviceName, invalid, LIMITS } from "./api/validate";
 import { BACKGROUND_SYNC_TAG } from "./background";
@@ -42,6 +58,7 @@ import { InstallPrompt, isAppleMobile } from "./pwa/install";
 import { registerServiceWorker } from "./pwa/register";
 import type { AppUpdates } from "./pwa/updates";
 import { Store, type StoreState } from "./store";
+import { ContactChannel } from "./sync/contact";
 import { SyncEngine, type SyncOutcome, type SyncRunOptions } from "./sync/engine";
 import { SYNC_LOCK_NAME } from "./sync/lock";
 import { SyncScheduler, type SchedulerTimers } from "./sync/scheduler";
@@ -87,6 +104,7 @@ const BLOCKED_TIMEOUT_MS = 8_000;
 const SUPERSEDED_MESSAGE = "Ein anderer Tab läuft schon mit einer neueren Version von Stowly. Diese Seite muss neu geladen werden.";
 const BLOCKED_MESSAGE = "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest. Schließe ihn, dann geht es hier weiter.";
 const NO_STORAGE_MESSAGE = "Die lokale Datenbank ist nicht verfügbar.";
+const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
 
 export interface StowlyCore extends Core {
   /** Erfüllt sich, sobald der gespeicherte Zustand geladen ist. */
@@ -156,6 +174,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       scheduler.stop();
       deliveries.stop();
       delivery.stop();
+      contacts.close();
     },
     onBlocked: () => {
       blocked = true;
@@ -246,6 +265,19 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     },
   });
 
+  /** Ein gescheiterter Versuch in `sync.status` (9.2). Nur "offline" heißt: Der Server ist nicht erreichbar. */
+  function showFailure(code: CoreErrorCode, message: string): void {
+    patchStatus({
+      phase: "error",
+      // Jeder andere Fehler ist eine Antwort des Servers: Er ist also erreichbar.
+      online: code !== "offline",
+      last_error: { code, message, at: now().toISOString() },
+    });
+    if (code === "offline" && store.snapshot.outbox.length > 0) {
+      registerBackgroundSync();
+    }
+  }
+
   /** Ein Abgleich samt Buchführung für `sync.status`. Wirft nicht. */
   async function runSync(runOptions?: SyncRunOptions): Promise<SyncOutcome> {
     if (disposed || !storageAvailable || store.superseded) {
@@ -261,6 +293,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     if (disposed) {
       return outcome;
     }
+    // Die anderen Tabs warten mit ihrer Prüfung nebenbei wieder von vorn (9.5).
+    contacts.post(outcome.ok || outcome.error.code !== "offline");
     if (outcome.ok) {
       patchStatus({ phase: "idle", online: true, last_error: null });
       if (outcome.synced) {
@@ -269,18 +303,35 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         deliveries.kick("sync");
       }
     } else {
-      const { code, message } = outcome.error;
-      patchStatus({
-        phase: "error",
-        // Jeder andere Fehler ist eine Antwort des Servers: Er ist also erreichbar.
-        online: code !== "offline",
-        last_error: { code, message, at: now().toISOString() },
-      });
-      if (code === "offline" && store.snapshot.outbox.length > 0) {
-        registerBackgroundSync();
-      }
+      showFailure(outcome.error.code, outcome.error.message);
     }
     return outcome;
+  }
+
+  /** Wird nebenbei geprüft, ob der Server erreichbar ist (9.5)? Nur, solange das Gerät angemeldet ist. */
+  function canCheckServer(): boolean {
+    return !disposed && storageAvailable && !store.superseded && store.snapshot.session?.status === "signed_in";
+  }
+
+  /**
+   * Die Prüfung nebenbei (9.5) für den Zeitplan: true erreichbar, false nicht; null, wenn sie
+   * entfiel, weil gerade jemand abgleicht (auch ein anderer Tab oder der Service Worker).
+   * Antwortet der Server nicht, zeigt `sync.status` dasselbe wie nach einem gescheiterten Abgleich.
+   */
+  async function checkServer(): Promise<boolean | null> {
+    if (!canCheckServer()) {
+      return null;
+    }
+    const health = await engine.checkIfIdle();
+    if (health === "busy" || disposed) {
+      return null;
+    }
+    contacts.post(health !== null);
+    if (health === null) {
+      showFailure("offline", OFFLINE_MESSAGE);
+      return false;
+    }
+    return true;
   }
 
   const scheduler = new SyncScheduler({
@@ -295,9 +346,34 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       }
       return result;
     },
+    check: () => checkServer(),
+    canCheck: () => canCheckServer(),
     timers: options.timers,
     auto: autoSync,
   });
+
+  // Was ein anderer Tab über den Server erfährt, gilt auch hier (9.5): Die Prüfung nebenbei wartet
+  // wieder von vorn, und `sync.status` zeigt dasselbe. Den eigenen Abgleich stört das nicht.
+  const contacts = new ContactChannel(dbName, (reachable) => {
+    if (disposed) {
+      return;
+    }
+    scheduler.notifyContact(reachable);
+    if (status.get().phase === "syncing") {
+      return;
+    }
+    if (reachable) {
+      patchStatus({ online: true });
+    } else {
+      showFailure("offline", OFFLINE_MESSAGE);
+    }
+  });
+
+  /** Ein Aufruf außerhalb des Abgleichs hat den Server erreicht oder nicht (9.5). */
+  function noteContact(reachable: boolean): void {
+    scheduler.notifyContact(reachable);
+    contacts.post(reachable);
+  }
 
   // ---------------------------------------------------------------- Etiketten zustellen
 
@@ -340,9 +416,29 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       }
     },
     syncFirst: async () => {
-      await runSync();
+      // Ein langsamer Server hält „Jetzt drucken" und „Verbindung prüfen" höchstens 10 Sekunden
+      // auf. Der Abgleich läuft danach weiter; was er noch nicht gebracht hat, bleibt ausstehend
+      // und geht hinaus, sobald er fertig ist (docs/etiketten.md, 4.1).
+      await waitAtMost(scheduler.request(), SYNC_FIRST_MAX_WAIT_MS);
     },
   };
+
+  /** Wartet auf `work`, aber höchstens `ms` Millisekunden; es läuft danach weiter. Wirft nicht. */
+  function waitAtMost(work: Promise<unknown>, ms: number): Promise<void> {
+    const timers = options.timers;
+    return new Promise<void>((resolve) => {
+      const handle: unknown = timers ? timers.set(resolve, ms) : setTimeout(resolve, ms);
+      const done = () => {
+        if (timers) {
+          timers.clear(handle);
+        } else {
+          clearTimeout(handle as ReturnType<typeof setTimeout>);
+        }
+        resolve();
+      };
+      work.then(done, done);
+    });
+  }
 
   /** Lädt die Bilder der Produkte im Bestand vorab (docs/sync-protokoll.md, 9.6). */
   async function cacheImages(): Promise<void> {
@@ -560,9 +656,11 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       try {
         const result = await call(session.token);
         patchStatus({ online: true });
+        noteContact(true);
         return result;
       } catch (error) {
         const failure = toCoreError(error);
+        noteContact(failure.code !== "offline");
         if (failure.code === "offline") {
           patchStatus({ online: false });
         } else if (failure.code === "unauthorized") {
@@ -572,6 +670,34 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       }
     },
   };
+
+  /**
+   * `products.lookup`: Open Food Facts über den Server, gleich beim Scannen (docs/sync-protokoll.md,
+   * Abschnitt 10). Fragt nur, wenn es etwas zu fragen gibt und der Server nicht als unerreichbar
+   * gilt. Wirft nicht.
+   */
+  async function lookupProduct(barcode: string): Promise<ProductLookup> {
+    const answer = (state: ProductLookup["state"]): ProductLookup => ({ barcode, state, name: "", brand: "", quantity: "", image_id: null });
+    await ready;
+    if (typeof barcode !== "string" || !isValidBarcode(barcode)) {
+      return answer("failed");
+    }
+    if (isStoreInternalBarcode(barcode)) {
+      return answer("skipped");
+    }
+    if (store.snapshot.meta.lookup_enabled === false) {
+      return answer("disabled");
+    }
+    if (status.get().online === false) {
+      return answer("offline");
+    }
+    try {
+      const found = await runtime.server((token) => api.lookup(token, barcode, PRODUCT_LOOKUP_WAIT_S));
+      return { barcode, state: found.state, name: found.name, brand: found.brand, quantity: found.quantity, image_id: found.image_id };
+    } catch (error) {
+      return answer(error instanceof CoreError && error.code === "offline" ? "offline" : "failed");
+    }
+  }
 
   let loginInFlight: Promise<void> | null = null;
 
@@ -606,6 +732,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       void flushRevocations();
       throw outcome.ok ? new CoreError("internal", "Die Anmeldung ließ sich nicht abschließen.") : outcome.error;
     }
+    // Der Zeitplan geht weiter wie nach einem eigenen Abgleich; ab jetzt prüft er auch nebenbei.
+    scheduler.notifySynced(outcome);
     void checkPersistence(true);
   }
 
@@ -680,7 +808,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
 
     data: createDataApi(store, ready),
     stock: createStockApi(runtime),
-    products: createProductsApi(runtime),
+    products: { ...createProductsApi(runtime), lookup: lookupProduct },
     zones: createZonesApi(runtime),
     settings: createSettingsApi(runtime),
 
@@ -758,6 +886,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       scheduler.stop();
       deliveries.stop();
       delivery.stop();
+      contacts.close();
       for (const cleanup of cleanups) {
         cleanup();
       }

@@ -30,13 +30,21 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-dejavu-core libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Erst der Druckdienst, dann der Server, der ihn als Abhängigkeit braucht. Dazu die Brother-
-# Bibliothek, auf Version und Prüfsumme festgelegt (GPL-3.0, nur im Treiber-Modul geladen).
+# Python-Pakete: Jede Datei, die von PyPI kommt, ist auf Version und Prüfsumme festgelegt, und
+# nichts wird aufgelöst (docs/betrieb.md, Abschnitt 9.1):
+#  1. alle Abhängigkeiten aus server/requirements.lock, nur fertige Wheels, dazu setuptools,
+#  2. Druckdienst und Server aus dem Quelltext, gebaut mit diesem setuptools, ohne PyPI,
+#  3. die Brother-Bibliothek (print/requirements-brother.txt; GPL-3.0, nur im Treiber-Modul
+#     geladen). packbits gibt es nur als Quellpaket; auch das baut dieses setuptools.
+# setuptools braucht nur der Bau. pip check bricht ab, wenn danach eine Abhängigkeit fehlt.
 # Installiert wird nach site-packages; die Quellen bleiben nicht im Image.
 COPY print/ /src/print/
 COPY server/ /src/server/
-RUN pip install /src/print /src/server \
-    && pip install --no-deps --require-hashes -r /src/print/requirements-brother.txt \
+RUN pip install --no-deps --require-hashes --only-binary=:all: -r /src/server/requirements.lock \
+    && pip install --no-deps --no-build-isolation --no-index /src/print /src/server \
+    && pip install --no-deps --no-build-isolation --require-hashes -r /src/print/requirements-brother.txt \
+    && pip uninstall --yes setuptools \
+    && pip check \
     && rm -rf /src
 
 WORKDIR /app

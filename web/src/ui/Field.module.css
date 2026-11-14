@@ -103,11 +103,13 @@
   color: var(--color-text);
 }
 
-.step:hover:not(:disabled) {
+.step:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-surface-3);
 }
 
-.step:disabled {
+/* Gesperrt an der Grenze; `aria-disabled`, solange der Knopf dabei den Fokus hat (useButtonLock). */
+.step:disabled,
+.step[aria-disabled="true"] {
   opacity: 0.35;
 }
 

@@ -49,11 +49,12 @@
   font-size: var(--text-md);
 }
 
-.segment:hover:not(:disabled):not(.selected) {
+.segment:hover:not(:disabled):not([aria-disabled="true"]):not(.selected) {
   color: var(--color-text);
 }
 
-.segment:disabled {
+.segment:disabled,
+.segment[aria-disabled="true"] {
   opacity: 0.5;
 }
 

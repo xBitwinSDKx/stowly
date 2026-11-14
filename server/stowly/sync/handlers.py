@@ -27,7 +27,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from stowly import db, events, records
+from stowly import db, events, off, records
 from stowly.contract import commands as c
 from stowly.contract.ids import is_store_internal_barcode, is_valid_barcode
 from stowly.contract.sync import CommandStatus, RejectCode
@@ -147,12 +147,20 @@ class CommandRunner:
         self.lookup_pending = False
         self.command_id = ""
         self.at = ""
+        # Produkte, die der laufende Befehl auf ``pending`` gestellt hat (Abschnitt 10).
+        self._waiting: list[str] = []
 
     def run(self, command: Any, at: str) -> CommandStatus:
         """Führt einen geprüften Befehl mit dem wirksamen Zeitpunkt ``at`` aus."""
         self.command_id = command.id
         self.at = at
-        return _HANDLERS[command.type](self, command)
+        self._waiting = []
+        status = _HANDLERS[command.type](self, command)
+        # Steht ein Ergebnis von Open Food Facts schon fest, gilt es gleich, im selben Abgleich.
+        # Erst nach dem Befehl: Im Ereignisprotokoll steht die Ursache vor der Wirkung.
+        for product_id in self._waiting:
+            off.settle(self.con, product_id, self.recorded_at)
+        return status
 
     # ------------------------------------------------------------------ Bausteine
 
@@ -299,9 +307,11 @@ class CommandRunner:
     def _refresh_lookup(self, product_id: str) -> None:
         """Stellt ``lookup`` nach einer Änderung an den Barcodes neu (Abschnitt 10).
 
-        Wartet das Produkt danach, legt der Hintergrund-Ablauf los: Er übernimmt ein
-        schon gespeichertes Ergebnis sofort und fragt sonst bei Open Food Facts nach.
-        Ist das Nachschlagen abgeschaltet, bleibt der Zustand, wie er ist (neu: ``none``).
+        Wartet das Produkt danach und steht das Ergebnis schon in ``off_lookups`` (etwa weil der
+        Barcode beim Scannen nachgeschlagen wurde), bekommt es die Daten am Ende des Befehls,
+        im selben Abgleich (``run``): leere Felder füllen, Bild anhängen. Sonst wartet es, und
+        der Hintergrund-Ablauf fragt bei Open Food Facts nach. Ist das Nachschlagen
+        abgeschaltet, bleibt der Zustand, wie er ist (neu: ``none``).
         """
         if not self.off_enabled:
             return
@@ -328,12 +338,14 @@ class CommandRunner:
             # Nichts Neues nachzuschlagen: Es bleibt dabei.
             wanted = "not_found"
         else:
-            # Auch wenn das Ergebnis schon in off_lookups steht: Der Weg führt immer über
-            # pending. Der Hintergrund-Ablauf übernimmt es sofort und vermerkt es im Protokoll.
             wanted = "pending"
+            # Der Ablauf schaut auch dann nach, wenn das Ergebnis schon feststeht: Fehlt das
+            # Bild noch, holt er es.
             self.lookup_pending = True
         if wanted != row["lookup"]:
             self._update("products", product_id, {"lookup": wanted}, changed=False)
+        if wanted == "pending" and product_id not in self._waiting:
+            self._waiting.append(product_id)
 
     # ------------------------------------------------------------------ Produkte
 

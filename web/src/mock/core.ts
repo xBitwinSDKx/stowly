@@ -15,8 +15,9 @@
  * Druckers werden von selbst gedruckt; wie das ausgeht, bestimmt `stowlyMock.setPrintOutcome`.
  * Warum der Pi nicht benutzbar ist, lässt sich mit `stowlyMock.setPiProblem("permission")`
  * (oder einem anderen `PrinterProblem`) vorgeben. Wie im Kern ändert ein Zwischenstand kein
- * Etikett mit Ausgang, und `print.flush` erfüllt sich nach dem Einreichen, nicht erst mit dem
- * Ergebnis.
+ * Etikett mit Ausgang, `print.flush` erfüllt sich nach dem Einreichen, nicht erst mit dem
+ * Ergebnis, und eine neue Meldung zum Zustand eines direkten Druckers ersetzt eine ältere, noch
+ * ungesendete: Ohne Server zählt sie in `sync.status.pending` nur einmal.
  */
 import {
   addDays,
@@ -35,6 +36,8 @@ import {
   checkZoneIcon,
   cleanText,
   DEFAULT_DEVICE_PREFS,
+  isStoreInternalBarcode,
+  isValidBarcode,
   LIMITS,
   MAX_HANDOFF_JOBS,
   MAX_SYNC_PROBLEMS,
@@ -65,6 +68,7 @@ import {
   type PrintJob,
   type Product,
   type ProductChanges,
+  type ProductLookup,
   type ProductRef,
   type RemovalReason,
   type ServiceHealth,
@@ -264,10 +268,16 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   }
 
   let syncScheduled = false;
+  /**
+   * Direkte Drucker, deren Zustand noch ungesendet wartet. Wie im Kern ersetzt eine neue Meldung
+   * die ältere (Sync-Protokoll 9.1): Sie zählt nicht noch einmal.
+   */
+  const unsentPrinterReports = new Set<string>();
 
   function finishSync(): void {
     syncScheduled = false;
     if (syncStatus.get().online && session.get().status === "signed_in") {
+      unsentPrinterReports.clear();
       syncStatus.update((status) => ({ ...status, phase: "idle", pending: 0, last_synced_at: stamp(), last_error: null }));
     }
   }
@@ -416,7 +426,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       // Dieselbe Regel wie im Kern: Nur was der Server nachschlägt, beginnt als "pending".
       const lookup = willLookUp(ref.barcode, syncStatus.get().lookup_enabled) ? "pending" : "none";
       const name = optionalText(ref.name, LIMITS.product_name, "Der Name");
-      return { product: buildProduct({ name, barcodes: [ref.barcode] }, lookup), created: true };
+      const brand = optionalText(ref.brand, LIMITS.brand, "Die Marke");
+      const quantity = optionalText(ref.quantity, LIMITS.quantity, "Die Packungsgröße");
+      return { product: buildProduct({ name, brand, quantity, barcodes: [ref.barcode] }, lookup), created: true };
     }
     const name = requiredText(ref.name, LIMITS.product_name, "Das Produkt");
     const brand = optionalText(ref.brand, LIMITS.brand, "Die Marke");
@@ -664,6 +676,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           throw new CoreError("pending_changes", "Es gibt ungesendete Änderungen.", { pending });
         }
         syncStatus.update((status) => ({ ...status, pending: 0 }));
+        unsentPrinterReports.clear();
         problems.set([]);
         // Der Name bleibt als Vorschlag für die nächste Anmeldung.
         session.set({ status: "signed_out", reason: "logout", last_device_name: currentName() });
@@ -917,6 +930,37 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         const { product } = resolveProduct({ kind: "new", ...input });
         mutate((data) => ({ ...data, products: [...data.products, product] }));
         return product;
+      },
+      async lookup(barcode: string): Promise<ProductLookup> {
+        // Dieselbe Regel wie beim Nachschlagen im Hintergrund: gerade Endziffer = gefunden.
+        const answer = (state: ProductLookup["state"], found: Partial<ProductLookup> = {}): ProductLookup => ({
+          barcode,
+          state,
+          name: "",
+          brand: "",
+          quantity: "",
+          image_id: null,
+          ...found,
+        });
+        if (!isValidBarcode(barcode)) {
+          return answer("failed");
+        }
+        if (isStoreInternalBarcode(barcode)) {
+          return answer("skipped");
+        }
+        if (syncStatus.get().lookup_enabled === false) {
+          return answer("disabled");
+        }
+        if (!syncStatus.get().online) {
+          return answer("offline");
+        }
+        await wait(2);
+        if (!syncStatus.get().online) {
+          return answer("offline");
+        }
+        return Number(barcode.at(-1)) % 2 === 0
+          ? answer("found", { name: `Beispielprodukt ${barcode.slice(-4)}`, brand: "Beispielmarke", quantity: "500 g", image_id: SAMPLE_IMAGE_ID })
+          : answer("not_found");
       },
       async update(id: string, changes: ProductChanges) {
         const product = activeProduct(id);
@@ -1193,9 +1237,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         const status = printerStatusFor(printer);
         rememberStatus(status);
         const health = sampleHealth(printer, status);
-        // Ein direkter Drucker bringt seinen Zustand mit dem nächsten Abgleich zum Server (`printer.report`).
+        // Ein direkter Drucker bringt seinen Zustand mit dem nächsten Abgleich zum Server
+        // (`printer.report`). Wartet von ihm noch eine ungesendete Meldung, ersetzt die neue sie.
         if (printer.connection === "direct") {
-          changed();
+          const replaces = unsentPrinterReports.has(printer.id);
+          unsentPrinterReports.add(printer.id);
+          changed(replaces ? 0 : 1);
         }
         deliverSoon();
         return { reachable: true, url: printer.direct?.urls[0] ?? null, health, problem: null, error: null };

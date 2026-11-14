@@ -366,8 +366,9 @@ Eine gedruckte ID lässt sich nicht mehr ändern, also dürfen zwei Geräte offl
 ### 9.1 Lokale Kopie und Outbox
 
 - Jede Änderung schreibt die App sofort in ihre lokale Kopie und als Befehl in die Outbox, beides in einer Transaktion.
-- Die Outbox wird in der Reihenfolge der Entstehung gesendet, höchstens 500 Befehle je Aufruf. Ein Befehl verlässt sie erst, wenn sein Ergebnis da ist. Hat sie mehr als 500 Befehle, folgen weitere Aufrufe im selben Abgleich (höchstens 20; der Rest geht mit dem nächsten Anlass).
+- Die Outbox wird in der Reihenfolge der Entstehung gesendet, höchstens 500 Befehle je Aufruf. Ein Befehl verlässt sie erst, wenn sein Ergebnis da ist (Ausnahme: der Zustand eines Druckers, unten). Hat sie mehr als 500 Befehle, folgen weitere Aufrufe im selben Abgleich (höchstens 20; der Rest geht mit dem nächsten Anlass).
 - **Was die App anzeigt, ist immer: Stand des Servers plus die noch nicht bestätigten Befehle, in ihrer Reihenfolge.** Nach jeder Antwort übernimmt die App die gelieferten Datensätze und wendet die Befehle, die inzwischen neu in der Outbox stehen, erneut darauf an. Bestätigte Befehle stecken bereits in den gelieferten Datensätzen.
+- **Ausnahme: der Zustand eines Druckers.** Ein `printer.report` ist ein Schnappschuss; es gilt immer die jüngste Meldung (Druckerzustand als Ganzes, 7.1). Eine neue Meldung ersetzt deshalb eine ältere desselben Druckers, die noch ungesendet in der Outbox wartet: Die ältere fällt ohne Ergebnis heraus, die neue steht am Ende. So steht je Drucker höchstens ein noch nicht gesendeter `printer.report` in der Outbox, auch nach einer Stunde im Keller. Was ein Abgleich gerade sendet, bleibt unberührt, auch der eines anderen Tabs oder des Service Workers: Jede Runde hält in der lokalen Datenbank fest, bis zu welchem Befehl der Outbox sie sendet, in derselben Transaktion, in der sie die Befehle nimmt, und gibt das nach der Antwort oder dem Fehlschlag wieder frei. Eine Markierung, die ein mitten im Abgleich beendeter Tab nicht mehr freigibt, verfällt nach zwei Minuten. Die Anzeige ist dieselbe wie ohne Ersetzen. Kommt doch ein Ergebnis zu einem inzwischen ersetzten Befehl, zählt es nur als Antwort des Servers auf das Gesendete und ändert sonst nichts.
 
 ### 9.2 Ergebnisse
 
@@ -402,15 +403,23 @@ Die Oberfläche muss Verweise aushalten, die ins Leere zeigen (Produkt oder Zone
 - wenn der Browser `online` meldet,
 - wenn die App wieder sichtbar wird (`visibilitychange`),
 - nach jeder lokalen Änderung, zusammengefasst über höchstens 2 Sekunden,
-- alle 60 Sekunden, solange die App sichtbar ist,
+- alle 60 Sekunden, solange die App sichtbar und der Server erreichbar ist,
+- sobald die Prüfung nebenbei (9.5) oder ein anderer Kontakt den Server nach einem Ausfall wieder erreicht,
 - auf Android zusätzlich im Hintergrund (Background Sync, Kennung `stowly-sync`); Safari kann das nicht,
 - solange ein Produkt `lookup = pending` hat: zusätzlich nach 3, 10 und 30 Sekunden (Abschnitt 10).
 
-Es läuft immer nur ein Abgleich je Gerät, auch über mehrere Tabs und den Service Worker hinweg (Web Locks, Name `stowly-sync`, wo vorhanden). Nach einem Fehlschlag wartet die App 2, 5, 15, dann 60 Sekunden.
+Es läuft immer nur ein Abgleich je Gerät, auch über mehrere Tabs und den Service Worker hinweg (Web Locks, Name `stowly-sync`, wo vorhanden). Nach einem Fehlschlag wartet die App 2, 5, 15, dann 60 Sekunden. War der Server nicht erreichbar und ist das Gerät angemeldet, übernimmt nach den 15 Sekunden die Prüfung nebenbei: Sie fragt alle 15 Sekunden und gleicht ab, sobald er wieder antwortet.
 
 ### 9.5 Ist der Server erreichbar?
 
-`navigator.onLine` meldet auf jeder Verbindung `true`, auch im WLAN des Pi ohne Internet. Nur `false` ist verlässlich. Die App prüft deshalb selbst: `GET /api/health` mit `cache: "no-store"`, Abbruch nach 3 Sekunden, und die Antwort gilt nur, wenn `app === "stowly"` ist. Einem Abgleich geht die Prüfung voraus, wenn der letzte Kontakt zum Server länger als 30 Sekunden zurückliegt oder das Gerät nicht angemeldet ist.
+`navigator.onLine` meldet auf jeder Verbindung `true`, auch im WLAN des Pi ohne Internet. Nur `false` ist verlässlich. Die App prüft deshalb selbst: `GET /api/health` mit `cache: "no-store"`, Abbruch nach 3 Sekunden, und die Antwort gilt nur, wenn `app === "stowly"` ist. Einem Abgleich geht die Prüfung voraus, wenn der letzte Kontakt zum Server länger als 30 Sekunden zurückliegt, der letzte Versuch ihn nicht erreicht hat oder das Gerät nicht angemeldet ist.
+
+**Prüfung nebenbei.** Solange die App sichtbar und das Gerät angemeldet ist, prüft sie so auch ohne Anlass, ob der Server erreichbar ist, sobald 15 Sekunden lang kein Kontakt zu ihm bestand. Kontakt ist jeder Abgleich, jede Prüfung und jeder Aufruf, der den Server braucht (Geräte, Sicherung, Vorschau, Nachschlagen beim Scannen), auch der eines anderen Tabs desselben Geräts: Die Tabs sagen es einander über einen BroadcastChannel (`stowly-contact`). So entsteht höchstens eine kleine Anfrage je 15 Sekunden, bei mehreren sichtbaren Tabs meist nur in einem, und die App merkt Ausfall und Rückkehr binnen etwa 15 Sekunden (dazu höchstens die 3 Sekunden Zeitgrenze), auch wenn niemand etwas ändert.
+
+- Antwortet der Server nicht, zeigt `sync.status` „nicht erreichbar" wie nach einem gescheiterten Abgleich, in diesem Tab und in den anderen. Der Abgleich alle 60 Sekunden ruht dann.
+- Antwortet er nach einem Ausfall wieder, gleicht die App sofort ab.
+- Die Prüfung nimmt die Sperre `stowly-sync` (9.4), aber nur, wenn sie frei ist, ohne auf sie zu warten: Gleicht gerade ein anderer Tab oder der Service Worker ab, entfällt sie und kommt 15 Sekunden später wieder.
+- Im Hintergrund (App nicht sichtbar) und ohne Anmeldung prüft die App nicht nebenbei, der Service Worker nie.
 
 Zeitgrenzen der übrigen Aufrufe: Abgleich 45 Sekunden (der erste Abzug eines großen Bestands ist kein kleiner Aufruf), Sicherung 120 Sekunden, alles andere 15 Sekunden. Eine Zeitüberschreitung gilt als „nicht erreichbar". Hat der Server die Anfrage trotzdem verbucht, erkennt er die Befehle beim nächsten Versuch als bekannt (`duplicate`).
 
@@ -420,18 +429,72 @@ Nach einem Abgleich lädt die App die Bilder der Produkte im Bestand, die sie no
 
 ## 10. Open Food Facts
 
-Unbekannte Barcodes werden nie im Vordergrund nachgeschlagen: Das Produkt entsteht sofort als Platzhalter, der Server ergänzt Name und Bild später. Das gilt offline wie online, weil Open Food Facts nur 15 Abfragen je Minute und Adresse erlaubt.
+Name, Marke, Packungsgröße und Bild unbekannter Barcodes schlägt der Server bei Open Food Facts nach. Alle Abfragen macht ein einziger Hintergrund-Ablauf, höchstens 10 je Minute: Open Food Facts erlaubt nur 15 Abfragen je Minute und Adresse. Er hat zwei Quellen: Produkte, die als Platzhalter auf ihre Daten warten, und Barcodes, nach denen die App beim Scannen fragt, solange der Server erreichbar ist (10.1). Das Produkt selbst entsteht immer sofort, offline wie online, auch ohne Antwort.
 
-- **Wann:** Ein Produkt mit mindestens einem nicht ladeninternen Barcode bekommt beim Anlegen `lookup = pending`, ebenso nach `product.add_barcode` und nach einem Zusammenführen, wenn es danach etwas nachzuschlagen gibt und noch nichts gefunden ist. Der Server arbeitet die Wartenden im Hintergrund ab, höchstens 10 Abfragen je Minute. Die App zeigt ein eben angelegtes Produkt mit nachschlagbarem Barcode schon vor dem Abgleich als `pending`, außer der Server hat gemeldet, dass er nicht nachschlägt (`lookup_enabled: false`, Abschnitt 6.4): Dann beginnt es wie beim Server als `none`. Maßgeblich ist danach, was der Server liefert.
+- **Wann:** Ein Produkt mit mindestens einem nicht ladeninternen Barcode bekommt beim Anlegen `lookup = pending`, ebenso nach `product.add_barcode` und nach einem Zusammenführen, wenn es danach etwas nachzuschlagen gibt und noch nichts gefunden ist. Steht das Ergebnis schon in `off_lookups` (etwa weil die App den Barcode beim Scannen nachgeschlagen hat, 10.1), übernimmt das Produkt es noch im selben Abgleich: Die Antwort liefert es schon als `found` oder `not_found`, und im Ereignisprotokoll steht `product.lookup` hinter dem Eintrag des Befehls. Sonst arbeitet der Server die Wartenden im Hintergrund ab, höchstens 10 Abfragen je Minute. Die App zeigt ein eben angelegtes Produkt mit nachschlagbarem Barcode schon vor dem Abgleich als `pending`, außer der Server hat gemeldet, dass er nicht nachschlägt (`lookup_enabled: false`, Abschnitt 6.4): Dann beginnt es wie beim Server als `none`. Maßgeblich ist danach, was der Server liefert.
 - **Abruf:** `GET {STOWLY_OFF_URL}/api/v3/product/{barcode}?product_type=all&lc=de&fields=product_name_de,product_name,brands,quantity,image_front_small_url` mit `User-Agent: Stowly/<Version>`, ergänzt um `(<Kontakt>)`, wenn `STOWLY_OFF_CONTACT` gesetzt ist. Im Code steht nie eine persönliche Adresse.
 - **Ergebnis:** Gefunden: `lookup = found`. 404 mit `product_not_found`: `lookup = not_found`, endgültig. Netzfehler, 429 und 5xx: Das Produkt bleibt `pending`; neue Versuche nach 1 Minute, 5 Minuten, 30 Minuten, 3 Stunden, danach täglich.
 - **Übernahme:** Die Daten füllen **nur leere Felder** des Produkts (`name` aus `product_name_de`, sonst `product_name`; `brand` aus dem ersten Eintrag von `brands`; `quantity`; `image`). Die Uhren der Felder bleiben unberührt: Jede Eingabe eines Anwenders gewinnt, davor wie danach.
 - **Bild:** Der Server lädt `image_front_small_url` einmal herunter (nur JPEG, PNG, WebP, höchstens 300 KB) und speichert es in der Datenbank. Die Bild-ID ist der Anfang des SHA-256 des Inhalts (32 Hex-Zeichen) plus Endung, z. B. `9f2c…e1.jpg`.
-- **Dauerhaft:** Jedes Ergebnis steht in `off_lookups` und wird nie erneut abgefragt. Die Tabelle ist von `products` getrennt, damit die Daten trennbar bleiben (ODbL). Die App nennt die Quelle: „Open Food Facts (ODbL)".
+- **Dauerhaft:** Jedes Ergebnis steht in `off_lookups` und wird nie erneut abgefragt, auch das zu einem Barcode, der (noch) keinem Produkt gehört. Bei einem solchen Barcode ruht, was noch aussteht (ein neuer Versuch nach einem Fehler, ein fehlendes Bild), bis ein Produkt ihn bekommt; einen neuen Versuch löst auch eine erneute Anfrage der App nach der Wartezeit aus. Die Tabelle ist von `products` getrennt, damit die Daten trennbar bleiben (ODbL). Die App nennt die Quelle: „Open Food Facts (ODbL)".
 - `STOWLY_OFF_ENABLED=0` schaltet das Nachschlagen ab; Produkte bekommen dann `lookup = none`. Beim Start gleicht der Server `lookup` an die Einstellung an: Wartende werden `none`, und nach dem Wiedereinschalten warten Produkte mit nachschlagbarem Barcode erneut. Jede Sync-Antwort nennt den Stand (`lookup_enabled`).
 - **Was die App verspricht:** Dass Name und Bild nachkommen, sagt sie nur, wenn es stimmt: bei einem Barcode, der nachgeschlagen wird (nicht ladenintern), und nur, solange der Server nicht `lookup_enabled: false` gemeldet hat. Die Regel steht als `willLookUp` in `web/src/contract/barcode.ts`; sie entscheidet auch über die lokale Vorwegnahme.
 - **Packungsgröße:** Ein Schätzzeichen am Ende der Mengenangabe von Open Food Facts (`e` oder `℮`, mit oder ohne Leerzeichen davor, etwa „400 g e") übernimmt der Server nicht; aus „400 g e" wird „400 g".
 - Tests rufen den echten Dienst nie auf.
+
+### 10.1 Nachschlagen beim Scannen
+
+Scannt der Anwender einen Barcode, den die lokale Kopie nicht kennt, soll der Name schon im Dialog stehen. Dafür fragt die App den Server:
+
+`GET /api/lookup/{barcode}?wait=<Sekunden>` mit Token; ohne gültiges Token 401 `unauthorized` wie jeder Aufruf unter `/api`.
+
+- `barcode`: EAN-8 oder EAN-13 in der gespeicherten Form mit gültiger Prüfziffer, dieselbe Prüfung wie bei `product.create`. Sonst 400 `invalid_request` im Fehlerformat (Abschnitt 13), `details.errors` mit `loc: ["path", "barcode"]`.
+- `wait`: ganze Zahl von 0 bis 8, Vorgabe 4. So lange wartet der Server höchstens auf ein Ergebnis, das er noch nicht hat. Anderes ist 400 `invalid_request` mit `loc: ["query", "wait"]`.
+- Antwort 200 `LookupResult`, `Cache-Control: no-store`:
+
+```json
+{
+  "barcode": "4006381333931",
+  "state": "found",
+  "name": "Basmati Reis",
+  "brand": "Kornhaus",
+  "quantity": "1 kg",
+  "image_id": "3f…a1.jpg"
+}
+```
+
+| `state` | Bedeutung | Felder |
+|---|---|---|
+| `found` | Open Food Facts kennt den Barcode (aus `off_lookups` oder eben abgefragt) | `name`, `brand`, `quantity` so aufbereitet, wie sie ein Produkt füllen (leer, wenn unbekannt); `image_id`, wenn das Bild schon beim Server liegt (`GET /api/images/{id}`), sonst `null` |
+| `not_found` | Open Food Facts kennt ihn nicht | leer |
+| `pending` | in `wait` Sekunden keine Antwort (Warteschlange, Rate, Open Food Facts langsam oder weg); der Server fragt im Hintergrund weiter | leer |
+| `skipped` | ladeninterner Code (Präfix 2): wird nie nachgeschlagen, auch nicht bei ausgeschaltetem Nachschlagen | leer |
+| `disabled` | Nachschlagen ist am Server ausgeschaltet (`STOWLY_OFF_ENABLED=0`); dann gilt auch kein gespeichertes Ergebnis | leer |
+
+Leere Felder sind `""`, nie `null`; nur `image_id` ist `null`, solange es kein Bild gibt.
+
+**Der Server:**
+
+- Steht das Ergebnis in `off_lookups`, antwortet er sofort, ohne Open Food Facts. Ebenso sofort `pending`, solange nach einem Fehlversuch die Wartezeit läuft (1 Minute, 5 Minuten …): Sie gilt auch, wenn jemand wartet.
+- Sonst stellt er den Barcode vorn in die Warteschlange des Hintergrund-Ablaufs, vor die Produkte, die ohne Eile warten, weckt ihn und wartet höchstens `wait` Sekunden auf das Ergebnis. Wartet der Ablauf gerade auf die Rate, bekommt der Barcode den nächsten freien Platz. Mehrere Anfragen zum selben Barcode teilen sich eine Abfrage und bekommen dasselbe Ergebnis.
+- Das Bild lädt der Ablauf wie sonst auch. Hat Open Food Facts geantwortet, liegt das Bild bis zum Ende der Wartezeit aber noch nicht vor, kommen Name, Marke und Größe ohne `image_id`.
+- Kommt in `wait` Sekunden kein Ergebnis, antwortet er `pending` und fragt im Hintergrund weiter; das Ergebnis landet in `off_lookups`. Scheitert die Abfrage (Netzfehler, 429, 5xx), antwortet er sofort `pending`.
+- Ein Barcode, zu dem es (noch) kein Produkt gibt, steht danach in `off_lookups`. Ein Produkt, das ihn später bekommt, übernimmt das Ergebnis im selben Abgleich („Wann", oben).
+- Wünsche zu Barcodes, die keinem Produkt gehören, nimmt er höchstens 20 zugleich an; sonst könnte ein Gerät mit erfundenen gültigen Barcodes die Warteschlange füllen. Darüber antwortet er `pending`, ohne einzureihen.
+- Beim Herunterfahren bekommt eine wartende Anfrage sofort, was bis dahin bekannt ist, sonst `pending`. Sie hält das Beenden nicht auf.
+
+**Die App:**
+
+- Scannt der Anwender einen Barcode, den die lokale Kopie nicht kennt, fragt die App nach, sofern der Server erreichbar ist (9.5) und `willLookUp` gilt. Sie öffnet den Dialog sofort und wartet nicht auf die Antwort.
+- Kommt `found`, füllt sie den Namen, sobald die Antwort da ist, aber nur, wenn der Anwender noch nichts eingetragen hat.
+- Beim Einlagern schickt sie Name, Marke und Packungsgröße aus der Antwort mit dem Anlegen des Produkts mit (`product.create`), wie eine Eingabe des Anwenders. Was er selbst eingetragen hat, gilt.
+- Kommt `pending`, eine andere Antwort ohne Daten oder gar keine (nicht erreichbar, Zeitüberschreitung, Fehler), gilt der bisherige Ablauf: Das Produkt entsteht als Platzhalter, und was der Server weiß oder später erfährt, kommt mit dem Abgleich. Die Zeitgrenze des Aufrufs liegt etwas über `wait`, damit die Antwort des Servers noch ankommt.
+
+**Warum die Rate hält:**
+
+- Der Endpunkt fragt nie selbst, er reiht nur ein. Abgefragt wird ausschließlich im Hintergrund-Ablauf, mit derselben Drosselung (höchstens 10 Abfragen in jedem Fenster von 60 Sekunden), denselben Wartezeiten nach Fehlern und derselben Pause nach 429.
+- Jedes Ergebnis wird gespeichert und nie erneut abgefragt. Wird aus dem gescannten Barcode ein Produkt, übernimmt es das gespeicherte Ergebnis, und die Abfrage im Hintergrund entfällt: Sie kommt nur früher, nicht zusätzlich. Neu ist allein die Abfrage zu einem Scan, aus dem kein Produkt wird; auch sie zählt in die 10 je Minute.
+- Gleichzeitige Anfragen zum selben Barcode ergeben eine Abfrage, und Wünsche zu Barcodes ohne Produkt sind auf 20 begrenzt.
 
 ## 11. Weitere Endpunkte
 
@@ -443,6 +506,7 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `GET /api/images/{image_id}` | offen | 200 Bilddaten, `Cache-Control: public, max-age=31536000, immutable`; 404 |
 | `GET /api/backup` | Token | 200 `application/vnd.sqlite3`, `Content-Disposition: attachment; filename="stowly-JJJJ-MM-TT.sqlite3"` |
 | `GET /api/events?before=&limit=&entity=&entity_id=` | Token | 200 `EventPage { events, next_before }`, neueste zuerst, `limit` 1–500 (Vorgabe 100) |
+| `GET /api/lookup/{barcode}?wait=` | Token | 200 `LookupResult { barcode, state, name, brand, quantity, image_id }`, `Cache-Control: no-store`; 400 bei ungültigem Barcode oder `wait` (Abschnitt 10.1) |
 | `/print/v1/…` | Token | Druckdienst des Servers, siehe [`etiketten.md`](etiketten.md) |
 
 - **Bilder sind ohne Anmeldung abrufbar**, weil `<img>` keinen `Authorization`-Kopf senden kann. Die Kennung ist der Hash des Inhalts und nicht zu erraten; ausgeliefert werden nur Vorschaubilder aus Open Food Facts.
@@ -490,7 +554,7 @@ Jede Fehlerantwort unter `/api` hat denselben Rumpf (`ErrorBody`):
 | 401 | `unauthorized` | Token fehlt, ist unbekannt oder gesperrt | `unauthorized`; das Gerät gilt als abgemeldet (`revoked`) |
 | 401 | `invalid_password` | falsches Haushalts-Passwort | `invalid_password` |
 | 404 | `not_found` | Pfad oder Datensatz gibt es nicht | `not_found` |
-| 405, 422 | `invalid_request` | Anfrage verletzt den Vertrag; bei 422 nennt `details.errors` die Stellen (`loc`, `msg`, `type`) | `invalid` |
+| 400, 405, 422 | `invalid_request` | Anfrage verletzt den Vertrag; bei 400 und 422 nennt `details.errors` die Stellen (`loc`, `msg`, `type`) | `invalid` |
 | 409 | `conflict` | Zustand passt nicht zur Anfrage | `invalid` |
 | 409 | `protocol_mismatch` | verschiedene Protokollversionen; `details: { server, client }` | `protocol_mismatch` |
 | 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf | `internal` |

@@ -310,9 +310,26 @@
   gap: var(--space-4);
 }
 
+.storeHead {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+/* Das Bild aus Open Food Facts, wenn der Server es schon hat. */
+.storeImage {
+  flex: none;
+  width: 4rem;
+  height: 4rem;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+
 .storeProduct {
   display: grid;
   gap: var(--space-1);
+  min-width: 0;
 }
 
 .storeTitle {

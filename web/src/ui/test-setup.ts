@@ -2,6 +2,8 @@
 // Läuft nach src/test/setup.dom.ts.
 import { afterEach, vi } from "vitest";
 
+// Die Prüfungen toBeUnavailable() und toBeAvailable() für Schaltflächen.
+import "./base/testing";
 import { setTestViewport } from "./testing";
 
 // jsdom kennt keine Medienabfragen. Die Oberfläche entscheidet aber mit ihnen, ob sie den

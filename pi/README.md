@@ -99,7 +99,8 @@ sudo bash pi/install.sh --origin https://stowly.home --cert pi.crt --key pi.key
 
 - `--origin` ist die Adresse, unter der die App läuft (ohne Pfad), etwa `https://stowly.home` oder `https://<rechner>.<tailnet>.ts.net`; mehrfach möglich. Nur von diesen Ursprüngen darf die App den Pi direkt ansprechen.
 - `--model` (Vorgabe `QL-800`; auch `QL-810W`, `QL-820NWB`) und `--address` (Vorgabe `usb://04f9` = der erste Brother am USB) nur, wenn es nicht der QL-800 am USB ist.
-- Das Skript sagt vor jedem Schritt, was es tut, und bricht bei einem Fehler ab: Systempakete (`python3-pil`, `python3-usb`, `python3-segno`, `python3-starlette`, `python3-uvicorn`, `python3-venv`, `fonts-dejavu-core`, `libusb-1.0-0`, `hostapd`, `dnsmasq`, `qrencode`, dazu `overlayroot` für später), Benutzer `stowly-print` in der Gruppe `plugdev`, Programm in `/opt/stowly-print` (venv mit den Systempaketen, kein FastAPI, kein pydantic), die Brother-Bibliothek von PyPI auf Version und Prüfsumme festgelegt, udev-Regel, Konfiguration, Journal nur im Arbeitsspeicher (höchstens 16 MB), Systemdienst mit `Restart=always`, zuletzt eine Probe.
+- Das Skript sagt vor jedem Schritt, was es tut, und bricht bei einem Fehler ab: Systempakete (`python3-pil`, `python3-usb`, `python3-segno`, `python3-starlette`, `python3-uvicorn`, `python3-venv`, `python3-setuptools`, `fonts-dejavu-core`, `libusb-1.0-0`, `hostapd`, `dnsmasq`, `qrencode`, dazu `overlayroot` für den Schreibschutz am Ende), Benutzer `stowly-print` in der Gruppe `plugdev`, Programm in `/opt/stowly-print` (venv mit den Systempaketen, kein FastAPI, kein pydantic), die Brother-Bibliothek von PyPI auf Version und Prüfsumme festgelegt, udev-Regel, Konfiguration, Journal nur im Arbeitsspeicher (höchstens 16 MB), Systemdienst mit `Restart=always`, zuletzt eine Probe.
+- Gebaut wird mit `python3-setuptools` aus Debian, ohne eigene Bau-Umgebung: das Programm und `packbits` (gibt es nur als Quellpaket). So lädt pip nichts, was nicht in `print/requirements-brother.txt` mit Prüfsumme steht.
 - Am Ende steht das **Token** des Druckers: Es kommt in Stowly beim Drucker ins Feld „Token" (Schritt 7) und steht auch in `/etc/stowly-print/stowly-print.toml`.
 - Wiederholbar: Ein zweiter Lauf bringt Programm, Dienst und Regeln auf den neuen Stand und lässt die Konfiguration samt Token stehen.
 
@@ -175,20 +176,22 @@ Als **letzter, eigener Schritt**, wenn alles läuft: Danach geht jede Änderung 
 ```
 sudo bash pi/overlay.sh on
 sudo reboot
-sudo bash pi/overlay.sh status     # nach dem Neustart: "Overlay jetzt: an"
+sudo bash pi/overlay.sh status     # nach dem Neustart: "Overlay jetzt: an", Boot-Partition "nur lesbar"
 ```
 
-Das Skript benutzt `raspi-config`. Klappt es nicht, von Hand: `sudo raspi-config` → Performance Options → Overlay File System → „Ja" für das Overlay und „Ja" für die schreibgeschützte Boot-Partition. Zurück: `sudo bash pi/overlay.sh off` (oder derselbe Menüpunkt mit „Nein"), neu starten.
+Das Skript benutzt `raspi-config` (`raspi-config nonint do_overlayfs 0`): Das trägt `overlayroot=tmpfs` in die Kernel-Befehlszeile ein (Paket `overlayroot`, kommt mit `install.sh`) und macht die Boot-Partition in `/etc/fstab` nur lesbar. Klappt es nicht, von Hand: `sudo raspi-config` → Performance Options → Overlay File System → „Ja" für das Overlay und „Ja" für die schreibgeschützte Boot-Partition.
+
+Zurück: `sudo bash pi/overlay.sh off` (oder derselbe Menüpunkt mit „Nein"), neu starten. Danach ist das Wurzelverzeichnis wieder beschreibbar, die Boot-Partition aber noch nicht: Die ändert `raspi-config` nur, solange kein Overlay läuft. Zum Aktualisieren genügt das. Braucht ein Systemupdate (`apt`) die Boot-Partition, nach dem Neustart ein zweites Mal `sudo bash pi/overlay.sh off` und noch einmal neu starten.
 
 ## Aktualisieren trotz Schreibschutz
 
 Der Pi hat kein Internet; neue Dateien kommen über sein WLAN.
 
-1. Laptop mit dem WLAN des Pi verbinden. `ssh <benutzer>@10.71.83.1`, dort `sudo bash ~/stowly/pi/overlay.sh off`, `sudo reboot`.
+1. Laptop mit dem WLAN des Pi verbinden. `ssh <benutzer>@10.71.83.1`, dort `sudo bash ~/stowly/pi/overlay.sh off`, `sudo reboot`. Die Boot-Partition bleibt dabei nur lesbar; für die Schritte hier ist das recht.
 2. Neue Ordner hinüberkopieren: `scp -r print pi <benutzer>@10.71.83.1:stowly/`
 3. Auf dem Pi: `cd ~/stowly && sudo bash pi/install.sh --offline` (ohne Internet: nur das Programm, Dienst und Regeln neu; Konfiguration und Token bleiben). Ein neues Zertifikat zusätzlich mit `--cert pi.crt --key pi.key`.
 4. Konfiguration ändern (Token, Ursprünge, Drucker): `sudo nano /etc/stowly-print/stowly-print.toml`, dann `sudo systemctl restart stowly-print`.
-5. Braucht ein Update neue Pakete oder eine neue Brother-Bibliothek (das steht dann in den Änderungen): `sudo bash pi/access-point.sh --remove`, neu starten (der Pi verbindet sich wieder mit dem Heim-WLAN), `sudo bash pi/install.sh`, dann wieder `access-point.sh` mit denselben Angaben, neu starten.
+5. Braucht ein Update neue Pakete oder eine neue Brother-Bibliothek (das steht dann in den Änderungen): `sudo bash pi/access-point.sh --remove`, neu starten (der Pi verbindet sich wieder mit dem Heim-WLAN), `sudo bash pi/install.sh`, dann wieder `access-point.sh` mit denselben Angaben, neu starten. Ein Systemupdate (`sudo apt full-upgrade`) braucht zusätzlich die beschreibbare Boot-Partition (Abschnitt 9, „Zurück").
 6. Zuletzt `sudo bash pi/overlay.sh on`, `sudo reboot`.
 
 ## Konfiguration
@@ -224,8 +227,9 @@ Unbrauchbare Angaben zu einem Drucker (unbekanntes Modell, falsche Adresse, fehl
 | `no_media`, `cover_open`, `media_mismatch` | Rolle leer, Deckel offen, andere Rolle als 62 mm endlos |
 | App zeigt den Drucker als „blockiert" | Ursprung der App fehlt in `origins` |
 | App zeigt „nicht erreichbar", Browser aber geht | Zertifikat (Handy vertraut der Zertifizierungsstelle nicht, iPhone: volles Vertrauen fehlt, abgelaufen) oder Android ohne „Verbunden bleiben" |
-| WLAN erscheint nicht | `systemctl status hostapd`, `journalctl -u hostapd -e`; Land (`--country`) passend? |
-| Handy bekommt keine Adresse | `systemctl status dnsmasq`, `ip address show wlan0` muss `10.71.83.1/24` zeigen |
+| WLAN erscheint nicht | `systemctl status hostapd`, `journalctl -u hostapd -e`; Land (`--country`) passend? `nmcli device status` muss `wlan0` als `unmanaged` zeigen, sonst greift NetworkManager ein; `rfkill list` darf für das WLAN keine Sperre zeigen |
+| Handy bekommt keine Adresse | `systemctl status dnsmasq`, `ip address show wlan0` muss `10.71.83.1/24` zeigen. dnsmasq startet erst nach `network-online.target`; kurz nach dem Einschalten etwas warten |
+| Overlay ist nach dem Neustart nicht an | `grep -o overlayroot=tmpfs /proc/cmdline` (fehlt: `overlay.sh on` wiederholen); `dpkg -s overlayroot` (fehlt: Aktualisieren, Schritt 5) |
 | Etikett blieb „unklar" | Der Druck wurde unterbrochen (Strom, Kabel). Nichts druckt von selbst nach; in der App beantworten |
 
 Ein Etikett, das beim Neustart des Pi noch nicht gedruckt war, kennt der Dienst danach nicht mehr (jeder Start hat eine neue `boot_id`); die App fragt dann nach, statt doppelt zu drucken.
@@ -264,8 +268,8 @@ Für Tests lässt sich der Bild-Treiber stören: eine Datei `simulate.txt` im Ve
 | Skript | Dateien |
 |---|---|
 | `install.sh` | Benutzer `stowly-print`; `/opt/stowly-print/` (venv, README); `/etc/stowly-print/stowly-print.toml` und `tls/`; `/etc/systemd/system/stowly-print.service`; `/etc/udev/rules.d/99-stowly-brother.rules`; `/etc/systemd/journald.conf.d/stowly.conf` |
-| `access-point.sh` | `/etc/hostapd/hostapd.conf` (enthält das WLAN-Passwort, nur für root); `/etc/dnsmasq.d/stowly-ap.conf`; `/etc/NetworkManager/conf.d/99-stowly-ap.conf`; `/etc/systemd/system/stowly-ap-address.service`; `/etc/sysctl.d/99-stowly-ap.conf` |
-| `overlay.sh` | Einstellungen von `raspi-config` (Kernel-Befehlszeile, `/etc/fstab`) |
+| `access-point.sh` | `/etc/hostapd/hostapd.conf` (enthält das WLAN-Passwort, nur für root); `/etc/dnsmasq.d/stowly-ap.conf`; `/etc/NetworkManager/conf.d/99-stowly-ap.conf`; `/etc/systemd/system/stowly-ap-address.service`; `/etc/sysctl.d/99-stowly-ap.conf`; über `raspi-config` das Land (`cfg80211.ieee80211_regdom=DE` in `/boot/firmware/cmdline.txt`) |
+| `overlay.sh` | Einstellungen von `raspi-config`: `overlayroot=tmpfs` in `/boot/firmware/cmdline.txt`, `ro` für die Boot-Partition in `/etc/fstab` |
 
 ## Lizenz der Brother-Bibliothek
 
@@ -275,17 +279,20 @@ Die Bibliothek `brother_ql_next` steht unter der GPL-3.0. Stowly liefert sie nic
 
 Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe nach; hinter jedem Schritt steht, was zu sehen sein muss.
 
+Die Skripte sind gegen die Quellen geprüft (Paketlisten von Debian, Raspbian und Raspberry Pi für Trixie, Quelltext von `raspi-config` im Zweig `trixie`, Debian-Pakete von hostapd und dnsmasq, NetworkManager 1.52). Was sich nur am Gerät klären lässt, steht in P2, P8, R1, R6, U1 und U4.
+
 ### P. Pi und Druckdienst
 
 | # | Schritt | Erwartet |
 |---|---|---|
 | P1 | Pi mit frischer Karte starten, `ssh` | Anmeldung klappt, `cat /etc/os-release` nennt Trixie |
-| P2 | `sudo bash pi/install.sh --origin … --cert pi.crt --key pi.key` | läuft durch; die Probe am Ende zeigt `stowly-print 0.1.0` und den Drucker; Token wird angezeigt. Bitte die Zeile mit Starlette- und uvicorn-Version notieren |
+| P2 | `sudo bash pi/install.sh --origin … --cert pi.crt --key pi.key` | läuft durch; die Probe am Ende zeigt `stowly-print 0.1.0` und den Drucker; Token wird angezeigt. Bei der Brother-Bibliothek steht „Building wheel for packbits", aber kein „Installing build dependencies". Die Versionen aus Trixie: Starlette 0.46.1, uvicorn 0.32.0, Pillow 11.1.0, segno 1.6.6; bitte die Zeile notieren |
 | P3 | `install.sh` gleich noch einmal | läuft durch, „gibt es schon; sie bleibt, wie sie ist", Token unverändert |
 | P4 | `systemctl status stowly-print`, `journalctl -u stowly-print -e` | `active (running)`, Meldungen „Druckdienst … hört auf http://0.0.0.0:8080" und „https://0.0.0.0:8443"; kein Token im Journal |
 | P5 | `id stowly-print`, `ls -l /etc/stowly-print/tls/` | Gruppe `plugdev`; `pi.key` gehört `stowly-print`, Rechte `-rw-------` |
 | P6 | `sudo systemctl kill -s KILL stowly-print`, nach 5 s `systemctl status stowly-print` | läuft wieder (Restart=always) |
 | P7 | `journalctl --disk-usage`, `ls /var/log/journal` | Journal nur im Arbeitsspeicher (`/run/log/journal`) |
+| P8 | `/opt/stowly-print/venv/bin/python -c "import uvloop"` | läuft meist ohne Fehler: `python3-uvicorn` aus Debian zieht uvloop nach. Der Druckdienst legt trotzdem asyncio und h11 fest, wie in den Tests (`print/stowly_print/__main__.py`). Beide Zugänge (P4) und HTTPS (S1, T3) laufen; sonst bitte melden |
 
 ### Q. Drucker
 
@@ -304,12 +311,12 @@ Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe
 
 | # | Schritt | Erwartet |
 |---|---|---|
-| R1 | `access-point.sh`, Neustart | WLAN „Stowly-Keller" sichtbar; `ip address show wlan0` zeigt `10.71.83.1/24` |
+| R1 | `access-point.sh`, Neustart | WLAN „Stowly-Keller" sichtbar; `ip address show wlan0` zeigt `10.71.83.1/24`; `nmcli device status` zeigt `wlan0` als `unmanaged`; `systemctl is-active stowly-ap-address hostapd dnsmasq` dreimal `active`; `iw dev wlan0 info` zeigt `type AP`; `iw reg get` nennt `country DE` |
 | R2 | Android verbinden | Frage „kein Internet, verbunden bleiben?" → Ja; `http://10.71.83.1:8080/v1/health` öffnet; mobile Daten gehen weiter (andere Seiten laden) |
 | R3 | iPhone verbinden | `http://10.71.83.1:8080/v1/health` öffnet in Safari |
 | R4 | Beide Handys: Adresse im WLAN | aus `10.71.83.50` bis `10.71.83.150`, Router `10.71.83.1`, kein DNS-Server |
 | R5 | WLAN-QR-Code mit der Kamera-App beider Handys | verbindet ohne Tippen |
-| R6 | Pi stromlos machen, wieder einschalten (mit Overlay) | WLAN und Druckdienst kommen von selbst; neue `boot_id` |
+| R6 | Pi stromlos machen, wieder einschalten (mit Overlay) | WLAN und Druckdienst kommen von selbst; neue `boot_id`. Bitte die Zeit vom Einschalten bis zur Adresse am Handy notieren: dnsmasq startet erst nach `network-online.target` |
 
 ### S. Zertifikat
 
@@ -336,10 +343,10 @@ Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe
 
 | # | Schritt | Erwartet |
 |---|---|---|
-| U1 | `overlay.sh on`, Neustart, `overlay.sh status` | „Overlay jetzt: an"; Boot-Partition `ro` |
+| U1 | `overlay.sh on`, Neustart, `overlay.sh status` | „Overlay jetzt: an", „Boot-Partition jetzt: nur lesbar (ro)"; „Wurzelverzeichnis: overlay …"; `grep /boot/firmware /etc/fstab` zeigt genau ein `ro` |
 | U2 | Datei anlegen (`touch ~/x`), Neustart | Datei ist weg |
 | U3 | Aktualisieren nach Abschnitt „Aktualisieren trotz Schreibschutz" | Dienst läuft danach mit neuem Stand, Token unverändert |
-| U4 | `overlay.sh off`, Neustart, `overlay.sh status` | „Overlay jetzt: aus" |
+| U4 | `overlay.sh off`, Neustart, `overlay.sh status`; dann `overlay.sh off` ein zweites Mal, Neustart, `overlay.sh status` | erst „Overlay jetzt: aus", Boot-Partition noch „nur lesbar (ro)"; nach dem zweiten Mal „Boot-Partition jetzt: beschreibbar (rw)" |
 
 ### V. Etiketten im Alltag
 

@@ -33,3 +33,8 @@ web/.vite
 *.sqlite3-wal
 *.sqlite3-shm
 *.md
+
+# Was der Bau braucht, bleibt drin, auch wenn ein Muster oben es einmal träfe: die auf Version
+# und Prüfsumme festgelegten Python-Pakete.
+!server/requirements.lock
+!print/requirements-brother.txt

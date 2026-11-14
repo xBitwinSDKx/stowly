@@ -6,6 +6,12 @@
  * lang nicht zu sehen war, zählt er wieder: So bucht ein Etikett, das ruhig vor der Kamera
  * liegt, nicht alle zwei Sekunden erneut.
  *
+ * Nach einem Dialog (die Auswertung war angehalten) gilt für Werte, die eine Rückfrage
+ * auslösen (Produkt-Barcodes: Einlagern fragt nach dem MHD), eine kurze Lücke statt der zwei
+ * Sekunden (`RESCAN_GAP_MS`): Bleibt der Code durchgehend im Bild, öffnet sich der Dialog nicht
+ * von selbst wieder; kurz wegschwenken genügt, um ihn erneut zu scannen. Etiketten, die ohne
+ * Rückfrage buchen, behalten die zwei Sekunden.
+ *
  * Dazu das Zurückstellen: Was mit im Bild war, als ein anderer Code gemeldet wurde (der
  * Barcode neben dem Etikett derselben Packung), zählt für eine feste Frist nicht. Diese
  * Frist verlängert sich nicht mit jeder Sichtung: Wer danach bewusst auf den zweiten Code
@@ -13,6 +19,15 @@
  */
 
 export const SAME_VALUE_WINDOW_MS = 2_000;
+
+/**
+ * So lange muss ein Produkt-Barcode nach einem Dialog nicht zu sehen sein, bevor er wieder
+ * zählt: 0,8 Sekunden. Bewusstes Wegschwenken und wieder Hinhalten dauert länger (die Kamera
+ * muss danach auch erst wieder scharf stellen), ein Aussetzer der Erkennung bei ruhig
+ * gehaltenem Code ist dagegen kürzer: Bei zehn Auswertungen je Sekunde wären es acht
+ * Fehlschläge hintereinander, bei einer langsamen Erkennung (drei je Sekunde) noch zwei bis drei.
+ */
+export const RESCAN_GAP_MS = 800;
 
 /**
  * - "new": neu oder lange genug nicht gesehen; soll gemeldet werden
@@ -26,8 +41,13 @@ export class ScanDeduper {
   private readonly seen = new Map<string, number>();
   /** Zurückgestellte Werte mit dem Ende ihrer Frist. */
   private readonly held = new Map<string, number>();
+  /** Werte, die nach einem Dialog schon nach der kurzen Lücke wieder zählen. */
+  private readonly rearming = new Set<string>();
 
-  constructor(private readonly windowMs: number = SAME_VALUE_WINDOW_MS) {}
+  constructor(
+    private readonly windowMs: number = SAME_VALUE_WINDOW_MS,
+    private readonly rescanGapMs: number = RESCAN_GAP_MS,
+  ) {}
 
   /** Meldet eine Sichtung des Codes, auf den gezielt wird, und sagt, was sie bedeutet. */
   check(value: string, nowMs: number): Sighting {
@@ -47,7 +67,20 @@ export class ScanDeduper {
     if (this.seen.size > 32) {
       this.prune(nowMs);
     }
-    return last === undefined || nowMs - last >= this.windowMs ? "new" : "repeat";
+    const gap = this.rearming.has(value) ? this.rescanGapMs : this.windowMs;
+    if (last === undefined || nowMs - last >= gap) {
+      this.rearming.delete(value);
+      return "new";
+    }
+    return "repeat";
+  }
+
+  /**
+   * Wartet dieser Wert nach einem Dialog nur noch auf die kurze Lücke? Dann ist er seit dem
+   * Dialog durchgehend im Bild, und die Ansicht sagt, dass kurzes Wegschwenken genügt.
+   */
+  waitsForGap(value: string): boolean {
+    return this.rearming.has(value);
   }
 
   /** Wie `check`; true = dieser Wert ist neu (oder lange genug weg gewesen) und soll gemeldet werden. */
@@ -88,11 +121,17 @@ export class ScanDeduper {
    * gerade eben gesehen. Sonst öffnete das Produkt, das noch vor der Kamera liegt, sofort
    * den nächsten Dialog. Was schon beim Anhalten (`pausedAtMs`) länger nicht mehr zu sehen
    * war, bleibt dagegen vergessen: Es soll nach dem Dialog sofort wieder zählen.
+   *
+   * @param quick Werte, die nach dem Dialog schon nach der kurzen Lücke wieder zählen
+   *              (`RESCAN_GAP_MS`); alle anderen erst nach den zwei Sekunden.
    */
-  refresh(nowMs: number, pausedAtMs: number = nowMs): void {
+  refresh(nowMs: number, pausedAtMs: number = nowMs, quick: (value: string) => boolean = () => false): void {
     for (const [value, at] of this.seen) {
       if (pausedAtMs - at < this.windowMs) {
         this.seen.set(value, nowMs);
+        if (quick(value)) {
+          this.rearming.add(value);
+        }
       }
     }
   }
@@ -102,9 +141,11 @@ export class ScanDeduper {
     if (value === undefined) {
       this.seen.clear();
       this.held.clear();
+      this.rearming.clear();
     } else {
       this.seen.delete(value);
       this.held.delete(value);
+      this.rearming.delete(value);
     }
   }
 
@@ -112,6 +153,7 @@ export class ScanDeduper {
     for (const [value, at] of this.seen) {
       if (nowMs - at >= this.windowMs) {
         this.seen.delete(value);
+        this.rearming.delete(value);
       }
     }
     for (const [value, until] of this.held) {

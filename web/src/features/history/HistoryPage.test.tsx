@@ -2,7 +2,7 @@
  * Lösch-Historie auf der Attrappe: anzeigen, wiederherstellen (einzeln, mehrere),
  * verdrängte Bearbeitung übernehmen, Grund nachträglich ändern.
  */
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -120,13 +120,53 @@ describe("Lösch-Historie", () => {
     expect(screen.getByText(`Packung ${id} wiederhergestellt`)).toBeInTheDocument();
   });
 
+  it("zeigt beim Wiederherstellen den Spinner an der gedrückten Schaltfläche, die den Fokus behält, und sperrt solange die anderen", async () => {
+    const core = renderApp({}, ROUTES.history);
+    await ready();
+    const removed = value(core.data.removedPackages);
+    const plain = removed.filter((pkg) => pkg.displaced === null);
+    const edited = removed.find((pkg) => pkg.displaced !== null);
+    const [target, other] = plain;
+    if (!target || !other || !edited) {
+      throw new Error("Beispieldaten ohne passende entnommene Packungen");
+    }
+    // Das Wiederherstellen wartet, bis der Test es freigibt.
+    let release: () => void = () => undefined;
+    const restore = core.stock.restore.bind(core.stock);
+    const spy = vi.spyOn(core.stock, "restore").mockImplementation(async (ids, options) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return restore(ids, options);
+    });
+
+    const button = screen.getByRole("button", { name: `Wiederherstellen: ${target.id}` });
+    await userEvent.click(button);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button).toBeUnavailable();
+    for (const name of [`Wiederherstellen: ${other.id}`, `Mit Bearbeitung wiederherstellen: ${edited.id}`]) {
+      expect(screen.getByRole("button", { name })).toBeUnavailable();
+      expect(screen.getByRole("button", { name })).not.toHaveAttribute("aria-busy");
+    }
+    await userEvent.keyboard("{Enter}");
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => expect(screen.queryByRole("button", { name: `Wiederherstellen: ${target.id}` })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: `Wiederherstellen: ${other.id}` })).toBeAvailable();
+    expect(screen.getByRole("button", { name: `Mit Bearbeitung wiederherstellen: ${edited.id}` })).toBeAvailable();
+  });
+
   it("stellt mehrere Packungen auf einmal wieder her", async () => {
     const core = renderApp({}, ROUTES.history);
     await ready();
     const removed = value(core.data.removedPackages);
     const plain = removed.filter((pkg) => pkg.displaced === null).slice(0, 2);
     const bulk = screen.getByRole("button", { name: "Auswahl wiederherstellen" });
-    expect(bulk).toBeDisabled();
+    expect(bulk).toBeUnavailable();
 
     for (const pkg of plain) {
       await userEvent.click(screen.getByRole("checkbox", { name: `${pkg.id} auswählen` }));
@@ -136,16 +176,16 @@ describe("Lösch-Historie", () => {
     await waitFor(() => expect(value(core.data.removedPackages)).toHaveLength(removed.length - 2));
     expect(value(core.data.packages).filter((pkg) => plain.some((candidate) => candidate.id === pkg.id))).toHaveLength(2);
     expect(screen.getByText("2 Packungen wiederhergestellt")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Auswahl wiederherstellen" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Auswahl wiederherstellen" })).toBeUnavailable();
   });
 
   it("wählt alle auf einmal aus und hebt die Auswahl wieder auf", async () => {
     renderApp({}, ROUTES.history);
     await ready();
     await userEvent.click(screen.getByRole("checkbox", { name: "Alle auswählen" }));
-    expect(screen.getByRole("button", { name: "5 wiederherstellen" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "5 wiederherstellen" })).toBeAvailable();
     await userEvent.click(screen.getByRole("button", { name: "Auswahl aufheben" }));
-    expect(screen.getByRole("button", { name: "Auswahl wiederherstellen" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Auswahl wiederherstellen" })).toBeUnavailable();
   });
 
   it("ändert den Grund nachträglich", async () => {

@@ -11,6 +11,8 @@ import type { PrintJob, StoreResult } from "@/contract";
 import { MAX_HANDOFF_JOBS } from "@/contract";
 
 import type { CoreOptions, StowlyCore } from "..";
+import { SYNC_FIRST_MAX_WAIT_MS } from "../api/runtime";
+import { SENDING_MARK_TTL_MS } from "../store";
 import type { SchedulerTimers } from "../sync/scheduler";
 import { FakePrintService, type FakeCall, type FakeLink, type FakePrintOptions } from "../testing/fake-api";
 import { commandsOf, disposeAll, expectCoreError, firstZoneId, signedIn, value, type Harness } from "../testing/harness";
@@ -84,7 +86,12 @@ function sent(harness: Harness, type: string): Record<string, unknown>[] {
   return harness.server.syncRequests.flatMap((request) => commandsOf(request)).filter((command) => command.type === type);
 }
 
-/** Zeitgeber von Hand: sammelt, was der Kern vormerkt, und führt es auf Wunsch aus. */
+/**
+ * Zeitgeber von Hand: sammelt, was der Kern vormerkt, und führt es auf Wunsch aus. Abgleich und
+ * Zustellen teilen sich die Zeitgeber; die Prüfung nebenbei des Abgleichs (15 Sekunden) liegt
+ * dabei neben dem zweiten Zustellversuch (auch 15 Sekunden). `fire` führt deshalb alle aus, die
+ * mit dieser Wartezeit vorgemerkt sind.
+ */
 function manualTimers() {
   const pending = new Map<number, { delay: number; callback: () => void }>();
   let next = 1;
@@ -103,20 +110,37 @@ function manualTimers() {
     timers,
     delays: () => [...pending.values()].map((entry) => entry.delay),
     fire(delay: number) {
-      for (const [handle, entry] of pending) {
-        if (entry.delay === delay) {
-          pending.delete(handle);
+      const due = [...pending].filter(([, entry]) => entry.delay === delay);
+      if (due.length === 0) {
+        throw new Error(`Kein Zeitgeber mit ${delay} ms; vorgemerkt: ${[...pending.values()].map((entry) => entry.delay).join(", ")}`);
+      }
+      for (const [handle, entry] of due) {
+        pending.delete(handle);
+        entry.callback();
+      }
+    },
+    /** Führt alles aus, was gerade vorgemerkt ist (was dabei abgeräumt wird, nicht mehr). */
+    fireAll() {
+      for (const [handle, entry] of [...pending]) {
+        if (pending.delete(handle)) {
           entry.callback();
-          return;
         }
       }
-      throw new Error(`Kein Zeitgeber mit ${delay} ms; vorgemerkt: ${[...pending.values()].map((entry) => entry.delay).join(", ")}`);
     },
   };
 }
 
 /** Lässt alles laufen, was gerade ansteht (für „es passiert nichts"). */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+/** Ein Versprechen, das der Test selbst erfüllt. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open: () => void = () => undefined;
+  const promise = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
 
 // ------------------------------------------------------------------------------------------
 
@@ -168,6 +192,69 @@ describe("Etikett an den Drucker am Server", () => {
     const syncs = harness.server.syncRequests.length;
     await harness.core.printers.probe(printer.id);
     expect(harness.server.syncRequests).toHaveLength(syncs);
+  });
+
+  it("wartet bei „Jetzt drucken“ höchstens 10 Sekunden auf den Abgleich; was der Server noch nicht kennt, geht danach hinaus", async () => {
+    const manual = manualTimers();
+    const harness = await withServerPrinter({ autoSync: true, timers: manual.timers });
+    const { core, server, network } = harness;
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id ?? "";
+
+    // Der Server ist langsam: Der Abgleich hängt.
+    const slow = gate();
+    network.beforeRequest = async (call) => {
+      if (call.path === "/api/sync") {
+        await slow.promise;
+      }
+    };
+    let flushed = false;
+    const flushing = core.print.flush().finally(() => {
+      flushed = true;
+    });
+    await vi.waitFor(() => expect(manual.delays()).toContain(SYNC_FIRST_MAX_WAIT_MS));
+    await settle();
+    expect(flushed).toBe(false);
+    expect(SYNC_FIRST_MAX_WAIT_MS).toBe(10_000);
+
+    // Nach 10 Sekunden geht es weiter: Der Server kennt das Etikett noch nicht, es bleibt ausstehend.
+    manual.fire(SYNC_FIRST_MAX_WAIT_MS);
+    expect(await flushing).toEqual({ delivered: 0, pending: 1, problems: [] });
+    expect(network.calls.some(isSubmit)).toBe(false);
+    expect(jobOf(core, jobId).state).toBe("pending");
+    expect(value(core.sync.status).phase).toBe("syncing");
+
+    // Der Abgleich läuft weiter; ist er fertig, geht das Etikett von selbst hinaus.
+    network.beforeRequest = null;
+    slow.open();
+    await vi.waitFor(() => expect(server.print.printed).toEqual([jobId]));
+    await vi.waitFor(() => expect(jobOf(core, jobId).state).toBe("printed"));
+  });
+
+  it("wartet bei „Verbindung prüfen“ höchstens 10 Sekunden; kennt der Server den Drucker dann noch nicht, sagt die Abfrage das", async () => {
+    const manual = manualTimers();
+    const harness = await signedIn({ core: { timers: manual.timers } });
+    const { core, network } = harness;
+    const printer = await core.printers.create({ name: "Küche", connection: "server", server: { driver: "image", model: null, address: null, media: "62" } });
+
+    const slow = gate();
+    network.beforeRequest = async (call) => {
+      if (call.path === "/api/sync") {
+        await slow.promise;
+      }
+    };
+    const probing = core.printers.probe(printer.id);
+    await vi.waitFor(() => expect(manual.delays()).toContain(SYNC_FIRST_MAX_WAIT_MS));
+    manual.fire(SYNC_FIRST_MAX_WAIT_MS);
+    expect(await probing).toMatchObject({ reachable: true, url: null, problem: "unknown_printer" });
+
+    // Der Abgleich läuft zu Ende; danach kennt der Server den Drucker.
+    network.beforeRequest = null;
+    slow.open();
+    await vi.waitFor(() => expect(sent(harness, "printer.create")).toMatchObject([{ printer_id: printer.id }]));
+    await vi.waitFor(() => expect(value(core.sync.status).pending).toBe(0));
+    expect(await core.printers.probe(printer.id)).toMatchObject({ reachable: true, problem: null });
+    expect(manual.delays()).toEqual([]);
   });
 
   it("lässt das Etikett ausstehen, wenn der Server nicht erreichbar ist, und stellt später zu", async () => {
@@ -522,9 +609,14 @@ describe("Direkt zum Pi", () => {
     harness.http.reachable = true;
     manual.fire(15_000);
     await vi.waitFor(() => expect(pi.printed).toHaveLength(1));
-    // Nichts steht mehr aus: kein weiterer Versuch vorgemerkt.
+    // Nichts steht mehr aus: kein weiterer Versuch vorgemerkt. Was noch vorgemerkt ist, gehört
+    // zum Abgleich (Takt, Prüfung nebenbei) und fragt den Server, nicht den Pi.
     await settle();
-    expect(manual.delays().filter((delay) => delay === 5_000 || delay === 15_000)).toEqual([]);
+    expect(manual.delays().filter((delay) => delay === 5_000)).toEqual([]);
+    const piCalls = harness.piCalls().length;
+    manual.fireAll();
+    await settle();
+    expect(harness.piCalls()).toHaveLength(piCalls);
   });
 
   it("stellt ohne selbsttätigen Betrieb nie von selbst zu, nur über flush()", async () => {
@@ -1068,6 +1160,129 @@ describe("Zustand des Druckers weiterreichen", () => {
     await core.printers.probe(printerId);
     await core.sync.now();
     expect(sent(harness, "printer.report")).toHaveLength(4);
+  });
+
+  it("hält ohne Server je Drucker höchstens eine Meldung in der Outbox; es gilt die jüngste, hier wie beim Server", async () => {
+    const harness = await withPi();
+    const { core, pi, network, printerId } = harness;
+    const reportsBefore = sent(harness, "printer.report").length;
+    // Im Keller: kein Server, aber der Pi. Jede Abfrage meldet seinen Zustand.
+    network.offline = true;
+    await core.printers.probe(printerId);
+    expect(value(core.sync.status).pending).toBe(1);
+    pi.setStatus("brother", { ready: false, media_detected: false, errors: ["no_media"] });
+    await core.printers.probe(printerId);
+    pi.restart();
+    pi.setStatus("brother", { ready: false, media_detected: false, errors: ["cover_open"] });
+    await core.printers.probe(printerId);
+    // Drei Meldungen, eine in der Outbox: die jüngste, und die Anzeige zeigt dasselbe wie ohne Ersetzen.
+    expect(value(core.sync.status).pending).toBe(1);
+    expect(value(core.data.printerStatus)).toMatchObject([{ printer_id: printerId, boot_id: pi.bootId, status: { errors: ["cover_open"] } }]);
+
+    // Auch beim Zustellen (gedrosselt, aber bei jeder Änderung) bleibt es bei einer.
+    pi.setStatus("brother", { ready: true, media_detected: true, errors: [] });
+    const stored = await storeLabelled(core);
+    await core.print.flush();
+    await vi.waitFor(() => expect(jobOf(core, stored.print_jobs[0]?.id).state).toBe("printed"));
+    expect(value(core.data.printerStatus)).toMatchObject([{ printer_id: printerId, boot_id: pi.bootId, status: { ready: true, errors: [] } }]);
+
+    network.offline = false;
+    await core.sync.now();
+    expect(value(core.sync.status)).toMatchObject({ pending: 0, phase: "idle" });
+    expect(sent(harness, "printer.report").slice(reportsBefore)).toMatchObject([{ printer_id: printerId, boot_id: pi.bootId, status: { ready: true, errors: [] } }]);
+    expect(harness.server.data.printer_status.get(printerId)).toMatchObject({ boot_id: pi.bootId, status: { ready: true, errors: [] } });
+  });
+
+  it("lässt stehen, was ein Abgleich gerade sendet, auch der eines anderen Tabs, und schickt die neue Meldung danach", async () => {
+    const harness = await withPi();
+    const { core, pi, network, server, printerId } = harness;
+    const tab = await harness.another();
+    await core.printers.probe(printerId);
+    const before = sent(harness, "printer.report").length;
+
+    // Der Abgleich des ersten Tabs ist unterwegs; der Server hat die Anfrage noch nicht.
+    const slow = gate();
+    let syncing = false;
+    network.beforeRequest = async (call) => {
+      if (call.path === "/api/sync" && !syncing) {
+        syncing = true;
+        await slow.promise;
+      }
+    };
+    const running = core.sync.now();
+    await vi.waitFor(() => expect(syncing).toBe(true));
+    // Inzwischen meldet sich der Pi neu, in diesem Tab und im anderen.
+    pi.setStatus("brother", { errors: ["cover_open"], ready: false });
+    await core.printers.probe(printerId);
+    pi.setStatus("brother", { errors: ["no_media"], ready: false, media_detected: false });
+    await tab.printers.probe(printerId);
+    // Die gesendete bleibt; die beiden neuen ersetzen einander.
+    await vi.waitFor(() => expect(value(core.sync.status).pending).toBe(2));
+    await vi.waitFor(() => expect(value(core.data.printerStatus)).toMatchObject([{ status: { errors: ["no_media"] } }]));
+
+    network.beforeRequest = null;
+    slow.open();
+    await running;
+    // Die gesendete ist bestätigt; die jüngste ging mit der nächsten Runde desselben Abgleichs
+    // hinaus. Kein Fehler, nichts verloren, nichts doppelt.
+    expect(value(core.sync.status)).toMatchObject({ pending: 0, phase: "idle", last_error: null });
+    expect(value(core.data.printerStatus)).toMatchObject([{ status: { errors: ["no_media"] } }]);
+    expect(sent(harness, "printer.report").slice(before).map((command) => (command.status as { errors: string[] }).errors)).toEqual([[], ["no_media"]]);
+    expect(server.data.printer_status.get(printerId)?.status?.errors).toEqual(["no_media"]);
+  });
+
+  it("verträgt ein Ergebnis zu einer Meldung, die unterwegs doch ersetzt wurde (Tab mitten im Abgleich beendet)", async () => {
+    const harness = await withPi();
+    const { core, pi, network, server, clock, printerId } = harness;
+    await core.printers.probe(printerId);
+    const before = sent(harness, "printer.report").length;
+
+    const slow = gate();
+    let syncing = false;
+    network.beforeRequest = async (call) => {
+      if (call.path === "/api/sync" && !syncing) {
+        syncing = true;
+        await slow.promise;
+      }
+    };
+    const running = core.sync.now();
+    await vi.waitFor(() => expect(syncing).toBe(true));
+    // Die Markierung gilt nicht ewig: Nach ihrer Frist wird die gesendete Meldung doch ersetzt.
+    clock.advance(SENDING_MARK_TTL_MS + 1_000);
+    pi.setStatus("brother", { errors: ["cover_open"], ready: false });
+    await core.printers.probe(printerId);
+    expect(value(core.sync.status).pending).toBe(1);
+
+    network.beforeRequest = null;
+    slow.open();
+    await running;
+    // Das Ergebnis der ersetzten Meldung stört nicht: Der Abgleich gelingt, und die neue geht
+    // mit seiner nächsten Runde hinaus.
+    expect(value(core.sync.status)).toMatchObject({ pending: 0, phase: "idle", last_error: null });
+    expect(value(core.sync.problems)).toEqual([]);
+    expect(sent(harness, "printer.report").slice(before)).toHaveLength(2);
+    expect(server.data.printer_status.get(printerId)?.status?.errors).toEqual(["cover_open"]);
+  });
+
+  it("gibt Gesendetes wieder frei, wenn die Antwort verloren geht: Danach wird es ersetzt", async () => {
+    const harness = await withPi();
+    const { core, pi, network, server, printerId } = harness;
+    await core.printers.probe(printerId);
+    const before = sent(harness, "printer.report").length;
+    // Der Server verbucht die Meldung, die Antwort kommt nie an.
+    network.dropResponses = 1;
+    await core.sync.now();
+    expect(value(core.sync.status)).toMatchObject({ pending: 1, online: false });
+
+    network.offline = true;
+    pi.setStatus("brother", { errors: ["no_media"], ready: false, media_detected: false });
+    await core.printers.probe(printerId);
+    expect(value(core.sync.status).pending).toBe(1);
+    network.offline = false;
+    await core.sync.now();
+    expect(value(core.sync.status)).toMatchObject({ pending: 0, phase: "idle" });
+    expect(sent(harness, "printer.report").slice(before)).toHaveLength(2);
+    expect(server.data.printer_status.get(printerId)?.status?.errors).toEqual(["no_media"]);
   });
 
   it("meldet für einen Drucker am Server nie; dessen Zustand bringt der Abgleich", async () => {

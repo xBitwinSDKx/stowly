@@ -132,9 +132,24 @@ export const INITIAL_SYNC_META: SyncMeta = {
   lookup_enabled: null,
 };
 
+/**
+ * Was ein Abgleich gerade sendet (docs/sync-protokoll.md, 9.1): Befehle der Outbox bis
+ * einschließlich der laufenden Nummer `upto` können unterwegs sein, seit `at` (Geräteuhr in
+ * Millisekunden). Fehlt der Eintrag, ist nichts unterwegs.
+ */
+export interface SendingMark {
+  upto: number;
+  at: number;
+}
+
 export interface KvValues {
   /** Zähler: wächst mit jedem Schreibvorgang. Daran erkennt ein Tab, dass ein anderer geschrieben hat. */
   seq: number;
+  /**
+   * Was ein Abgleich gerade sendet, über Tabs und den Service Worker hinweg. Steht nie im
+   * Arbeitsspeicher und zählt `seq` nicht hoch: Wer es braucht, liest es in seiner Transaktion.
+   */
+  sending: SendingMark;
   session: StoredSession;
   sync: SyncMeta;
   settings: HouseholdSettings;

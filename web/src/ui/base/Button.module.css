@@ -27,7 +27,9 @@
   text-decoration: none;
 }
 
-.button:disabled {
+/* Gesperrt: `disabled`, oder `aria-disabled`, solange sie arbeitet oder den Fokus hat (lock.ts). */
+.button:disabled,
+.button[aria-disabled="true"] {
   opacity: 0.5;
 }
 
@@ -97,7 +99,7 @@
   color: var(--color-accent-contrast);
   font-weight: var(--weight-bold);
 }
-.primary:hover:not(:disabled) {
+.primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-accent-hover);
 }
 
@@ -105,7 +107,7 @@
   border-color: var(--color-border-strong);
   background: transparent;
 }
-.secondary:hover:not(:disabled) {
+.secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--color-accent-border);
   background: var(--color-accent-soft);
 }
@@ -113,7 +115,7 @@
 .ghost {
   color: var(--color-text-muted);
 }
-.ghost:hover:not(:disabled) {
+.ghost:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-surface-2);
   color: var(--color-text);
 }
@@ -123,6 +125,6 @@
   color: var(--color-danger-contrast);
   font-weight: var(--weight-bold);
 }
-.danger:hover:not(:disabled) {
+.danger:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-danger-hover);
 }

@@ -9,7 +9,18 @@
  *
  * Ohne DOM: Diese Datei läuft auch im Service Worker.
  */
-import { ENDPOINTS, type Device, type DeviceList, type ErrorCode, type LoginResponse, type ServerHealth, type SyncRequest, type SyncResponse } from "@/contract/api.gen";
+import {
+  ENDPOINTS,
+  type Device,
+  type DeviceList,
+  type ErrorCode,
+  type LoginResponse,
+  type LookupResult,
+  type LookupResultState,
+  type ServerHealth,
+  type SyncRequest,
+  type SyncResponse,
+} from "@/contract/api.gen";
 import { CoreError, type CoreErrorCode } from "@/contract/errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -19,6 +30,10 @@ export const HEALTH_TIMEOUT_MS = 3_000;
 /** Ein Abgleich darf dauern: Der erste Abzug eines großen Bestands ist kein kleiner Aufruf. */
 export const SYNC_TIMEOUT_MS = 45_000;
 export const REQUEST_TIMEOUT_MS = 15_000;
+/** Nachschlagen beim Scannen: Der Server wartet bis zu 4 Sekunden auf Open Food Facts, dazu der Weg. */
+export const LOOKUP_TIMEOUT_MS = 6_000;
+
+const LOOKUP_STATES: ReadonlySet<string> = new Set<LookupResultState>(["found", "not_found", "pending", "skipped", "disabled"]);
 
 const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
 
@@ -176,6 +191,28 @@ export class ApiClient {
   async revokeDevice(token: string, deviceId: string): Promise<void> {
     const path = ENDPOINTS.revoke_device.path.replace("{device_id}", encodeURIComponent(deviceId));
     await this.call(ENDPOINTS.revoke_device, path, { token, timeoutMs: REQUEST_TIMEOUT_MS }, async () => undefined);
+  }
+
+  /**
+   * Schlägt einen Barcode nach (`GET /api/lookup/{barcode}?wait=…`); der Server wartet bis zu
+   * `waitS` Sekunden auf Open Food Facts. Eine Antwort, die nicht so aussieht, gilt als „nicht
+   * erreichbar".
+   */
+  async lookup(token: string, barcode: string, waitS: number): Promise<LookupResult> {
+    const path = `${ENDPOINTS.lookup_barcode.path.replace("{barcode}", encodeURIComponent(barcode))}?wait=${String(waitS)}`;
+    const answer = await this.json<LookupResult>(ENDPOINTS.lookup_barcode, path, { token, timeoutMs: LOOKUP_TIMEOUT_MS });
+    if (
+      !isRecord(answer) ||
+      typeof answer.state !== "string" ||
+      !LOOKUP_STATES.has(answer.state) ||
+      typeof answer.name !== "string" ||
+      typeof answer.brand !== "string" ||
+      typeof answer.quantity !== "string" ||
+      !(answer.image_id === null || typeof answer.image_id === "string")
+    ) {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return answer;
   }
 
   /** Lädt die Kopie der Datenbank. Der Name steht in `Content-Disposition`. */

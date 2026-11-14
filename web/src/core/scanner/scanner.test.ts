@@ -7,11 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScanResult } from "@/contract";
 
 import { CameraError, type CameraCapabilities, type CameraInfo, type OpenCamera } from "./camera";
-import { ScanDeduper } from "./dedupe";
+import { RESCAN_GAP_MS, ScanDeduper } from "./dedupe";
 import type { CodeDetector, DetectorKind } from "./detector";
 import { playFeedback, setFeedbackActive, unlockAudio } from "./feedback";
 import type { DetectedCode } from "./formats";
-import { Scanner, type ScannerOptions } from "./scanner";
+import { Scanner, STALL_RESTART_MS, STALL_RESTART_SPACING_MS, type ScannerOptions } from "./scanner";
 
 const PACKAGE = { rawValue: "STOWLY/P/A2B3C", format: "qr_code", center: { x: 50, y: 50 }, side: 200 } satisfies DetectedCode;
 const ZONE = { rawValue: "STOWLY/Z/3F2B8C1E5A474D099B6E0C1D2E3F4A5B", format: "qr_code", center: { x: 10, y: 10 }, side: 200 } satisfies DetectedCode;
@@ -23,7 +23,7 @@ function at(code: DetectedCode, x: number, y: number): DetectedCode {
 }
 
 /** Eine Umgebung mit nachgebildeter Kamera, Erkennung und Uhr. */
-function setup(config: { cameraId?: string | null; devices?: Record<string, CameraCapabilities>; engine?: DetectorKind } = {}) {
+function setup(config: { cameraId?: string | null; devices?: Record<string, CameraCapabilities>; engine?: DetectorKind; appleMobile?: boolean } = {}) {
   const devices = config.devices ?? { cam: {} };
   const running = new Set<object>();
   const opened: (string | null)[] = [];
@@ -38,6 +38,13 @@ function setup(config: { cameraId?: string | null; devices?: Record<string, Came
     now: 0,
     detections: 0,
     fallbacks: 0,
+    /** Das System hat das Video angehalten (iOS, wenn sich die Tastatur öffnet); `play()` hebt es auf. */
+    systemPaused: false,
+    /** Die Kamera liefert keine neuen Bilder mehr, auch nach `play()`; erst eine neu geöffnete wieder. */
+    frozen: false,
+    plays: 0,
+    /** Was der Scanner an der Kamera eingestellt hat (`applyConstraints`). */
+    constraints: [] as MediaTrackConstraints[],
   };
 
   const video = document.createElement("video");
@@ -47,7 +54,22 @@ function setup(config: { cameraId?: string | null; devices?: Record<string, Came
   Object.defineProperty(video, "readyState", { get: () => (video.srcObject ? 4 : 0) });
   let source: unknown = null;
   Object.defineProperty(video, "srcObject", { get: () => source, set: (value) => (source = value) });
-  video.play = () => Promise.resolve();
+  // Die Abspielposition läuft mit der Uhr, solange neue Bilder kommen.
+  let position = 0;
+  Object.defineProperty(video, "currentTime", {
+    get: () => {
+      if (source !== null && !state.systemPaused && !state.frozen) {
+        position = state.now / 1000;
+      }
+      return position;
+    },
+  });
+  Object.defineProperty(video, "paused", { get: () => source === null || state.systemPaused });
+  video.play = () => {
+    state.plays += 1;
+    state.systemPaused = false;
+    return Promise.resolve();
+  };
   video.pause = () => undefined;
 
   const detector = (kind: DetectorKind): CodeDetector => ({
@@ -69,6 +91,7 @@ function setup(config: { cameraId?: string | null; devices?: Record<string, Came
     onCameraChosen: (deviceId) => chosen.push(deviceId),
     deps: {
       now: () => state.now,
+      appleMobile: () => config.appleMobile ?? false,
       async openCamera(deviceId) {
         opened.push(deviceId);
         if (state.openGate) {
@@ -81,9 +104,17 @@ function setup(config: { cameraId?: string | null; devices?: Record<string, Came
         if (state.missing.includes(id)) {
           throw new CameraError("not_found");
         }
+        // Eine neu geöffnete Kamera liefert wieder Bilder.
+        state.frozen = false;
         const handle = {};
         running.add(handle);
-        const track = { stop: () => running.delete(handle), addEventListener: () => undefined } as unknown as MediaStreamTrack;
+        const track = {
+          stop: () => running.delete(handle),
+          addEventListener: () => undefined,
+          applyConstraints: async (constraints: MediaTrackConstraints) => {
+            state.constraints.push(constraints);
+          },
+        } as unknown as MediaStreamTrack;
         const stream = { getTracks: () => [track] } as unknown as MediaStream;
         return { stream, track, deviceId: id, capabilities: devices[id] ?? {} } satisfies OpenCamera;
       },
@@ -223,6 +254,27 @@ describe("Start und Stopp", () => {
 });
 
 describe("Kamera", () => {
+  it("beginnt am iPhone mit 2× Zoom, wenn die Kamera ihn kann; sonst bleibt er, wie er ist", async () => {
+    const zoomable = { cam: { facingMode: ["environment"], zoom: { min: 1, max: 10, step: 0.1 } } };
+    const iphone = setup({ appleMobile: true, devices: zoomable });
+    await iphone.scanner.start();
+    expect(iphone.state.constraints).toEqual([{ advanced: [{ zoom: 2 }] }]);
+    expect(iphone.scanner.state.get().zoom).toEqual({ min: 1, max: 10, step: 0.1, value: 2 });
+    iphone.scanner.dispose();
+
+    const android = setup({ appleMobile: false, devices: zoomable });
+    await android.scanner.start();
+    expect(android.state.constraints).toEqual([]);
+    expect(android.scanner.state.get().zoom?.value).toBe(1);
+    android.scanner.dispose();
+
+    // Ohne Zoom (oder mit zu wenig) gibt es nichts einzustellen.
+    const plain = setup({ appleMobile: true, devices: { cam: { facingMode: ["environment"] } } });
+    await plain.scanner.start();
+    expect(plain.state.constraints).toEqual([]);
+    expect(plain.scanner.state.get().zoom).toBeNull();
+  });
+
   it("merkt sich die gewählte Kamera", async () => {
     const env = setup();
     await env.scanner.start();
@@ -448,6 +500,133 @@ describe("Auswertung", () => {
   });
 });
 
+describe("Nach einem Dialog", () => {
+  /** Der Barcode löst den Dialog aus, der Dialog ist eine Weile offen, dann zu. */
+  async function scanThroughDialog(env: ReturnType<typeof setup>, openMs = 5_000): Promise<void> {
+    await env.scanner.start();
+    env.state.visibleCodes = [PRODUCT];
+    await run(env, 200);
+    expect(env.scans).toEqual([{ kind: "product", barcode: "4006381333931" }]);
+    env.scanner.pause();
+    await run(env, openMs);
+    env.scanner.resume();
+  }
+
+  it("öffnet ihn nicht von selbst wieder, solange der Barcode im Bild bleibt, und sagt, was hilft", async () => {
+    const env = setup();
+    await scanThroughDialog(env);
+    await run(env, 10_000);
+    expect(env.scans).toHaveLength(1);
+    expect(env.scanner.state.get().rescan).toBe(true);
+    // Kurze Aussetzer der Erkennung bei ruhig gehaltenem Code zählen nicht als Wegschwenken.
+    for (let dropout = 0; dropout < 5; dropout += 1) {
+      env.state.visibleCodes = [];
+      await run(env, 600);
+      env.state.visibleCodes = [PRODUCT];
+      await run(env, 300);
+    }
+    expect(env.scans).toHaveLength(1);
+  });
+
+  it("zählt denselben Barcode wieder, sobald er kurz nicht zu sehen war; der Hinweis geht", async () => {
+    const env = setup();
+    await scanThroughDialog(env);
+    await run(env, 1_000);
+    expect(env.scanner.state.get().rescan).toBe(true);
+    env.state.visibleCodes = [];
+    await run(env, RESCAN_GAP_MS);
+    expect(env.scanner.state.get().rescan).toBe(false);
+    env.state.visibleCodes = [PRODUCT];
+    await run(env, 200);
+    expect(env.scans).toEqual([
+      { kind: "product", barcode: "4006381333931" },
+      { kind: "product", barcode: "4006381333931" },
+    ]);
+    expect(RESCAN_GAP_MS).toBeLessThanOrEqual(1_000);
+  });
+
+  it("lässt ein Etikett (es bucht ohne Rückfrage) nach dem Dialog erst nach zwei Sekunden wieder zählen", async () => {
+    const env = setup();
+    await env.scanner.start();
+    env.state.visibleCodes = [PACKAGE];
+    await run(env, 200);
+    env.scanner.pause();
+    await run(env, 5_000);
+    env.scanner.resume();
+    await run(env, 1_000);
+    expect(env.scanner.state.get().rescan).toBe(false);
+    env.state.visibleCodes = [];
+    await run(env, 1_000);
+    env.state.visibleCodes = [PACKAGE];
+    await run(env, 500);
+    expect(env.scans).toHaveLength(1);
+    env.state.visibleCodes = [];
+    await run(env, 2_100);
+    env.state.visibleCodes = [PACKAGE];
+    await run(env, 200);
+    expect(env.scans).toHaveLength(2);
+  });
+
+  it("startet das Video wieder, wenn das System es angehalten hat (iOS nach der Tastatur)", async () => {
+    const env = setup();
+    await env.scanner.start();
+    env.state.visibleCodes = [PRODUCT];
+    await run(env, 200);
+    env.scanner.pause();
+    // Im Dialog öffnet sich die Tastatur; iOS hält das Video an, das Bild steht.
+    env.state.systemPaused = true;
+    await run(env, 5_000);
+    const plays = env.state.plays;
+    env.scanner.resume();
+    expect(env.state.plays).toBe(plays + 1);
+    // Es läuft wieder: Ein anderer Code wird erkannt, ohne dass die Kamera neu geöffnet wird.
+    env.state.visibleCodes = [PACKAGE];
+    await run(env, 300);
+    expect(env.scans).toEqual([
+      { kind: "product", barcode: "4006381333931" },
+      { kind: "package", package_id: "A2B3C" },
+    ]);
+    expect(env.opened).toHaveLength(1);
+  });
+
+  it("öffnet die Kamera neu, wenn trotzdem keine neuen Bilder kommen; was gesperrt war, bleibt gesperrt", async () => {
+    const env = setup();
+    await scanThroughDialog(env);
+    // Das letzte Bild steht, und es zeigt noch den Barcode von eben.
+    env.state.frozen = true;
+    await run(env, STALL_RESTART_MS - 500);
+    expect(env.opened).toHaveLength(1);
+    await run(env, 1_000);
+    expect(env.opened).toHaveLength(2);
+    expect(env.running.size).toBe(1);
+    await vi.waitFor(() => expect(env.scanner.state.get().status).toBe("running"));
+    // Das neue Bild zeigt noch denselben Barcode: kein neuer Dialog. Ein anderer Code zählt.
+    await run(env, 2_000);
+    expect(env.scans).toHaveLength(1);
+    env.state.visibleCodes = [PACKAGE];
+    await run(env, 300);
+    expect(env.scans).toHaveLength(2);
+
+    // Steht es gleich wieder, wird nicht ständig neu geöffnet: frühestens 15 Sekunden später.
+    env.state.frozen = true;
+    await run(env, STALL_RESTART_MS + 1_000);
+    expect(env.opened).toHaveLength(2);
+    await run(env, STALL_RESTART_SPACING_MS);
+    expect(env.opened).toHaveLength(3);
+  });
+
+  it("öffnet nicht neu, solange seit dem Öffnen noch nie ein Bild kam", async () => {
+    const env = setup();
+    env.state.frozen = true;
+    const open = env.scanner.start();
+    // `openCamera` taut die Kamera auf; diese hier liefert trotzdem nie ein Bild.
+    await open;
+    env.state.frozen = true;
+    await run(env, 30_000);
+    expect(env.opened).toHaveLength(1);
+  });
+});
+
 describe("Wiederholungen", () => {
   it("ignoriert denselben Wert zwei Sekunden lang, gerechnet ab der letzten Sichtung", () => {
     const deduper = new ScanDeduper();
@@ -576,6 +755,21 @@ describe("Mindestgröße eines Etiketts im Bild", () => {
   // 7 % von 800 Bildpunkten sind 56.
   const SMALL = 55;
   const BIG = 57;
+
+  it("meint mit Zoom denselben Abstand: Bei 2× muss das Etikett im Bild doppelt so groß sein", async () => {
+    const env = setup({ appleMobile: true, devices: { cam: { facingMode: ["environment"], zoom: { min: 1, max: 10, step: 0.1 } } } });
+    await env.scanner.start();
+    expect(env.scanner.state.get().zoom?.value).toBe(2);
+    // 10 % des Ausschnitts: ohne Zoom genug, mit 2× (das Etikett im Regal dahinter) nicht.
+    env.state.visibleCodes = [sized(at(PACKAGE, 400, 400), 80)];
+    await run(env, 1_000);
+    expect(env.scans).toEqual([]);
+    expect(env.scanner.state.get().too_small).toBe(true);
+    // Zurück auf 1×: Jetzt zählt es.
+    await env.scanner.setZoom(1);
+    await run(env, 200);
+    expect(env.scans).toEqual([{ kind: "package", package_id: "A2B3C" }]);
+  });
 
   it("bucht ein zu kleines Etikett nicht und zeigt „Näher ran“; beim Näherkommen zählt es sofort", async () => {
     const env = setup();

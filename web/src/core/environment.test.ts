@@ -12,7 +12,7 @@ import { createCore } from ".";
 import { runBackgroundSync } from "./background";
 import { IMAGE_CACHE, imageUrl, preloadImages } from "./images";
 import { SYNC_LOCK_NAME, withLock } from "./sync/lock";
-import type { SchedulerTimers } from "./sync/scheduler";
+import { CHECK_INTERVAL_MS, type SchedulerTimers } from "./sync/scheduler";
 import { createFakeNetwork, FAKE_PASSWORD, FakeServer } from "./testing/fake-api";
 import { commandsOf, createClock, disposeAll, expectCoreError, firstZoneId, signedIn, start, value } from "./testing/harness";
 
@@ -40,6 +40,8 @@ function manualTimers() {
   return {
     timers,
     delays: () => [...pending.values()].map((entry) => entry.delay).sort((a, b) => a - b),
+    /** Kennung des vorgemerkten Zeitgebers mit dieser Wartezeit; eine neue heißt: neu gestellt. */
+    handle: (delay: number) => [...pending].find(([, entry]) => entry.delay === delay)?.[0] ?? null,
     /** Führt den Zeitgeber mit dieser Wartezeit aus. */
     fire(delay: number) {
       for (const [handle, entry] of pending) {
@@ -111,8 +113,9 @@ describe("Auslöser des Abgleichs", () => {
     expect(stored.product).toMatchObject({ name: "", lookup: "pending" });
     clock.fire(2_000);
     await expect.poll(() => value(core.sync.status).pending).toBe(0);
-    // Solange das Produkt nachgeschlagen wird: zusätzlich nach 3, 10 und 30 Sekunden.
-    expect(clock.delays()).toEqual([3_000, 10_000, 30_000, 60_000]);
+    // Solange das Produkt nachgeschlagen wird: zusätzlich nach 3, 10 und 30 Sekunden (daneben
+    // die Prüfung nebenbei nach 15 und der Takt nach 60 Sekunden).
+    expect(clock.delays()).toEqual([3_000, 10_000, CHECK_INTERVAL_MS, 30_000, 60_000]);
 
     time.advance(3_000);
     clock.fire(3_000);
@@ -130,6 +133,168 @@ describe("Auslöser des Abgleichs", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(clock.delays()).toEqual([]);
     expect(network.calls).toHaveLength(calls);
+  });
+});
+
+/** Ein Versprechen, das der Test selbst erfüllt. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open: () => void = () => undefined;
+  const promise = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
+}
+
+/** Ein Proxy ohne Server dahinter (502, nicht im Fehlerformat): „nicht erreichbar". Merkt, was gefragt wurde. */
+function serverGone(asked: string[]) {
+  return (call: { path: string }) => {
+    asked.push(call.path);
+    return new Response("Bad Gateway", { status: 502 });
+  };
+}
+
+describe("Ist der Server erreichbar? (Prüfung nebenbei)", () => {
+  it("merkt einen Ausfall nach 15 Sekunden mit einer kleinen Anfrage und gleicht bei der Rückkehr sofort ab", async () => {
+    const clock = manualTimers();
+    const { core, server, network } = await start({ core: { autoSync: true, timers: clock.timers } });
+    await core.session.login(FAKE_PASSWORD, "Handy");
+    expect(value(core.sync.status)).toMatchObject({ online: true, phase: "idle" });
+    // Nach der Anmeldung: Prüfung in 15 Sekunden, Abgleich in 60.
+    expect(clock.delays()).toEqual([CHECK_INTERVAL_MS, 60_000]);
+
+    // Der Server fällt aus, während niemand etwas ändert.
+    const asked: string[] = [];
+    network.respondWith = serverGone(asked);
+    clock.fire(CHECK_INTERVAL_MS);
+    await expect.poll(() => value(core.sync.status).online).toBe(false);
+    expect(value(core.sync.status)).toMatchObject({ phase: "error", last_error: { code: "offline" } });
+    expect(asked).toEqual(["/api/health"]);
+    // Solange er fehlt: kein Abgleich nach der Uhr, nur die nächste Prüfung.
+    expect(clock.delays()).toEqual([CHECK_INTERVAL_MS]);
+    clock.fire(CHECK_INTERVAL_MS);
+    await expect.poll(() => asked).toEqual(["/api/health", "/api/health"]);
+    expect(server.syncRequests).toHaveLength(1);
+
+    // Er ist wieder da: Die nächste Prüfung merkt es, und es wird sofort abgeglichen.
+    network.respondWith = null;
+    await expect.poll(() => clock.delays()).toEqual([CHECK_INTERVAL_MS]);
+    clock.fire(CHECK_INTERVAL_MS);
+    await expect.poll(() => value(core.sync.status)).toMatchObject({ online: true, phase: "idle", last_error: null });
+    expect(server.syncRequests).toHaveLength(2);
+    // Und der Abgleich braucht keine eigene Prüfung mehr: Die eben gelungene genügt.
+    expect(network.calls.slice(-2).map((call) => call.path)).toEqual(["/api/health", "/api/sync"]);
+    expect(clock.delays()).toEqual([CHECK_INTERVAL_MS, 60_000]);
+  });
+
+  it("lernt aus anderen Aufrufen: ohne Server kein Takt, und antwortet er wieder, wird sofort abgeglichen", async () => {
+    const clock = manualTimers();
+    const { core, server, network } = await start({ core: { autoSync: true, timers: clock.timers } });
+    await core.session.login(FAKE_PASSWORD, "Handy");
+    const check = clock.handle(CHECK_INTERVAL_MS);
+
+    network.offline = true;
+    await expectCoreError(core.devices.list(), "offline");
+    expect(value(core.sync.status).online).toBe(false);
+    // Kein Abgleich nach der Uhr mehr; die Prüfung wartet wieder volle 15 Sekunden.
+    expect(clock.delays()).toEqual([CHECK_INTERVAL_MS]);
+    expect(clock.handle(CHECK_INTERVAL_MS)).not.toBe(check);
+
+    network.offline = false;
+    await core.devices.list();
+    await expect.poll(() => server.syncRequests.length).toBe(2);
+    await expect.poll(() => value(core.sync.status)).toMatchObject({ online: true, phase: "idle" });
+  });
+
+  it("prüft nur angemeldet und im Vordergrund", async () => {
+    const clock = manualTimers();
+    const { core, network } = await start({ core: { autoSync: true, timers: clock.timers } });
+    // Abgemeldet: nur der Takt (der dann allein die Erreichbarkeit prüft).
+    await expect.poll(() => value(core.sync.status).online).toBe(true);
+    expect(clock.delays()).toEqual([60_000]);
+
+    await core.session.login(FAKE_PASSWORD, "Handy");
+    expect(clock.delays()).toContain(CHECK_INTERVAL_MS);
+    const hidden = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(clock.delays()).toEqual([]);
+    const calls = network.calls.length;
+    await core.devices.list();
+    expect(clock.delays()).toEqual([]);
+
+    hidden.mockRestore();
+    document.dispatchEvent(new Event("visibilitychange"));
+    await expect.poll(() => clock.delays()).toEqual([CHECK_INTERVAL_MS, 60_000]);
+    expect(network.calls.length).toBeGreaterThan(calls);
+  });
+
+  it("zwei sichtbare Tabs: Was einer erfährt, gilt im anderen, und der fragt nicht selbst", async () => {
+    const first = manualTimers();
+    const second = manualTimers();
+    const { core, network, another } = await start({ core: { autoSync: true, timers: first.timers } });
+    await core.session.login(FAKE_PASSWORD, "Handy");
+    const tab = await another({ timers: second.timers });
+    await expect.poll(() => second.delays()).toContain(CHECK_INTERVAL_MS);
+
+    // Der erste Tab prüft; der zweite wartet danach wieder volle 15 Sekunden.
+    const waiting = second.handle(CHECK_INTERVAL_MS);
+    first.fire(CHECK_INTERVAL_MS);
+    await expect.poll(() => second.handle(CHECK_INTERVAL_MS)).not.toBe(waiting);
+
+    // Der Server fällt aus: Der erste Tab merkt es, der zweite zeigt es, ohne selbst zu fragen.
+    const asked: string[] = [];
+    network.respondWith = serverGone(asked);
+    await expect.poll(() => first.delays()).toContain(CHECK_INTERVAL_MS);
+    first.fire(CHECK_INTERVAL_MS);
+    await expect.poll(() => value(tab.sync.status)).toMatchObject({ online: false, phase: "error", last_error: { code: "offline" } });
+    expect(value(core.sync.status).online).toBe(false);
+    expect(asked).toEqual(["/api/health"]);
+    // Auch der zweite Tab gleicht ohne Server nicht mehr nach der Uhr ab.
+    expect(second.delays()).toEqual([CHECK_INTERVAL_MS]);
+
+    // Er ist wieder da: Beide gleichen ab und zeigen „erreichbar".
+    network.respondWith = null;
+    await expect.poll(() => first.delays()).toContain(CHECK_INTERVAL_MS);
+    first.fire(CHECK_INTERVAL_MS);
+    await expect.poll(() => value(core.sync.status)).toMatchObject({ online: true, phase: "idle", last_error: null });
+    await expect.poll(() => value(tab.sync.status)).toMatchObject({ online: true, phase: "idle", last_error: null });
+  });
+
+  it("fragt nicht, solange ein anderer Tab abgleicht (Sperre stowly-sync, ohne auf sie zu warten)", async () => {
+    const first = manualTimers();
+    const second = manualTimers();
+    const { core, network, another } = await start({ core: { autoSync: true, timers: first.timers } });
+    await core.session.login(FAKE_PASSWORD, "Handy");
+    const tab = await another({ timers: second.timers });
+    await expect.poll(() => second.delays()).toContain(CHECK_INTERVAL_MS);
+    await core.zones.create({ name: "Keller" });
+
+    // Der Abgleich des ersten Tabs hängt beim Server.
+    const slow = gate();
+    let syncing = false;
+    network.beforeRequest = async (call) => {
+      if (call.path === "/api/sync") {
+        syncing = true;
+        await slow.promise;
+      }
+    };
+    const running = core.sync.now();
+    await expect.poll(() => syncing).toBe(true);
+    const healthChecks = () => network.calls.filter((call) => call.path === "/api/health").length;
+    const before = healthChecks();
+    second.fire(CHECK_INTERVAL_MS);
+    // Die Prüfung entfällt und wartet wieder 15 Sekunden.
+    await expect.poll(() => second.delays()).toContain(CHECK_INTERVAL_MS);
+    expect(healthChecks()).toBe(before);
+    expect(value(tab.sync.status).online).toBe(true);
+
+    network.beforeRequest = null;
+    slow.open();
+    await running;
+    expect(value(core.sync.status)).toMatchObject({ pending: 0, phase: "idle" });
+    // Ist die Sperre frei, fragt er wieder.
+    await expect.poll(() => second.delays()).toContain(CHECK_INTERVAL_MS);
+    second.fire(CHECK_INTERVAL_MS);
+    await expect.poll(() => healthChecks()).toBe(before + 1);
   });
 });
 

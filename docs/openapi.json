@@ -1667,6 +1667,65 @@
         ],
         "type": "object"
       },
+      "LookupResult": {
+        "additionalProperties": false,
+        "description": "Antwort von ``GET /api/lookup/{barcode}``. Leere Felder sind ``\"\"``, nie ``null`` (außer ``image_id``).",
+        "properties": {
+          "barcode": {
+            "pattern": "^([0-9]{8}|[0-9]{13})$",
+            "type": "string"
+          },
+          "brand": {
+            "description": "Der erste Eintrag von brands; leer, wenn unbekannt.",
+            "maxLength": 80,
+            "type": "string"
+          },
+          "image_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bild-ID für GET /api/images/{id}, wenn das Bild schon beim Server liegt; sonst null."
+          },
+          "name": {
+            "description": "Wie beim Füllen eines Produkts aufbereitet; leer, wenn unbekannt.",
+            "maxLength": 120,
+            "type": "string"
+          },
+          "quantity": {
+            "description": "Packungsgröße ohne Schätzzeichen; leer, wenn unbekannt.",
+            "maxLength": 40,
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/LookupResultState"
+          }
+        },
+        "required": [
+          "barcode",
+          "state",
+          "name",
+          "brand",
+          "quantity",
+          "image_id"
+        ],
+        "type": "object"
+      },
+      "LookupResultState": {
+        "description": "Ergebnis von ``GET /api/lookup/{barcode}`` (docs/sync-protokoll.md, Abschnitt 10).",
+        "enum": [
+          "found",
+          "not_found",
+          "pending",
+          "skipped",
+          "disabled"
+        ],
+        "type": "string"
+      },
       "LookupState": {
         "description": "Stand des Nachschlagens bei Open Food Facts.",
         "enum": [
@@ -3291,6 +3350,53 @@
         "summary": "Get Image",
         "tags": [
           "images"
+        ]
+      }
+    },
+    "/api/lookup/{barcode}": {
+      "get": {
+        "description": "Schlägt einen Barcode bei Open Food Facts nach, während der Anwender wartet.\n\nEin gespeichertes Ergebnis kommt sofort. Sonst stellt der Server den Barcode vorn in die\nWarteschlange seines Hintergrund-Ablaufs und wartet höchstens ``wait`` Sekunden; die Rate\ngilt unverändert. Ungültiger Barcode oder ``wait``: 400.",
+        "operationId": "lookup_barcode",
+        "parameters": [
+          {
+            "description": "EAN-8 oder EAN-13 mit gültiger Prüfziffer, in der gespeicherten Form.",
+            "in": "path",
+            "name": "barcode",
+            "required": true,
+            "schema": {
+              "description": "EAN-8 oder EAN-13 mit gültiger Prüfziffer, in der gespeicherten Form.",
+              "title": "Barcode",
+              "type": "string"
+            }
+          },
+          {
+            "description": "So viele Sekunden wartet der Server höchstens auf ein Ergebnis, das er noch nicht hat.",
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "default": 4,
+              "maximum": 8,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LookupResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Lookup Barcode",
+        "tags": [
+          "lookup"
         ]
       }
     },

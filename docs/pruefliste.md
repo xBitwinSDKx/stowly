@@ -6,7 +6,9 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
 
 ## A. Container
 
-- [ ] **1.** `.env` anlegen und `STOWLY_PASSWORD` setzen. `docker compose build`: Beide Stufen laufen durch, dazu `fonts-dejavu-core`, `libusb-1.0-0` und die Brother-Bibliothek mit Prüfsummen. Der Bau braucht Internet; das Paket `packbits` wird dabei aus dem Quelltext gebaut. (A1–A3, F1)
+- [ ] **1.** `.env` anlegen und `STOWLY_PASSWORD` setzen. `docker compose build` (braucht Internet): Beide Stufen laufen durch, dazu `fonts-dejavu-core` und `libusb-1.0-0`. (A1–A3, F1)
+  - Die drei Aufrufe `pip install` laufen durch: die Sperrdatei `server/requirements.lock`, Druckdienst und Server, die Brother-Bibliothek. „Building wheel for packbits" erscheint, „Installing build dependencies" nirgends; danach „Successfully uninstalled setuptools-78.1.1" und „No broken requirements found."
+  - `docker compose run --rm --no-deps stowly pip freeze` zeigt dieselben Versionen wie `server/requirements.lock` und `print/requirements-brother.txt`, kein setuptools.
 - [ ] **2.** `docker compose up -d`: Der Container wird `healthy`. `/api/health`, `/` und `/sw.js` antworten. Der Dienst läuft als Benutzer `stowly`; `/data` und `/data/print` gehören ihm. (A4–A8, F5)
 - [ ] **3.** Log ansehen (A9, F2–F4):
   - kein Traceback
@@ -14,7 +16,7 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - „Druckdienst unter /print bereit"
   - „Schriften der Etiketten:" nennt dreimal eine Datei unter `…/stowly_print/fonts/`, nicht „eingebaut"
   - `brother_ql` und `usb` lassen sich importieren
-- [ ] **4.** Anmelden per `curl`. Nach `restart` und nach `down`/`up` sind die Daten noch da. Ohne `STOWLY_PUBLISH` ist der Port von außen nicht erreichbar. Im Log steht die Zeile zu Open Food Facts. `docker compose stop` endet in höchstens 15 Sekunden, auch während eine App auf ein Etikett wartet. (A10–A15, F9)
+- [ ] **4.** Anmelden per `curl`. Nach `restart` und nach `down`/`up` sind die Daten noch da. Ohne `STOWLY_PUBLISH` ist der Port von außen nicht erreichbar. Im Log steht die Zeile zu Open Food Facts. `docker compose stop` endet in höchstens 15 Sekunden, auch während eine App auf ein Etikett wartet, und in deutlich unter 5 Sekunden, während nur ein Scan auf das Nachschlagen wartet. (A10–A15, F9)
 
 ## B. HTTPS davor
 
@@ -26,6 +28,8 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - Android: Der Hinweis „Stowly als App installieren" erscheint einmal; sonst Einstellungen → Diese App → „Stowly installieren". Dort auch die Zeile „Lokaler Speicher" ansehen: Nach der Installation sollte sie „dauerhaft" zeigen.
   - iPhone und iPad: Die Anleitung „Zum Home-Bildschirm" erscheint (auch auf einem iPad, das sich als Mac ausgibt). Danach vom Home-Bildschirm öffnen und dort anmelden.
   - Die Kamera in der Scan-Ansicht erlauben; das Bild erscheint.
+  - Mit VoiceOver (iPhone) bzw. TalkBack (Android): In „Von Hand einlagern" auf „Einlagern" tippen. Angesagt wird „beschäftigt" bzw. „nicht verfügbar", der Fokus bleibt auf der Schaltfläche, danach wird der Dialog „Eingelagert" angesagt.
+  - Mit der Bildschirmtastatur: In Einstellungen → Geräte „Umbenennen", neuen Namen tippen, zweimal schnell die Eingabetaste: Das Gerät wird genau einmal umbenannt.
 
 ## D. Drucker am Server
 
@@ -35,6 +39,7 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - Einlagern: „gesendet" (Netz) oder „gedruckt" (USB). Bei USB den Drucker aus- und wieder einschalten: Er druckt danach weiter. (F10, F13, F14)
 - [ ] **9.** Zuordnung: Standarddrucker und den Drucker einer Zone umstellen; „Druckt für …" auf den Drucker-Karten stimmt.
 - [ ] **10.** Mit „Etiketten" an von Hand und über die Scan-Ansicht einlagern: Das Etikett kommt aus dem Drucker der Zone. Nachdruck über eine Charge („Etikett") und im Packungs-Dialog. Zonen → QR-Code → „Vorschau des Etiketts" → „Etikett drucken".
+  - Bei langsamem Server (großer Bestand, schwaches WLAN): „Jetzt drucken" ist spätestens nach etwa 10 Sekunden wieder frei, das Etikett druckt nach dem Abgleich von selbst. „Verbindung prüfen" an einem eben angelegten Drucker am Server meldet höchstens kurz „unbekannter Drucker".
 - [ ] **11.** **Ab hier die beiden Langzeitproben anstoßen:** ein Folienetikett (DK-22212) auf eine Gefrierdose bei −18 °C und ein Papieretikett (DK-22205) ins Regal (V1, V2, F15); das iPhone acht Tage nicht öffnen (C10). Ausgewertet wird in Abschnitt L.
 - [ ] **12.** Hängender Druck mit dem Bild-Treiber: `hang` in `simulate.txt` schreiben, einlagern, `docker compose restart`, Datei entfernen (F8).
   - Erwartet: Das Etikett wird „unklar"; es entsteht kein Bild, und nichts druckt von selbst nach.
@@ -44,7 +49,7 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
 
 ## E. Raspberry Pi
 
-- [ ] **13.** SD-Karte, Zertifikat (S4), `install.sh` zweimal hintereinander, Dienst, Rechte, Journal (`pi/README.md` Abschnitte 1–4, P1–P7).
+- [ ] **13.** SD-Karte, Zertifikat (S4), `install.sh` zweimal hintereinander, Dienst, Rechte, Journal (`pi/README.md` Abschnitte 1–4, P1–P8).
 - [ ] **14.** QL-800 am Pi (Q1–Q6, Q8):
   - „Editor Lite" am Drucker an ergibt `offline`, aus ergibt „bereit".
   - Probedruck: Umlaute stimmen, der QR-Code ist lesbar.
@@ -78,6 +83,7 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - Zurück in der App die Nachfrage beantworten; danach ist der Verweis verschwunden.
   - Die Seite vor dem Beantworten noch einmal öffnen: Es wird nichts doppelt gedruckt. Mehr als 20 Etiketten brauchen einen zweiten Aufruf.
 - [ ] **26.** Die App läuft unter `https://stowly.home` und das Handy ist im Keller-WLAN: einmal „prüfen", danach druckt die App dort von selbst.
+  - Eine halbe Stunde im Keller mit offener App, Pi erreichbar, Server nicht: „ungesendet" in der Kopfzeile wächst nicht im Minutentakt. Zurück im Heim-WLAN kommt je Drucker genau ein Zustand beim Server an, der jüngste.
 - [ ] **27.** Zurück im Heim-WLAN: Auf dem zweiten Gerät erscheint der Zustand des Pi mit „zuletzt gesehen" (T7).
 - [ ] **28.** Den Pi stromlos machen und wieder einschalten: WLAN und Dienst kommen von selbst; die App sieht eine neue `boot_id` und druckt nichts nach (R6).
 
@@ -89,10 +95,19 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
   - Ein Barcode in der Hand, Etiketten im Hintergrund: Nur das Einlagern geht auf.
   - Ein Zonen-Etikett aus 1 m und aus der Nähe: wechselt die Zone.
   - Greift die Schwelle falsch, den Wert `MIN_LABEL_SIDE_RATIO` (Scan-Kern der App) anpassen lassen.
+  - iPhone: Die Scan-Ansicht startet mit „2×", wenn Safari für die Kamera einen Zoom anbietet; ein ruhig gehaltener Barcode aus etwa 20 cm ist scharf und wird in etwa einer halben Sekunde erkannt. Steht dort kein „2×", bitte melden, ebenso den Namen der Kamera unter „Kamera wechseln".
+  - Nach „Abbrechen" im Einlager-Dialog mit dem Barcode weiter im Bild: Der Dialog geht nicht von selbst wieder auf, die Ansicht sagt „Zum erneuten Scannen kurz wegschwenken". Kurz wegschwenken und wieder draufhalten: Der Dialog geht wieder auf.
+  - Nach Eingabe des MHD mit der Tastatur läuft das Kamerabild weiter.
+  - „Kein MHD" zeigt den Spinner an „Kein MHD", nicht an „Einlagern".
+- [ ] **29a.** Nachschlagen beim Scannen, mit Internet am Server: Ein unbekannter echter Barcode öffnet den Dialog sofort; nach ein bis vier Sekunden stehen Name, Marke und Größe darin, mit „Von Open Food Facts (ODbL)" und Bild. Einlagern geht schon vorher.
+  - Name schon getippt, bevor die Antwort kommt: Er bleibt stehen.
+  - Denselben Barcode noch einmal scannen: Der Name ist sofort da; im Log steht nur eine Zeile „gefunden".
+  - Ohne Netz am Handy: der bisherige Hinweis, kein Warten. Ein ladeninterner Code (beginnt mit 2) wird nicht nachgeschlagen.
 
 ## H. Offline und Abgleich
 
 - [ ] **30.** Flugmodus, Änderungen auf beiden Handys, ein Konflikt (eines entnimmt, das andere ändert das MHD), Geräteliste, ein Gerät sperren; das Gerät „Prüfung" aus A10 sperren (C5–C9).
+- [ ] **30a.** Ausfall und Rückkehr, App offen und angemeldet: Container stoppen, binnen etwa 15 Sekunden steht „Offline"; starten, binnen etwa 15 Sekunden „Aktuell", ohne Zutun. Im Log des Servers höchstens eine Abfrage `/api/health` je 15 Sekunden, auch mit zwei offenen Fenstern; ist die App im Hintergrund, keine.
 
 ## I. Content-Security-Policy an den Geräten
 

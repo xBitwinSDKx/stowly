@@ -31,6 +31,9 @@
  *   `lookupDelayMs`. `product.add_barcode` und ein Zusammenführen setzen `lookup` nicht auf
  *   `pending`. Bilder gibt es nicht (404). Mit `lookupEnabled: false` meldet jede Antwort
  *   `lookup_enabled: false`, und neue Produkte beginnen mit `lookup: "none"`.
+ *   `GET /api/lookup/{barcode}` antwortet nach derselben Regel sofort (nie `pending`, nie mit
+ *   Bild) und merkt sich nichts; der echte Server legt das Ergebnis ab und füllt damit später
+ *   das Produkt.
  * - `last_seen_at` rückt bei jedem Abgleich vor, im echten Server höchstens einmal je Minute.
  * - Es gibt kein Ereignisprotokoll und keine Grenze für die Größe einer Anfrage; die Sicherung
  *   ist keine SQLite-Datei; die Klartexte der Meldungen sind eigene, und `details.errors` ist
@@ -690,6 +693,26 @@ export class FakeServer {
     }
   }
 
+  /** `GET /api/lookup/{barcode}?wait=0..8`: Open Food Facts nachgespielt wie oben, sofort beantwortet. */
+  private lookupNow(barcode: string, query: string): FakeResponseData {
+    const wait = new URLSearchParams(query).get("wait");
+    const waitS = wait === null ? 4 : Number(wait);
+    if (!isValidBarcode(barcode) || !Number.isInteger(waitS) || waitS < 0 || waitS > 8) {
+      return failure(400, "invalid_request", "Barcode oder Wartezeit sind ungültig.");
+    }
+    const empty = { barcode, name: "", brand: "", quantity: "", image_id: null };
+    if (isStoreInternalBarcode(barcode)) {
+      return json(200, { ...empty, state: "skipped" });
+    }
+    if (!this.lookupEnabled) {
+      return json(200, { ...empty, state: "disabled" });
+    }
+    if (Number(barcode.at(-1)) % 2 !== 0) {
+      return json(200, { ...empty, state: "not_found" });
+    }
+    return json(200, { barcode, state: "found", name: `Beispielprodukt ${barcode.slice(-4)}`, brand: "Beispielmarke", quantity: "500 g", image_id: null });
+  }
+
   // ---------------------------------------------------------------- Sync
 
   private sync(device: FakeDevice, body: unknown): FakeResponseData {
@@ -939,6 +962,10 @@ export class FakeServer {
         target.revoked_at ??= this.stamp();
         return { status: 204, headers: {}, body: null };
       }
+    }
+    const lookupMatch = /^\/api\/lookup\/([^/]+)$/.exec(path);
+    if (method === "GET" && lookupMatch) {
+      return this.lookupNow(decodeURIComponent(lookupMatch[1] ?? ""), request.query ?? "");
     }
     if (method === "GET" && path === "/api/backup") {
       const header = new TextEncoder().encode("SQLite format 3\u0000 (Nachbildung, keine echte Datenbank)\n");

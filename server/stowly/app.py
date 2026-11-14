@@ -59,10 +59,16 @@ class BodyLimit:
         await self.app(scope, receive, send)
 
 
-def build_app(settings: Settings, *, off_transport: httpx2.AsyncBaseTransport | None = None) -> FastAPI:
+def build_app(
+    settings: Settings,
+    *,
+    off_transport: httpx2.AsyncBaseTransport | None = None,
+    off_clock: off.Clock | None = None,
+) -> FastAPI:
     """Baut die Anwendung, ohne Dateien oder die Datenbank anzufassen.
 
-    ``off_transport`` ersetzt in Tests die Verbindung zu Open Food Facts.
+    ``off_transport`` und ``off_clock`` ersetzen in Tests die Verbindung zu Open Food Facts
+    und die Uhr des Hintergrund-Ablaufs.
     """
 
     gateway = PrintGateway()
@@ -87,13 +93,16 @@ def build_app(settings: Settings, *, off_transport: httpx2.AsyncBaseTransport | 
             worker: off.OffWorker | None = None
             task: asyncio.Task[None] | None = None
             if settings.off_enabled:
-                worker = off.OffWorker(settings, transport=off_transport)
+                worker = off.OffWorker(settings, transport=off_transport, clock=off_clock)
                 task = asyncio.create_task(worker.run(), name="stowly-off")
                 app.state.off_worker = worker
             try:
                 yield
             finally:
                 app.state.off_worker = None
+                if worker is not None:
+                    # Wer beim Nachschlagen wartet, bekommt seine Antwort jetzt (siehe release_waiting).
+                    worker.release()
                 if task is not None:
                     task.cancel()
                     # Wie auch immer der Ablauf endet: Das Herunterfahren geht weiter.
@@ -144,6 +153,18 @@ def build_app(settings: Settings, *, off_transport: httpx2.AsyncBaseTransport | 
     return app
 
 
+def release_waiting(app: FastAPI) -> None:
+    """Beim Beenden, bevor uvicorn auf laufende Anfragen wartet: Wer beim Nachschlagen wartet
+    (``GET /api/lookup/…?wait=8``), bekommt sofort, was bekannt ist, sonst ``pending``.
+
+    uvicorn fährt die App erst herunter, wenn die laufenden Anfragen beantwortet sind. Ohne
+    diesen Schritt hielte eine wartende Anfrage das Beenden bis zum Ende ihrer Wartezeit auf.
+    """
+    worker = getattr(app.state, "off_worker", None)
+    if worker is not None:
+        worker.release()
+
+
 def prepare_database(settings: Settings) -> None:
     """Legt die Datenbank an, migriert sie und bringt sie auf den Stand dieses Servers.
 
@@ -163,9 +184,12 @@ def prepare_database(settings: Settings) -> None:
 
 
 def create_app(
-    settings: Settings | None = None, *, off_transport: httpx2.AsyncBaseTransport | None = None
+    settings: Settings | None = None,
+    *,
+    off_transport: httpx2.AsyncBaseTransport | None = None,
+    off_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Anwendung für den Betrieb: legt die Datenbank an und migriert sie."""
     settings = settings or Settings.from_env()
     prepare_database(settings)
-    return build_app(settings, off_transport=off_transport)
+    return build_app(settings, off_transport=off_transport, off_clock=off_clock)
