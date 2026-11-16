@@ -42,7 +42,11 @@ SKIPPED_NAMES = frozenset({".env", ".DS_Store", "Thumbs.db"})
 PRINT_FILES = ("pyproject.toml", "requirements-brother.txt")
 
 # server/stowly/pi_bundle.py -> Wurzel des Repositorys (nur in einem Quell-Checkout sinnvoll)
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# Als Skript in der Bau-Stufe des Images liegt die Datei flach (/build/pi_bundle.py): Dort gibt es diese
+# Ebene nicht, und es gibt auch keinen Quell-Checkout. Dann zeigt _REPO_ROOT auf die Wurzel des
+# Dateisystems, wo in_source_checkout nichts findet.
+_PARENTS = Path(__file__).resolve().parents
+_REPO_ROOT = _PARENTS[2] if len(_PARENTS) > 2 else _PARENTS[-1]
 _TEMPLATE = Path(__file__).with_name("pi_install.sh")
 # Die Adresse dieses Servers im Startskript: Schema, Name oder IP (IPv6 in Klammern), Port.
 _SERVER = re.compile(r"https?://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?")

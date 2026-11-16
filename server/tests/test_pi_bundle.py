@@ -45,6 +45,18 @@ def small_repo(root: Path, *, install: str = "#!/usr/bin/env bash\necho installi
     return root
 
 
+def test_the_module_loads_from_a_flat_path_like_in_the_image():
+    """Im Image liegt das Skript unter /build/pi_bundle.py: Laden darf nicht an fehlenden Ebenen scheitern.
+
+    So scheiterte der Bau von v0.3.0-rc.1 (``parents[2]`` gab einen ``IndexError``).
+    """
+    source = Path(pi_bundle.__file__).read_text(encoding="utf-8")
+    flat = "/build/pi_bundle.py"
+    namespace: dict = {"__file__": flat, "__name__": "pi_bundle_flach"}
+    exec(compile(source, flat, "exec"), namespace)  # noqa: S102 - der eigene Quelltext unter anderem Pfad
+    assert namespace["in_source_checkout"]() is False
+
+
 # --- Das Paket -----------------------------------------------------------------------------------
 
 
