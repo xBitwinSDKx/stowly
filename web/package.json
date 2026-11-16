@@ -1,6 +1,6 @@
 {
   "name": "stowly-web",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Stowly: Web-App für Desktop und Handy (React, Offline-PWA)",
