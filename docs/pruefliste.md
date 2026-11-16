@@ -288,7 +288,7 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 
 ## V. Stufe B: Sicherung und Home Assistant in der App (0.4.0)
 
-Bisher nur mit automatischen Tests geprüft, auch gegen den echten Server samt Neustart beim Zurückspielen und mit einem nachgebildeten Home Assistant; am NAS und an den Geräten noch nichts. Erst an einem Testcontainer per Mausklick (`v0.4.0-rc.1`), dann am eigenen Stowly; Home Assistant zuerst gegen eine Probe-Liste in HA, nicht gegen die echte Bring!-Liste.
+Automatisch geprüft, auch gegen den echten Server samt Neustart beim Zurückspielen und mit einem nachgebildeten Home Assistant. Am NAS erst an einem Testcontainer per Mausklick, dann am eigenen Stowly; Home Assistant zuerst gegen eine Probe-Liste in HA, nicht gegen die echte Bring!-Liste.
 
 - [ ] **65.** Im Assistenten des Testcontainers die Sicherung einrichten ([`betrieb.md`](betrieb.md), Abschnitt 8.2): Schlüssel erzeugen und an zwei Orten aufheben, mit dem Haushalts-Passwort übernehmen, prüfen, „Jetzt sichern", den Schalter einmal aus (N1–N5).
 - [ ] **66.** Eine Sicherung herunterladen und am Rechner mit `age` und der Schlüsseldatei aus der App öffnen (N6, D10).
@@ -296,6 +296,13 @@ Bisher nur mit automatischen Tests geprüft, auch gegen den echten Server samt N
 - [ ] **68.** Daten ändern, zurückspielen, die Gegenproben mit falschem Schlüssel und Passwort, dann „Rückgängig" und „Alte Datenbank löschen" (N9–N13). Die Handys laden neu, niemand muss sich neu anmelden.
 - [ ] **69.** Ein frischer Container mit derselben Sicherung: „Aus einer Sicherung wiederherstellen", danach die sichere Verbindung neu, die Tokens für HA fehlen (N14–N16).
 - [ ] **70.** Home Assistant am Testcontainer gegen eine Probe-Liste („Local To-do"): Verbindung, Liste, Wechsel der Liste, Sensor-Token mit YAML (N17–N19, N21, N22).
+**Stand 16.11.2026** (Synology DSM 6.2.4; Testcontainer per Mausklick mit `v0.4.0-rc.2`, rc.1 scheiterte im Bau an einem Test, der nur unter Linux lief; am PC über http):
+- **65:** Schlüssel erzeugen und als Datei speichern, mit dem Test-Passwort übernehmen, „Jetzt sichern", Herunterladen, „Schlüssel prüfen" mit der Datei: alles wie beschrieben (N1, N3, N4). Ohne zweiten Ordner landete die Sicherung im Datenordner.
+- **67:** Mit zweitem Ordner `/backups` (in DSM per „Bearbeiten" → Volume am gestoppten Container) zeigte die App den eigenen Ordner, und „Jetzt sichern" legte die Datei dort ab (N7). Offen: der Fall ohne Schreibrecht (N8).
+- **68:** Etwas Neues angelegt, zurückgespielt: Stowly startete neu, die App lud von selbst neu, angemeldet blieb sie, das Neue fehlte; „Rückgängig" brachte es zurück (N9, N12). Offen: die Gegenproben mit falschem Schlüssel und Passwort (N10), ein zweites Gerät (N11), „Alte Datenbank löschen" (N13).
+- **69:** Ein zweiter frischer Container mit derselben Sicherung: „Aus einer Sicherung wiederherstellen" mit dem Passwort der Sicherung, nach dem Neustart angemeldet, die Daten waren da (N14).
+- **70:** Gegen zwei Probe-Listen („Local To-do") in HA: Verbindung prüfen, Liste wählen, Zustand „ok"; ein Eintrag erschien in HA, in HA abgehakt war er in Stowly erledigt; nach dem Wechsel auf die zweite Liste wurde nichts abgehakt, der offene Eintrag ging in die neue Liste (N17, N19). Das YAML für den Sensor erschien (N21 nur bis dahin).
+- Offen außerdem: 66 (Öffnen mit `age` am Rechner), N16 (Hinweis über http nur gesehen, nicht eigens geprüft), N18, N22.
 - [ ] **71.** Das eigene Stowly per Knopf auf 0.4.0:
   - Home Assistant bleibt aus der `.env`; die App zeigt die Werte nur an, und „Verbindung prüfen" listet „Zuhause" (N20).
   - Die Sicherung in der App einrichten. Dabei prüfen, ob uid 10001 in `./backups` schreiben darf; sonst zeigt die App „Der eigene Ordner wird nicht benutzt" (oder, mit `STOWLY_BACKUP_DIR` in der `.env`, „… nicht beschreibbar").
