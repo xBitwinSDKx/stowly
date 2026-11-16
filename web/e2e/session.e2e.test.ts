@@ -128,13 +128,13 @@ describe("Geräte und Sicherung", () => {
     await expectCoreError(kitchen.core.devices.rename(kitchen.session.id, "   "), "invalid");
   });
 
-  it("lädt die Sicherung als SQLite-Datei", async () => {
+  it("gibt die Sicherung nur noch verschlüsselt heraus: ohne Schlüssel kein „Jetzt sichern“, keine Kopie im Klartext", async () => {
     const device = await signedIn(server.url, "Küche B");
-    const { blob, filename } = await device.core.backup.download();
-    expect(filename).toMatch(/^stowly-\d{4}-\d{2}-\d{2}\.sqlite3$/);
-    const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
-    expect(new TextDecoder().decode(head)).toBe("SQLite format 3\u0000");
-    expect(blob.size).toBeGreaterThan(4096);
+    await expectCoreError(device.core.backup.run(), "not_configured");
+    // Die frühere Kopie zum Herunterladen (GET /api/backup) gibt es nicht mehr.
+    const raw = await RawClient.login(server.url, "Prüfer B");
+    expect((await raw.request("GET", "/api/backup")).status).toBe(404);
+    await expectCoreError(device.core.backup.file("stowly.sqlite3"), "not_found");
   });
 });
 

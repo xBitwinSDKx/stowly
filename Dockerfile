@@ -77,10 +77,12 @@ COPY --from=pi-bundle /out/pi-bundle.tar.gz ./pi-bundle.tar.gz
 
 # Eigener Benutzer ohne Rechte; Datenbank, Auftragsspeicher, Etikett-Bilder und die CA liegen im
 # Volume /data (/data/stowly.sqlite3, /data/print/, /data/tls/). Den Ordner der automatischen
-# Sicherungen (/backups) legt das Image absichtlich nicht an: Er kommt aus docker-compose.yml
-# (./backups). Fehlt die Einbindung, meldet der Server „Der Ordner für Sicherungen fehlt." statt die
-# Sicherungen unbemerkt in den Container zu schreiben. Ein Ordner, den DSM über die Oberfläche
-# anlegt, ist für uid 10001 beschreibbar (docs/plan-einrichtung.md, Abschnitt 5).
+# Sicherungen (/backups) legt das Image absichtlich nicht an, und es setzt auch kein STOWLY_BACKUP_DIR
+# (DSM übernähme die Variable sonst als „Umgebung" und sperrte den Ordner in der App): Bindet
+# docker-compose.yml oder DSM dort einen Ordner ein, den uid 10001 beschreiben darf, gehen die
+# Sicherungen dorthin; sonst nach /data/backups im Volume, nie in den Container selbst
+# (docs/plan-einrichtung-b.md, Abschnitt 1). Ein Ordner, den DSM über die Oberfläche anlegt, ist für
+# uid 10001 beschreibbar (docs/plan-einrichtung.md, Abschnitt 5).
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin stowly \
     && mkdir -p /data \
     && chown stowly:stowly /data

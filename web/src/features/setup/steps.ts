@@ -5,19 +5,21 @@
 import type { SetupStatus, SetupStep, SetupStepId, SetupStepKey } from "@/contract";
 
 /** Die Schritte nach dem Passwort, in der Reihenfolge des Assistenten (`SetupStepId`). */
-export const WIZARD_STEPS: readonly SetupStepId[] = ["https", "printer", "updates", "notifications"];
+export const WIZARD_STEPS: readonly SetupStepId[] = ["https", "printer", "backup", "updates", "notifications", "home_assistant"];
 
 /** Beschriftungen im Fortschritt: der Zugang (das Passwort) vorweg, die Übersicht am Ende. */
 export const STEP_LABELS: Readonly<Record<SetupStepKey | "access", string>> = {
   access: "Zugang",
   https: "Sichere Verbindung",
   printer: "Drucker",
+  backup: "Sicherung",
   updates: "Updates",
   notifications: "Benachrichtigungen",
+  home_assistant: "Home Assistant",
   done: "Fertig",
 };
 
-/** So viele Schritte zählt der Fortschritt: der Zugang und die vier danach; die Übersicht nicht. */
+/** So viele Schritte zählt der Fortschritt: der Zugang und die Schritte danach; die Übersicht nicht. */
 export const STEP_COUNT = WIZARD_STEPS.length + 1;
 
 /** Wie der Assistent einen Schritt zeigt. */
@@ -44,17 +46,24 @@ export function progressOf(step: SetupStep, secure: boolean): StepProgress {
   return step.state === "skipped" ? "skipped" : "open";
 }
 
-/** Der erste Schritt, der weder erledigt noch übersprungen ist; gibt es keinen, die Übersicht. */
+/**
+ * Der erste Schritt, der weder erledigt noch übersprungen ist; gibt es keinen, die Übersicht. Ist die
+ * Einrichtung abgeschlossen, immer die Übersicht: Dort steht, was sich nachholen lässt, auch ein
+ * Schritt, der erst mit einem Update dazukam (Sicherung, Home Assistant).
+ */
 export function firstOpenStep(status: SetupStatus, secure = false): SetupStepKey {
+  if (status.finished_at !== null) {
+    return "done";
+  }
   return WIZARD_STEPS.find((id) => progressOf(stepOf(status, id), secure) === "open") ?? "done";
 }
 
-/** Wie viele der vier Schritte erledigt sind. */
+/** Wie viele der Schritte nach dem Zugang erledigt sind. */
 export function doneCount(status: SetupStatus, secure = false): number {
   return WIZARD_STEPS.filter((id) => progressOf(stepOf(status, id), secure) === "done").length;
 }
 
-/** Die Nummer im Fortschritt: Der Zugang ist 1, die Schritte 2 bis 5, die Übersicht wie der letzte. */
+/** Die Nummer im Fortschritt: Der Zugang ist 1, die Schritte ab 2, die Übersicht wie der letzte. */
 export function stepNumber(key: SetupStepKey): number {
   return key === "done" ? STEP_COUNT : WIZARD_STEPS.indexOf(key) + 2;
 }

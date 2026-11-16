@@ -101,7 +101,7 @@ def test_the_sensor_token_counts_nowhere_else(client, device):
         ("GET", "/api/integrations"),
         ("GET", "/api/stats"),
         ("GET", "/api/events"),
-        ("GET", "/api/backup"),
+        ("POST", "/api/backup/run"),
         ("GET", f"/api/lookup/{EAN_A}"),
         ("POST", "/api/auth/logout"),
     ):

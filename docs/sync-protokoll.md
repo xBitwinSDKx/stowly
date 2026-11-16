@@ -150,6 +150,7 @@ Es gibt ein Haushalts-Passwort und beliebig viele Geräte. Jedes Gerät bekommt 
 - **Das Passwort** kommt aus der Umgebungsvariable `STOWLY_PASSWORD` oder wird beim ersten Aufruf in der App gesetzt (11.6). Die Variable geht vor: Ist sie gesetzt, übernimmt der Server sie beim Start als Hash in die Datenbank (`meta.password_hash`). Wird sie später entfernt, gilt das Passwort weiter; es entsteht nie wieder ein offenes Fenster für ein „erstes Passwort".
   - Gibt es noch keines (weder Variable noch Hash), meldet `GET /api/health` `configured: false`. Die Anmeldung antwortet dann mit 503 `not_configured`, und die App zeigt die Einrichtung.
   - Ohne Anmeldung setzt nur `POST /api/setup/password` ein Passwort, und das nur, solange es keines gibt (11.6).
+  - **Oder eine Sicherung beim ersten Start** (11.9): Solange es kein Passwort gibt, lässt sich ohne Anmeldung eine Sicherung zurückspielen; sie bringt ihr Passwort mit (oder ein neues, wenn sie keines hat). Erstes Passwort und dieses Zurückspielen schließen sich aus: Liegt eine Sicherung bereit, antwortet `POST /api/setup/password` mit 409; ist inzwischen ein Passwort gesetzt, antwortet `POST /api/restore/apply` ohne Token mit 409. Beides prüft der Server unter dem Lock der Bremse, genau einer gewinnt.
   - Ändern geht angemeldet mit `POST /api/auth/password` und dem bisherigen Passwort, außer es kommt aus der Umgebung (409). Ein geändertes Passwort lässt bestehende Geräte angemeldet.
   - Gespeichert wird nur ein scrypt-Hash, nie das Passwort selbst. Der Rückfall `stowly` des Entwicklungsmodus (`--dev`) gilt wie `STOWLY_PASSWORD` (`configured`, 409 beim Setzen und Ändern, `password_source: env`), wird aber nie gespeichert.
   - Ändern zwei Geräte das Passwort zugleich, gewinnt das erste; das zweite bekommt 409 `conflict` und versucht es mit dem neuen Passwort noch einmal.
@@ -167,7 +168,7 @@ Es gibt ein Haushalts-Passwort und beliebig viele Geräte. Jedes Gerät bekommt 
 | `PATCH /api/devices/{device_id}` | Token | `DeviceUpdate { name }` | 200 `Device` |
 | `DELETE /api/devices/{device_id}` | Token | – | 204; sperrt das Token dieses Geräts. Wiederholbar. Unbekannt: 404. |
 
-Fehler der Anmeldung: 401 `invalid_password`; 429 `rate_limited` mit Kopfzeile `Retry-After` und `details.retry_after_s`; 503 `not_configured`. Dieselbe Bremse zählt auch das falsche bisherige Passwort beim Ändern und gilt für das Setzen des ersten Passworts. Der Passwortvergleich läuft in konstanter Zeit. Nach 5 Fehlversuchen innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab, auch eine mit dem richtigen Passwort. Die Sperre gilt für alle, nicht je Adresse: Hinter einem Reverse Proxy ist die Adresse des Aufrufers nicht verlässlich. Die Fehlversuche bleiben über die Sperre hinaus im Fenster von 5 Minuten stehen: Wer danach weiter falsch rät, löst mit jedem Versuch sofort die nächste Sperre aus. Eine gelungene Anmeldung setzt den Zähler zurück. Der Stand liegt im Arbeitsspeicher des Servers und beginnt mit seinem Start neu. Geräte, die schon angemeldet sind, berührt die Sperre nicht.
+Fehler der Anmeldung: 401 `invalid_password`; 429 `rate_limited` mit Kopfzeile `Retry-After` und `details.retry_after_s`; 503 `not_configured`. Dieselbe Bremse zählt auch das falsche bisherige Passwort beim Ändern, das Passwort beim Zurückspielen (11.9) und beim Hinzufügen eines Schlüssels der Sicherung (11.7) und gilt für das Setzen des ersten Passworts. Der Passwortvergleich läuft in konstanter Zeit. Nach 5 Fehlversuchen innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab, auch eine mit dem richtigen Passwort. Die Sperre gilt für alle, nicht je Adresse: Hinter einem Reverse Proxy ist die Adresse des Aufrufers nicht verlässlich. Die Fehlversuche bleiben über die Sperre hinaus im Fenster von 5 Minuten stehen: Wer danach weiter falsch rät, löst mit jedem Versuch sofort die nächste Sperre aus. Eine gelungene Anmeldung setzt den Zähler zurück. Der Stand liegt im Arbeitsspeicher des Servers und beginnt mit seinem Start neu. Geräte, die schon angemeldet sind, berührt die Sperre nicht.
 
 Jedes angemeldete Gerät darf jedes Gerät umbenennen und sperren, auch sich selbst; die App meldet ein Gerät, das sich selbst sperrt, sofort ab (`signed_out` / `revoked`). `last_seen_at` ist nach der Anmeldung `null`; der Server schreibt es beim Sync fort, höchstens einmal je Minute.
 
@@ -214,7 +215,7 @@ Der ganze Aufruf läuft in **einer** Transaktion (`BEGIN IMMEDIATE`): entweder i
    - Mehr als 500 Befehle: 413 `payload_too_large`.
    - Der Rahmen: `protocol`, `dataset_id`, `cursor`, `sent_at`, `id_pool` und dass `commands` eine Liste von Objekten mit gültiger `id` ist. Sonst 422 `invalid_request`, auch wenn `protocol` fehlt oder keine Zahl ist.
 
-   Ein Rumpf über 4 MiB wird schon davor mit 413 abgewiesen; 500 Befehle bleiben weit darunter. Ein Rumpf, der kein JSON ist oder tiefer als 32 Ebenen verschachtelt, ergibt 422.
+   Ein Rumpf über 4 MiB wird schon davor mit 413 abgewiesen, auch ohne `Content-Length` (etwa `chunked`); 500 Befehle bleiben weit darunter. Ein Rumpf, der kein JSON ist oder tiefer als 32 Ebenen verschachtelt, ergibt 422.
 2. Feststellen, ob die Antwort ein vollständiger Abzug wird (`reset`, Abschnitt 6.4). Das entscheidet der Stand **vor** den Befehlen dieser Anfrage: Sie heben ihn selbst an und überdeckten sonst einen `cursor`, der dem Server voraus ist.
 3. **Jeden Befehl einzeln** in Reihenfolge verarbeiten (Abschnitt 6.3). Ein einzelner ungültiger oder fehlschlagender Befehl lässt nie die ganze Anfrage scheitern: Sonst bliebe die Outbox des Geräts für immer stecken. Streikt dagegen die Datenbank selbst (Platte voll, E/A-Fehler), scheitert die ganze Anfrage mit 500, nichts ist verbucht, und das Gerät versucht es später erneut.
 4. Änderungen seit `cursor` einsammeln (Abschnitt 6.4). Die Wirkung der eben verarbeiteten Befehle ist darin enthalten.
@@ -272,7 +273,7 @@ Der Server hebt verarbeitete Befehle mindestens 90 Tage auf.
 - **Was der Server selbst schreibt** (automatische Einträge der Einkaufsliste, Erledigtes aus Bring!, 7.6), kommt als gewöhnliche Änderung: Die Zeile bekommt einen neuen `rev`, und das nächste `changes` jedes Geräts enthält sie. Was ein Befehl auslöst, steht schon in der Antwort auf den Sync, der ihn gebracht hat (Schritt 4 von 6.2 kommt nach den Befehlen). Was ein Hintergrund-Ablauf schreibt (der Abgleich mit Bring!), kommt mit dem nächsten Abgleich. Die App nimmt nichts davon vorweg und braucht keine eigene Behandlung: Für sie ist es Stand des Servers.
 - **`cursor`** schickt die App beim nächsten Aufruf zurück. Für die App ist er eine undurchsichtige Zahl.
 - **`has_more`:** Eine Antwort enthält höchstens 5000 Datensätze. Bei `true` ruft die App sofort erneut ab, bis `false` kommt: ohne Befehle, mit `dataset_id` und `cursor` der Seite davor; als `have` nennt sie ihren Vorrat einschließlich dessen, was dieser Abgleich schon zugeteilt hat. Meldet eine Folgeseite selbst `reset: true` (der Bestand hat mitten im Blättern gewechselt), wendet die App nichts davon an und beginnt den Abgleich neu. Verweise können zwischen den Seiten vorübergehend ins Leere zeigen; die App wendet deshalb alle Seiten gemeinsam an (Abschnitt 9). Beim Blättern geht nichts verloren: Der gelieferte `cursor` ist immer ein Stand, bis zu dem die Antworten zusammen alles enthalten, über alle Tabellen hinweg. Tragen mehrere Zeilen denselben `rev` (ein Befehl, der viele Packungen auf einmal verschiebt), endet eine Seite nie mitten in diesem `rev`; sie darf dafür größer als 5000 werden.
-- **`dataset_id`** kennzeichnet den Datenbestand. **`reset: true`** kommt, wenn die `dataset_id` der Anfrage nicht die des Servers ist (auch beim ersten Sync) oder der `cursor` der Anfrage größer ist als der Stand des Servers vor den Befehlen dieser Anfrage. Die Antwort ist dann ein vollständiger Abzug ab `cursor = 0`; die App leert ihre Kopie vorher (Abschnitt 9.3). Die Befehle der Anfrage sind trotzdem verarbeitet, ihre Wirkung steckt im Abzug. Eine neue Kennung bekommt der Bestand mit jeder Sicherung (Abschnitt 11) und mit `python -m stowly --new-dataset`, nachdem eine Kopie der Datenbank auf anderem Weg zurückgespielt wurde.
+- **`dataset_id`** kennzeichnet den Datenbestand. **`reset: true`** kommt, wenn die `dataset_id` der Anfrage nicht die des Servers ist (auch beim ersten Sync) oder der `cursor` der Anfrage größer ist als der Stand des Servers vor den Befehlen dieser Anfrage. Die Antwort ist dann ein vollständiger Abzug ab `cursor = 0`; die App leert ihre Kopie vorher (Abschnitt 9.3). Die Befehle der Anfrage sind trotzdem verarbeitet, ihre Wirkung steckt im Abzug. Eine neue Kennung bekommt der Bestand mit jeder Sicherung (Abschnitt 11), beim Zurückspielen in der App und beim Rückgängig (11.9) und mit `python -m stowly --new-dataset`, nachdem eine Kopie der Datenbank auf anderem Weg zurückgespielt wurde.
 - **Was ein vollständiger Abzug weglässt:** Eine Antwort mit `reset: true` enthält keine entnommenen Packungen, deren `removed_at` länger zurückliegt als `trash_retention_days`, keine Einträge der Einkaufsliste, die länger als `trash_retention_days` erledigt oder gelöscht sind (gemessen am späteren von `done_at` und `deleted_at`), und keine Etiketten in einem Endzustand (`printed`, `sent`, `failed`, `cancelled`), deren `updated_at` länger als 30 Tage zurückliegt. **Jede andere Antwort liefert ausnahmslos alles mit `rev > cursor`, egal wie alt**, auch die Folgeseiten eines Abzugs. Ein Gerät, das länger offline war als die Aufbewahrungsdauer, muss erfahren, dass eine Packung inzwischen entnommen, ein Eintrag erledigt oder ein Etikett erledigt ist: Sonst zeigte es die Packung für immer im Bestand, den Eintrag auf der Liste und stellte das Etikett noch einmal zu. Die App verwirft alles drei nach derselben Regel, beim Empfang und beim Start; was sie so verwirft, verschwindet auch dann aus ihrer Kopie, wenn es dort bis eben noch als Bestand, offen oder ausstehend geführt war. Gelöschte Zonen und zusammengeführte Produkte kommen immer mit: Die App braucht sie, um alten Verweisen zu folgen.
 - **`lookup_enabled`** sagt in jeder Antwort, ob dieser Server unbekannte Barcodes bei Open Food Facts nachschlägt (`STOWLY_OFF_ENABLED`, Abschnitt 10). Die App merkt sich den Wert über Neustarts und richtet danach, was sie verspricht und vorwegnimmt; bis zur ersten Antwort gilt er als unbekannt und wird wie „eingeschaltet" behandelt. Beim Abmelden vergisst sie ihn.
 - **Längere Aufbewahrung:** Vergrößert sich `trash_retention_days` in der Kopie der App (durch eine eigene Änderung oder durch eine Antwort), holt sie den Bestand beim nächsten Abgleich einmal vollständig neu (`dataset_id: null`, `cursor: 0`; der Server antwortet mit `reset: true`). Nur so reicht ihre Lösch-Historie wieder so weit zurück wie die des Servers.
@@ -601,12 +602,13 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | Aufruf | Anmeldung | Antwort |
 |---|---|---|
 | `GET /api/health` | offen | 200 `ServerHealth { app: "stowly", status: "ok", version, protocol, time, configured }`, `Cache-Control: no-store` |
-| `GET /api/images/{image_id}` | offen | 200 Bilddaten, `Cache-Control: public, max-age=31536000, immutable`; 404 |
-| `GET /api/backup` | Token | 200 `application/vnd.sqlite3`, `Content-Disposition: attachment; filename="stowly-JJJJ-MM-TT.sqlite3"` |
+| `GET /api/images/{image_id}` | offen | 200 Bilddaten, nur `image/jpeg`, `image/png` oder `image/webp` mit passenden Bytes (sonst 404), mit `Cache-Control: public, max-age=31536000, immutable`, `Content-Security-Policy: default-src 'none'; sandbox` und `X-Content-Type-Options: nosniff`; 404 |
+| `POST /api/backup/run` | Token | 200 `BackupFile { name, size, created_at }`, `Cache-Control: no-store`; 409 `conflict`, 429 `rate_limited`, 500, 503 `not_configured` (11.9) |
+| `GET /api/backup/files/{name}` | Token | 200 `application/octet-stream`, `Content-Disposition: attachment`, `Cache-Control: no-store`; 404 bei jedem anderen Namen (11.9) |
 | `GET /api/events?before=&limit=&entity=&entity_id=` | Token | 200 `EventPage { events, next_before }`, neueste zuerst, `limit` 1–500 (Vorgabe 100) |
 | `GET /api/lookup/{barcode}?wait=` | Token | 200 `LookupResult { barcode, state, name, brand, quantity, image_id }`, `Cache-Control: no-store`; 400 bei ungültigem Barcode oder `wait` (Abschnitt 10.1) |
 | `GET /api/stats?start=&end=` | Token | 200 `Stats`, `Cache-Control: no-store`; 400 bei ungültigem Zeitraum (11.1) |
-| `GET /api/ha/summary` | Token des Sensors (`STOWLY_HA_SUMMARY_TOKEN`), kein Geräte-Token | 200 `HaSummary`, `Cache-Control: no-store`; 401 ohne gültigen Sensor-Token; 503 `not_configured` ohne gesetzten Token (11.2) |
+| `GET /api/ha/summary` | Token des Sensors (aus der App oder `STOWLY_HA_SUMMARY_TOKEN`), kein Geräte-Token | 200 `HaSummary`, `Cache-Control: no-store`; 401 ohne gültigen Sensor-Token; 503 `not_configured` ohne Sensor-Token (11.2) |
 | `GET /api/ha/stock` | Token des Sensors, kein Geräte-Token | 200 `HaStock`, sonst wie `GET /api/ha/summary` (11.2) |
 | `GET /api/push/key` | Token | 200 `PushKey { public_key }`, `Cache-Control: no-store`; 503 `not_configured` (11.3) |
 | `PUT /api/push/subscription` | Token | `PushSubscriptionInput { endpoint, keys { p256dh, auth }, origin }`; 204; 422 bei ungültigem oder unbekanntem Push-Dienst; 503 `not_configured` |
@@ -619,7 +621,19 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `PATCH /api/setup` | Token | `SetupChanges`; 200 `SetupStatus`; 422 bei einer Adresse außerhalb des Heimnetzes (11.6) |
 | `GET /api/setup/ca.crt?download=` | offen | 200 Zertifikat der CA als DER, `Cache-Control: no-store`; 404 ohne nutzbare CA (11.6) |
 | `GET /api/server-config` | Token | 200 `ServerConfig`, `Cache-Control: no-store` (11.7) |
-| `PATCH /api/server-config` | Token | `ServerConfigChanges`; 200 `ServerConfig`; 409 `conflict` bei einem Wert aus der Umgebung; 422 (11.7) |
+| `PATCH /api/server-config` | Token | `ServerConfigChanges`; 200 `ServerConfig`; 401 `invalid_password` und 429 beim Hinzufügen eines Schlüssels der Sicherung; 409 `conflict` bei einem Wert aus der Umgebung; 422 (11.7) |
+| `GET /api/server-config/ha` | Token | 200 `HaConfig`, `Cache-Control: no-store` (11.10) |
+| `PATCH /api/server-config/ha` | Token | `HaConfigChanges { url, entity, token }`; 200 `HaConfig`; 409 `conflict` aus der Umgebung; 422; 500, wenn sich der Token nicht speichern lässt (11.10) |
+| `POST /api/server-config/ha/check` | Token | `HaCheckInput { url, token }`; 200 `HaCheck`, `Cache-Control: no-store`; 409, 422, 429 `rate_limited` (11.10) |
+| `POST /api/server-config/ha/sensor-token` | Token | 201 `HaSensorToken { token }`; 409 aus der Umgebung (11.10) |
+| `GET /api/server-config/ha/sensor-token` | Token | 200 `HaSensorToken`; 404 ohne; 409 aus der Umgebung (11.10) |
+| `DELETE /api/server-config/ha/sensor-token` | Token | 204, auch ohne; 409 aus der Umgebung (11.10) |
+| `PUT /api/restore/upload` | Token, beim ersten Start offen | Rumpf: die Datei (`application/octet-stream`), höchstens 512 MiB; 201 `RestoreUpload { upload_id, kind, size }`; 400, 401, 409, 413, 422, 429 (11.9) |
+| `POST /api/restore/check` | wie oben | `RestoreCheckInput { upload_id, identity }`; 200 `RestorePreview`; 400, 401, 404, 409, 413, 422 mit `details.reason`, 429 (11.9) |
+| `POST /api/restore/apply` | wie oben | `RestoreApplyInput { restore_id, password, device_name }`; 202 `RestoreApplied { login }`; 400, 401 (auch `invalid_password`), 404, 409, 422, 429, 503 (11.9) |
+| `GET /api/restore` | Token | 200 `RestoreStatus { state, at, message, undo_until }`, `Cache-Control: no-store` (11.9) |
+| `POST /api/restore/undo` | Token | 202 `RestoreApplied`; 404, 409, 503 (11.9) |
+| `DELETE /api/restore/previous` | Token | 204, wiederholbar; 409, solange eine Sicherung bereitliegt (11.9) |
 | `POST /api/pi/pairings` | Token | `PiPairingInput { origin, printer_id }`; 201 `PiPairing` mit Code und Befehl; 422; 503 `not_configured` (11.8) |
 | `GET /api/pi/pairings/{pairing_id}` | Token | 200 `PiPairing`, `Cache-Control: no-store`; 404 (11.8) |
 | `DELETE /api/pi/pairings/{pairing_id}` | Token | 204, wiederholbar; 404 (11.8) |
@@ -629,10 +643,10 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `GET /api/pi/bundle.tar.gz` | offen | 200 Paket für den Pi (`application/gzip`); 503 ohne Paket (11.8) |
 | `/print/v1/…` | Token | Druckdienst des Servers, siehe [`etiketten.md`](etiketten.md) |
 
-- **Bilder sind ohne Anmeldung abrufbar**, weil `<img>` keinen `Authorization`-Kopf senden kann. Die Kennung ist der Hash des Inhalts und nicht zu erraten; ausgeliefert werden nur Vorschaubilder aus Open Food Facts.
-- **Sicherung:** eine in sich stimmige Kopie der ganzen Datenbank (`sqlite3.Connection.backup`). Die Kopie bekommt eine **neue `dataset_id`**. Wird sie später eingespielt (Server anhalten, Datei ersetzen, starten), antwortet der Server allen Geräten mit `reset: true`; sie holen den Bestand vollständig neu und senden ihre Outbox erneut. Befehle, die schon in der Sicherung stecken, erkennt der Server als bekannt.
+- **Bilder sind ohne Anmeldung abrufbar**, weil `<img>` keinen `Authorization`-Kopf senden kann. Die Kennung ist der Hash des Inhalts und nicht zu erraten; ausgeliefert werden nur Vorschaubilder aus Open Food Facts, als JPEG, PNG oder WebP und nur, wenn die Bytes zum Typ passen, so, dass der Browser sie nur als Bild nimmt (`sandbox`, `nosniff`). Selbst ein Bild aus einer gefälschten Sicherung liefe so nie als Seite unter dem Ursprung von Stowly.
+- **Sicherung:** eine in sich stimmige Kopie der ganzen Datenbank (`sqlite3.Connection.backup`), seit 0.4.0 nur noch verschlüsselt im Ordner der Sicherungen ([`integrationen.md`](integrationen.md), 3); die unverschlüsselte (`GET /api/backup`) gibt es nicht mehr. Die Kopie bekommt eine **neue `dataset_id`**. Wird sie eingespielt (11.9), antwortet der Server allen Geräten mit `reset: true`; sie holen den Bestand vollständig neu und senden ihre Outbox erneut. Befehle, die schon in der Sicherung stecken, erkennt der Server als bekannt.
 - Unbekannte Pfade unter `/api` antworten mit 404 im Fehlerformat. Alles außerhalb von `/api` und `/print` liefert die Web-App (Datei oder `index.html`).
-- **Seit Stufe 2** kommen Statistik, Sensor, Push und der Zustand der Integrationen dazu (11.1 bis 11.4). Die Pfade, Methoden, `operation_id`, Modelle und die Beschreibungen in `server/stowly/api/` sind Vertrag (sie stehen in `openapi.json`); umsetzen heißt, den Rumpf der Funktion zu füllen.
+- **Seit Stufe 2** kommen Statistik, Sensor, Push und der Zustand der Integrationen dazu (11.1 bis 11.4), seit 0.4.0 Sicherung jetzt, Zurückspielen und Home Assistant aus der App (11.9, 11.10). Die Pfade, Methoden, `operation_id`, Modelle und die Beschreibungen in `server/stowly/api/` sind Vertrag (sie stehen in `openapi.json`); umsetzen heißt, den Rumpf der Funktion zu füllen.
 
 ### 11.1 Statistik
 
@@ -645,7 +659,7 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 
 ### 11.2 Sensor für Home Assistant
 
-`GET /api/ha/summary`, nur lesend, mit eigenem Token: `Authorization: Bearer <STOWLY_HA_SUMMARY_TOKEN>`. Der Vergleich läuft in konstanter Zeit (über die SHA-256 beider Werte, wie beim Passwort). Ein Geräte-Token gilt hier nicht (401), und der Sensor-Token gilt nirgends sonst (dort ist er ein unbekanntes Geräte-Token: 401). Ist `STOWLY_HA_SUMMARY_TOKEN` nicht gesetzt, antwortet der Endpunkt jedem mit 503 `not_configured`. Inhalt, Regeln und die Schnipsel für HA: [`integrationen.md`](integrationen.md), Abschnitt 6.
+`GET /api/ha/summary`, nur lesend, mit eigenem Token: `Authorization: Bearer <Sensor-Token>`. Der Sensor-Token ist `STOWLY_HA_SUMMARY_TOKEN` oder, ohne die Variable, der Token aus der App (11.10); gelesen wird er bei jeder Anfrage. Der Vergleich läuft in konstanter Zeit (über die SHA-256 beider Werte, wie beim Passwort). Ein Geräte-Token gilt hier nicht (401), und der Sensor-Token gilt nirgends sonst (dort ist er ein unbekanntes Geräte-Token: 401). Gibt es keinen Sensor-Token, antwortet der Endpunkt jedem mit 503 `not_configured`. Inhalt, Regeln und die Schnipsel für HA: [`integrationen.md`](integrationen.md), Abschnitt 6.
 
 `GET /api/ha/stock` liefert mit demselben Token und denselben Regeln die Liste aller Waren im Bestand, je Zone (`HaStock`, [`integrationen.md`](integrationen.md), Abschnitt 6.3).
 
@@ -669,20 +683,21 @@ Alle vier Aufrufe mit Geräte-Token; das Abo gehört zum Gerät, höchstens eine
 
 ### 11.6 Einrichtung
 
-Der Assistent der App führt nach dem ersten Passwort durch die Schritte `https`, `printer`, `updates` und `notifications`, jeder überspringbar. Der Stand liegt auf dem Server, damit er den Wechsel von http zu https und andere Geräte übersteht. HTTPS, CA und Zertifikat: [`integrationen.md`](integrationen.md), Abschnitt 11.
+Der Assistent der App führt nach dem ersten Passwort durch die Schritte `https`, `printer`, `backup`, `updates`, `notifications` und `home_assistant` (`backup` und `home_assistant` seit 0.4.0), jeder überspringbar. Der Stand liegt auf dem Server, damit er den Wechsel von http zu https und andere Geräte übersteht. HTTPS, CA und Zertifikat: [`integrationen.md`](integrationen.md), Abschnitt 11.
 
 **Erstes Passwort:** `POST /api/setup/password` ohne Anmeldung.
 - Nur solange es kein Passwort gibt, weder aus `STOWLY_PASSWORD` noch in der Datenbank. Sonst 409 `conflict`; die App wechselt dann zur Anmeldung.
 - Gleichzeitige Aufrufe: genau einer gewinnt, die anderen bekommen 409.
 - Die Kopfzeile `Host` muss ins Heimnetz zeigen: eine private IP-Adresse, Loopback, ein einteiliger Name oder eine lokale Endung (Liste in [`integrationen.md`](integrationen.md), 11.3). Sonst 400 `invalid_request`. Das hält Seiten im Internet ab, die per DNS-Rebinding als erste ein Passwort setzen wollen.
 - Die Bremse der Anmeldung gilt auch hier (Abschnitt 5).
+- Solange beim ersten Start eine Sicherung zum Einspielen bereitliegt (11.9): 409 `conflict` „Gerade wird eine Sicherung zurückgespielt; Stowly startet gleich neu."
 - Antwort wie die Anmeldung: `LoginResponse` mit dem Token des neuen Geräts, `Cache-Control: no-store`. Die Adresse aus `Host` lernt der Server fürs Zertifikat.
 
 **Stand:** `GET /api/setup` liefert `SetupStatus`.
 - `steps`: je Schritt `state` (`open`, `done`, `skipped`, wie die App ihn markiert hat), `ready` (aus Sicht des Servers erledigt) und `changed_at`.
-  - `ready` heißt bei `https`: Eine angemeldete Anfrage kam über den HTTPS-Listener. Bei `printer`: Es gibt einen nicht gelöschten Drucker. Bei `updates`: Updates sind an. Bei `notifications`: Ein Kontakt für die Push-Dienste ist wirksam.
+  - `ready` heißt bei `https`: Eine angemeldete Anfrage kam über den HTTPS-Listener. Bei `printer`: Es gibt einen nicht gelöschten Drucker. Bei `backup`: Die Sicherung wirkt (an, mit Schlüssel, der Ordner taugt), und eine ist gelungen. Bei `updates`: Updates sind an. Bei `notifications`: Ein Kontakt für die Push-Dienste ist wirksam. Bei `home_assistant`: Adresse, Token und Liste sind wirksam, aus der Umgebung oder der App.
   - Die App zeigt einen Schritt als erledigt, wenn er `ready` oder als `done` markiert ist. Läuft die Seite hinter einem Reverse Proxy schon über HTTPS, markiert die App `https` selbst als `done`.
-- `finished_at`: wann die Einrichtung abgeschlossen wurde; `null` = offen. Haushalte, die beim Umstieg auf Schema 4 schon Geräte hatten, gelten als eingerichtet.
+- `finished_at`: wann die Einrichtung abgeschlossen wurde; `null` = offen. Haushalte, die beim Umstieg auf Schema 4 schon Geräte hatten, gelten als eingerichtet. Ist die Einrichtung abgeschlossen, öffnet die App den Assistenten bei der Übersicht; dort stehen Schritte, die später dazukamen (`backup`, `home_assistant`), zum Nachholen. Nach dem Zurückspielen beim ersten Start ist `finished_at` wieder `null` (11.9).
 - `password_source`: `env` oder `app` (auch, solange es noch keines gibt).
 - `https` (`HttpsStatus`): Listener, Port, Adressen, Ursprünge, CA und Zertifikat ([`integrationen.md`](integrationen.md), 11).
 - **Lernen:** Jeder Aufruf lernt die Adresse aus `Host`. Eine neue Adresse stellt das Zertifikat neu aus.
@@ -709,15 +724,20 @@ Der Assistent der App führt nach dem ersten Passwort durch die Schritte `https`
 
 - **`ServerConfig`:**
   - `push { contact, source }`: der wirksame Kontakt für die Push-Dienste;
-  - `update { enabled, repo, source, available }`: der Schalter „Nach Updates suchen".
-  - `source` ist `env`, `app` oder `default`. Nie ein Geheimnis.
+  - `update { enabled, repo, source, available }`: der Schalter „Nach Updates suchen";
+  - seit 0.4.0 `backup` (`BackupConfig`): `enabled` mit `enabled_source`, `recipients` (je `key` vollständig, `short` gekürzt, `added_at`; `null` aus der Umgebung) mit `recipients_source`, `time` mit `time_source`, `folder` mit `folder_source` (`env`, `mounted` oder `data`), `folder_problem` und `folder_hint` ([`integrationen.md`](integrationen.md), 3.1 und 3.5).
+  - `source` ist `env`, `app` oder `default`. Nie ein Geheimnis; öffentliche Schlüssel sind keines.
 - **`ServerConfigChanges`:** Nur vorhandene Felder zählen.
   - `push_contact`: `mailto:<Adresse>` oder eine https-Adresse; eine Adresse ohne `mailto:` bekommt es davor. `null` entfernt den Kontakt, Push ist dann aus.
   - `update_enabled`: an oder aus.
+  - `backup_enabled`: an oder aus. `backup_time`: `HH:MM`; `null` = wieder die Vorgabe `03:30`.
+  - `backup_recipients`: die öffentlichen Schlüssel aus der App, höchstens 10; ersetzt die bisherigen. Kommt dabei ein Schlüssel hinzu, braucht es `current_password`, das Haushalts-Passwort (aus `STOWLY_PASSWORD`, wenn gesetzt): Wer einen Schlüssel hinzufügt, kann jede künftige Sicherung öffnen, samt Passwort-Hash, VAPID-Schlüssel und Push-Abos; ein Geräte-Token allein genügt dafür nicht. Entfernen braucht es nicht. Das Passwort steht nie im Log.
 - **Fehler:**
-  - 409 `conflict`, wenn das Feld aus der Umgebung kommt oder das Image kein Repository für den Schalter kennt (`available: false`).
-  - 422 mit `details.errors[].loc = ["body", "push_contact"]` bei einem ungültigen Kontakt.
-- **Wirkung:** ohne Neustart. Ein neuer Kontakt gilt ab der nächsten Nachricht, ein eingeschalteter Schalter weckt die Abfrage bei GitHub (erste Abfrage nach `UPDATE_CHECK_FIRST_S`).
+  - 409 `conflict`, wenn das Feld aus der Umgebung kommt (Schlüssel und Schalter bei `STOWLY_BACKUP_RECIPIENTS`, die Uhrzeit bei `STOWLY_BACKUP_TIME`) oder das Image kein Repository für den Schalter kennt (`available: false`).
+  - 422 mit `details.errors[].loc`: `["body", "push_contact"]` bei einem ungültigen Kontakt; `["body", "backup_recipients", i]` bei einem Eintrag, der kein öffentlicher age-Schlüssel ist, und bei einem geheimen, ohne ihn zu wiederholen; `["body", "current_password"]` mit „Zum Hinzufügen eines Schlüssels braucht es das Haushalts-Passwort.", wenn das Passwort zum Hinzufügen fehlt.
+  - 401 `invalid_password` („Das Passwort stimmt nicht.") bei einem falschen `current_password`, über die Bremse der Anmeldung (Abschnitt 5): nach 5 Fehlversuchen in 5 Minuten 60 Sekunden lang 429, gemeinsam mit der Anmeldung. Das Gerät bleibt angemeldet.
+  - 409 `conflict` „Die Schlüssel der Sicherung haben sich inzwischen auf einem anderen Gerät geändert. Bitte neu laden und noch einmal versuchen.", wenn ein anderes Gerät gerade einen Schlüssel entfernt hat, den die Liste ohne Passwort zurückbrächte.
+- **Wirkung:** ohne Neustart. Ein neuer Kontakt gilt ab der nächsten Nachricht, ein eingeschalteter Schalter weckt die Abfrage bei GitHub (erste Abfrage nach `UPDATE_CHECK_FIRST_S`), eine Änderung der Sicherung den Zeitplan.
 
 ### 11.8 Pi koppeln
 
@@ -766,6 +786,86 @@ Ein Raspberry Pi wird mit einem Befehl zum Druckdienst. Ablauf, Paket und Skript
 - **Bremse:** eigene, für alle zusammen. Jeder Fehlversuch zählt; nach 10 Fehlversuchen in 10 Minuten 60 Sekunden Sperre, 429 mit `Retry-After`. Eine Wiederholung mit demselben Antrag gilt nicht als Erfolg und setzt die Fehlversuche nicht zurück.
 - **Code lesen:** Kleinschreibung, Bindestriche und Leerzeichen zählen nicht; O gilt als 0, I und L als 1.
 
+### 11.9 Sicherung jetzt und Zurückspielen
+
+**Sicherung jetzt:** `POST /api/backup/run` legt mit Geräte-Token eine verschlüsselte Sicherung wie die tägliche in den Ordner, `GET /api/backup/files/{name}` liefert eine Datei von dort. Regeln: [`integrationen.md`](integrationen.md), 3.8. Die unverschlüsselte Sicherung (`GET /api/backup`) gibt es seit 0.4.0 nicht mehr.
+
+**Zurückspielen** geht in drei Schritten, danach startet Stowly neu (`stowly/restore.py`; Anleitung [`betrieb.md`](betrieb.md), 8.3). Alles liegt in `/data/restore` (`0700`, Dateien `0600`), in keiner Sicherung.
+
+- **Wer darf:** Mit Geräte-Token gilt alles für den laufenden Stowly; ein unbekanntes Token gibt 401. Ohne Token nur beim ersten Start: solange es kein Passwort gibt (weder `STOWLY_PASSWORD` noch einen Hash), sonst 401, und mit der Regel für `Host` wie beim ersten Passwort (11.6), sonst 400.
+
+1. **Hochladen:** `PUT /api/restore/upload`. Der Rumpf ist die Datei selbst (`application/octet-stream`, kein Formular), höchstens `RESTORE_MAX_BYTES` (512 MiB), sonst 413 `payload_too_large`; der Server zählt auch ohne `Content-Length` mit.
+   - Die Art erkennt er an den ersten Bytes: `age` (binär oder ASCII-Armor), `gzip` oder `sqlite`. Anderes gibt 422 (`not_stowly`).
+   - Nennt die Anfrage ihre Größe, braucht es dreimal so viel freien Platz, sonst 409 mit Satz.
+   - Antwort 201 `RestoreUpload { upload_id, kind, size }`, `Cache-Control: no-store`. Ein neues Hochladen ersetzt das vorige erst, wenn es gelingt; eine geprüfte Sicherung bleibt, bis eine neue die Prüfung besteht. So nimmt ein zweites Gerät dem ersten nicht die geprüfte Sicherung weg.
+   - Kommen 60 Sekunden lang keine Daten (`UPLOAD_IDLE_S`) oder dauert das Hochladen länger als 20 Minuten (`UPLOAD_TOTAL_S`), antwortet der Server mit 408 `invalid_request` und einem Satz und löscht die Teildatei.
+   - Alle 5 Minuten räumt der Server auf, auch ohne Aufruf: abgelaufene Dateien und geprüfte Kopien (nach 30 Minuten), Reste ohne Besitzer in `/data/restore` und nach 7 Tagen die Datenbank von vor dem Zurückspielen.
+2. **Prüfen:** `POST /api/restore/check` mit `RestoreCheckInput { upload_id, identity }`.
+   - `identity` ist der geheime Schlüssel (`AGE-SECRET-KEY-1…`), auch als ganze Schlüsseldatei (Zeilen mit `#` zählen nicht), höchstens 4096 Zeichen, nur bei `age`. Der Server entschlüsselt mit `pyrage`; der Schlüssel lebt nur im Arbeitsspeicher und steht nie in einer Antwort oder im Log.
+   - Dann entpackt er (höchstens 2 GiB, sonst 413) und öffnet die Kopie abgesichert (`trusted_schema = OFF`, `DBCONFIG_DEFENSIVE`, Trigger und Views abgeschaltet, nur lesend); so laufen auch alle späteren Verbindungen zur Kopie. Geprüft wird der Reihe nach: `quick_check`; `PRAGMA application_id` „STOW" (Migration 0005, Abschnitt 15) oder 0; `user_version` zwischen 1 und dem Stand dieses Servers; keine Trigger und keine Views, gleich unter welchem Namen; der Aufbau Zeichen für Zeichen wie aus den Migrationen dieses Stands, also keine fremden oder veränderten Tabellen (Statistiktabellen aus `ANALYZE` nur in der Form, in der SQLite sie anlegt); `integrity_check` und `foreign_key_check`. Erst dann migriert er die Kopie auf den eigenen Stand; Statistiktabellen fallen dabei weg.
+   - Antwort 200 `RestorePreview`: `restore_id` (gilt `RESTORE_ID_TTL_S`, 30 Minuten, bis `expires_at`), `kind`, `schema_version` der Sicherung und `current_schema_version`, `last_activity_at` (jüngstes Ereignis oder jüngster Befehl), `has_password`, `devices` (nicht gesperrte), `counts` (`products`, `items` = Packungen im Bestand, `zones`, `shopping` = offene Einträge).
+   - Mit einem anderen Schlüssel lässt sich die Prüfung wiederholen, ohne neues Hochladen; auch `upload_id` gilt 30 Minuten.
+3. **Anwenden:** `POST /api/restore/apply` mit `RestoreApplyInput { restore_id, password, device_name }`, Antwort 202 `RestoreApplied { login }`, `Cache-Control: no-store`. Der Server legt die geprüfte Kopie als `pending.sqlite3` bereit, dazu `pending.json` mit Prüfsumme und neuer `dataset_id`, und startet nach der Antwort neu.
+   - **Laufender Stowly:** `password` ist das jetzige Haushalts-Passwort. Es läuft über die Bremse der Anmeldung (Abschnitt 5): falsch 401 `invalid_password`, gesperrt 429. `login` ist `null`: Alle Anmeldungen bleiben.
+   - **Erster Start:** `device_name` ist nötig (sonst 422). Enthält die Sicherung ein Passwort (`has_password`), muss `password` dieses sein (sonst 401 `invalid_password`, ebenfalls über die Bremse); das zeigt zugleich, dass die Sicherung echt ist. Sonst ist `password` ein neues (mindestens `LIMITS.password_min`, sonst 422); dann sperrt der Server die Geräte aus der Sicherung und löscht ihre Push-Abos. `login` bringt Token und Gerät dieses Geräts; es gilt, sobald `GET /api/health` nach dem Neustart `configured: true` meldet.
+   - Beim ersten Start vergisst der Server außerdem, was zur alten CA gehört: den Abschluss der Einrichtung (`finished_at`), „über HTTPS gesehen", die gelernten Ports und die Markierung des Schritts `https`. Der Assistent beginnt so mit der sicheren Verbindung.
+
+**Neustart und Tausch:**
+
+- Nach der Antwort 202 beendet Stowly beide Listener sauber und ersetzt seinen Prozess (`os.execv`); der Container läuft weiter. Scheitert das, endet der Prozess mit Exit-Code 3, und Docker startet ihn neu. Unter Windows (Entwicklung) beginnt er im selben Prozess von vorn.
+- Getauscht wird nur im frisch gestarteten Prozess, bevor etwas die Datenbank öffnet (`restore.resume`, vor `create_app`):
+  1. die bereitgelegte Datei prüfen: Prüfsumme, `quick_check`, Version;
+  2. die laufende Datenbank checkpointen und auf `journal_mode = DELETE` stellen; das gelingt nur ohne offene Verbindung, und danach gibt es kein `-wal` mehr;
+  3. in einer Kopie die Zugänge übernehmen (unten), die neue `dataset_id` setzen und `server.restored` verbuchen (Abschnitt 12);
+  4. die alte Datenbank wird `previous.sqlite3`, die Kopie die Datenbank (`os.replace`).
+- Jeder Schritt lässt sich nach einem Absturz wiederholen; ob schon getauscht ist, zeigt die `dataset_id`. Ein Fehler davor behält die alte Datenbank, merkt `failed` und startet normal, ohne Neustart-Schleife. Eine bereitgelegte Sicherung gilt 10 Minuten nach dem Anwenden; kommt der Neustart später, verwirft der Server sie (`failed`).
+
+**Was ein laufender Stowly behält:** aus der laufenden Datenbank die Tabellen `devices`, `push_subscriptions`, `server_config` und `job_runs`, aus `meta` den Passwort-Hash und die VAPID-Schlüssel. So wird niemand abgemeldet, und gesperrte Geräte bleiben gesperrt. Geräte aus einer gefälschten Datei zählen nicht, denn age prüft den Absender nicht. Dazu:
+
+- **Merker `ha_links_entity`:** Er gehört zu `ha_links` und kommt deshalb mit der Sicherung, obwohl der Rest von `server_config` bleibt. Hat die Sicherung keinen (vor 0.4.0), leert der Server `ha_links` und löst die Bindungen der Einkaufsliste (`bring_key = null`); nichts wird abgehakt, der nächste Abgleich spiegelt die offenen Einträge neu ([`integrationen.md`](integrationen.md), 5.4). Das gilt auch beim ersten Start.
+- **Reservierte Kennungen:** Packungen, die es nur in der laufenden Datenbank gibt (sie entstanden nach der Sicherung), und dort reservierte Kennungen, die die Sicherung nicht als Packung kennt, kommen nach `id_reservations` (Abschnitt 8). So bekommt kein gedrucktes Etikett eine Kennung ein zweites Mal.
+- Kopplungen eines Pi, deren Gerät es nicht mehr gibt, verlieren den Verweis darauf.
+- `STOWLY_PASSWORD` geht weiter vor.
+
+Beim ersten Start übernimmt der Server nichts; alles kommt aus der Sicherung. Aus der Sicherung fallen außerdem Bilder weg, die kein JPEG, PNG oder WebP sind oder deren Bytes nicht zum Typ passen (das Log zählt sie), und Kopplungen eines Pi, die dort noch offen waren, gelten als abgebrochen; für den Pi braucht es einen neuen Code. Beides geschieht schon in der geprüften Kopie, für beide Arten des Zurückspielens.
+
+**Danach:** Die neue `dataset_id` lässt jedes Gerät den Bestand vollständig neu holen (`reset: true`, 6.4). Seine Outbox sendet es erneut; Befehle, die schon in der Sicherung stecken, erkennt der Server als bekannt.
+
+**Stand:** `GET /api/restore` (Geräte-Token, `Cache-Control: no-store`) liefert `RestoreStatus { state, at, message, undo_until }`.
+
+- `state`: `idle`, `pending` (bereitgelegt, der Neustart steht aus), `done`, `undone` oder `failed`, dann mit dem Satz „Das Zurückspielen ist gescheitert: … Die bisherige Datenbank läuft weiter." Nach `RESTORE_UNDO_DAYS` (7) Tagen ist der Stand wieder `idle`.
+- Die App fragt nach dem Anwenden hier, bis nicht mehr `pending` dasteht; beim ersten Start fragt sie `GET /api/health`, bis `configured: true` kommt. Beides höchstens fünf Minuten.
+
+**Rückgängig:** `POST /api/restore/undo` (Geräte-Token) spielt `previous.sqlite3` über denselben Tausch zurück: 202 `RestoreApplied`, Neustart, `server.restored` mit `kind: undo`. Das geht bis `undo_until`, sieben Tage nach dem Zurückspielen in einen laufenden Stowly, und lässt sich selbst wieder umkehren. 404, wenn es nichts gibt; beim ersten Start gibt es kein Rückgängig. `DELETE /api/restore/previous` löscht die alte Datenbank vorzeitig (204, wiederholbar). Nach sieben Tagen löscht der Server sie selbst.
+
+**Fehler:**
+
+- 422 `invalid_request` mit `details.reason` und einem deutschen Satz, nie mit dem Schlüssel:
+  - `wrong_key`: Der Schlüssel öffnet die Datei nicht.
+  - `not_a_key`: kein geheimer age-Schlüssel, auch ein öffentlicher (mit eigenem Satz).
+  - `not_stowly`: keine Datei oder Datenbank von Stowly, auch eine mit fremdem Aufbau, mit Triggern oder Views.
+  - `damaged`: beschädigt oder unvollständig.
+  - `newer_schema`: von einem neueren Stowly.
+  - `migration_failed`: Die Migration der Kopie scheiterte; Einzelheiten im Log.
+- 404 `not_found`, wenn `upload_id` oder `restore_id` abgelaufen oder unbekannt ist.
+- 409 `conflict`, solange eine Sicherung bereitliegt, ein Update angefordert ist oder läuft, bei zu wenig Platz und beim ersten Start, wenn inzwischen ein Passwort gesetzt ist. Eine Anforderung, die der Updater seit 10 Minuten nicht abholt, und ein Update, zu dem er seit 15 Minuten schweigt, zählen nicht. Umgekehrt antwortet `POST /api/update/install` mit 409, solange ein Schritt läuft oder eine Sicherung bereitliegt ([`integrationen.md`](integrationen.md), 10.5).
+- 408 `invalid_request` mit Satz, wenn das Hochladen stockt oder zu lange dauert (oben).
+- 413 `payload_too_large` über 512 MiB, entpackt über 2 GiB.
+- 429 `rate_limited` mit `Retry-After` aus einer eigenen Bremse: ein Schritt zugleich, Hochladen und Prüfen höchstens sechsmal in 10 Minuten. Passwörter zählen in der Bremse der Anmeldung.
+- 503 `not_configured`, wenn sich Stowly hier nicht selbst neu starten kann (ohne Listener, etwa in Tests).
+
+### 11.10 Home Assistant aus der App
+
+`GET` und `PATCH /api/server-config/ha`, `POST /api/server-config/ha/check` und `POST`, `GET`, `DELETE /api/server-config/ha/sensor-token`, alle mit Geräte-Token und `Cache-Control: no-store`. Regeln: [`integrationen.md`](integrationen.md), Abschnitte 5 und 6.
+
+- **`HaConfig`:** `source` der Verbindung (`env`: Adresse, Token und Liste kommen aus der Umgebung und sind gesperrt; `app`; `default`: nichts eingerichtet), `url`, `entity`, `token_set`, `token_set_at`, `ca` (`STOWLY_HA_CA` ist gesetzt), `configured`, `problem` und `sensor { source, set, set_at }`. Nie ein Token.
+- **`PATCH` mit `HaConfigChanges { url, entity, token }`:** Nur vorhandene Felder zählen, `null` entfernt.
+  - Eine neue Adresse ohne `token` im selben Aufruf löscht den gespeicherten Token; dieselbe Adresse behält ihn. Ein Token ohne Adresse gibt 422.
+  - Der Token geht in den eigenen Speicher (`/data/secrets`), Adresse und Liste nach `server_config`. `server.config_changed` nennt nur die Schlüssel (Abschnitt 12). Der Abgleich übernimmt die Änderung ohne Neustart.
+  - 409 `conflict`, wenn die Verbindung aus der Umgebung kommt. 422 mit `details.errors[].loc` (`["body", "url"]`, `["body", "token"]`) bei einer ungültigen oder nicht erlaubten Adresse, einem Token, der nicht in eine Kopfzeile passt, oder einem Token ohne Adresse; die Liste muss `^todo\.[a-z0-9_]+$` treffen. 500, wenn sich der Token nicht speichern lässt; dann ändert sich nichts.
+- **`POST /check` mit `HaCheckInput { url, token }`:** prüft und speichert nichts; ohne Felder die wirksame Einrichtung. Antwort `HaCheck`. Der gespeicherte Token geht nur an seine eigene Adresse. 409, wenn die Verbindung aus der Umgebung kommt und trotzdem Felder angegeben sind; 422 an `["body", "url"]` ohne jede Adresse; 429 mit `Retry-After`, wenn schon eine Prüfung läuft oder die letzte vor weniger als 3 Sekunden begann. Ablauf, Grenzen und Zustände: [`integrationen.md`](integrationen.md), 5.7.
+- **Sensor-Token:** `POST` erzeugt einen neuen (64 Hex-Zeichen; 201 `HaSensorToken { token }`) und ersetzt den bisherigen; `GET` zeigt den gespeicherten (404 ohne, auch wenn er nach einem Zurückspielen fehlt); `DELETE` entfernt ihn (204, auch ohne), danach antwortet der Sensor mit 503. Alle drei geben 409, wenn `STOWLY_HA_SUMMARY_TOKEN` gesetzt ist.
+
 ## 12. Ereignisprotokoll
 
 Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `events`. Das Protokoll wird nie gekürzt und nicht an die Geräte synchronisiert; es ist über `GET /api/events` lesbar. Die Statistik (11.1) rechnet nicht daraus, sondern aus dem heutigen Stand der Packungen: So zählt ein Zusammenführen oder ein geänderter Grund richtig.
@@ -811,9 +911,10 @@ Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `
 
 | `type` | `entity` | `data` |
 |---|---|---|
-| `server.password_set` | `server` (`entity_id`: `password`) | `source`: `app` (erstes Passwort) oder `env` (aus `STOWLY_PASSWORD` übernommen, ohne Gerät) |
+| `server.password_set` | `server` (`entity_id`: `password`) | `source`: `app` (erstes Passwort, auch ein neues beim Zurückspielen beim ersten Start) oder `env` (aus `STOWLY_PASSWORD` übernommen, ohne Gerät) |
 | `server.password_changed` | `server` (`entity_id`: `password`) | – |
-| `server.config_changed` | `server` (`entity_id`: `config`) | `keys`: die geänderten Schlüssel, nie ihre Werte (aus `PATCH /api/server-config`: `push_contact`, `update_enabled`; aus `PATCH /api/setup`: `setup_steps`, `setup_finished_at`, `tls_addresses`, `https_port`) |
+| `server.config_changed` | `server` (`entity_id`: `config`) | `keys`: die geänderten Schlüssel, nie ihre Werte (aus `PATCH /api/server-config`: `push_contact`, `update_enabled`, `backup_enabled`, `backup_time`, `backup_recipients`; aus `PATCH /api/server-config/ha`: `ha_url`, `ha_todo_entity`, `ha_token_set_at`; aus den Aufrufen zum Sensor-Token: `ha_sensor_set_at`; aus `PATCH /api/setup`: `setup_steps`, `setup_finished_at`, `tls_addresses`, `https_port`) |
+| `server.restored` | `server` (`entity_id`: `restore`) | `kind`: `restore` oder `undo`; `source`: `age`, `gzip`, `sqlite` oder `previous` (beim Rückgängig); `first_start`; `schema_version` der Sicherung (`null` beim Rückgängig). Verbucht beim Tausch in der neuen Datenbank, mit dem Gerät, das angewendet hat (11.9) |
 | `pi_pairing.created` | `pi_pairing` | `printer_id` (gewählt oder `null`) |
 | `pi_pairing.cancelled` | `pi_pairing` | `reason`: `user` oder `replaced` (ein neuerer Code) |
 
@@ -835,13 +936,14 @@ Jede Fehlerantwort unter `/api` hat denselben Rumpf (`ErrorBody`):
 | 401 | `invalid_password` | falsches Haushalts-Passwort | `invalid_password` |
 | 404 | `not_found` | Pfad oder Datensatz gibt es nicht | `not_found` |
 | 400, 405, 422 | `invalid_request` | Anfrage verletzt den Vertrag; bei 400 und 422 nennt `details.errors` die Stellen (`loc`, `msg`, `type`) | `invalid` |
+| 408 | `invalid_request` | Das Hochladen einer Sicherung stockt 60 Sekunden oder dauert länger als 20 Minuten (11.9) | `invalid` |
 | 409 | `conflict` | Zustand passt nicht zur Anfrage (etwa: Update schon angefordert) | `conflict` |
 | 409 | `protocol_mismatch` | verschiedene Protokollversionen; `details: { server, client }` | `protocol_mismatch` |
-| 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf | `internal` |
-| 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung, zu viele Testnachrichten (11.3), zu häufiges Suchen nach Updates (11.5); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
+| 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf, auch ohne `Content-Length`; eine Sicherung über 512 MiB bzw. entpackt über 2 GiB (11.9) | `internal` |
+| 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung (auch beim Passwort zum Zurückspielen oder zum Hinzufügen eines Schlüssels), zu viele Testnachrichten (11.3), zu häufiges Suchen nach Updates (11.5), „Jetzt sichern" öfter als einmal je Minute, Zurückspielen (11.9), Prüfung der Verbindung zu HA (11.10); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
 | 500 | `internal` | Fehler im Server; Einzelheiten nur im Log | `internal` |
 | 501 | `not_implemented` | Endpunkt ist noch nicht umgesetzt | `not_supported` |
-| 503 | `not_configured` | Es gibt noch kein Passwort, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (kein Kontakt), Sensor (`STOWLY_HA_SUMMARY_TOKEN`), Updates (aus, oder der Updater meldet sich nicht), Pi koppeln (keine nutzbare CA oder kein Paket) | `not_configured` |
+| 503 | `not_configured` | Es gibt noch kein Passwort, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (kein Kontakt), Sensor (kein Sensor-Token), Updates (aus, oder der Updater meldet sich nicht), Pi koppeln (keine nutzbare CA oder kein Paket), „Jetzt sichern" (kein Schlüssel oder kein brauchbarer Ordner), Zurückspielen (kein Neustart möglich) | `not_configured` |
 
 `message` ist deutscher Klartext und als Rückfall anzeigbar. Die App unterscheidet nach `code` und zeigt dazu ihren eigenen Text; die letzte Spalte nennt, als welchen Fehler ihr Kern die Antwort an die Oberfläche weitergibt (`web/src/core/http.ts`). Eine Fehlerantwort ohne diesen Rumpf stammt nicht vom Stowly-Server und gilt in der App als `offline` (Abschnitt 9.2). Im Server: `raise ApiError(status, ErrorCode.X, "…")` aus `stowly/errors.py`. Unbekannte Pfade unter `/api` und `/print` antworten bei jeder Methode mit 404, ein bekannter Pfad mit falscher Methode mit 405 und der Kopfzeile `Allow`; 401 trägt `WWW-Authenticate: Bearer`.
 
@@ -878,6 +980,7 @@ Regeln, die sich nicht als Typ ausdrücken lassen, gibt es als Funktionen auf be
 | Fehlbestand, Name und Menge eines Eintrags | – (der Server rechnet den Fehlbestand nach 7.6) | `web/src/contract/shopping.ts` |
 | Welche Packung als Nächstes dran ist (FIFO) | – | `web/src/contract/fifo.ts` |
 | Etikett-Daten, „welcher Drucker?" | `stowly/contract/labels.py` (nur Typ) | `web/src/contract/labels.ts` |
+| age-Schlüssel: der öffentliche zum geheimen, die Schlüsseldatei (seit 0.4.0, gegen `age_keys`) | `pyrage` (geprüft in `server/tests`) | `web/src/features/backup/keys.ts` |
 
 Die Schnittstelle zwischen Oberfläche und Offline-Kern steht in `web/src/contract/core.ts`.
 
@@ -891,6 +994,7 @@ Das Schema steht in `server/stowly/migrations/` und ist Teil dieses Vertrags: `0
 | `0002_device_command_floor.sql` | `devices.last_command_at`: wirksamer Zeitpunkt des letzten gültigen Befehls je Gerät (Abschnitt 4). Bestehende Datenbanken bekommen den spätesten Zeitpunkt aus `commands`. |
 | `0003_shopping_push_jobs.sql` | Stufe 2: `products.min_stock` und `products.shopping_lock_at` (Sperre, 7.6), die Tabellen `shopping_items`, `push_subscriptions`, `push_notices`, `ha_links` und `job_runs`, die Einstellung `notify_time` (`"17:00"`) für Datenbanken, die schon Einstellungen haben. Ändert nichts an der Änderungsfolge. |
 | `0004_setup.sql` | Einrichtung: die Tabellen `server_config` (Einstellungen des Servers aus der App und was er über sich lernt) und `pi_pairings` (Kopplungen eines Pi). Datenbanken, die schon Geräte haben, gelten als eingerichtet (`setup_finished_at`). Ändert nichts an der Änderungsfolge. |
+| `0005_application_id.sql` | Stufe B der Einrichtung: `PRAGMA application_id` = „STOW" (`0x53544F57`). Daran erkennt das Zurückspielen eine Datenbank von Stowly (11.9); ältere Kopien haben 0 und gelten ebenso. Ändert keine Tabelle und nichts an der Änderungsfolge. |
 
 | Tabelle | Inhalt |
 |---|---|
@@ -909,8 +1013,10 @@ Das Schema steht in `server/stowly/migrations/` und ist Teil dieses Vertrags: `0
 | `push_subscriptions`, `push_notices` | Push: Abo je Gerät; welche Packung schon in einer Tagesnachricht stand ([`integrationen.md`](integrationen.md), 4) |
 | `ha_links` | Home Assistant und Bring!: was Stowly je Artikel zuletzt geschrieben und gesehen hat ([`integrationen.md`](integrationen.md), 5.3) |
 | `job_runs` | Zeitplan: je Aufgabe der letzte Lauf ([`integrationen.md`](integrationen.md), 1) |
-| `server_config` | Einstellungen des Servers aus der App und Gelerntes (Adressen, Ports, Fortschritt des Assistenten), je Schlüssel ein JSON-Wert; nie ein Geheimnis (11.6, 11.7) |
+| `server_config` | Einstellungen des Servers aus der App und Gelerntes (Adressen, Ports, Fortschritt des Assistenten), seit 0.4.0 auch Sicherung, Adresse und Liste von HA und Merker ohne Geheimnis (`ha_token_set_at`, `ha_sensor_set_at`, `ha_links_entity`), je Schlüssel ein JSON-Wert; nie ein Geheimnis (11.6, 11.7, 11.10) |
 | `pi_pairings` | Kopplungen eines Pi: Hash des Codes, Fristen, was der Pi gemeldet hat, die Antwort an ihn (11.8) |
+
+Nicht in der Datenbank, aber im selben Datenordner: `/data/tls` (CA und Zertifikat), `/data/secrets` (Tokens aus der App, 11.10), `/data/restore` (Zurückspielen, 11.9), `/data/print` und `/data/update`. Keiner davon steht in einer Sicherung.
 
 Regeln für jeden Zugriff (`stowly/db.py`):
 

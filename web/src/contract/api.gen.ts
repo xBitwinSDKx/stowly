@@ -83,6 +83,12 @@ export const LIMITS = {
   setup_address: 253,
   setup_addresses: 10,
   push_contact: 200,
+  backup_recipient: 100,
+  backup_recipients: 10,
+  backup_files_listed: 50,
+  restore_identity: 4096,
+  ha_url: 200,
+  ha_token: 2000,
 } as const;
 /** Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3). */
 export const SERVICE_ERROR_CODES = [
@@ -139,17 +145,26 @@ export const COMMAND_TYPES = [
 
 /** Alle Endpunkte des Servers. Platzhalter wie {device_id} ersetzt der Aufrufer. */
 export const ENDPOINTS = {
+  apply_restore: { method: "POST", path: "/api/restore/apply" },
   cancel_pi_pairing: { method: "DELETE", path: "/api/pi/pairings/{pairing_id}" },
   change_password: { method: "POST", path: "/api/auth/password" },
+  check_ha: { method: "POST", path: "/api/server-config/ha/check" },
+  check_restore: { method: "POST", path: "/api/restore/check" },
   check_update: { method: "POST", path: "/api/update/check" },
+  create_ha_sensor_token: { method: "POST", path: "/api/server-config/ha/sensor-token" },
   create_pi_pairing: { method: "POST", path: "/api/pi/pairings" },
+  delete_ha_sensor_token: { method: "DELETE", path: "/api/server-config/ha/sensor-token" },
   delete_push_subscription: { method: "DELETE", path: "/api/push/subscription" },
-  download_backup: { method: "GET", path: "/api/backup" },
+  delete_restore_previous: { method: "DELETE", path: "/api/restore/previous" },
+  download_backup_file: { method: "GET", path: "/api/backup/files/{name}" },
   download_ca: { method: "GET", path: "/api/setup/ca.crt" },
+  get_ha_config: { method: "GET", path: "/api/server-config/ha" },
+  get_ha_sensor_token: { method: "GET", path: "/api/server-config/ha/sensor-token" },
   get_image: { method: "GET", path: "/api/images/{image_id}" },
   get_integrations: { method: "GET", path: "/api/integrations" },
   get_pi_pairing: { method: "GET", path: "/api/pi/pairings/{pairing_id}" },
   get_push_key: { method: "GET", path: "/api/push/key" },
+  get_restore_status: { method: "GET", path: "/api/restore" },
   get_server_config: { method: "GET", path: "/api/server-config" },
   get_setup: { method: "GET", path: "/api/setup" },
   get_stats: { method: "GET", path: "/api/stats" },
@@ -168,23 +183,72 @@ export const ENDPOINTS = {
   pi_pair_start: { method: "POST", path: "/api/pi/pair/start" },
   put_push_subscription: { method: "PUT", path: "/api/push/subscription" },
   revoke_device: { method: "DELETE", path: "/api/devices/{device_id}" },
+  run_backup: { method: "POST", path: "/api/backup/run" },
   send_push_test: { method: "POST", path: "/api/push/test" },
   setup_password: { method: "POST", path: "/api/setup/password" },
   sync: { method: "POST", path: "/api/sync" },
+  undo_restore: { method: "POST", path: "/api/restore/undo" },
   update_device: { method: "PATCH", path: "/api/devices/{device_id}" },
+  update_ha_config: { method: "PATCH", path: "/api/server-config/ha" },
   update_server_config: { method: "PATCH", path: "/api/server-config" },
   update_setup: { method: "PATCH", path: "/api/setup" },
+  upload_restore: { method: "PUT", path: "/api/restore/upload" },
 } as const;
 
 export type AddressSource = "learned" | "manual";
 
+export interface BackupConfig {
+  /** Die automatische Sicherung ist an. */
+  enabled: boolean;
+  /** env: fest an, weil die Schlüssel aus STOWLY_BACKUP_RECIPIENTS kommen; app: Schalter in der App; default: noch nie geschaltet, dann an. */
+  enabled_source: ConfigSource;
+  recipients: BackupRecipientInfo[];
+  recipients_source: ConfigSource;
+  /** Uhrzeit der täglichen Sicherung, Zeitzone des Servers. */
+  time: string;
+  time_source: ConfigSource;
+  /** Ordner im Container, in den die Sicherungen gehen. */
+  folder: string;
+  folder_source: BackupFolderSource;
+  /** Warum der Ordner nicht taugt (fehlt, nicht beschreibbar); sonst null. */
+  folder_problem: string | null;
+  /** Hinweis, wenn ein eigener Ordner /backups eingebunden ist, aber nicht taugt (etwa ohne Schreibrecht für Benutzer 10001): Die Sicherungen gehen dann in den Datenordner. Sonst null. */
+  folder_hint: string | null;
+}
+
+/** Eine Sicherung im Ordner (nur Dateien von Stowly: stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age). */
+export interface BackupFile {
+  name: string;
+  /** Größe in Byte. */
+  size: number;
+  /** Zeit aus dem Dateinamen bzw. der Datei. */
+  created_at: string;
+}
+
+/** Woher der Ordner der Sicherungen kommt (docs/plan-einrichtung-b.md, Abschnitt 1). */
+export type BackupFolderSource = "env" | "mounted" | "data";
+
+/** Ein öffentlicher age-Schlüssel der Sicherung. Nie ein geheimer Schlüssel. */
+export interface BackupRecipientInfo {
+  /** Der öffentliche Schlüssel, vollständig (age1…). */
+  key: string;
+  /** Gekürzt für die Anzeige, etwa 'age1ql3z…ac8p'. */
+  short: string;
+  /** Wann er in der App hinzukam; null aus der Umgebung. */
+  added_at: string | null;
+}
+
 /** Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext. */
 export interface BackupStatus {
-  /** STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS sind gesetzt. */
+  /** Die Sicherung ist wirksam: an, mit mindestens einem öffentlichen Schlüssel (Umgebung oder App) und einem brauchbaren Ordner. */
   configured: boolean;
+  /** Ordner im Container, in dem die Sicherungen liegen. */
+  folder: string | null;
+  /** Sicherungen im Ordner, neueste zuerst, höchstens LIMITS.backup_files_listed. */
+  files: BackupFile[];
   /** Warum die Sicherung aus ist, obwohl etwas gesetzt ist; sonst null. */
   problem: string | null;
-  /** Uhrzeit der täglichen Sicherung (STOWLY_BACKUP_TIME). */
+  /** Wirksame Uhrzeit der täglichen Sicherung (Umgebung, App oder Vorgabe); null ohne jede Einstellung. */
   time: string | null;
   /** Öffentliche age-Schlüssel, gekürzt: 'age1ql3z…ac8p'. */
   recipients: string[];
@@ -624,6 +688,70 @@ export interface EventRecord {
   data: { [key: string]: unknown };
 }
 
+/** Ergebnis der Prüfung. Nie eine rohe Antwort von HA, nie ein Token. */
+export interface HaCheck {
+  state: HaCheckState;
+  /** Deutscher Klartext. */
+  message: string;
+  ha_version: string | null;
+  location_name: string | null;
+  /** To-do-Listen (todo.*), höchstens 100. */
+  lists: HaTodoList[];
+  /** Die wirksame To-do-Liste gibt es in HA; null = keine Liste eingerichtet. */
+  entity_found: boolean | null;
+}
+
+/** `POST /api/server-config/ha/check`. Ohne Felder: die wirksame Einrichtung prüfen. */
+export interface HaCheckInput {
+  url?: string;
+  token?: string;
+}
+
+export type HaCheckState = "ok" | "token_needed" | "unauthorized" | "not_ha" | "unreachable" | "error";
+
+/**
+ * `GET /api/server-config/ha`. Nie ein Token: Der Token von HA steht in einem eigenen Speicher
+ * außerhalb der Datenbank und jeder Sicherung.
+ */
+export interface HaConfig {
+  /** env: Adresse, Token und Liste kommen aus der Umgebung (in der App gesperrt); app: aus der App; default: nichts eingerichtet. */
+  source: ConfigSource;
+  url: string | null;
+  entity: string | null;
+  token_set: boolean;
+  token_set_at: string | null;
+  /** Eine eigene CA für HA ist gesetzt (STOWLY_HA_CA, nur in der Umgebung). */
+  ca: boolean;
+  configured: boolean;
+  problem: string | null;
+  sensor: HaSensorConfig;
+}
+
+/**
+ * `PATCH /api/server-config/ha`. Nur vorhandene Felder zählen; 409, wenn die Verbindung aus der
+ * Umgebung kommt. Eine neue Adresse ohne token im selben Aufruf löscht den gespeicherten Token.
+ */
+export interface HaConfigChanges {
+  /** http(s)://Rechner[:Port]; null = entfernen. */
+  url?: string | null;
+  /** Die To-do-Liste; null = entfernen. */
+  entity?: string | null;
+  /** Langlebiger Zugangs-Token; null = entfernen. */
+  token?: string | null;
+}
+
+export interface HaSensorConfig {
+  /** env: STOWLY_HA_SUMMARY_TOKEN; app: in der App erzeugt; default: keiner. */
+  source: ConfigSource;
+  set: boolean;
+  set_at: string | null;
+}
+
+/** Der Sensor-Token für HA (erzeugen bzw. anzeigen; nur angemeldet). */
+export interface HaSensorToken {
+  token: string;
+}
+
 /** Ergebnis des letzten Abgleichs mit Home Assistant. */
 export type HaState =
   | "off"
@@ -637,11 +765,11 @@ export type HaState =
 
 /** Home Assistant und Bring! (docs/integrationen.md, Abschnitt 5). Nie ein Token. */
 export interface HaStatus {
-  /** STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY sind gesetzt. */
+  /** Adresse, Token und To-do-Liste sind wirksam: alle drei aus der Umgebung (STOWLY_HA_URL, STOWLY_HA_TOKEN, STOWLY_HA_TODO_ENTITY) oder alle drei aus der App. */
   configured: boolean;
-  /** Warum der Abgleich aus ist, obwohl etwas gesetzt ist; sonst null. */
+  /** Warum der Abgleich oder der Sensor nicht wirkt, obwohl etwas gesetzt ist (etwa: der Token oder der Sensor-Token fehlt nach einem Zurückspielen); sonst null. */
   problem: string | null;
-  /** Die To-do-Liste in HA (STOWLY_HA_TODO_ENTITY). */
+  /** Die wirksame To-do-Liste in HA. */
   entity: string | null;
   state: HaState;
   /** Letzter gelungener Abgleich. */
@@ -651,7 +779,7 @@ export interface HaStatus {
   last_error_at: string | null;
   /** Offene Einträge, die gerade in Bring! stehen. */
   linked: number;
-  /** Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN). */
+  /** Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN oder ein Sensor-Token aus der App). */
   sensor: boolean;
 }
 
@@ -732,6 +860,13 @@ export interface HaSummaryNext {
   count: number;
   /** Name der Zone der ersten dieser Packungen. */
   zone: string;
+}
+
+export interface HaTodoList {
+  entity_id: string;
+  name: string;
+  /** Offene Einträge, soweit HA sie meldet. */
+  open: number | null;
 }
 
 /**
@@ -1182,10 +1317,83 @@ export type RejectCode = "invalid" | "not_found" | "id_conflict" | "last_zone" |
 /** Warum eine Packung entnommen wurde (Grundlage der Statistik in Stufe 2). */
 export type RemovalReason = "consumed" | "discarded" | "mistake";
 
+/** Antwort 202 auf `POST /api/restore/apply` und `POST /api/restore/undo`. */
+export interface RestoreApplied {
+  /** Nur beim ersten Start: Token und Gerät; es gilt, sobald /api/health nach dem Neustart wieder configured=true meldet. Ein laufender Stowly behält alle Anmeldungen. */
+  login: LoginResponse | null;
+}
+
+/** `POST /api/restore/apply`: die geprüfte Sicherung einspielen; Stowly startet danach neu. */
+export interface RestoreApplyInput {
+  restore_id: string;
+  /** Laufender Stowly: das jetzige Haushalts-Passwort. Erster Start: das Passwort aus der Sicherung (has_password) oder ein neues (sonst; dann gilt die Mindestlänge eines neuen Passworts). */
+  password: string;
+  /** Nur beim ersten Start: Name dieses Geräts für die Anmeldung. */
+  device_name?: string;
+}
+
+/** `POST /api/restore/check`: die hochgeladene Datei prüfen, bei age mit dem geheimen Schlüssel. */
+export interface RestoreCheckInput {
+  upload_id: string;
+  /** Der geheime age-Schlüssel (AGE-SECRET-KEY-1…), auch als Inhalt der Schlüsseldatei; Zeilen mit # zählen nicht. Nur für kind=age. Der Server speichert und loggt ihn nie. */
+  identity?: string | null;
+}
+
+export interface RestoreCounts {
+  products: number;
+  /** Vorräte (Packungen) im Bestand. */
+  items: number;
+  zones: number;
+  /** Offene Einträge der Einkaufsliste. */
+  shopping: number;
+}
+
+/** Was hochgeladen wurde, an den ersten Bytes erkannt. */
+export type RestoreKind = "age" | "gzip" | "sqlite";
+
+/** Was in der Sicherung steckt (Antwort auf `POST /api/restore/check`). */
+export interface RestorePreview {
+  restore_id: string;
+  expires_at: string;
+  kind: RestoreKind;
+  /** Version der Datenbank in der Sicherung. */
+  schema_version: number;
+  /** Version dieses Servers. */
+  current_schema_version: number;
+  /** Jüngste Änderung in der Sicherung. */
+  last_activity_at: string | null;
+  /** Die Sicherung enthält ein Haushalts-Passwort (nur sein Hash). */
+  has_password: boolean;
+  /** Geräte in der Sicherung. */
+  devices: number;
+  counts: RestoreCounts;
+}
+
+export type RestoreState = "idle" | "pending" | "done" | "undone" | "failed";
+
+/** `GET /api/restore`: der letzte Stand des Zurückspielens. Nie ein Schlüssel. */
+export interface RestoreStatus {
+  state: RestoreState;
+  /** Seit wann state gilt. */
+  at: string | null;
+  message: string | null;
+  /** Bis wann Rückgängig geht (RESTORE_UNDO_DAYS = 7 Tage); null = gar nicht. */
+  undo_until: string | null;
+}
+
+/** Antwort auf `PUT /api/restore/upload`. */
+export interface RestoreUpload {
+  upload_id: string;
+  kind: RestoreKind;
+  /** Größe in Byte. */
+  size: number;
+}
+
 /** Einstellungen des Servers, die auch in der App gehen. Die Umgebung geht vor; nie ein Geheimnis. */
 export interface ServerConfig {
   push: PushConfig;
   update: UpdateConfig;
+  backup: BackupConfig;
 }
 
 /** `PATCH /api/server-config`. Nur vorhandene Felder zählen; 409, wenn das Feld aus der Umgebung kommt. */
@@ -1193,6 +1401,14 @@ export interface ServerConfigChanges {
   /** mailto:<Adresse> oder eine https-Adresse; eine Adresse ohne mailto: bekommt es davor. null = entfernen (Push ist dann aus). */
   push_contact?: string | null;
   update_enabled?: boolean;
+  /** Die automatische Sicherung an oder aus. */
+  backup_enabled?: boolean;
+  /** Uhrzeit HH:MM; null = wieder die Vorgabe 03:30. */
+  backup_time?: string | null;
+  /** Die öffentlichen age-Schlüssel (age1…); ersetzt die bisherigen aus der App. Ein geheimer Schlüssel (AGE-SECRET-KEY-…) gibt 422, ohne ihn zu wiederholen. Kommt ein Schlüssel hinzu, braucht es current_password. */
+  backup_recipients?: string[];
+  /** Das Haushalts-Passwort. Nötig, wenn backup_recipients einen Schlüssel hinzufügt: Wer einen Schlüssel hinzufügt, kann jede künftige Sicherung lesen (samt Passwort-Hash). Fehlt es, 422 an ['body', 'current_password']; falsch: 401 invalid_password über die Bremse der Anmeldung (dann auch 429). Entfernen braucht es nicht. */
+  current_password?: string;
 }
 
 /** Antwort von `GET /api/health`. `app` ist der Marker, an dem die App den Server erkennt. */
@@ -1325,7 +1541,7 @@ export interface SetupStep {
   id: SetupStepId;
   /** Wie die App den Schritt markiert hat; ohne Markierung open. */
   state: SetupStepState;
-  /** Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; printer = es gibt einen Drucker; updates = Updates sind an; notifications = ein Kontakt für die Push-Dienste ist wirksam. */
+  /** Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; printer = es gibt einen Drucker; backup = die Sicherung ist wirksam und es gibt eine gelungene; updates = Updates sind an; notifications = ein Kontakt für die Push-Dienste ist wirksam; home_assistant = der Abgleich mit Home Assistant ist eingerichtet. */
   ready: boolean;
   /** Wann state zuletzt gesetzt wurde. */
   changed_at: string | null;
@@ -1337,7 +1553,7 @@ export interface SetupStepChange {
 }
 
 /** Die Schritte des Assistenten nach dem Passwort, in dieser Reihenfolge. */
-export type SetupStepId = "https" | "printer" | "updates" | "notifications";
+export type SetupStepId = "https" | "printer" | "backup" | "updates" | "notifications" | "home_assistant";
 
 export type SetupStepState = "open" | "done" | "skipped";
 

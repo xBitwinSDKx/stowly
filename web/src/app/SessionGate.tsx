@@ -35,7 +35,8 @@ function inSetup(): boolean {
  * Zeigt die App nur angemeldeten Geräten. Abgemeldet:
  *
  * - Hat der Server noch kein Haushalts-Passwort (`server_configured === false`), die Willkommensseite,
- *   gleich aus welchem Grund das Gerät abgemeldet ist.
+ *   gleich aus welchem Grund das Gerät abgemeldet ist. Spielt sie gerade eine Sicherung ein, bleibt
+ *   sie, bis das Gerät angemeldet ist.
  * - War dieses Gerät noch nie angemeldet und hat der Kern den Server noch nicht gefragt, höchstens
  *   `FIRST_CHECK_MS` lang „Verbindung zum Server wird geprüft …": So erscheint bei einem neuen
  *   Server nicht erst die Anmeldung.
@@ -51,6 +52,9 @@ export function SessionGate({ children, onLogout, onFirstRun, onResumeSetup }: S
   const toast = useToast();
   const checking = session.status === "signed_out" && session.reason === "never" && status?.server_configured == null && status?.online == null;
   const [waited, setWaited] = useState(false);
+  // Die Willkommensseite spielt gerade eine Sicherung ein: Sie bleibt stehen, bis das Gerät angemeldet
+  // ist, auch wenn der Server inzwischen ein Passwort meldet (sonst blitzte die Anmeldung auf).
+  const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
     if (loggedOut) {
@@ -92,8 +96,8 @@ export function SessionGate({ children, onLogout, onFirstRun, onResumeSetup }: S
     );
   }
   if (session.status === "signed_out") {
-    if (status?.server_configured === false) {
-      return <FirstRunPage onFirstRun={onFirstRun} />;
+    if (status?.server_configured === false || restoring) {
+      return <FirstRunPage onFirstRun={onFirstRun} onBusy={setRestoring} />;
     }
     if (checking && !waited) {
       return (

@@ -90,8 +90,9 @@ class ErrorCode(StrEnum):
     INVALID_PASSWORD = "invalid_password"  # 401: falsches Haushalts-Passwort (auch beim Ändern)
     RATE_LIMITED = "rate_limited"  # 429: zu viele Fehlversuche, Retry-After beachten
     # 503: Auf dem Server gibt es noch kein Passwort, oder eine Integration, die der Aufruf braucht,
-    # ist nicht eingerichtet (Push: kein Kontakt, Sensor: STOWLY_HA_SUMMARY_TOKEN, Updates: aus
-    # oder der Updater meldet sich nicht, Pi koppeln: keine CA oder kein Paket für den Pi).
+    # ist nicht eingerichtet (Push: kein Kontakt, Sensor: kein Sensor-Token aus App oder Umgebung,
+    # Updates: aus oder der Updater meldet sich nicht, Pi koppeln: keine CA oder kein Paket für den Pi,
+    # Sicherung jetzt: kein Schlüssel oder kein brauchbarer Ordner, Zurückspielen: kein Neustart möglich).
     NOT_CONFIGURED = "not_configured"
     NOT_FOUND = "not_found"  # 404
     CONFLICT = "conflict"  # 409
@@ -374,14 +375,33 @@ class PushTestResult(Model):
 # --- Zustand der Integrationen (GET /api/integrations) ----------------------------------
 
 
+class BackupFile(Model):
+    """Eine Sicherung im Ordner (nur Dateien von Stowly: stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age)."""
+
+    name: str
+    size: Count = Field(description="Größe in Byte.")
+    created_at: Timestamp = Field(description="Zeit aus dem Dateinamen bzw. der Datei.")
+
+
 class BackupStatus(Model):
     """Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext."""
 
-    configured: bool = Field(description="STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS sind gesetzt.")
+    configured: bool = Field(
+        description=(
+            "Die Sicherung ist wirksam: an, mit mindestens einem öffentlichen Schlüssel (Umgebung oder App) "
+            "und einem brauchbaren Ordner."
+        )
+    )
+    folder: str | None = Field(description="Ordner im Container, in dem die Sicherungen liegen.")
+    files: list[BackupFile] = Field(
+        description="Sicherungen im Ordner, neueste zuerst, höchstens LIMITS.backup_files_listed."
+    )
     problem: str | None = Field(
         description="Warum die Sicherung aus ist, obwohl etwas gesetzt ist; sonst null."
     )
-    time: TimeOfDay | None = Field(description="Uhrzeit der täglichen Sicherung (STOWLY_BACKUP_TIME).")
+    time: TimeOfDay | None = Field(
+        description="Wirksame Uhrzeit der täglichen Sicherung (Umgebung, App oder Vorgabe); null ohne jede Einstellung."
+    )
     recipients: list[str] = Field(description="Öffentliche age-Schlüssel, gekürzt: 'age1ql3z…ac8p'.")
     last_ok_at: Timestamp | None = Field(description="Letzte gelungene Sicherung.")
     last_file: str | None = Field(description="Dateiname der letzten gelungenen Sicherung.")
@@ -411,18 +431,26 @@ class HaStatus(Model):
     """Home Assistant und Bring! (docs/integrationen.md, Abschnitt 5). Nie ein Token."""
 
     configured: bool = Field(
-        description="STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY sind gesetzt."
+        description=(
+            "Adresse, Token und To-do-Liste sind wirksam: alle drei aus der Umgebung (STOWLY_HA_URL, "
+            "STOWLY_HA_TOKEN, STOWLY_HA_TODO_ENTITY) oder alle drei aus der App."
+        )
     )
     problem: str | None = Field(
-        description="Warum der Abgleich aus ist, obwohl etwas gesetzt ist; sonst null."
+        description=(
+            "Warum der Abgleich oder der Sensor nicht wirkt, obwohl etwas gesetzt ist (etwa: der Token oder "
+            "der Sensor-Token fehlt nach einem Zurückspielen); sonst null."
+        )
     )
-    entity: str | None = Field(description="Die To-do-Liste in HA (STOWLY_HA_TODO_ENTITY).")
+    entity: str | None = Field(description="Die wirksame To-do-Liste in HA.")
     state: HaState
     last_ok_at: Timestamp | None = Field(description="Letzter gelungener Abgleich.")
     last_error: str | None = Field(description="Fehler des letzten Abgleichs; null nach einem Erfolg.")
     last_error_at: Timestamp | None
     linked: int = Field(ge=0, description="Offene Einträge, die gerade in Bring! stehen.")
-    sensor: bool = Field(description="Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN).")
+    sensor: bool = Field(
+        description="Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN oder ein Sensor-Token aus der App)."
+    )
 
 
 class PushStatus(Model):
@@ -570,8 +598,10 @@ class SetupStepId(StrEnum):
 
     HTTPS = "https"  # sichere Verbindung
     PRINTER = "printer"  # Drucker (Raspberry Pi)
+    BACKUP = "backup"  # Sicherung (seit Stufe B)
     UPDATES = "updates"  # Updates
     NOTIFICATIONS = "notifications"  # Benachrichtigungen
+    HOME_ASSISTANT = "home_assistant"  # Home Assistant und Bring! (seit Stufe B)
 
 
 class SetupStepState(StrEnum):
@@ -586,8 +616,9 @@ class SetupStep(Model):
     ready: bool = Field(
         description=(
             "Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; "
-            "printer = es gibt einen Drucker; updates = Updates sind an; notifications = ein Kontakt "
-            "für die Push-Dienste ist wirksam."
+            "printer = es gibt einen Drucker; backup = die Sicherung ist wirksam und es gibt eine "
+            "gelungene; updates = Updates sind an; notifications = ein Kontakt für die Push-Dienste ist "
+            "wirksam; home_assistant = der Abgleich mit Home Assistant ist eingerichtet."
         )
     )
     changed_at: Timestamp | None = Field(description="Wann state zuletzt gesetzt wurde.")
@@ -734,11 +765,58 @@ class UpdateConfig(Model):
     )
 
 
+BackupRecipient = Annotated[str, Field(min_length=1, max_length=LIMITS["backup_recipient"])]
+# Die automatische Sicherung läuft täglich um diese Uhrzeit, solange nichts anderes eingestellt ist.
+BACKUP_TIME_DEFAULT = "03:30"
+
+
+class BackupFolderSource(StrEnum):
+    """Woher der Ordner der Sicherungen kommt (docs/plan-einrichtung-b.md, Abschnitt 1)."""
+
+    ENV = "env"  # STOWLY_BACKUP_DIR
+    MOUNTED = "mounted"  # /backups ist als eigener Ordner eingebunden und beschreibbar
+    DATA = "data"  # /data/backups im Datenordner (Vorgabe ohne eigenen Ordner)
+
+
+class BackupRecipientInfo(Model):
+    """Ein öffentlicher age-Schlüssel der Sicherung. Nie ein geheimer Schlüssel."""
+
+    key: str = Field(description="Der öffentliche Schlüssel, vollständig (age1…).")
+    short: str = Field(description="Gekürzt für die Anzeige, etwa 'age1ql3z…ac8p'.")
+    added_at: Timestamp | None = Field(description="Wann er in der App hinzukam; null aus der Umgebung.")
+
+
+class BackupConfig(Model):
+    enabled: bool = Field(description="Die automatische Sicherung ist an.")
+    enabled_source: ConfigSource = Field(
+        description=(
+            "env: fest an, weil die Schlüssel aus STOWLY_BACKUP_RECIPIENTS kommen; app: Schalter in der App; "
+            "default: noch nie geschaltet, dann an."
+        )
+    )
+    recipients: list[BackupRecipientInfo]
+    recipients_source: ConfigSource
+    time: TimeOfDay = Field(description="Uhrzeit der täglichen Sicherung, Zeitzone des Servers.")
+    time_source: ConfigSource
+    folder: str = Field(description="Ordner im Container, in den die Sicherungen gehen.")
+    folder_source: BackupFolderSource
+    folder_problem: str | None = Field(
+        description="Warum der Ordner nicht taugt (fehlt, nicht beschreibbar); sonst null."
+    )
+    folder_hint: str | None = Field(
+        description=(
+            "Hinweis, wenn ein eigener Ordner /backups eingebunden ist, aber nicht taugt (etwa ohne "
+            "Schreibrecht für Benutzer 10001): Die Sicherungen gehen dann in den Datenordner. Sonst null."
+        )
+    )
+
+
 class ServerConfig(Model):
     """Einstellungen des Servers, die auch in der App gehen. Die Umgebung geht vor; nie ein Geheimnis."""
 
     push: PushConfig
     update: UpdateConfig
+    backup: BackupConfig
 
 
 class ServerConfigChanges(Model):
@@ -752,6 +830,226 @@ class ServerConfigChanges(Model):
         ),
     )
     update_enabled: bool = Field(default=None)
+    backup_enabled: bool = Field(default=None, description="Die automatische Sicherung an oder aus.")
+    backup_time: TimeOfDay | None = Field(
+        default=None, description=f"Uhrzeit HH:MM; null = wieder die Vorgabe {BACKUP_TIME_DEFAULT}."
+    )
+    backup_recipients: list[BackupRecipient] = Field(
+        default=None,
+        max_length=LIMITS["backup_recipients"],
+        description=(
+            "Die öffentlichen age-Schlüssel (age1…); ersetzt die bisherigen aus der App. Ein geheimer "
+            "Schlüssel (AGE-SECRET-KEY-…) gibt 422, ohne ihn zu wiederholen. Kommt ein Schlüssel hinzu, "
+            "braucht es current_password."
+        ),
+    )
+    current_password: str = Field(
+        default=None,
+        min_length=1,
+        max_length=LIMITS["password"],
+        description=(
+            "Das Haushalts-Passwort. Nötig, wenn backup_recipients einen Schlüssel hinzufügt: Wer einen "
+            "Schlüssel hinzufügt, kann jede künftige Sicherung lesen (samt Passwort-Hash). Fehlt es, 422 an "
+            "['body', 'current_password']; falsch: 401 invalid_password über die Bremse der Anmeldung (dann "
+            "auch 429). Entfernen braucht es nicht."
+        ),
+    )
+
+
+# --- Sicherung jetzt und Zurückspielen (docs/sync-protokoll.md, 11.9) ------------------
+
+# Eine hochgeladene Sicherung darf so groß sein; der Server braucht das Dreifache an freiem Platz.
+RESTORE_MAX_BYTES = 512 * 1024 * 1024
+# upload_id und restore_id gelten so viele Sekunden.
+RESTORE_ID_TTL_S = 1800
+# So lange bleibt die Datenbank vor dem Zurückspielen für „Rückgängig".
+RESTORE_UNDO_DAYS = 7
+RestoreId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+
+
+class RestoreKind(StrEnum):
+    """Was hochgeladen wurde, an den ersten Bytes erkannt."""
+
+    AGE = "age"  # verschlüsselte Sicherung von Stowly (.sqlite3.gz.age)
+    GZIP = "gzip"  # gepackte Datenbank (.sqlite3.gz)
+    SQLITE = "sqlite"  # Datenbank ohne alles (etwa die frühere Sicherung zum Herunterladen)
+
+
+class RestoreUpload(Model):
+    """Antwort auf ``PUT /api/restore/upload``."""
+
+    upload_id: RestoreId
+    kind: RestoreKind
+    size: Count = Field(description="Größe in Byte.")
+
+
+class RestoreCheckInput(Model):
+    """``POST /api/restore/check``: die hochgeladene Datei prüfen, bei age mit dem geheimen Schlüssel."""
+
+    upload_id: RestoreId
+    identity: str | None = Field(
+        default=None,
+        max_length=LIMITS["restore_identity"],
+        description=(
+            "Der geheime age-Schlüssel (AGE-SECRET-KEY-1…), auch als Inhalt der Schlüsseldatei; Zeilen mit # "
+            "zählen nicht. Nur für kind=age. Der Server speichert und loggt ihn nie."
+        ),
+    )
+
+
+class RestoreCounts(Model):
+    products: Count
+    items: Count = Field(description="Vorräte (Packungen) im Bestand.")
+    zones: Count
+    shopping: Count = Field(description="Offene Einträge der Einkaufsliste.")
+
+
+class RestorePreview(Model):
+    """Was in der Sicherung steckt (Antwort auf ``POST /api/restore/check``)."""
+
+    restore_id: RestoreId
+    expires_at: Timestamp
+    kind: RestoreKind
+    schema_version: int = Field(ge=1, description="Version der Datenbank in der Sicherung.")
+    current_schema_version: int = Field(ge=1, description="Version dieses Servers.")
+    last_activity_at: Timestamp | None = Field(description="Jüngste Änderung in der Sicherung.")
+    has_password: bool = Field(description="Die Sicherung enthält ein Haushalts-Passwort (nur sein Hash).")
+    devices: Count = Field(description="Geräte in der Sicherung.")
+    counts: RestoreCounts
+
+
+class RestoreApplyInput(Model):
+    """``POST /api/restore/apply``: die geprüfte Sicherung einspielen; Stowly startet danach neu."""
+
+    restore_id: RestoreId
+    password: str = Field(
+        min_length=1,
+        max_length=LIMITS["password"],
+        description=(
+            "Laufender Stowly: das jetzige Haushalts-Passwort. Erster Start: das Passwort aus der Sicherung "
+            "(has_password) oder ein neues (sonst; dann gilt die Mindestlänge eines neuen Passworts)."
+        ),
+    )
+    device_name: DeviceName = Field(
+        default=None, description="Nur beim ersten Start: Name dieses Geräts für die Anmeldung."
+    )
+
+
+class RestoreApplied(Model):
+    """Antwort 202 auf ``POST /api/restore/apply`` und ``POST /api/restore/undo``."""
+
+    login: LoginResponse | None = Field(
+        description=(
+            "Nur beim ersten Start: Token und Gerät; es gilt, sobald /api/health nach dem Neustart wieder "
+            "configured=true meldet. Ein laufender Stowly behält alle Anmeldungen."
+        )
+    )
+
+
+class RestoreState(StrEnum):
+    IDLE = "idle"  # nie zurückgespielt, oder der letzte Stand ist abgelaufen
+    PENDING = "pending"  # eingespielt, der Neustart steht aus
+    DONE = "done"  # zurückgespielt
+    UNDONE = "undone"  # rückgängig gemacht
+    FAILED = "failed"  # gescheitert; die bisherige Datenbank läuft weiter, message sagt warum
+
+
+class RestoreStatus(Model):
+    """``GET /api/restore``: der letzte Stand des Zurückspielens. Nie ein Schlüssel."""
+
+    state: RestoreState
+    at: Timestamp | None = Field(description="Seit wann state gilt.")
+    message: str | None
+    undo_until: Timestamp | None = Field(
+        description=(
+            f"Bis wann Rückgängig geht (RESTORE_UNDO_DAYS = {RESTORE_UNDO_DAYS} Tage); null = gar nicht."
+        )
+    )
+
+
+# --- Home Assistant aus der App (docs/integrationen.md, Abschnitt 5 und 12) ------------
+
+HaUrl = Annotated[str, Field(min_length=1, max_length=LIMITS["ha_url"])]
+HaToken = Annotated[str, Field(min_length=1, max_length=LIMITS["ha_token"])]
+HaEntity = Annotated[str, Field(pattern=r"^todo\.[a-z0-9_]+$", max_length=255)]
+
+
+class HaSensorConfig(Model):
+    source: ConfigSource = Field(
+        description="env: STOWLY_HA_SUMMARY_TOKEN; app: in der App erzeugt; default: keiner."
+    )
+    set: bool
+    set_at: Timestamp | None
+
+
+class HaConfig(Model):
+    """``GET /api/server-config/ha``. Nie ein Token: Der Token von HA steht in einem eigenen Speicher
+    außerhalb der Datenbank und jeder Sicherung."""
+
+    source: ConfigSource = Field(
+        description=(
+            "env: Adresse, Token und Liste kommen aus der Umgebung (in der App gesperrt); app: aus der App; "
+            "default: nichts eingerichtet."
+        )
+    )
+    url: str | None
+    entity: str | None
+    token_set: bool
+    token_set_at: Timestamp | None
+    ca: bool = Field(description="Eine eigene CA für HA ist gesetzt (STOWLY_HA_CA, nur in der Umgebung).")
+    configured: bool
+    problem: str | None
+    sensor: HaSensorConfig
+
+
+class HaConfigChanges(Model):
+    """``PATCH /api/server-config/ha``. Nur vorhandene Felder zählen; 409, wenn die Verbindung aus der
+    Umgebung kommt. Eine neue Adresse ohne token im selben Aufruf löscht den gespeicherten Token."""
+
+    url: HaUrl | None = Field(default=None, description="http(s)://Rechner[:Port]; null = entfernen.")
+    entity: HaEntity | None = Field(default=None, description="Die To-do-Liste; null = entfernen.")
+    token: HaToken | None = Field(default=None, description="Langlebiger Zugangs-Token; null = entfernen.")
+
+
+class HaCheckInput(Model):
+    """``POST /api/server-config/ha/check``. Ohne Felder: die wirksame Einrichtung prüfen."""
+
+    url: HaUrl = Field(default=None)
+    token: HaToken = Field(default=None)
+
+
+class HaCheckState(StrEnum):
+    OK = "ok"
+    TOKEN_NEEDED = "token_needed"  # Adresse antwortet als HA, aber kein Token angegeben oder gespeichert
+    UNAUTHORIZED = "unauthorized"  # HA lehnt den Token ab
+    NOT_HA = "not_ha"  # unter der Adresse antwortet kein Home Assistant
+    UNREACHABLE = "unreachable"  # nicht erreichbar: Netz, Zeitüberschreitung, Zertifikat
+    ERROR = "error"  # anderer Fehler
+
+
+class HaTodoList(Model):
+    entity_id: str
+    name: str
+    open: int | None = Field(ge=0, description="Offene Einträge, soweit HA sie meldet.")
+
+
+class HaCheck(Model):
+    """Ergebnis der Prüfung. Nie eine rohe Antwort von HA, nie ein Token."""
+
+    state: HaCheckState
+    message: str = Field(description="Deutscher Klartext.")
+    ha_version: str | None
+    location_name: str | None
+    lists: list[HaTodoList] = Field(description="To-do-Listen (todo.*), höchstens 100.")
+    entity_found: bool | None = Field(
+        description="Die wirksame To-do-Liste gibt es in HA; null = keine Liste eingerichtet."
+    )
+
+
+class HaSensorToken(Model):
+    """Der Sensor-Token für HA (erzeugen bzw. anzeigen; nur angemeldet)."""
+
+    token: str
 
 
 # --- Pi koppeln (docs/sync-protokoll.md, 11.8; docs/etiketten.md) ----------------------

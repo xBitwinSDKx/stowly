@@ -142,8 +142,10 @@ describe("Stand der Einrichtung", () => {
     expect(status.steps.map((step) => [step.id, step.state, step.ready])).toEqual([
       ["https", "open", false],
       ["printer", "open", false],
+      ["backup", "open", false],
       ["updates", "open", false],
       ["notifications", "open", true],
+      ["home_assistant", "open", false],
     ]);
     expect(status.finished_at).toBeNull();
     expect(status.https).toMatchObject({ enabled: true, port: 8443, origins: ["https://192.168.1.10:8443"] });
@@ -283,7 +285,7 @@ describe("Gekoppelte Pi (SetupStatus.paired_printers)", () => {
     const { core, server, network } = await signedIn();
     const { paired_printers: _paired, ...older } = server.setupStatus();
     network.respondWith = (call) => (call.path === ENDPOINTS.get_setup.path ? jsonResponse(older) : null);
-    expect((await core.setup.load()).steps).toHaveLength(4);
+    expect((await core.setup.load()).steps).toHaveLength(6);
     network.respondWith = (call) => (call.path === ENDPOINTS.get_setup.path ? jsonResponse({ ...older, paired_printers: [{ printer_id: 1 }] }) : null);
     await expectCoreError(core.setup.load(), "offline");
   });

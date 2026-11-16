@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request, Response
 
-from stowly import auth, records, wizard
+from stowly import auth, records, restore, wizard
 from stowly.api.auth import rate_limited
 from stowly.api.deps import CurrentDevice, Db, get_settings
 from stowly.contract.api import (
@@ -34,6 +34,10 @@ NOT_AT_HOME = (
 )
 ALREADY_SET = "Es gibt schon ein Passwort. Bitte damit anmelden."
 NO_CA = "Es gibt keine nutzbare CA (Einzelheiten unter Einstellungen → Einrichtung)."
+
+
+class _Restoring(Exception):
+    """Beim ersten Start wird gerade eine Sicherung zurückgespielt."""
 
 
 def _tls(request: Request) -> TlsManager:
@@ -83,11 +87,18 @@ def setup_password(body: SetupPasswordInput, request: Request, response: Respons
         )
     if auth.has_password(settings, con):
         raise ApiError(409, ErrorCode.CONFLICT, ALREADY_SET)
+    # Beim ersten Start kann statt des Passworts eine Sicherung kommen (stowly/restore.py): Liegt sie bereit,
+    # bringt sie ihr Passwort mit. Geprüft unter dem Lock der Bremse, wie das Anwenden dort.
+    restoring = request.app.state.restore.blocks_first_password
+    if restoring():
+        raise ApiError(409, ErrorCode.CONFLICT, restore.BLOCKS_FIRST_PASSWORD)
 
     created: dict[str, Any] = {}
 
     def first() -> bool:
         # Unter dem Lock der Bremse: höchstens ein scrypt zugleich, und gesperrt heißt auch hier 429.
+        if restoring():
+            raise _Restoring
         created["token"], created["device"] = auth.set_first_password(con, body.password, body.device_name)
         return True
 
@@ -96,6 +107,8 @@ def setup_password(body: SetupPasswordInput, request: Request, response: Respons
         _ok, retry_after = guard.attempt(first)
     except auth.PasswordExists:
         raise ApiError(409, ErrorCode.CONFLICT, ALREADY_SET) from None
+    except _Restoring:
+        raise ApiError(409, ErrorCode.CONFLICT, restore.BLOCKS_FIRST_PASSWORD) from None
     if retry_after is not None:
         raise rate_limited(retry_after)
 

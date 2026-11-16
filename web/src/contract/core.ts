@@ -41,9 +41,14 @@
  * Schnittstelle sind camelCase (`core.data.removedPackages`, `core.stock.store`).
  */
 import type {
+  BackupFile,
   Command,
   Device,
   DirectPrinterConfig,
+  HaCheck,
+  HaCheckInput,
+  HaConfig,
+  HaConfigChanges,
   HouseholdSettings,
   IntegrationStatus,
   LookupResultState,
@@ -60,6 +65,10 @@ import type {
   PushTestResult,
   RejectCode,
   RemovalReason,
+  RestoreApplyInput,
+  RestorePreview,
+  RestoreStatus,
+  RestoreUpload,
   ServerConfig,
   ServerConfigChanges,
   ServerPrinterConfig,
@@ -685,8 +694,9 @@ export const SECURE_CHECK_TIMEOUT_MS = 4_000;
 
 /**
  * Einstellungen des Servers, die auch in der App gehen (docs/integrationen.md, Abschnitt 12):
- * Kontakt für die Push-Dienste und der Schalter für Updates. Die Umgebung geht vor; was dort
- * steht, ist hier nur zu sehen (`source: "env"`).
+ * Kontakt für die Push-Dienste, der Schalter für Updates und seit Stufe B die Sicherung (Schalter,
+ * Uhrzeit, öffentliche Schlüssel). Die Umgebung geht vor; was dort steht, ist hier nur zu sehen
+ * (`source: "env"`).
  */
 export interface ServerConfigApi {
   /** `GET /api/server-config`. @throws CoreError offline | unauthorized | not_supported */
@@ -694,10 +704,143 @@ export interface ServerConfigApi {
   /**
    * `PATCH /api/server-config`. `push_contact` prüft der Kern vorher (`checkPushContact`, eine
    * Adresse ohne `mailto:` bekommt es davor); null entfernt den Kontakt. Ein geänderter Kontakt
-   * gilt sofort auch für `push.state`.
-   * @throws CoreError conflict (aus der Umgebung, oder das Image kennt kein Repository) | invalid | offline | unauthorized
+   * gilt sofort auch für `push.state`. `backup_recipients` ersetzt die öffentlichen Schlüssel aus
+   * der App; ein geheimer Schlüssel gehört nie hierher (der Server lehnt ihn mit 422 ab). Kommt ein
+   * Schlüssel hinzu, braucht es `current_password` (das Haushalts-Passwort); Entfernen nicht.
+   * @throws CoreError conflict (aus der Umgebung, oder das Image kennt kein Repository) | invalid (auch: Passwort
+   *   fehlt) | invalid_password (falsches Passwort; das Gerät bleibt angemeldet) | rate_limited | offline | unauthorized
    */
   update(changes: ServerConfigChanges): Promise<ServerConfig>;
+}
+
+// --------------------------------------------------------------------------------------
+// Sicherung, Zurückspielen und Home Assistant (Einrichtung, Stufe B): braucht den Server
+// --------------------------------------------------------------------------------------
+//
+// Der Code dieser drei Teile wird erst beim ersten Aufruf geladen (src/core/admin.ts und
+// src/core/restore.ts): Er gehört nicht ins Hauptpaket. Scheitert das Laden, weil der Server
+// fehlt, scheitert der Aufruf mit "offline".
+
+/** So groß darf eine Sicherung zum Zurückspielen sein (`RESTORE_MAX_BYTES`, server/stowly/contract/api.py). */
+export const RESTORE_MAX_BYTES = 512 * 1024 * 1024;
+
+/** So viele Tage lang lässt sich ein Zurückspielen rückgängig machen (`RESTORE_UNDO_DAYS`). */
+export const RESTORE_UNDO_DAYS = 7;
+
+/** So lange wartet der Kern nach dem Anwenden höchstens darauf, dass Stowly nach dem Neustart wieder antwortet. */
+export const RESTORE_RESTART_TIMEOUT_MS = 300_000;
+
+/**
+ * Die verschlüsselte Sicherung im Ordner des Servers (docs/plan-einrichtung-b.md, Abschnitt 1).
+ * Eingestellt wird sie über `serverConfig.update` (`backup_enabled`, `backup_time`,
+ * `backup_recipients`); den Zustand samt den Dateien im Ordner meldet `integrations.load().backup`.
+ * Eine unverschlüsselte Kopie zum Herunterladen gibt es nicht mehr.
+ */
+export interface BackupApi {
+  /**
+   * `POST /api/backup/run`: legt jetzt eine Sicherung wie die tägliche in den Ordner und liefert sie.
+   * @throws CoreError conflict (es läuft schon eine) | rate_limited (mehr als eine je Minute, `details.retry_after_s`)
+   *   | not_configured (kein öffentlicher Schlüssel oder kein brauchbarer Ordner) | offline | unauthorized
+   */
+  run(): Promise<BackupFile>;
+  /**
+   * `GET /api/backup/files/{name}`: eine Sicherung aus dem Ordner, verschlüsselt, wie sie dort liegt.
+   * @throws CoreError not_found (kein Name von Stowly, oder die Datei ist weg) | offline | unauthorized
+   */
+  file(name: string): Promise<Blob>;
+}
+
+/** Wie weit das Hochladen ist, in Byte. */
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+}
+
+/**
+ * Eine Sicherung zurückspielen (docs/sync-protokoll.md, 11.9; docs/plan-einrichtung-b.md, Abschnitt 2):
+ * hochladen, prüfen, anwenden. Angemeldet gilt es für den laufenden Stowly (mit dem jetzigen
+ * Haushalts-Passwort); abgemeldet nur beim ersten Start, solange der Server noch kein Passwort hat
+ * (`sync.status.server_configured === false`). Der geheime Schlüssel geht nur an `check`; der Kern
+ * speichert ihn nirgends.
+ */
+export interface RestoreApi {
+  /**
+   * `PUT /api/restore/upload`: die Datei als Rohdaten, höchstens `RESTORE_MAX_BYTES` (größer
+   * scheitert ohne Anfrage). `onProgress` meldet den Fortschritt, soweit der Browser ihn kennt.
+   * @throws CoreError invalid (zu groß, oder keine Sicherung) | conflict (ein Zurückspielen oder ein Update läuft,
+   *   zu wenig Platz; der Satz des Servers) | rate_limited (`details.retry_after_s`) | offline | unauthorized
+   */
+  upload(file: Blob, options?: { onProgress?: (progress: UploadProgress) => void }): Promise<RestoreUpload>;
+  /**
+   * `POST /api/restore/check`: prüft die hochgeladene Datei und sagt, was in ihr steckt. Zu einer
+   * verschlüsselten (`kind: "age"`) gehört der geheime Schlüssel, als `AGE-SECRET-KEY-1…` oder als
+   * Inhalt der Schlüsseldatei (Zeilen mit # zählen nicht). Mit einem anderen Schlüssel lässt es sich
+   * ohne neues Hochladen wiederholen. Bei großen Sicherungen dauert die Prüfung eine Weile.
+   * @throws CoreError invalid (der Satz des Servers; `details.reason`: wrong_key, not_a_key, not_stowly, damaged,
+   *   newer_schema, migration_failed) | not_found (die hochgeladene Datei ist abgelaufen) | conflict | rate_limited | offline | unauthorized
+   */
+  check(uploadId: string, identity?: string | null): Promise<RestorePreview>;
+  /**
+   * `POST /api/restore/apply`: spielt die geprüfte Sicherung ein; Stowly startet danach neu.
+   *
+   * - Angemeldet (laufender Stowly): `password` ist das jetzige Haushalts-Passwort. Erfüllt sich mit
+   *   der Antwort; danach wartet `waitForRestart`. Alle Geräte bleiben angemeldet und laden den
+   *   Bestand mit dem nächsten Abgleich neu (neue `dataset_id`).
+   * - Abgemeldet (erster Start): `password` ist das aus der Sicherung (`has_password`) oder ein
+   *   neues, `device_name` der Name dieses Geräts. Erfüllt sich erst, wenn der Server nach dem
+   *   Neustart wieder eingerichtet antwortet (`/api/health` meldet configured) und dieses Gerät mit
+   *   dem gelieferten Zugang angemeldet ist, wie nach `session.login`: So geht die Anmeldung in der
+   *   Lücke des Neustarts nicht verloren. Höchstens `RESTORE_RESTART_TIMEOUT_MS`.
+   * @throws CoreError invalid_password | invalid (Gerätename, ein neues Passwort ist zu kurz) | not_found (abgelaufen)
+   *   | conflict (inzwischen gibt es ein Passwort, oder ein Update läuft) | rate_limited | offline | unauthorized | not_supported
+   */
+  apply(input: RestoreApplyInput): Promise<void>;
+  /** `GET /api/restore`: der letzte Stand des Zurückspielens. Nur angemeldet. @throws CoreError offline | unauthorized | not_supported */
+  status(): Promise<RestoreStatus>;
+  /**
+   * `POST /api/restore/undo`: zurück zur Datenbank von vor dem letzten Zurückspielen (bis
+   * `undo_until`); Stowly startet neu wie nach `apply`, danach wartet `waitForRestart`.
+   * @throws CoreError not_found (es gibt nichts zurückzunehmen) | conflict | offline | unauthorized
+   */
+  undo(): Promise<void>;
+  /** `DELETE /api/restore/previous`: löscht die Datenbank von vor dem Zurückspielen vorzeitig; danach geht „Rückgängig" nicht mehr. */
+  discardPrevious(): Promise<void>;
+  /**
+   * Nach `apply` oder `undo` eines laufenden Stowly: wartet, bis der Neustart vorbei ist, und liefert
+   * den Stand danach ("done", "undone" oder "failed"). Fragt dafür `GET /api/restore`, solange es
+   * "pending" meldet oder der Server nicht antwortet, höchstens `RESTORE_RESTART_TIMEOUT_MS`.
+   * @throws CoreError offline (der Server kam in der Zeit nicht wieder) | unauthorized
+   */
+  waitForRestart(): Promise<RestoreStatus>;
+}
+
+/**
+ * Home Assistant und Bring! aus der App (docs/integrationen.md, 5 und 12; docs/plan-einrichtung-b.md,
+ * Abschnitt 3). Kommt die Verbindung aus der Umgebung (`HaConfig.source: "env"`), ist sie hier nur
+ * zu sehen und zu prüfen. Der Token von Home Assistant steht nie in einer Antwort; den Sensor-Token
+ * liefern nur `sensorToken` und `createSensorToken`.
+ */
+export interface HaConfigApi {
+  /** `GET /api/server-config/ha`: die wirksame Einrichtung mit Quelle. @throws CoreError offline | unauthorized | not_supported */
+  load(): Promise<HaConfig>;
+  /**
+   * `PATCH /api/server-config/ha`: nur die vorhandenen Felder, null entfernt. Eine neue Adresse ohne
+   * `token` im selben Aufruf löscht den gespeicherten Token. Der Abgleich übernimmt es ohne Neustart.
+   * @throws CoreError conflict (die Verbindung kommt aus der Umgebung) | invalid (Adresse oder Liste, `details.errors`) | offline | unauthorized
+   */
+  update(changes: HaConfigChanges): Promise<HaConfig>;
+  /**
+   * `POST /api/server-config/ha/check`: prüft Adresse und Token (ohne Felder die wirksamen) und
+   * liefert die To-do-Listen von HA. Was HA antwortet, ist kein Fehler dieses Aufrufs: Es steht in `state`.
+   * @throws CoreError rate_limited (eine Prüfung zugleich, mit Abstand) | conflict (aus der Umgebung, aber mit Feldern) | invalid | offline | unauthorized
+   */
+  check(input?: HaCheckInput): Promise<HaCheck>;
+  /** `GET …/ha/sensor-token`: der Sensor-Token aus der App. @throws CoreError not_found (keiner) | conflict (aus der Umgebung) | offline | unauthorized */
+  sensorToken(): Promise<string>;
+  /** `POST …/ha/sensor-token`: ein neuer Sensor-Token; der bisherige gilt nicht mehr. @throws CoreError conflict | offline | unauthorized */
+  createSensorToken(): Promise<string>;
+  /** `DELETE …/ha/sensor-token`: entfernt ihn; der Sensor antwortet danach mit 503. @throws CoreError conflict | offline | unauthorized */
+  deleteSensorToken(): Promise<void>;
 }
 
 // --------------------------------------------------------------------------------------
@@ -987,11 +1130,6 @@ export interface DevicesApi {
   revoke(id: string): Promise<void>;
 }
 
-export interface BackupApi {
-  /** Lädt die vollständige Kopie der Datenbank. Braucht den Server. */
-  download(): Promise<{ blob: Blob; filename: string }>;
-}
-
 // --------------------------------------------------------------------------------------
 // Die App selbst
 // --------------------------------------------------------------------------------------
@@ -1057,6 +1195,7 @@ export interface Core {
   readonly printers: PrintersApi;
   readonly print: PrintApi;
   readonly devices: DevicesApi;
+  /** Die verschlüsselte Sicherung im Ordner des Servers (Stufe B). Braucht den Server. */
   readonly backup: BackupApi;
   readonly app: AppApi;
   /** Einkaufsliste (Stufe 2); lesen über `data.shoppingItems`. */
@@ -1071,6 +1210,10 @@ export interface Core {
   readonly update: UpdateApi;
   /** Stand der Einrichtung und HTTPS (Einrichtung, Stufe A). Braucht den Server. */
   readonly setup: SetupApi;
-  /** Push-Kontakt und Schalter für Updates (Einrichtung, Stufe A). Braucht den Server. */
+  /** Push-Kontakt, Schalter für Updates und die Sicherung (Einrichtung, Stufen A und B). Braucht den Server. */
   readonly serverConfig: ServerConfigApi;
+  /** Eine Sicherung zurückspielen (Stufe B). Braucht den Server. */
+  readonly restore: RestoreApi;
+  /** Home Assistant und Bring! aus der App (Stufe B). Braucht den Server. */
+  readonly haConfig: HaConfigApi;
 }

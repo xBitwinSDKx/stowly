@@ -116,9 +116,8 @@ def test_stage_2_defaults():
     settings = Settings.from_env({}, dev=False)
     assert settings.timezone == "Europe/Berlin"
     assert settings.tz == ZoneInfo("Europe/Berlin")
-    assert (settings.backup_dir, settings.backup_recipients, settings.backup_time) == (None, (), "03:30")
-    assert settings.backup_configured is False and settings.backup_problem is None
-    assert settings.backup_mentioned is False
+    # Nur die Umgebung: nichts gesetzt. Vorgaben (03:30, Ordner) kennt serverconfig.backup_setup.
+    assert (settings.backup_dir, settings.backup_recipients, settings.backup_time) == (None, (), None)
     assert (settings.ha_url, settings.ha_token, settings.ha_todo_entity, settings.ha_ca) == (None,) * 4
     assert settings.ha_configured is False and settings.ha_problem is None
     assert settings.ha_summary_token is None
@@ -150,18 +149,17 @@ def test_backup_settings(tmp_path):
     assert settings.backup_dir == tmp_path
     assert settings.backup_recipients == (first, second)  # ohne Doppelte, in ihrer Reihenfolge
     assert settings.backup_time == "23:59"
-    assert settings.backup_configured is True and settings.backup_problem is None
 
 
-def test_half_a_backup_setup_is_reported_not_refused(tmp_path):
+def test_half_a_backup_setup_is_not_refused(tmp_path):
+    """Was fehlt, ergänzen App und Vorgaben (serverconfig.backup_setup, test_backup_config.py)."""
     only_dir = Settings.from_env({"STOWLY_BACKUP_DIR": str(tmp_path)})
-    assert only_dir.backup_configured is False
-    assert only_dir.backup_problem == "STOWLY_BACKUP_RECIPIENTS fehlt."
-    only_keys = Settings.from_env({"STOWLY_BACKUP_RECIPIENTS": age_key()})
-    assert only_keys.backup_problem == "STOWLY_BACKUP_DIR fehlt."
-    assert only_keys.backup_mentioned is True
+    assert (only_dir.backup_dir, only_dir.backup_recipients, only_dir.backup_time) == (tmp_path, (), None)
+    key = age_key()
+    only_keys = Settings.from_env({"STOWLY_BACKUP_RECIPIENTS": key})
+    assert (only_keys.backup_dir, only_keys.backup_recipients, only_keys.backup_time) == (None, (key,), None)
     only_time = Settings.from_env({"STOWLY_BACKUP_TIME": "04:00"})
-    assert only_time.backup_problem is None and only_time.backup_mentioned is False
+    assert (only_time.backup_dir, only_time.backup_recipients, only_time.backup_time) == (None, (), "04:00")
 
 
 @pytest.mark.parametrize("directory", ["backups", "./backups", "data/backups"])

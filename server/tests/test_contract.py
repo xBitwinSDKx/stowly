@@ -52,7 +52,6 @@ def test_openapi_lists_every_endpoint_and_command():
         ("POST", "/api/sync"),
         ("GET", "/api/lookup/{barcode}"),
         ("GET", "/api/images/{image_id}"),
-        ("GET", "/api/backup"),
         ("GET", "/api/events"),
         # Stufe 2
         ("GET", "/api/stats"),
@@ -81,6 +80,21 @@ def test_openapi_lists_every_endpoint_and_command():
         ("POST", "/api/pi/pair"),
         ("GET", "/api/pi/install.sh"),
         ("GET", "/api/pi/bundle.tar.gz"),
+        # Stufe B: Sicherung, Zurückspielen, Home Assistant aus der App
+        ("POST", "/api/backup/run"),
+        ("GET", "/api/backup/files/{name}"),
+        ("PUT", "/api/restore/upload"),
+        ("POST", "/api/restore/check"),
+        ("POST", "/api/restore/apply"),
+        ("GET", "/api/restore"),
+        ("POST", "/api/restore/undo"),
+        ("DELETE", "/api/restore/previous"),
+        ("GET", "/api/server-config/ha"),
+        ("PATCH", "/api/server-config/ha"),
+        ("POST", "/api/server-config/ha/check"),
+        ("POST", "/api/server-config/ha/sensor-token"),
+        ("GET", "/api/server-config/ha/sensor-token"),
+        ("DELETE", "/api/server-config/ha/sensor-token"),
     }
     mapping = document["components"]["schemas"]["Command"]["discriminator"]["mapping"]
     assert sorted(mapping) == sorted(COMMAND_TYPES)

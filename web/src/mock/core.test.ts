@@ -27,7 +27,23 @@ import {
   type StatsRange,
 } from "@/contract";
 
-import { createMockCore, createSampleData, DEVICE_IDS, MOCK_PASSWORD, PRINTER_IDS, sampleBarcode, samplePackageId, sampleUuid, ZONE_IDS, type MockCore, type MockScenario } from ".";
+import {
+  createMockCore,
+  createSampleData,
+  DEVICE_IDS,
+  HA_TOKEN_MISSING,
+  MOCK_BACKUP_KEYS,
+  MOCK_BACKUP_SECRET,
+  MOCK_HA_URL,
+  MOCK_PASSWORD,
+  PRINTER_IDS,
+  sampleBarcode,
+  samplePackageId,
+  sampleUuid,
+  ZONE_IDS,
+  type MockCore,
+  type MockScenario,
+} from ".";
 
 const NOW = new Date("2026-11-13T10:00:00.000Z");
 
@@ -438,7 +454,7 @@ describe("Sitzung und Sync", () => {
     await core.zones.create({ name: "Garage" });
     expect(value(core.sync.status).pending).toBe(5);
     await expectCoreError(core.devices.list(), "offline");
-    await expectCoreError(core.backup.download(), "offline");
+    await expectCoreError(core.backup.run(), "offline");
 
     await core.sync.now();
     expect(value(core.sync.status)).toMatchObject({ online: false, phase: "error", pending: 5 });
@@ -1118,7 +1134,7 @@ describe("Integrationen", () => {
     expect(warning).toMatchObject({ configured: true, warning: true, last_error: expect.any(String) });
     expect(warning).toMatchObject({ last_ok_at: "2026-11-10T02:30:00.000Z", last_file: "stowly-2026-11-10-0330.sqlite3.gz.age" });
     const problem = (await mock({ scenarios: ["backup-problem"] }).integrations.load()).backup;
-    expect(problem).toMatchObject({ configured: false, problem: "STOWLY_BACKUP_RECIPIENTS fehlt.", last_ok_at: null, warning: false });
+    expect(problem).toMatchObject({ configured: false, problem: "Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).", last_ok_at: null, files: [], warning: false });
   });
 
   it("brauchen den Server und lassen sich umstellen", async () => {
@@ -1529,11 +1545,14 @@ describe("Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8)", () => {
     const finished = await mock().setup.load();
     expect(finished.finished_at).not.toBeNull();
     expect(finished.password_source).toBe("app");
-    expect(finished.steps.map((step) => [step.id, step.state])).toEqual([
-      ["https", "done"],
-      ["printer", "done"],
-      ["updates", "done"],
-      ["notifications", "done"],
+    // Die Schritte von Stufe B kamen nach dem Abschluss dazu: unmarkiert; die Sicherung aus der Umgebung ist trotzdem erledigt.
+    expect(finished.steps.map((step) => [step.id, step.state, step.ready])).toEqual([
+      ["https", "done", true],
+      ["printer", "done", true],
+      ["backup", "open", true],
+      ["updates", "done", true],
+      ["notifications", "done", true],
+      ["home_assistant", "open", false],
     ]);
     expect(finished.https).toMatchObject({ enabled: true, port: 8443, http_port: 8010, origins: ["https://192.168.1.10:8443"], ca: { name: "Stowly CA 3F2A1C" } });
 
@@ -1543,8 +1562,10 @@ describe("Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8)", () => {
     expect(status.steps.map((step) => [step.id, step.state, step.ready])).toEqual([
       ["https", "open", false],
       ["printer", "open", true],
+      ["backup", "open", false],
       ["updates", "open", false],
       ["notifications", "open", false],
+      ["home_assistant", "open", false],
     ]);
     expect(value(open.push.state)).toBe("not_configured");
     expect((await open.serverConfig.load()).update).toEqual({ enabled: false, repo: "beispiel/stowly", source: "default", available: true });
@@ -1552,7 +1573,7 @@ describe("Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8)", () => {
 
     const env = mock({ scenarios: ["setup-env"] });
     expect((await env.setup.load()).password_source).toBe("env");
-    expect(await env.serverConfig.load()).toEqual({
+    expect(await env.serverConfig.load()).toMatchObject({
       push: { contact: "mailto:haushalt@example.org", source: "env" },
       update: { enabled: true, repo: "beispiel/stowly", source: "env", available: false },
     });
@@ -1710,5 +1731,163 @@ describe("Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ------------------------------------------------------------------------------------------
+// Stufe B: Sicherung, Zurückspielen, Home Assistant aus der App
+// ------------------------------------------------------------------------------------------
+
+describe("Sicherung aus der App", () => {
+  it("kommt ohne Ausgangslage aus der Umgebung und ist dort gesperrt", async () => {
+    const core = mock();
+    const config = (await core.serverConfig.load()).backup;
+    expect(config).toMatchObject({ enabled: true, enabled_source: "env", recipients_source: "env", time: "03:30", time_source: "env", folder: "/backups", folder_source: "env" });
+    expect(config.recipients.map((recipient) => recipient.key)).toEqual([...MOCK_BACKUP_KEYS]);
+    await expectCoreError(core.serverConfig.update({ backup_recipients: [] }), "conflict");
+    await expectCoreError(core.serverConfig.update({ backup_time: "02:00" }), "conflict");
+    const status = (await core.integrations.load()).backup;
+    expect(status).toMatchObject({ configured: true, folder: "/backups", recipients: ["age1wd93…dxjq", "age1extf…tge3"] });
+    expect(status.files).toHaveLength(3);
+    expect(status.files[0]?.name).toBe(status.last_file);
+  });
+
+  it("richtet mit backup-none in der App ein: Schlüssel, Uhrzeit, Schalter; ein geheimer Schlüssel wird abgelehnt", async () => {
+    const core = mock({ scenarios: ["backup-none"] });
+    expect((await core.integrations.load()).backup).toMatchObject({ configured: false, folder: "/data/backups", files: [], problem: null });
+    expect((await core.setup.load()).steps.find((step) => step.id === "backup")?.ready).toBe(false);
+    await expectCoreError(core.backup.run(), "not_configured");
+
+    const secret = await expectCoreError(core.serverConfig.update({ backup_recipients: [MOCK_BACKUP_SECRET] }), "invalid");
+    expect(secret.message).not.toContain(MOCK_BACKUP_SECRET);
+    await expectCoreError(core.serverConfig.update({ backup_recipients: ["age1kaputt"] }), "invalid");
+    await expectCoreError(core.serverConfig.update({ backup_time: "25:00" }), "invalid");
+    // Ein neuer Schlüssel braucht das Haushalts-Passwort, wie beim Server.
+    expect((await expectCoreError(core.serverConfig.update({ backup_recipients: [MOCK_BACKUP_KEYS[1]] }), "invalid")).message).toBe(
+      "Zum Hinzufügen eines Schlüssels braucht es das Haushalts-Passwort.",
+    );
+    await expectCoreError(core.serverConfig.update({ backup_recipients: [MOCK_BACKUP_KEYS[1]], current_password: "falsch" }), "invalid_password");
+    expect((await core.serverConfig.load()).backup.recipients).toEqual([]);
+
+    const config = await core.serverConfig.update({ backup_recipients: [MOCK_BACKUP_KEYS[1].toUpperCase()], current_password: MOCK_PASSWORD, backup_time: "04:15", backup_enabled: true });
+    expect(config.backup).toMatchObject({
+      recipients_source: "app",
+      recipients: [{ key: MOCK_BACKUP_KEYS[1], added_at: NOW.toISOString() }],
+      time: "04:15",
+      time_source: "app",
+      enabled_source: "app",
+    });
+    const file = await core.backup.run();
+    expect(file.name).toMatch(/^stowly-\d{4}-\d{2}-\d{2}-\d{4}\.sqlite3\.gz\.age$/);
+    expect((await core.integrations.load()).backup).toMatchObject({ configured: true, last_file: file.name, files: [file] });
+    expect((await core.setup.load()).steps.find((step) => step.id === "backup")?.ready).toBe(true);
+    // Höchstens eine je Minute.
+    expect((await expectCoreError(core.backup.run(), "rate_limited")).details.retry_after_s).toBe(60);
+    expect(await (await core.backup.file(file.name)).text()).toContain("age-encryption.org/v1");
+    await expectCoreError(core.backup.file("stowly-1999-01-01-0330.sqlite3.gz.age"), "not_found");
+  });
+
+  it("zeigt mit backup-app einen Schlüssel aus der App und den eigenen Ordner", async () => {
+    const config = (await mock({ scenarios: ["backup-app"] }).serverConfig.load()).backup;
+    expect(config).toMatchObject({ recipients_source: "app", recipients: [{ key: MOCK_BACKUP_KEYS[0] }], folder: "/backups", folder_source: "mounted", time_source: "default" });
+  });
+});
+
+describe("Zurückspielen", () => {
+  const age = () => new Blob(["age-encryption.org/v1\n-> X25519 …\n"]);
+
+  it("lädt hoch, prüft den Schlüssel wirklich, zeigt die Vorschau und spielt mit Neustart ein; dann Rückgängig", async () => {
+    const core = mock();
+    const progress: number[] = [];
+    const uploaded = await core.restore.upload(age(), { onProgress: (step) => progress.push(step.loaded) });
+    expect(uploaded.kind).toBe("age");
+    expect(progress.at(-1)).toBe(uploaded.size);
+    expect((await expectCoreError(core.restore.check(uploaded.upload_id, "kein Schlüssel"), "invalid")).details.reason).toBe("not_a_key");
+    const other = "AGE-SECRET-KEY-1VCRK9U8HKEN8GG34K206EPERG55J0X2LD5PATAUTEHQK8MQMH5VSJ2SRXF";
+    expect((await expectCoreError(core.restore.check(uploaded.upload_id, other), "invalid")).details.reason).toBe("wrong_key");
+    const preview = await core.restore.check(uploaded.upload_id, `# public key: ${MOCK_BACKUP_KEYS[0]}\n${MOCK_BACKUP_SECRET}\n`);
+    expect(preview).toMatchObject({ kind: "age", has_password: true, counts: { zones: 4 } });
+
+    await expectCoreError(core.restore.apply({ restore_id: preview.restore_id, password: "falsch" }), "invalid_password");
+    await core.restore.apply({ restore_id: preview.restore_id, password: MOCK_PASSWORD });
+    expect((await core.restore.status()).state).toBe("pending");
+    const done = await core.restore.waitForRestart();
+    expect(done).toMatchObject({ state: "done", undo_until: new Date(NOW.getTime() + 7 * 86_400_000).toISOString() });
+
+    await core.restore.undo();
+    expect((await core.restore.waitForRestart()).state).toBe("undone");
+    await core.restore.discardPrevious();
+    await expectCoreError(core.restore.undo(), "not_found");
+  });
+
+  it("sagt, was keine Sicherung ist, und nimmt mit restore-preview jede Datei und jeden Schlüssel", async () => {
+    const core = mock();
+    expect((await expectCoreError(core.restore.upload(new Blob(["PK\u0003\u0004"])), "invalid")).details.reason).toBe("not_stowly");
+    await expectCoreError(core.restore.upload(new Blob([])), "invalid");
+
+    const lenient = mock({ scenarios: ["restore-preview"] });
+    expect(await lenient.restore.status()).toMatchObject({ state: "done", undo_until: expect.any(String) });
+    const uploaded = await lenient.restore.upload(new Blob(["irgendwas"]));
+    expect(uploaded.kind).toBe("sqlite");
+    expect((await lenient.restore.check(uploaded.upload_id)).has_password).toBe(true);
+  });
+
+  it("stellt beim ersten Start wieder her und meldet mit dem Passwort der Sicherung an", async () => {
+    const core = mock({ scenarios: ["unconfigured"] });
+    expect(value(core.data.packages)).toEqual([]);
+    const uploaded = await core.restore.upload(age());
+    const preview = await core.restore.check(uploaded.upload_id, MOCK_BACKUP_SECRET);
+    await expectCoreError(core.restore.apply({ restore_id: preview.restore_id, password: MOCK_PASSWORD }), "invalid");
+    await expectCoreError(core.restore.apply({ restore_id: preview.restore_id, password: "falsch", device_name: "Neues Handy" }), "invalid_password");
+    await core.restore.apply({ restore_id: preview.restore_id, password: MOCK_PASSWORD, device_name: "Neues Handy" });
+    expect(value(core.session.state)).toMatchObject({ status: "signed_in", device: { name: "Neues Handy" } });
+    expect(value(core.sync.status).server_configured).toBe(true);
+    expect(value(core.data.packages).length).toBeGreaterThan(0);
+  });
+
+  it("geht abgemeldet nur beim ersten Start und braucht den Server", async () => {
+    await expectCoreError(mock({ scenarios: ["signed-out"] }).restore.upload(age()), "conflict");
+    await expectCoreError(mock({ scenarios: ["offline"] }).restore.upload(age()), "offline");
+    await expectCoreError(mock({ scenarios: ["signed-out"] }).restore.status(), "unauthorized");
+  });
+});
+
+describe("Home Assistant aus der App", () => {
+  it("ist ohne Ausgangslage nicht eingerichtet; speichern, prüfen, Token an die Adresse gebunden", async () => {
+    const core = mock();
+    expect(await core.haConfig.load()).toMatchObject({ source: "default", configured: false, token_set: false, sensor: { set: false } });
+    await expectCoreError(core.haConfig.check(), "invalid");
+    expect((await core.haConfig.check({ url: MOCK_HA_URL })).state).toBe("token_needed");
+    const saved = await core.haConfig.update({ url: `${MOCK_HA_URL}/`, token: "ein-token", entity: "todo.einkaufsliste" });
+    expect(saved).toMatchObject({ source: "app", url: MOCK_HA_URL, configured: true, token_set: true });
+    // Ohne Wartezeit ist der erste Abgleich sofort gelaufen (sonst erst "pending").
+    expect((await core.integrations.load()).ha).toMatchObject({ configured: true, state: "ok", entity: "todo.einkaufsliste" });
+    expect((await core.setup.load()).steps.find((step) => step.id === "home_assistant")?.ready).toBe(true);
+    // Eine neue Adresse ohne Token löscht ihn.
+    expect(await core.haConfig.update({ url: "http://anderes.local:8123" })).toMatchObject({ token_set: false, configured: false });
+    await expectCoreError(core.haConfig.update({ entity: "Einkaufsliste" }), "invalid");
+  });
+
+  it("nennt die Listen sortiert, bremst zu dichte Prüfungen und sperrt eine Verbindung aus der Umgebung", async () => {
+    const core = mock({ scenarios: ["ha-env"] });
+    expect(await core.haConfig.load()).toMatchObject({ source: "env", url: MOCK_HA_URL, configured: true, sensor: { source: "env", set: true } });
+    const check = await core.haConfig.check();
+    expect(check).toMatchObject({ state: "ok", entity_found: true });
+    expect(check.lists.map((list) => list.name)).toEqual(["Baumarkt", "Einkaufsliste"]);
+    await expectCoreError(core.haConfig.check(), "rate_limited");
+    await expectCoreError(core.haConfig.update({ entity: "todo.baumarkt" }), "conflict");
+    await expectCoreError(core.haConfig.sensorToken(), "conflict");
+  });
+
+  it("meldet mit ha-token-missing den fehlenden Token und erzeugt den Sensor-Token", async () => {
+    const core = mock({ scenarios: ["ha-token-missing"] });
+    expect(await core.haConfig.load()).toMatchObject({ source: "app", token_set: false, configured: false, problem: HA_TOKEN_MISSING });
+    expect((await core.integrations.load()).ha).toMatchObject({ configured: false, problem: HA_TOKEN_MISSING });
+    await expectCoreError(core.haConfig.sensorToken(), "not_found");
+    const token = await core.haConfig.createSensorToken();
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(await core.haConfig.sensorToken()).toBe(token);
+    await core.haConfig.deleteSensorToken();
+    expect((await core.haConfig.load()).sensor.set).toBe(false);
   });
 });

@@ -29,6 +29,8 @@
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@scure/base": "2.4.0",
     "barcode-detector": "3.2.3",
     "dexie": "^4.4.7",
     "lucide-react": "^1.72.0",

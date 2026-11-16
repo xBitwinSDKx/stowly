@@ -24,7 +24,7 @@ from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
-from stowly import auth, db, push, serverconfig
+from stowly import auth, autobackup, db, haconfig, push, serverconfig
 from stowly.config import Settings
 from stowly.contract import timeutil
 from stowly.contract.api import (
@@ -462,6 +462,10 @@ def ready(settings: Settings, con: sqlite3.Connection) -> dict[str, bool]:
         SetupStepId.PRINTER.value: printer is not None,
         SetupStepId.UPDATES.value: serverconfig.update_repo(settings, con) is not None,
         SetupStepId.NOTIFICATIONS.value: serverconfig.push_contact(settings, con) is not None,
+        # Sicherung: wirksam (an, Schlüssel, Ordner) und mindestens eine gelungene (autobackup.ready).
+        SetupStepId.BACKUP.value: autobackup.ready(settings, con),
+        # Home Assistant: Adresse, Token und Liste sind wirksam (Umgebung oder App, haconfig.effective).
+        SetupStepId.HOME_ASSISTANT.value: haconfig.effective(settings, con).configured,
     }
 
 

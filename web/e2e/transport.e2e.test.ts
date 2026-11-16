@@ -3,7 +3,7 @@
  * antwortet, ein neuer Datenbestand, eine zurückgespielte Sicherung und das Blättern
  * durch mehr als 5000 Datensätze.
  */
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -133,7 +133,7 @@ describe("Server nicht erreichbar", () => {
     expect(status.last_error?.code).toBe("offline");
     // Was den Server braucht, scheitert mit „offline“.
     await expectCoreError(kitchen.core.devices.list(), "offline");
-    await expectCoreError(kitchen.core.backup.download(), "offline");
+    await expectCoreError(kitchen.core.backup.run(), "offline");
 
     // Die App wird neu geladen: Die Änderung liegt in der lokalen Datenbank.
     await kitchen.reload();
@@ -195,25 +195,31 @@ describe("Neuer Datenbestand", () => {
     await expectSameAsServer(cellar, raw);
   });
 
-  it("spielt eine Sicherung zurück: Die Geräte holen den älteren Stand vollständig neu", async () => {
+  it("spielt eine Kopie der Datenbank von Hand zurück: Die Geräte holen den älteren Stand vollständig neu", async () => {
     const { kitchen, cellar, raw } = await setup();
     const zone = firstZone(kitchen);
     const before = await kitchen.core.stock.store({ product: { kind: "new", name: "Amaranth T4" }, zone_id: zone.id, best_before: null, count: 1, labels: false });
     await kitchen.sync();
-    const { blob } = await kitchen.core.backup.download();
+    // Die Kopie: bei angehaltenem Server die Datei samt WAL (der Notweg aus docs/betrieb.md, 8).
+    await server.stop();
+    const database = join(server.dataDir, "stowly.sqlite3");
+    const copies = new Map<string, Buffer | null>(["", "-wal", "-shm"].map((suffix) => [suffix, existsSync(database + suffix) ? readFileSync(database + suffix) : null]));
+    await server.start();
 
     await kitchen.core.stock.store({ product: { kind: "existing", product_id: before.product.id }, zone_id: zone.id, best_before: null, count: 1, labels: false });
     await kitchen.sync();
     await cellar.sync();
     expect(stockedOf(cellar, before.product.id)).toHaveLength(2);
 
-    // Server anhalten, Datei ersetzen, starten (docs/sync-protokoll.md, Abschnitt 11).
+    // Server anhalten, Dateien ersetzen, neue Kennung des Bestands, starten (docs/sync-protokoll.md, 6.4).
     await server.stop();
-    const database = join(server.dataDir, "stowly.sqlite3");
-    for (const suffix of ["", "-wal", "-shm"]) {
+    for (const [suffix, content] of copies) {
       rmSync(database + suffix, { force: true });
+      if (content !== null) {
+        writeFileSync(database + suffix, content);
+      }
     }
-    writeFileSync(database, Buffer.from(await blob.arrayBuffer()));
+    expect(server.cli(["--new-dataset"]).status).toBe(0);
     await server.start();
 
     await kitchen.sync();

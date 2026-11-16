@@ -8,6 +8,10 @@
  */
 export {
   createMockCore,
+  HA_TOKEN_MISSING,
+  MOCK_BACKUP_KEYS,
+  MOCK_BACKUP_SECRET,
+  MOCK_HA_URL,
   MOCK_PASSWORD,
   MOCK_SCENARIOS,
   type MockControl,

@@ -44,5 +44,12 @@ LIMITS: Final = MappingProxyType(
         "setup_address": 253,  # eine Adresse fürs Zertifikat des Servers: IP oder Name
         "setup_addresses": 10,  # Adressen im Zertifikat des Servers
         "push_contact": 200,  # Kontakt für die Push-Dienste (mailto: oder https)
+        # Seit Stufe B der Einrichtung (docs/plan-einrichtung-b.md):
+        "backup_recipient": 100,  # ein öffentlicher age-Schlüssel (age1…, 62 Zeichen)
+        "backup_recipients": 10,  # öffentliche Schlüssel der Sicherung aus der App
+        "backup_files_listed": 50,  # Sicherungen im Ordner, die der Status nennt (neueste zuerst)
+        "restore_identity": 4096,  # Text mit dem geheimen age-Schlüssel (Zeilen mit # zählen nicht)
+        "ha_url": 200,  # Adresse von Home Assistant
+        "ha_token": 2000,  # Zugangs-Token von Home Assistant (ein JWT, meist um 180 Zeichen)
     }
 )

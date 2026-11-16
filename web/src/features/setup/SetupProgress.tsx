@@ -27,10 +27,10 @@ export interface SetupProgressProps {
 }
 
 /**
- * Wo der Assistent steht: „Zugang · Sichere Verbindung · Drucker · Updates · Benachrichtigungen ·
- * Fertig" als Liste, jeder Schritt mit Zeichen für erledigt oder übersprungen und als Verweis. Der
- * Zugang (das Passwort) ist immer erledigt und hat keine eigene Seite. Am Handy kompakt:
- * „Schritt 2 von 5" mit Balken.
+ * Wo der Assistent steht: „Zugang · Sichere Verbindung · Drucker · Sicherung · Updates ·
+ * Benachrichtigungen · Home Assistant · Fertig" als Liste, jeder Schritt mit Zeichen für erledigt
+ * oder übersprungen und als Verweis. Der Zugang (das Passwort) ist immer erledigt und hat keine
+ * eigene Seite. Am Handy kompakt: „Schritt 2 von 7" mit Balken.
  */
 export function SetupProgress({ status, current, secure }: SetupProgressProps) {
   const wide = useMediaQuery(WIDE_QUERY);

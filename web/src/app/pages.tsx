@@ -107,7 +107,9 @@ export const StatsPage = lazyPage(() => import("@/features/stats").then((module)
  * brauchen ihn nie, und er bringt die Bibliothek für QR-Codes mit.
  */
 export const SetupPage = lazyPage(() => import("@/features/setup").then((module) => module.SetupPage));
-export const FirstRunPage = lazyPage<{ onFirstRun?: () => void }>(() => import("@/features/setup").then((module) => module.FirstRunPage));
+export const FirstRunPage = lazyPage<{ onFirstRun?: () => void; onBusy?: (busy: boolean) => void }>(() =>
+  import("@/features/setup").then((module) => module.FirstRunPage),
+);
 
 const BY_PATH: Readonly<Record<string, LazyPage>> = {
   [ROUTES.stock]: StockPage,

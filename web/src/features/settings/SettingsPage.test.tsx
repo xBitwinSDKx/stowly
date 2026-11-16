@@ -216,33 +216,6 @@ describe("Geräte", () => {
   });
 });
 
-describe("Sicherung", () => {
-  it("lädt die Kopie der Datenbank und speichert sie als Datei", async () => {
-    const core = renderApp({}, ROUTES.settings);
-    const download = vi.spyOn(core.backup, "download");
-    const created = vi.spyOn(URL, "createObjectURL");
-    const clicked = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function click(this: HTMLAnchorElement) {
-      expect(this.download).toMatch(/^stowly-\d{4}-\d{2}-\d{2}\.sqlite3$/);
-    });
-    await ready();
-
-    await userEvent.click(within(section("Sicherung")).getByRole("button", { name: "Herunterladen" }));
-    expect(await screen.findByText(/Sicherung heruntergeladen: stowly-/)).toBeInTheDocument();
-    expect(download).toHaveBeenCalledTimes(1);
-    expect(created).toHaveBeenCalledTimes(1);
-    expect(clicked).toHaveBeenCalledTimes(1);
-    clicked.mockRestore();
-    created.mockRestore();
-  });
-
-  it("sagt, wenn der Server fehlt", async () => {
-    renderApp({ scenarios: ["offline"] }, ROUTES.settings);
-    await ready();
-    await userEvent.click(within(section("Sicherung")).getByRole("button", { name: "Herunterladen" }));
-    expect(await within(section("Sicherung")).findByRole("alert")).toHaveTextContent("Die Sicherung kommt vom Server, und der ist gerade nicht erreichbar.");
-  });
-});
-
 describe("Über und Abmelden", () => {
   it("nennt Version, Speicher, Verbindung und die Quelle der Produktdaten", async () => {
     renderApp({}, ROUTES.settings);
@@ -562,10 +535,10 @@ describe("Zustand der automatischen Sicherung", () => {
       expect(backup).toHaveTextContent(/Letzte gelungene.*vor 7 Stunden · 52 kB · stowly-2026-11-14-0330\.sqlite3\.gz\.age/);
       expect(backup).toHaveTextContent("Nächster Versuch");
       const keys = within(backup).getByRole("list", { name: "Öffentliche Schlüssel" });
-      expect(within(keys).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["age1ql3z…ac8p", "age1x7m2…9kqd"]);
+      expect(within(keys).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["age1wd93…dxjqaus der Umgebung", "age1extf…tge3aus der Umgebung"]);
       expect(within(backup).queryByRole("alert")).not.toBeInTheDocument();
-      // Daneben die Kopie zum Herunterladen
-      expect(within(backup).getByRole("button", { name: "Herunterladen" })).toBeInTheDocument();
+      // Die Sicherungen im Ordner, verschlüsselt zum Herunterladen
+      expect(within(backup).getAllByRole("button", { name: /^Herunterladen: stowly-\d{4}-\d{2}-\d{2}-0330\.sqlite3\.gz\.age$/ })).toHaveLength(3);
     } finally {
       vi.useRealTimers();
     }
@@ -583,13 +556,15 @@ describe("Zustand der automatischen Sicherung", () => {
     expect(backup).toHaveTextContent(/vor [34] Tagen/);
   });
 
-  it("sagt, wenn die Sicherung nur halb eingerichtet ist", async () => {
+  it("sagt, wenn die Sicherung aus ist, weil der Ordner nicht taugt", async () => {
     renderApp({ scenarios: ["backup-problem"] }, ROUTES.settings);
     await ready();
     const backup = section("Sicherung");
     expect(await within(backup).findByText("Die automatische Sicherung ist aus")).toBeInTheDocument();
-    expect(backup).toHaveTextContent("STOWLY_BACKUP_RECIPIENTS fehlt.");
-    expect(backup).toHaveTextContent("Nicht eingerichtet. Wer den Server betreibt, richtet sie mit STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS ein");
+    expect(await within(backup).findByText("Der Ordner für Sicherungen taugt nicht")).toBeInTheDocument();
+    expect(backup).toHaveTextContent("Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).");
+    expect(backup).toHaveTextContent("Kommt aus der Umgebung (STOWLY_BACKUP_DIR).");
+    expect(backup).toHaveTextContent("Im Ordner liegt noch keine Sicherung.");
   });
 
   it("sagt offline, dass der Zustand fehlt, und lädt ihn, sobald der Server wieder da ist", async () => {
@@ -702,10 +677,12 @@ describe("Home Assistant und Bring!", () => {
     await ready();
     const ha = section(HA);
     expect(await within(ha).findByText("Bring! über Home Assistant")).toBeInTheDocument();
-    expect(ha).toHaveTextContent("Nicht eingerichtet. Wer den Server betreibt, richtet es mit STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY ein");
+    expect(ha).toHaveTextContent("Nicht eingerichtet. Unten Adresse, Token und Liste eintragen.");
     expect(ha).toHaveTextContent("Ohne Home Assistant funktioniert die Einkaufsliste genauso, nur ohne Bring!.");
-    expect(ha).toHaveTextContent("Nicht eingerichtet. Wer den Server betreibt, setzt dafür STOWLY_HA_SUMMARY_TOKEN");
-    expect(within(ha).queryByText("Liste in Home Assistant")).not.toBeInTheDocument();
+    // Darunter das Formular für die Verbindung und der Sensor.
+    expect(await within(ha).findByLabelText("Adresse von Home Assistant")).toHaveValue("");
+    expect(within(ha).getByLabelText("Zugangs-Token")).toHaveAttribute("type", "password");
+    expect(within(ha).getByRole("button", { name: "Sensor-Token erzeugen" })).toBeInTheDocument();
     expect(within(ha).queryByRole("status")).not.toBeInTheDocument();
     // Was der Abgleich tut, kurz
     expect(ha).toHaveTextContent("Ein Eintrag der Einkaufsliste erscheint in Bring!, sobald er zwei Minuten offen ist.");
@@ -713,7 +690,7 @@ describe("Home Assistant und Bring!", () => {
     expect(ha).toHaveTextContent("Eigene Artikel in Bring! bleiben unberührt: Stowly übernimmt sie nicht und hakt sie nie ab.");
   });
 
-  it("zeigt nach einem gelungenen Abgleich Zeit, Einträge in Bring!, Liste und Sensor, aber nie Adresse oder Token", async () => {
+  it("zeigt nach einem gelungenen Abgleich Zeit, Einträge in Bring!, Liste und Sensor, aber nie einen Token", async () => {
     const core = renderApp({ scenarios: ["ha-ok"] }, ROUTES.settings);
     await ready();
     const ha = section(HA);
@@ -721,19 +698,21 @@ describe("Home Assistant und Bring!", () => {
     const status = await core.integrations.load();
     expect(ha).toHaveTextContent(`Zuletzt gelungen vor einer Minute (${formatTimestamp(status.ha.last_ok_at ?? "")}).`);
     expect(ha).toHaveTextContent(linkedText(status.ha.linked));
-    expect(within(ha).getByText("todo.einkaufsliste")).toBeInTheDocument();
-    expect(ha).toHaveTextContent("Home Assistant liest eine Zusammenfassung (bald fällig, abgelaufen, Einkaufsliste)");
-    expect(within(ha).getByText("eingerichtet")).toBeInTheDocument();
+    // Die gespeicherte Liste steht in der Auswahl, der Token ist nur „gespeichert".
+    expect(await within(ha).findByRole("combobox", { name: "Liste in Home Assistant" })).toHaveValue("todo.einkaufsliste");
+    expect(within(ha).getByRole("button", { name: "Ersetzen" })).toBeInTheDocument();
+    expect(within(ha).queryByLabelText("Zugangs-Token")).not.toBeInTheDocument();
+    expect(ha).toHaveTextContent(/Sensor-TokenErzeugt am .*Er gilt nur für die Zusammenfassung, nirgends sonst\./);
     expect(within(ha).queryByRole("status")).not.toBeInTheDocument();
-    expect(ha).not.toHaveTextContent(/https?:\/\/|Bearer|Token:/);
+    expect(ha).not.toHaveTextContent(/Bearer|AGE-SECRET-KEY/);
   });
 
   it("sagt, solange seit dem Start des Servers noch kein Abgleich lief", async () => {
     renderApp({ scenarios: ["ha-pending"] }, ROUTES.settings);
     await ready();
     const ha = section(HA);
-    expect(await within(ha).findByText("Seit dem Start des Servers lief noch kein Abgleich; der erste folgt in wenigen Minuten.")).toBeInTheDocument();
-    expect(within(ha).getAllByText("eingerichtet")).toHaveLength(2);
+    expect(await within(ha).findByText("Seit dem Start oder der letzten Änderung lief noch kein Abgleich; der erste folgt gleich.")).toBeInTheDocument();
+    expect(within(ha).getByText("eingerichtet")).toBeInTheDocument();
   });
 
   it("nennt eine Störung mit Satz, dem Fehler des Servers und seiner Zeit", async () => {
@@ -762,8 +741,13 @@ describe("Home Assistant und Bring!", () => {
     await ready();
     const ha = section(HA);
     expect(await within(ha).findByText("Der Abgleich mit Bring! ist aus")).toBeInTheDocument();
-    expect(within(ha).getByRole("status")).toHaveTextContent("STOWLY_HA_TOKEN fehlt.");
-    expect(ha).toHaveTextContent("Nur halb eingerichtet. Für den Abgleich braucht der Server STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY");
+    // Die Verbindung kommt aus der Umgebung: Dort ist es zu ändern, und der Satz steht nur einmal da.
+    expect(await within(ha).findByText(/Nur halb eingerichtet\. Für den Abgleich braucht der Server STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY/)).toBeInTheDocument();
+    expect(within(ha).getByText("Der Abgleich mit Bring! ist aus").closest("[role=status]")).toHaveTextContent("STOWLY_HA_TOKEN fehlt.");
+    expect(within(ha).getAllByText("STOWLY_HA_TOKEN fehlt.")).toHaveLength(1);
+    // Nur zu sehen: kein Feld für Adresse oder Token, kein „Speichern".
+    expect(within(ha).queryByLabelText("Adresse von Home Assistant")).not.toBeInTheDocument();
+    expect(within(ha).queryByRole("button", { name: "Speichern" })).not.toBeInTheDocument();
   });
 
   it("folgt dem Zustand, sobald er neu geladen ist", async () => {

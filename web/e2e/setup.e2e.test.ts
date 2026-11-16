@@ -66,7 +66,7 @@ it("setzt ohne STOWLY_PASSWORD das erste Passwort; ein zweiter Versuch gibt conf
   const status = await kitchen.core.setup.load();
   expect(status.password_source).toBe("app");
   expect(status.finished_at).toBeNull();
-  expect(status.steps.map((step) => step.id)).toEqual(["https", "printer", "updates", "notifications"]);
+  expect(status.steps.map((step) => step.id)).toEqual(["https", "printer", "backup", "updates", "notifications", "home_assistant"]);
   const skipped = await kitchen.core.setup.update({ step: { id: "printer", state: "skipped" } });
   expect(skipped.steps.find((step) => step.id === "printer")).toMatchObject({ state: "skipped", ready: false });
   expect((await kitchen.core.setup.update({ finished: true })).finished_at).not.toBeNull();

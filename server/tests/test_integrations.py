@@ -8,7 +8,6 @@ import dataclasses
 import json
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 import httpx2
 import pyrage
@@ -38,12 +37,15 @@ def status(client: TestClient, device: Device) -> dict:
     return response.json()
 
 
-def test_nothing_set_up(client):
+def test_nothing_set_up(client, settings):
     device = Device(client, "Handy")
     assert status(client, device) == {
         "timezone": "Europe/Berlin",
         "backup": {
             "configured": False,
+            # Ohne STOWLY_BACKUP_DIR: der Ordner im Datenordner (test_backup_config.py).
+            "folder": str(settings.data_dir / "backups"),
+            "files": [],
             "problem": None,
             "time": None,
             "recipients": [],
@@ -175,6 +177,8 @@ def test_everything_set_up_and_never_a_secret(everything, monkeypatch):
     )
     assert backup["recipients"] == [f"{key[:8]}…{key[-4:]}" for key in everything.backup_recipients]
     assert backup["next_at"] == "2026-11-14T09:00:00.000Z"  # 04:15 ist vorbei, noch nichts gelaufen: jetzt
+    # Der Ordner im Container gehört seit Stufe B zum Zustand (BackupStatus.folder), die Dateien darin auch.
+    assert (backup["folder"], backup["files"]) == (str(everything.backup_dir), [])
     assert mine["ha"]["last_ok_at"] is not None
     assert mine["ha"] == {
         "configured": True,
@@ -227,7 +231,6 @@ def test_everything_set_up_and_never_a_secret(everything, monkeypatch):
         *everything.backup_recipients,
     ):
         assert secret not in text, secret
-    assert str(everything.backup_dir) not in text and Path(everything.backup_dir).name not in text
     for folder in (everything.data_dir, everything.update_dir):
         assert str(folder) not in text and json.dumps(str(folder))[1:-1] not in text
 
@@ -241,7 +244,7 @@ def test_half_set_up_integrations_name_the_reason(settings, tmp_path):
         result = status(client, device)
     assert (result["backup"]["configured"], result["backup"]["problem"], result["backup"]["time"]) == (
         False,
-        "STOWLY_BACKUP_RECIPIENTS fehlt.",
+        "Es fehlt ein öffentlicher Schlüssel (in der App oder in STOWLY_BACKUP_RECIPIENTS).",
         "03:30",
     )
     assert result["backup"]["next_at"] is None

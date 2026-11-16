@@ -8,13 +8,169 @@
         ],
         "type": "string"
       },
+      "BackupConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "description": "Die automatische Sicherung ist an.",
+            "type": "boolean"
+          },
+          "enabled_source": {
+            "$ref": "#/components/schemas/ConfigSource",
+            "description": "env: fest an, weil die Schlüssel aus STOWLY_BACKUP_RECIPIENTS kommen; app: Schalter in der App; default: noch nie geschaltet, dann an."
+          },
+          "folder": {
+            "description": "Ordner im Container, in den die Sicherungen gehen.",
+            "type": "string"
+          },
+          "folder_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Hinweis, wenn ein eigener Ordner /backups eingebunden ist, aber nicht taugt (etwa ohne Schreibrecht für Benutzer 10001): Die Sicherungen gehen dann in den Datenordner. Sonst null."
+          },
+          "folder_problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Warum der Ordner nicht taugt (fehlt, nicht beschreibbar); sonst null."
+          },
+          "folder_source": {
+            "$ref": "#/components/schemas/BackupFolderSource"
+          },
+          "recipients": {
+            "items": {
+              "$ref": "#/components/schemas/BackupRecipientInfo"
+            },
+            "type": "array"
+          },
+          "recipients_source": {
+            "$ref": "#/components/schemas/ConfigSource"
+          },
+          "time": {
+            "description": "Uhrzeit der täglichen Sicherung, Zeitzone des Servers.",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "type": "string"
+          },
+          "time_source": {
+            "$ref": "#/components/schemas/ConfigSource"
+          }
+        },
+        "required": [
+          "enabled",
+          "enabled_source",
+          "recipients",
+          "recipients_source",
+          "time",
+          "time_source",
+          "folder",
+          "folder_source",
+          "folder_problem",
+          "folder_hint"
+        ],
+        "type": "object"
+      },
+      "BackupFile": {
+        "additionalProperties": false,
+        "description": "Eine Sicherung im Ordner (nur Dateien von Stowly: stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age).",
+        "properties": {
+          "created_at": {
+            "description": "Zeit aus dem Dateinamen bzw. der Datei.",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "description": "Größe in Byte.",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "BackupFolderSource": {
+        "description": "Woher der Ordner der Sicherungen kommt (docs/plan-einrichtung-b.md, Abschnitt 1).",
+        "enum": [
+          "env",
+          "mounted",
+          "data"
+        ],
+        "type": "string"
+      },
+      "BackupRecipientInfo": {
+        "additionalProperties": false,
+        "description": "Ein öffentlicher age-Schlüssel der Sicherung. Nie ein geheimer Schlüssel.",
+        "properties": {
+          "added_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wann er in der App hinzukam; null aus der Umgebung."
+          },
+          "key": {
+            "description": "Der öffentliche Schlüssel, vollständig (age1…).",
+            "type": "string"
+          },
+          "short": {
+            "description": "Gekürzt für die Anzeige, etwa 'age1ql3z…ac8p'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "short",
+          "added_at"
+        ],
+        "type": "object"
+      },
       "BackupStatus": {
         "additionalProperties": false,
         "description": "Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext.",
         "properties": {
           "configured": {
-            "description": "STOWLY_BACKUP_DIR und STOWLY_BACKUP_RECIPIENTS sind gesetzt.",
+            "description": "Die Sicherung ist wirksam: an, mit mindestens einem öffentlichen Schlüssel (Umgebung oder App) und einem brauchbaren Ordner.",
             "type": "boolean"
+          },
+          "files": {
+            "description": "Sicherungen im Ordner, neueste zuerst, höchstens LIMITS.backup_files_listed.",
+            "items": {
+              "$ref": "#/components/schemas/BackupFile"
+            },
+            "type": "array"
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ordner im Container, in dem die Sicherungen liegen."
           },
           "last_error": {
             "anyOf": [
@@ -113,7 +269,7 @@
                 "type": "null"
               }
             ],
-            "description": "Uhrzeit der täglichen Sicherung (STOWLY_BACKUP_TIME)."
+            "description": "Wirksame Uhrzeit der täglichen Sicherung (Umgebung, App oder Vorgabe); null ohne jede Einstellung."
           },
           "warning": {
             "description": "Seit 48 Stunden keine gelungene Sicherung (Regel: docs/integrationen.md, 3.6).",
@@ -122,6 +278,8 @@
         },
         "required": [
           "configured",
+          "folder",
+          "files",
           "problem",
           "time",
           "recipients",
@@ -1777,6 +1935,258 @@
         ],
         "type": "object"
       },
+      "HaCheck": {
+        "additionalProperties": false,
+        "description": "Ergebnis der Prüfung. Nie eine rohe Antwort von HA, nie ein Token.",
+        "properties": {
+          "entity_found": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Die wirksame To-do-Liste gibt es in HA; null = keine Liste eingerichtet."
+          },
+          "ha_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lists": {
+            "description": "To-do-Listen (todo.*), höchstens 100.",
+            "items": {
+              "$ref": "#/components/schemas/HaTodoList"
+            },
+            "type": "array"
+          },
+          "location_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "description": "Deutscher Klartext.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/HaCheckState"
+          }
+        },
+        "required": [
+          "state",
+          "message",
+          "ha_version",
+          "location_name",
+          "lists",
+          "entity_found"
+        ],
+        "type": "object"
+      },
+      "HaCheckInput": {
+        "additionalProperties": false,
+        "description": "``POST /api/server-config/ha/check``. Ohne Felder: die wirksame Einrichtung prüfen.",
+        "properties": {
+          "token": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "url": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "HaCheckState": {
+        "enum": [
+          "ok",
+          "token_needed",
+          "unauthorized",
+          "not_ha",
+          "unreachable",
+          "error"
+        ],
+        "type": "string"
+      },
+      "HaConfig": {
+        "additionalProperties": false,
+        "description": "``GET /api/server-config/ha``. Nie ein Token: Der Token von HA steht in einem eigenen Speicher\naußerhalb der Datenbank und jeder Sicherung.",
+        "properties": {
+          "ca": {
+            "description": "Eine eigene CA für HA ist gesetzt (STOWLY_HA_CA, nur in der Umgebung).",
+            "type": "boolean"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sensor": {
+            "$ref": "#/components/schemas/HaSensorConfig"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConfigSource",
+            "description": "env: Adresse, Token und Liste kommen aus der Umgebung (in der App gesperrt); app: aus der App; default: nichts eingerichtet."
+          },
+          "token_set": {
+            "type": "boolean"
+          },
+          "token_set_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "url",
+          "entity",
+          "token_set",
+          "token_set_at",
+          "ca",
+          "configured",
+          "problem",
+          "sensor"
+        ],
+        "type": "object"
+      },
+      "HaConfigChanges": {
+        "additionalProperties": false,
+        "description": "``PATCH /api/server-config/ha``. Nur vorhandene Felder zählen; 409, wenn die Verbindung aus der\nUmgebung kommt. Eine neue Adresse ohne token im selben Aufruf löscht den gespeicherten Token.",
+        "properties": {
+          "entity": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^todo\\.[a-z0-9_]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Die To-do-Liste; null = entfernen."
+          },
+          "token": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Langlebiger Zugangs-Token; null = entfernen."
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "http(s)://Rechner[:Port]; null = entfernen."
+          }
+        },
+        "type": "object"
+      },
+      "HaSensorConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "set": {
+            "type": "boolean"
+          },
+          "set_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConfigSource",
+            "description": "env: STOWLY_HA_SUMMARY_TOKEN; app: in der App erzeugt; default: keiner."
+          }
+        },
+        "required": [
+          "source",
+          "set",
+          "set_at"
+        ],
+        "type": "object"
+      },
+      "HaSensorToken": {
+        "additionalProperties": false,
+        "description": "Der Sensor-Token für HA (erzeugen bzw. anzeigen; nur angemeldet).",
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "type": "object"
+      },
       "HaState": {
         "description": "Ergebnis des letzten Abgleichs mit Home Assistant.",
         "enum": [
@@ -1796,7 +2206,7 @@
         "description": "Home Assistant und Bring! (docs/integrationen.md, Abschnitt 5). Nie ein Token.",
         "properties": {
           "configured": {
-            "description": "STOWLY_HA_URL, STOWLY_HA_TOKEN und STOWLY_HA_TODO_ENTITY sind gesetzt.",
+            "description": "Adresse, Token und To-do-Liste sind wirksam: alle drei aus der Umgebung (STOWLY_HA_URL, STOWLY_HA_TOKEN, STOWLY_HA_TODO_ENTITY) oder alle drei aus der App.",
             "type": "boolean"
           },
           "entity": {
@@ -1808,7 +2218,7 @@
                 "type": "null"
               }
             ],
-            "description": "Die To-do-Liste in HA (STOWLY_HA_TODO_ENTITY)."
+            "description": "Die wirksame To-do-Liste in HA."
           },
           "last_error": {
             "anyOf": [
@@ -1858,10 +2268,10 @@
                 "type": "null"
               }
             ],
-            "description": "Warum der Abgleich aus ist, obwohl etwas gesetzt ist; sonst null."
+            "description": "Warum der Abgleich oder der Sensor nicht wirkt, obwohl etwas gesetzt ist (etwa: der Token oder der Sensor-Token fehlt nach einem Zurückspielen); sonst null."
           },
           "sensor": {
-            "description": "Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN).",
+            "description": "Der Sensor ist eingerichtet (STOWLY_HA_SUMMARY_TOKEN oder ein Sensor-Token aus der App).",
             "type": "boolean"
           },
           "state": {
@@ -2138,6 +2548,35 @@
           "days",
           "count",
           "zone"
+        ],
+        "type": "object"
+      },
+      "HaTodoList": {
+        "additionalProperties": false,
+        "properties": {
+          "entity_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "open": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Offene Einträge, soweit HA sie meldet."
+          }
+        },
+        "required": [
+          "entity_id",
+          "name",
+          "open"
         ],
         "type": "object"
       },
@@ -3906,10 +4345,273 @@
         ],
         "type": "string"
       },
+      "RestoreApplied": {
+        "additionalProperties": false,
+        "description": "Antwort 202 auf ``POST /api/restore/apply`` und ``POST /api/restore/undo``.",
+        "properties": {
+          "login": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoginResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nur beim ersten Start: Token und Gerät; es gilt, sobald /api/health nach dem Neustart wieder configured=true meldet. Ein laufender Stowly behält alle Anmeldungen."
+          }
+        },
+        "required": [
+          "login"
+        ],
+        "type": "object"
+      },
+      "RestoreApplyInput": {
+        "additionalProperties": false,
+        "description": "``POST /api/restore/apply``: die geprüfte Sicherung einspielen; Stowly startet danach neu.",
+        "properties": {
+          "device_name": {
+            "description": "Nur beim ersten Start: Name dieses Geräts für die Anmeldung.",
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "password": {
+            "description": "Laufender Stowly: das jetzige Haushalts-Passwort. Erster Start: das Passwort aus der Sicherung (has_password) oder ein neues (sonst; dann gilt die Mindestlänge eines neuen Passworts).",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "restore_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "restore_id",
+          "password"
+        ],
+        "type": "object"
+      },
+      "RestoreCheckInput": {
+        "additionalProperties": false,
+        "description": "``POST /api/restore/check``: die hochgeladene Datei prüfen, bei age mit dem geheimen Schlüssel.",
+        "properties": {
+          "identity": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Der geheime age-Schlüssel (AGE-SECRET-KEY-1…), auch als Inhalt der Schlüsseldatei; Zeilen mit # zählen nicht. Nur für kind=age. Der Server speichert und loggt ihn nie."
+          },
+          "upload_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id"
+        ],
+        "type": "object"
+      },
+      "RestoreCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "description": "Vorräte (Packungen) im Bestand.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "products": {
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "shopping": {
+            "description": "Offene Einträge der Einkaufsliste.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "zones": {
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "products",
+          "items",
+          "zones",
+          "shopping"
+        ],
+        "type": "object"
+      },
+      "RestoreKind": {
+        "description": "Was hochgeladen wurde, an den ersten Bytes erkannt.",
+        "enum": [
+          "age",
+          "gzip",
+          "sqlite"
+        ],
+        "type": "string"
+      },
+      "RestorePreview": {
+        "additionalProperties": false,
+        "description": "Was in der Sicherung steckt (Antwort auf ``POST /api/restore/check``).",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/RestoreCounts"
+          },
+          "current_schema_version": {
+            "description": "Version dieses Servers.",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "devices": {
+            "description": "Geräte in der Sicherung.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "expires_at": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "has_password": {
+            "description": "Die Sicherung enthält ein Haushalts-Passwort (nur sein Hash).",
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RestoreKind"
+          },
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Jüngste Änderung in der Sicherung."
+          },
+          "restore_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "schema_version": {
+            "description": "Version der Datenbank in der Sicherung.",
+            "minimum": 1.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "restore_id",
+          "expires_at",
+          "kind",
+          "schema_version",
+          "current_schema_version",
+          "last_activity_at",
+          "has_password",
+          "devices",
+          "counts"
+        ],
+        "type": "object"
+      },
+      "RestoreState": {
+        "enum": [
+          "idle",
+          "pending",
+          "done",
+          "undone",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "RestoreStatus": {
+        "additionalProperties": false,
+        "description": "``GET /api/restore``: der letzte Stand des Zurückspielens. Nie ein Schlüssel.",
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Seit wann state gilt."
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/RestoreState"
+          },
+          "undo_until": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bis wann Rückgängig geht (RESTORE_UNDO_DAYS = 7 Tage); null = gar nicht."
+          }
+        },
+        "required": [
+          "state",
+          "at",
+          "message",
+          "undo_until"
+        ],
+        "type": "object"
+      },
+      "RestoreUpload": {
+        "additionalProperties": false,
+        "description": "Antwort auf ``PUT /api/restore/upload``.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RestoreKind"
+          },
+          "size": {
+            "description": "Größe in Byte.",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "upload_id": {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "kind",
+          "size"
+        ],
+        "type": "object"
+      },
       "ServerConfig": {
         "additionalProperties": false,
         "description": "Einstellungen des Servers, die auch in der App gehen. Die Umgebung geht vor; nie ein Geheimnis.",
         "properties": {
+          "backup": {
+            "$ref": "#/components/schemas/BackupConfig"
+          },
           "push": {
             "$ref": "#/components/schemas/PushConfig"
           },
@@ -3919,7 +4621,8 @@
         },
         "required": [
           "push",
-          "update"
+          "update",
+          "backup"
         ],
         "type": "object"
       },
@@ -3927,6 +4630,38 @@
         "additionalProperties": false,
         "description": "``PATCH /api/server-config``. Nur vorhandene Felder zählen; 409, wenn das Feld aus der Umgebung kommt.",
         "properties": {
+          "backup_enabled": {
+            "description": "Die automatische Sicherung an oder aus.",
+            "type": "boolean"
+          },
+          "backup_recipients": {
+            "description": "Die öffentlichen age-Schlüssel (age1…); ersetzt die bisherigen aus der App. Ein geheimer Schlüssel (AGE-SECRET-KEY-…) gibt 422, ohne ihn zu wiederholen. Kommt ein Schlüssel hinzu, braucht es current_password.",
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "type": "array"
+          },
+          "backup_time": {
+            "anyOf": [
+              {
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Uhrzeit HH:MM; null = wieder die Vorgabe 03:30."
+          },
+          "current_password": {
+            "description": "Das Haushalts-Passwort. Nötig, wenn backup_recipients einen Schlüssel hinzufügt: Wer einen Schlüssel hinzufügt, kann jede künftige Sicherung lesen (samt Passwort-Hash). Fehlt es, 422 an ['body', 'current_password']; falsch: 401 invalid_password über die Bremse der Anmeldung (dann auch 429). Entfernen braucht es nicht.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
           "push_contact": {
             "anyOf": [
               {
@@ -4458,7 +5193,7 @@
             "$ref": "#/components/schemas/SetupStepId"
           },
           "ready": {
-            "description": "Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; printer = es gibt einen Drucker; updates = Updates sind an; notifications = ein Kontakt für die Push-Dienste ist wirksam.",
+            "description": "Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; printer = es gibt einen Drucker; backup = die Sicherung ist wirksam und es gibt eine gelungene; updates = Updates sind an; notifications = ein Kontakt für die Push-Dienste ist wirksam; home_assistant = der Abgleich mit Home Assistant ist eingerichtet.",
             "type": "boolean"
           },
           "state": {
@@ -4495,8 +5230,10 @@
         "enum": [
           "https",
           "printer",
+          "backup",
           "updates",
-          "notifications"
+          "notifications",
+          "home_assistant"
         ],
         "type": "string"
       },
@@ -5454,19 +6191,52 @@
         ]
       }
     },
-    "/api/backup": {
+    "/api/backup/files/{name}": {
       "get": {
-        "description": "Liefert eine konsistente Kopie (``sqlite3.Connection.backup``) als Datei-Download.\n\nDie Kopie bekommt eine neue ``dataset_id``: Wird sie später eingespielt, holen\nalle Geräte den Bestand vollständig neu, statt mit einem veralteten Cursor zu arbeiten.",
-        "operationId": "download_backup",
+        "description": "Liefert eine Sicherung aus dem Ordner als Download, ``Cache-Control: no-store``.\n\nNur Namen von Stowly (stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age), nie ein anderer Pfad; sonst 404.",
+        "operationId": "download_backup_file",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
-              "application/vnd.sqlite3": {}
+              "application/octet-stream": {}
             },
             "description": "Successful Response"
           }
         },
-        "summary": "Download Backup",
+        "summary": "Download Backup File",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/backup/run": {
+      "post": {
+        "description": "Legt jetzt eine verschlüsselte Sicherung in den Ordner, mit demselben Lock wie der tägliche Lauf.\n\n409 ``conflict``, wenn gerade eine läuft; 429 bei mehr als einer je Minute; 503 ``not_configured``\nohne öffentlichen Schlüssel oder ohne brauchbaren Ordner.",
+        "operationId": "run_backup",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupFile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Backup",
         "tags": [
           "backup"
         ]
@@ -5652,7 +6422,7 @@
     },
     "/api/ha/stock": {
       "get": {
-        "description": "Nur lesen, mit dem Token des Sensors: alle Waren im Bestand, je Zone, mit dem nächsten MHD.\n\n401 ohne gültigen Sensor-Token (ein Geräte-Token gilt nicht), 503 ohne STOWLY_HA_SUMMARY_TOKEN.",
+        "description": "Nur lesen, mit dem Token des Sensors: alle Waren im Bestand, je Zone, mit dem nächsten MHD.\n\n401 ohne gültigen Sensor-Token (ein Geräte-Token gilt nicht), 503 ohne Sensor-Token (App oder Umgebung).",
         "operationId": "ha_stock",
         "responses": {
           "200": {
@@ -5674,7 +6444,7 @@
     },
     "/api/ha/summary": {
       "get": {
-        "description": "Nur lesen, mit dem Token des Sensors: Was bald abläuft, was abgelaufen ist, die Einkaufsliste.\n\n401 ohne gültigen Sensor-Token (ein Geräte-Token gilt nicht), 503 ohne STOWLY_HA_SUMMARY_TOKEN.",
+        "description": "Nur lesen, mit dem Token des Sensors: Was bald abläuft, was abgelaufen ist, die Einkaufsliste.\n\n401 ohne gültigen Sensor-Token (ein Geräte-Token gilt nicht), 503 ohne Sensor-Token (App oder Umgebung).",
         "operationId": "ha_summary",
         "responses": {
           "200": {
@@ -6082,6 +6852,162 @@
         ]
       }
     },
+    "/api/restore": {
+      "get": {
+        "description": "Der letzte Stand des Zurückspielens (nur angemeldet), ``Cache-Control: no-store``.",
+        "operationId": "get_restore_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Restore Status",
+        "tags": [
+          "restore"
+        ]
+      }
+    },
+    "/api/restore/apply": {
+      "post": {
+        "description": "Legt die geprüfte Sicherung bereit und startet Stowly neu; der Tausch geschieht beim Start.\n\n401 ``invalid_password`` bei falschem Passwort (über die Bremse der Anmeldung, dann auch 429); 404,\nwenn die ``restore_id`` unbekannt oder abgelaufen ist; 409, wenn beim ersten Start inzwischen ein\nPasswort gesetzt ist oder ein Update läuft; beim ersten Start 422, wenn ``device_name`` fehlt oder ein\nneues Passwort zu kurz ist; 503 ``not_configured``, wenn sich Stowly hier nicht selbst neu starten kann.",
+        "operationId": "apply_restore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreApplyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreApplied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Apply Restore",
+        "tags": [
+          "restore"
+        ]
+      }
+    },
+    "/api/restore/check": {
+      "post": {
+        "description": "Entschlüsselt (age) und prüft die hochgeladene Sicherung und migriert eine Kopie.\n\n422 mit ``details.reason``: ``wrong_key``, ``not_a_key``, ``not_stowly``, ``damaged``,\n``newer_schema``, ``migration_failed``; 404, wenn die ``upload_id`` abgelaufen oder unbekannt ist;\n413, wenn die Sicherung entpackt größer als 2 GiB wäre; 429 aus der eigenen Bremse. Der Schlüssel\nsteht nie in einer Antwort oder im Log.",
+        "operationId": "check_restore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreCheckInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestorePreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Check Restore",
+        "tags": [
+          "restore"
+        ]
+      }
+    },
+    "/api/restore/previous": {
+      "delete": {
+        "description": "Löscht die Datenbank von vor dem Zurückspielen vorzeitig; danach geht „Rückgängig\" nicht mehr.\n\nWiederholbar: 204 auch, wenn es keine (mehr) gibt; 409, solange eine Sicherung zum Einspielen bereitliegt.",
+        "operationId": "delete_restore_previous",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Restore Previous",
+        "tags": [
+          "restore"
+        ]
+      }
+    },
+    "/api/restore/undo": {
+      "post": {
+        "description": "Spielt die Datenbank von vor dem letzten Zurückspielen wieder ein (bis ``undo_until``) und startet neu.\n\n404, wenn es keine gibt; 409, wenn gerade etwas läuft; 503 ``not_configured``, wenn sich Stowly hier\nnicht selbst neu starten kann.",
+        "operationId": "undo_restore",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreApplied"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Undo Restore",
+        "tags": [
+          "restore"
+        ]
+      }
+    },
+    "/api/restore/upload": {
+      "put": {
+        "description": "Nimmt die Sicherung als Rohdaten an (höchstens RESTORE_MAX_BYTES) und erkennt ihre Art.\n\n413 ``payload_too_large``; 422 bei einer Datei, die keine Sicherung sein kann; 409, wenn schon ein\nZurückspielen oder ein Update läuft; 429 aus der eigenen Bremse; 507-artige Platznot als 409 mit Satz.",
+        "operationId": "upload_restore",
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreUpload"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Upload Restore",
+        "tags": [
+          "restore"
+        ]
+      }
+    },
     "/api/server-config": {
       "get": {
         "description": "Wirksame Werte mit ihrer Quelle, ``Cache-Control: no-store``. Nie ein Geheimnis.",
@@ -6129,6 +7055,145 @@
           }
         },
         "summary": "Update Server Config",
+        "tags": [
+          "server-config"
+        ]
+      }
+    },
+    "/api/server-config/ha": {
+      "get": {
+        "description": "Wirksame Einrichtung mit Quelle, ``Cache-Control: no-store``. Nie ein Token.",
+        "operationId": "get_ha_config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Ha Config",
+        "tags": [
+          "server-config"
+        ]
+      },
+      "patch": {
+        "description": "Ändert die vorhandenen Felder; der Abgleich übernimmt sie ohne Neustart.\n\n409 ``conflict``, wenn die Verbindung aus der Umgebung kommt; 422 mit ``details.errors[].loc`` bei\neiner ungültigen Adresse, Liste oder einem Token ohne Adresse; 500, wenn sich der Token nicht speichern\nlässt. Eine neue Adresse ohne Token im selben Aufruf löscht den Token; dieselbe Adresse behält ihn.",
+        "operationId": "update_ha_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HaConfigChanges"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Update Ha Config",
+        "tags": [
+          "server-config"
+        ]
+      }
+    },
+    "/api/server-config/ha/check": {
+      "post": {
+        "description": "Prüft Adresse und Token (ohne Felder: die wirksamen) und liefert die To-do-Listen von HA.\n\nSpeichert nichts. Feste Fristen, eine Prüfung zugleich, mindestens 3 Sekunden Abstand; sonst 429 mit\n``Retry-After``. 409, wenn die Verbindung aus der Umgebung kommt und trotzdem Felder angegeben sind;\n422 an ``[\"body\", \"url\"]``, wenn es keine Adresse gibt. Der gespeicherte Token geht nur an seine\nAdresse. Antworten von HA gehen nie roh zurück.",
+        "operationId": "check_ha",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HaCheckInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaCheck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Check Ha",
+        "tags": [
+          "server-config"
+        ]
+      }
+    },
+    "/api/server-config/ha/sensor-token": {
+      "delete": {
+        "description": "Entfernt den Sensor-Token aus der App (immer 204, auch ohne); danach antwortet der Sensor mit 503. 409 aus der Umgebung.",
+        "operationId": "delete_ha_sensor_token",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Ha Sensor Token",
+        "tags": [
+          "server-config"
+        ]
+      },
+      "get": {
+        "description": "Zeigt den Sensor-Token aus der App; 404, wenn es keinen gibt; 409, wenn er aus der Umgebung kommt.",
+        "operationId": "get_ha_sensor_token",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaSensorToken"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Ha Sensor Token",
+        "tags": [
+          "server-config"
+        ]
+      },
+      "post": {
+        "description": "Erzeugt einen neuen Sensor-Token (64 Hex-Zeichen) und ersetzt den bisherigen; 409 aus der Umgebung.",
+        "operationId": "create_ha_sensor_token",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HaSensorToken"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Ha Sensor Token",
         "tags": [
           "server-config"
         ]

@@ -1,16 +1,19 @@
 """Automatische, verschlüsselte Sicherung in einen Ordner auf dem Server (docs/integrationen.md, Abschnitt 3).
 
-Ein Lauf, im eigenen Thread des Zeitplans:
+Welche Schlüssel, welche Uhrzeit, welcher Ordner und ob sie an ist, steht in ``serverconfig.backup_setup``
+(Umgebung vor App vor Vorgabe); der Zeitplan liest es bei jedem Takt, eine Änderung in der App wirkt
+also ohne Neustart. Ein Lauf, im eigenen Thread des Zeitplans oder auf Knopfdruck
+(``POST /api/backup/run``), beide unter demselben Lock:
 
 1. **Kopie** der Datenbank in den Arbeitsspeicher (``sqlite3.Connection.backup`` in ``:memory:``),
    mit neuer ``dataset_id`` und ``PRAGMA integrity_check``. Unverschlüsselt berührt sie nie die Platte.
-2. **Packen** mit gzip, 3. **Verschlüsseln** im binären Format von age an alle öffentlichen Schlüssel
-   aus ``STOWLY_BACKUP_RECIPIENTS`` zugleich (``pyrage``). Jeder private Schlüssel öffnet die Datei allein.
+2. **Packen** mit gzip, 3. **Verschlüsseln** im binären Format von age an alle wirksamen öffentlichen
+   Schlüssel zugleich (``pyrage``). Jeder private Schlüssel öffnet die Datei allein.
 4. **Schreiben** in eine Zwischendatei ``.stowly-backup-<16 Hex>.tmp`` (``O_CREAT | O_EXCL``, ``0600``,
    ``fsync``), 5. **Umbenennen** auf ``stowly-YYYY-MM-DD-HHMM.sqlite3.gz.age`` (Tag und Uhrzeit des
    Laufs in ``STOWLY_TIMEZONE``), unter Linux danach ``fsync`` des Ordners.
 6. **Aufräumen** nach 7/4/12 (Tage, ISO-Wochen, Monate mit Sicherung), nur unter den eigenen Dateien.
-7. **Merken** in ``job_runs``.
+7. **Merken** in ``job_runs``. Ein Lauf auf Knopfdruck zählt als Sicherung des Tages.
 
 Scheitert ein Schritt, löscht der Lauf seine Zwischendatei, vermerkt einen kurzen deutschen Satz
 ohne Geheimnisse und versucht es eine Stunde später erneut. Der Server kennt nur öffentliche
@@ -25,6 +28,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -32,9 +36,10 @@ from typing import Any
 
 import pyrage
 
-from stowly import db, localtime, scheduler
+from stowly import db, localtime, scheduler, serverconfig
 from stowly.config import Settings
 from stowly.contract import ids
+from stowly.contract.limits import LIMITS
 from stowly.contract.timeutil import format_timestamp, parse_timestamp
 
 log = logging.getLogger("stowly.backup")
@@ -49,14 +54,21 @@ RETRY_AFTER = timedelta(hours=1)
 WARN_AFTER = timedelta(hours=48)
 # Aufbewahrung: so viele Tage, ISO-Wochen und Monate mit Sicherung.
 KEEP_DAYS, KEEP_WEEKS, KEEP_MONTHS = 7, 4, 12
+# So viele Sicherungen nennt der Zustand, neueste zuerst.
+FILES_LISTED = LIMITS["backup_files_listed"]
 
-MISSING_DIR = "Der Ordner für Sicherungen fehlt."
-NOT_WRITABLE = "Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)."
+MISSING_DIR = serverconfig.BACKUP_MISSING_DIR
+NOT_WRITABLE = serverconfig.BACKUP_NOT_WRITABLE
 DISK_FULL = "Auf der Platte ist kein Platz für die Sicherung."
 NOT_CONSISTENT = "Die Kopie der Datenbank ist nicht stimmig."
 NOT_ENCRYPTED = "Die Sicherung ließ sich nicht verschlüsseln."
 NOT_WRITTEN = "Die Sicherung ließ sich nicht schreiben."
 FAILED = "Die Sicherung ist fehlgeschlagen (Einzelheiten im Log des Servers)."
+
+# Ein Lauf zugleich, gleich ob aus dem Zeitplan oder auf Knopfdruck.
+_RUNNING = threading.Lock()
+
+short_key = serverconfig.short_key
 
 
 class BackupError(Exception):
@@ -67,14 +79,38 @@ class BackupError(Exception):
         self.message = message
 
 
-def short_key(recipient: str) -> str:
-    """Ein öffentlicher Schlüssel gekürzt: die ersten 8 Zeichen, „…", die letzten 4 (``age1ql3z…ac8p``)."""
-    return f"{recipient[:8]}…{recipient[-4:]}"
+class Busy(Exception):
+    """Es läuft schon eine Sicherung."""
+
+
+class NotSetUp(Exception):
+    """Ohne Schlüssel (oder, auf Knopfdruck, ohne brauchbaren Ordner) gibt es keinen Lauf; ``message`` sagt
+    warum. Nichts wird vermerkt."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 def file_name(moment: datetime, tz: Any) -> str:
     """``stowly-YYYY-MM-DD-HHMM.sqlite3.gz.age``, Tag und Uhrzeit in der Zeitzone des Servers."""
     return f"stowly-{localtime.local(moment, tz):%Y-%m-%d-%H%M}.sqlite3.gz.age"
+
+
+def name_time(name: str, tz: Any) -> datetime | None:
+    """Der Zeitpunkt (UTC) aus einem eigenen Dateinamen, Uhrzeit in der Zeitzone des Servers; gibt es sie
+    zweimal (Winterzeit), das erste Mal. ``None``, wenn der Name keiner von Stowly ist."""
+    match = OWN_FILE.fullmatch(name)
+    if match is None:
+        return None
+    year, month, day, hhmm = match.groups()
+    try:
+        stamp = date(int(year), int(month), int(day))
+    except ValueError:
+        return None
+    if int(hhmm[:2]) > 23 or int(hhmm[2:]) > 59:
+        return None
+    return localtime.first_moment(stamp, f"{hhmm[:2]}:{hhmm[2:]}", tz)
 
 
 # --- 1. bis 3.: Kopie, Packen, Verschlüsseln ---------------------------------------------------
@@ -284,18 +320,18 @@ class Result:
     removed: list[str]
 
 
-def create(settings: Settings, now: datetime) -> Result:
+def create(settings: Settings, now: datetime, setup: serverconfig.BackupSetup) -> Result:
     """Eine Sicherung, Schritte 1 bis 6. ``BackupError`` mit dem Satz für die App, wenn etwas scheitert."""
-    directory = settings.backup_dir
-    if directory is None or not settings.backup_recipients:
+    directory = setup.folder.path
+    if not setup.keys:
         raise BackupError(FAILED)
-    # Den Ordner legt der Server nicht an: Er läge sonst womöglich im Container statt auf dem Laufwerk.
+    # Den Ordner aus der Umgebung legt der Server nicht an (serverconfig.backup_folder).
     if not directory.is_dir():
         raise BackupError(MISSING_DIR)
     if os.name == "posix" and not os.access(directory, os.W_OK | os.X_OK):
         raise BackupError(NOT_WRITABLE)
     remove_leftovers(directory)
-    sealed = seal(snapshot(settings.database_path), settings.backup_recipients)
+    sealed = seal(snapshot(settings.database_path), setup.keys)
     name = file_name(now, settings.tz)
     write_file(directory, name, sealed)
     try:
@@ -307,40 +343,80 @@ def create(settings: Settings, now: datetime) -> Result:
     return Result(file=name, size=len(sealed), removed=removed)
 
 
-def run_backup(settings: Settings, now: datetime) -> bool:
-    """Ein Lauf samt Vermerk in ``job_runs``; liefert, ob er gelang. Wirft nie wegen der Sicherung selbst."""
-    try:
-        result = create(settings, now)
-    except BackupError as exc:
-        log.error("Sicherung fehlgeschlagen: %s Nächster Versuch in einer Stunde.", exc.message)
-        _remember_failure(settings, now, exc.message)
-        return False
-    except Exception:
-        log.exception("Sicherung fehlgeschlagen. Nächster Versuch in einer Stunde.")
-        _remember_failure(settings, now, FAILED)
-        return False
-    log.info(
-        "Sicherung geschrieben: %s (%d Byte, %d Schlüssel)%s",
-        result.file,
-        result.size,
-        len(settings.backup_recipients),
-        f", aufgeräumt: {', '.join(result.removed)}" if result.removed else "",
-    )
+def current_setup(settings: Settings, *, create_folder: bool = False) -> serverconfig.BackupSetup:
+    """Die wirksamen Einstellungen, mit eigener Verbindung (im Thread des Zeitplans oder eines Aufrufs)."""
     con = db.connect(settings.database_path)
     try:
-        scheduler.record_success(
-            con,
-            JOB,
-            day=localtime.today(now, settings.tz).isoformat(),
-            at=format_timestamp(now),
-            state={
-                "file": result.file,
-                "size": result.size,
-                "recipients": [short_key(recipient) for recipient in settings.backup_recipients],
-            },
-        )
+        return serverconfig.backup_setup(settings, con, create_folder=create_folder)
     finally:
         con.close()
+
+
+def run(settings: Settings, now: datetime, *, manual: bool = False) -> Result:
+    """Ein Lauf samt Vermerk in ``job_runs``, unter dem Lock für alle Läufe.
+
+    ``Busy``, wenn schon einer läuft; ``NotSetUp`` (nichts vermerkt), wenn es keinen Schlüssel gibt, der
+    tägliche Lauf ausgeschaltet ist oder (``manual``) der Ordner nicht taugt; ``BackupError`` mit dem Satz
+    für die App, wenn die Sicherung selbst scheitert (vermerkt, nächster Versuch eine Stunde später).
+    """
+    if not _RUNNING.acquire(blocking=False):
+        raise Busy
+    try:
+        setup = current_setup(settings, create_folder=True)
+        if not setup.keys:
+            raise NotSetUp(serverconfig.BACKUP_NO_KEY)
+        if manual and setup.folder.problem is not None:
+            raise NotSetUp(setup.folder.problem)
+        if not manual and not setup.enabled:
+            raise NotSetUp(serverconfig.BACKUP_SWITCHED_OFF)
+        try:
+            result = create(settings, now, setup)
+        except BackupError as exc:
+            log.error("Sicherung fehlgeschlagen: %s Nächster Versuch in einer Stunde.", exc.message)
+            _remember_failure(settings, now, exc.message)
+            raise
+        except Exception as exc:
+            log.exception("Sicherung fehlgeschlagen. Nächster Versuch in einer Stunde.")
+            _remember_failure(settings, now, FAILED)
+            raise BackupError(FAILED) from exc
+        log.info(
+            "Sicherung geschrieben%s: %s (%d Byte, %d Schlüssel)%s",
+            " auf Knopfdruck" if manual else "",
+            result.file,
+            result.size,
+            len(setup.keys),
+            f", aufgeräumt: {', '.join(result.removed)}" if result.removed else "",
+        )
+        con = db.connect(settings.database_path)
+        try:
+            scheduler.record_success(
+                con,
+                JOB,
+                day=localtime.today(now, settings.tz).isoformat(),
+                at=format_timestamp(now),
+                state={
+                    "file": result.file,
+                    "size": result.size,
+                    "recipients": [short_key(recipient) for recipient in setup.keys],
+                },
+            )
+        finally:
+            con.close()
+        return result
+    finally:
+        _RUNNING.release()
+
+
+def run_backup(settings: Settings, now: datetime) -> bool:
+    """Der tägliche Lauf (``run``); liefert, ob er gelang. Wirft nie wegen der Sicherung selbst."""
+    try:
+        run(settings, now)
+    except Busy:
+        # Gerade läuft eine auf Knopfdruck; gelingt sie, zählt sie als Sicherung des Tages.
+        log.info("Sicherung: Es läuft schon eine; der tägliche Lauf wartet.")
+        return False
+    except (NotSetUp, BackupError):
+        return False
     return True
 
 
@@ -353,7 +429,11 @@ def _remember_failure(settings: Settings, now: datetime, message: str) -> None:
 
 
 class BackupJob:
-    """Die Aufgabe ``backup`` des Zeitplans: täglich ab ``STOWLY_BACKUP_TIME``, nach einem Fehler stündlich."""
+    """Die Aufgabe ``backup`` des Zeitplans: täglich zur wirksamen Uhrzeit, nach einem Fehler stündlich.
+
+    Sie steht immer im Zeitplan und liest die Einstellungen bei jedem Takt; ohne Schlüssel oder
+    ausgeschaltet ruht sie. Eine Änderung in der App weckt den Zeitplan (``Scheduler.wake``).
+    """
 
     name = JOB
 
@@ -361,10 +441,10 @@ class BackupJob:
         self.settings = settings
 
     def due(self, run: scheduler.JobRun, now: datetime) -> bool:
-        settings = self.settings
-        if not settings.backup_configured:
+        setup = current_setup(self.settings)
+        if not setup.active:
             return False
-        if not scheduler.daily_due(run, now, settings.tz, settings.backup_time):
+        if not scheduler.daily_due(run, now, self.settings.tz, setup.time):
             return False
         later = retry_at(run, now)
         return later is None or now >= later
@@ -388,11 +468,11 @@ def retry_at(run: scheduler.JobRun, now: datetime) -> datetime | None:
 # --- Zustand für die App -----------------------------------------------------------------------
 
 
-def next_attempt(settings: Settings, run: scheduler.JobRun, now: datetime) -> datetime:
+def next_attempt(settings: Settings, run: scheduler.JobRun, now: datetime, hhmm: str) -> datetime:
     """Der nächste geplante Versuch (docs/integrationen.md, 3.6), so wie der Zeitplan ihn nimmt.
 
-    Heute zur Uhrzeit, wenn sie noch kommt und heute noch nichts lief; nach einem Fehler eine Stunde
-    später; sonst morgen zur Uhrzeit, über die Zeitumstellung richtig umgerechnet. Ist ein Versuch
+    Heute zur Uhrzeit ``hhmm``, wenn sie noch kommt und heute noch nichts lief; nach einem Fehler eine
+    Stunde später; sonst morgen zur Uhrzeit, über die Zeitumstellung richtig umgerechnet. Ist ein Versuch
     schon jetzt fällig (etwa nach einem Ausfall), ist es jetzt.
     """
     tz = settings.tz
@@ -402,7 +482,7 @@ def next_attempt(settings: Settings, run: scheduler.JobRun, now: datetime) -> da
     later = retry_at(run, now)
     candidate = now
     for _attempt in range(3):
-        candidate = max(localtime.first_moment(day, settings.backup_time, tz), now)
+        candidate = max(localtime.first_moment(day, hhmm, tz), now)
         if later is not None and later > candidate:
             candidate = later
         if localtime.today(candidate, tz) == day:
@@ -412,27 +492,65 @@ def next_attempt(settings: Settings, run: scheduler.JobRun, now: datetime) -> da
     return candidate
 
 
-def status(settings: Settings, run: scheduler.JobRun, now: datetime) -> dict[str, Any]:
-    """``BackupStatus`` für ``GET /api/integrations``. Öffentliche Schlüssel nur gekürzt."""
-    configured = settings.backup_configured
+def list_files(directory: Path, tz: Any, limit: int = FILES_LISTED) -> list[dict[str, Any]]:
+    """``BackupFile`` je eigener Sicherung im Ordner, neueste zuerst, höchstens ``limit``. Andere Dateien,
+    Ordner und Verweise zählen nicht; ein fehlender Ordner ergibt eine leere Liste."""
+    try:
+        files = own_files(directory)
+    except OSError:
+        return []
+    listed: list[dict[str, Any]] = []
+    for item in reversed(files):
+        if len(listed) >= limit:
+            break
+        moment = name_time(item.name, tz)
+        try:
+            size = os.stat(directory / item.name, follow_symlinks=False).st_size
+        except OSError:
+            continue
+        if moment is not None:
+            listed.append({"name": item.name, "size": size, "created_at": format_timestamp(moment)})
+    return listed
+
+
+def ready(settings: Settings, con: sqlite3.Connection) -> bool:
+    """Schritt „Sicherung" des Assistenten: wirksam und mindestens eine gelungene Sicherung."""
+    if not serverconfig.backup_setup(settings, con).configured:
+        return False
+    return scheduler.load_run(con, JOB).last_date is not None
+
+
+def status(
+    settings: Settings, run: scheduler.JobRun, now: datetime, *, con: sqlite3.Connection | None = None
+) -> dict[str, Any]:
+    """``BackupStatus`` für ``GET /api/integrations``. Öffentliche Schlüssel nur gekürzt.
+
+    ``configured`` ist die Sicherung, wie sie wirkt (an, mit Schlüssel, der Ordner taugt). Versucht wird
+    sie schon, wenn sie an ist und einen Schlüssel hat (``next_at``, ``warning``): Dann meldet ein Lauf
+    auch einen fehlenden Ordner.
+    """
+    setup = serverconfig.backup_setup(settings, con) if con is not None else current_setup(settings)
+    active = setup.active
     last_ok_at = run.last_at if run.last_date is not None else None
     state = run.state if last_ok_at is not None else {}
     last_ok = None if last_ok_at is None else parse_timestamp(last_ok_at)
-    warning = configured and (
+    warning = active and (
         (last_ok is not None and now - last_ok > WARN_AFTER)
         or (last_ok is None and run.last_error is not None)
     )
     size = state.get("size")
     return {
-        "configured": configured,
-        "problem": settings.backup_problem,
-        "time": settings.backup_time if settings.backup_mentioned else None,
-        "recipients": [short_key(recipient) for recipient in settings.backup_recipients],
+        "configured": setup.configured,
+        "folder": str(setup.folder.path),
+        "files": list_files(setup.folder.path, settings.tz),
+        "problem": setup.problem,
+        "time": setup.time if active or setup.mentioned else None,
+        "recipients": [short_key(recipient) for recipient in setup.keys],
         "last_ok_at": last_ok_at,
         "last_file": state.get("file") if isinstance(state.get("file"), str) else None,
         "last_size": size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None,
         "last_error": run.last_error,
         "last_error_at": run.last_error_at,
-        "next_at": format_timestamp(next_attempt(settings, run, now)) if configured else None,
+        "next_at": format_timestamp(next_attempt(settings, run, now, setup.time)) if active else None,
         "warning": bool(warning),
     }

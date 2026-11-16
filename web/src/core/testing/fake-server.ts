@@ -41,9 +41,8 @@
  *   Bild) und merkt sich nichts; der echte Server legt das Ergebnis ab und füllt damit später
  *   das Produkt.
  * - `last_seen_at` rückt bei jedem Abgleich vor, im echten Server höchstens einmal je Minute.
- * - Es gibt kein Ereignisprotokoll und keine Grenze für die Größe einer Anfrage; die Sicherung
- *   ist keine SQLite-Datei; die Klartexte der Meldungen sind eigene, und `details.errors` ist
- *   bei 422 leer.
+ * - Es gibt kein Ereignisprotokoll und keine Grenze für die Größe einer Anfrage; die Klartexte
+ *   der Meldungen sind eigene, und `details.errors` ist bei 422 meist leer.
  * - Der Druckdienst unter `/print` ist ebenfalls nachgebaut (fake-print.ts; dort steht, was er
  *   nicht kann). Was er am Etikett und am Zustand des Druckers fortschreibt, überschreibt hier
  *   einfach; der echte Server lässt die jüngste Meldung gewinnen.
@@ -53,9 +52,22 @@
  *   Längen, nicht, ob `keys.p256dh` auf der Kurve liegt. Eine Testnachricht geht nirgends hin: Die
  *   Nachbildung merkt sich die Nutzlast (`pushMessages`) und antwortet, was `pushTestStatus` sagt.
  *   Die Tagesnachricht gibt es nicht.
- * - `GET /api/integrations`: Die Sicherung ist nie eingerichtet; Push zählt die Abos der
- *   Nachbildung. Den Zustand von Home Assistant gibt der Test vor (`haStatus`, Vorgabe „aus"),
- *   samt `linked`: Einen Abgleich mit Bring! gibt es hier nicht, `bring_key` auch nicht.
+ * - `GET /api/integrations`: Push zählt die Abos der Nachbildung. Den Zustand von Home Assistant
+ *   gibt der Test vor (`haStatus`, Vorgabe „aus"), samt `linked`: Einen Abgleich mit Bring! gibt
+ *   es hier nicht, `bring_key` auch nicht. Eine Änderung der Verbindung in der App setzt ihn auf
+ *   „pending" (der erste Abgleich steht aus); weiter schaltet ihn nur der Test.
+ * - Sicherung (Stufe B): Es wird nichts verschlüsselt. Eine Sicherung der Nachbildung ist ein paar
+ *   Bytes: der Kopf von age, je öffentlichem Schlüssel eine Zeile `-> stowly-fake age1…` und ein
+ *   Verweis auf den festgehaltenen Stand im Arbeitsspeicher (`backupBytes`). Zum Prüfen errechnet
+ *   die Nachbildung aus dem geheimen Schlüssel den öffentlichen und sucht ihn in diesen Zeilen;
+ *   eine fremde Datei ist „damaged". Es gibt keine Uhrzeit für den nächsten Lauf (`next_at`) und
+ *   keinen täglichen Lauf, nur „Jetzt sichern".
+ * - Zurückspielen (Stufe B): Der Neustart ist sofort vorbei; `restartPolls` lässt `GET /api/restore`
+ *   (laufender Stowly) bzw. `/api/health` (erster Start) noch so oft den alten Stand melden. Was
+ *   der laufende Stowly behält, ist hier: Geräte, Passwort und alle Einstellungen des Servers.
+ *   Kennungen neuerer Pakete werden nicht reserviert.
+ * - Home Assistant (Stufe B): Es gibt kein HA. „Verbindung prüfen" liefert `haCheckResult`
+ *   (ohne Token: "token_needed"); die Prüfungen stehen in `haChecks`.
  * - Updates (`/api/update/…`, docs/integrationen.md 10): Vorgabe „nicht eingerichtet"
  *   (`updateRepo` null). Statt GitHub zu fragen, nimmt die Nachbildung `githubRelease` (oder
  *   scheitert mit `githubError`); den Updater auf dem Rechner spielt der Test über
@@ -80,6 +92,9 @@
  *
  * Ohne DOM und ohne Node: Die Datei läuft in den Tests (jsdom) und im Entwicklungsserver.
  */
+import { x25519 } from "@noble/curves/ed25519.js";
+import { bech32 } from "@scure/base";
+
 import {
   COMMAND_TYPES,
   ID_POOL_TARGET,
@@ -90,6 +105,9 @@ import {
   PUSH_PATHS,
   PUSH_TEST_INTERVAL_S,
   UPDATE_CHECK_MIN_GAP_S,
+  type BackupConfig,
+  type BackupFile,
+  type BackupStatus,
   type Changes,
   type Command,
   type CommandResult,
@@ -97,6 +115,9 @@ import {
   type Device,
   type ErrorBody,
   type ErrorCode,
+  type HaCheck,
+  type HaConfig,
+  type HaConfigChanges,
   type HaStatus,
   type HouseholdSettings,
   type HttpsStatus,
@@ -115,6 +136,10 @@ import {
   type PushTestResult,
   type PushTestStatus,
   type RejectCode,
+  type RestorePreview,
+  type RestoreState,
+  type RestoreStatus,
+  type RestoreUpload,
   type ServerConfig,
   type ServerConfigChanges,
   type ServerHealth,
@@ -150,8 +175,10 @@ export interface FakeRequestData {
   query?: string;
   /** Kopfzeilen mit kleingeschriebenen Namen. */
   headers: Record<string, string | undefined>;
-  /** Der Rumpf als Text; leer, wenn es keinen gibt. */
+  /** Der Rumpf als Text; leer, wenn es keinen gibt (oder er nur als Rohdaten in `bytes` steht). */
   body: string;
+  /** Der Rumpf als Rohdaten, wenn er kein Text ist (das Hochladen einer Sicherung). */
+  bytes?: Uint8Array;
 }
 
 export interface FakeResponseData {
@@ -615,7 +642,7 @@ const VERSION_RE = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/;
 // ------------------------------------------------------------------------------------------
 
 /** Die Schritte des Assistenten nach dem Passwort, in ihrer Reihenfolge. */
-export const SETUP_STEP_IDS: readonly SetupStepId[] = ["https", "printer", "updates", "notifications"];
+export const SETUP_STEP_IDS: readonly SetupStepId[] = ["https", "printer", "backup", "updates", "notifications", "home_assistant"];
 
 /** Was der Server sagt, wenn Updates aus sind (docs/integrationen.md, 10.5). */
 const UPDATE_OFF = "Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung.";
@@ -696,6 +723,134 @@ function isNewerVersion(version: string, than: string): boolean {
   return false;
 }
 
+// ------------------------------------------------------------------------------------------
+// Sicherung, Zurückspielen und Home Assistant aus der App (Stufe B, docs/plan-einrichtung-b.md)
+// ------------------------------------------------------------------------------------------
+
+/** Vorgabe der Uhrzeit der Sicherung (BACKUP_TIME_DEFAULT). */
+const BACKUP_TIME_DEFAULT = "03:30";
+/** So groß darf eine Sicherung zum Zurückspielen sein (RESTORE_MAX_BYTES). */
+export const FAKE_RESTORE_MAX_BYTES = 512 * 1024 * 1024;
+/** So lange gelten `upload_id` und `restore_id` (RESTORE_ID_TTL_S). */
+const RESTORE_ID_TTL_MS = 1_800_000;
+/** So lange geht „Rückgängig" (RESTORE_UNDO_DAYS). */
+const RESTORE_UNDO_MS = 7 * DAY_MS;
+/** Die eigene Bremse des Zurückspielens: höchstens so viele Versuche in zehn Minuten. */
+const RESTORE_LIMIT = 6;
+const RESTORE_WINDOW_MS = 600_000;
+/** Die Version der Datenbank, die die Nachbildung „hat" (`user_version`). */
+export const FAKE_SCHEMA_VERSION = 5;
+/** Höchstens eine Sicherung je Minute auf Knopfdruck. */
+const BACKUP_RUN_GAP_MS = 60_000;
+/** Zwischen zwei Prüfungen bei Home Assistant mindestens so viel Abstand. */
+const HA_CHECK_GAP_MS = 3_000;
+/** Dateien von Stowly im Ordner der Sicherungen. */
+const OWN_BACKUP_FILE = /^stowly-\d{4}-\d{2}-\d{2}-\d{4}\.sqlite3\.gz\.age$/;
+const AGE_PUBLIC = /^age1[02-9ac-hj-np-z]{58}$/;
+const HA_ENTITY = /^todo\.[a-z0-9_]+$/;
+const HA_URL = /^https?:\/\/[^\s/?#@]+\/?$/i;
+const AGE_MAGIC = "age-encryption.org/v1\n";
+const SQLITE_MAGIC = "SQLite format 3\u0000";
+/** So schreibt die Nachbildung einen Empfänger in ihre „verschlüsselte" Datei: kein echtes age, nur der öffentliche Schlüssel. */
+const FAKE_STANZA = "-> stowly-fake ";
+/** So verweist eine Datei der Nachbildung auf den Stand, den sie festhält. */
+const FAKE_SNAPSHOT = "--- stowly-fake ";
+
+/** Ein Stand des Servers, wie ihn eine Sicherung festhält. */
+interface FakeSnapshot {
+  tables: Tables;
+  /** Das Haushalts-Passwort; null = keines (eine Sicherung vor dem ersten Passwort). */
+  password: string | null;
+  devices: FakeDevice[];
+  /** Die jüngste Änderung. */
+  at: string;
+}
+
+interface FakeBackupFile {
+  name: string;
+  size: number;
+  created_at: string;
+  bytes: Uint8Array;
+}
+
+interface FakeUpload {
+  id: string;
+  kind: "age" | "gzip" | "sqlite";
+  bytes: Uint8Array;
+  expires: number;
+}
+
+interface FakeCandidate {
+  id: string;
+  expires: number;
+  snapshot: FakeSnapshot;
+}
+
+/** Was „Verbindung prüfen" bei Home Assistant ergibt; die Nachbildung fragt kein HA. */
+export const FAKE_HA_CHECK: HaCheck = {
+  state: "ok",
+  message: "Verbindung zu Home Assistant steht; 2 To-do-Listen gefunden.",
+  ha_version: "2026.11.0",
+  location_name: "Zuhause",
+  // Wie der Server: nach Namen sortiert; `open` kann fehlen.
+  lists: [
+    { entity_id: "todo.baumarkt", name: "Baumarkt", open: null },
+    { entity_id: "todo.einkaufsliste", name: "Einkaufsliste", open: 4 },
+  ],
+  entity_found: null,
+};
+
+/** Die Adresse, wie der Server sie speichert: Schema und Rechnername klein, ohne Schrägstrich am Ende. */
+function normalizeHaUrl(url: string): string {
+  return url
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/^(https?:\/\/)(\[[^\]]*\]|[^/:?#]*)/i, (_match, scheme: string, host: string) => `${scheme.toLowerCase()}${host.toLowerCase()}`);
+}
+
+function hex(bytes: number): string {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function startsWith(bytes: Uint8Array, magic: string): boolean {
+  const head = new TextEncoder().encode(magic);
+  return bytes.length >= head.length && head.every((value, index) => bytes[index] === value);
+}
+
+/** Die öffentlichen Schlüssel zu den geheimen in einem Text (Zeilen mit # zählen nicht); null, wenn eine Zeile keiner ist. */
+export function fakeIdentities(text: string): string[] | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  if (lines.length === 0) {
+    return null;
+  }
+  const publics: string[] = [];
+  for (const line of lines) {
+    try {
+      const decoded = bech32.decode(line);
+      const secret = bech32.fromWords(decoded.words);
+      if (decoded.prefix !== "age-secret-key-" || secret.length !== 32) {
+        return null;
+      }
+      publics.push(bech32.encode("age", bech32.toWords(x25519.getPublicKey(secret))));
+    } catch {
+      return null;
+    }
+  }
+  return publics;
+}
+
+/** Der Name einer Sicherung: `stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age`, Tag und Uhrzeit in der Zeitzone des Servers. */
+function backupFileName(moment: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(moment);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value ?? "00";
+  return `stowly-${part("year")}-${part("month")}-${part("day")}-${part("hour")}${part("minute")}.sqlite3.gz.age`;
+}
+
 export class FakeServer {
   /** Kennung des Datenbestands. */
   datasetId = newUuid();
@@ -756,6 +911,43 @@ export class FakeServer {
   /** Die Anforderung für den Updater (Datei `request`); null = keine. Der Updater löscht sie, wenn er fertig ist. */
   updateRequest: FakeUpdateRequest | null = null;
 
+  // Stufe B: Sicherung (docs/plan-einrichtung-b.md, 1). Was in der Umgebung steht, gibt der Test vor.
+  /** STOWLY_BACKUP_RECIPIENTS; leer = die Schlüssel kommen aus der App. */
+  backupEnvRecipients: string[] = [];
+  /** STOWLY_BACKUP_TIME; null = aus der App oder die Vorgabe 03:30. */
+  backupEnvTime: string | null = null;
+  /** STOWLY_BACKUP_DIR; null = `/backups`, wenn eingebunden (`backupMounted`), sonst `/data/backups`. */
+  backupEnvDir: string | null = null;
+  /** In DSM ist ein zweiter Ordner als /backups eingebunden und beschreibbar. */
+  backupMounted = false;
+  /** Warum der Ordner nicht taugt; null = er taugt. */
+  backupFolderProblem: string | null = null;
+  /** Ein eingebundener Ordner /backups taugt nicht, die Sicherungen gehen in den Datenordner (`folder_hint`). */
+  backupFolderHint: string | null = null;
+  /** true: Gerade läuft eine Sicherung („Jetzt sichern" antwortet 409). */
+  backupRunning = false;
+  // Stufe B: Zurückspielen (2).
+  /** Größte Sicherung zum Hochladen; für Tests kleiner einstellbar (413). */
+  restoreMaxBytes = FAKE_RESTORE_MAX_BYTES;
+  /** true: Ein Zurückspielen läuft schon (409). */
+  restoreBusy = false;
+  /**
+   * So oft meldet der Server nach dem Anwenden noch den alten Stand, als liefe der Neustart noch:
+   * `GET /api/restore` "pending", `GET /api/health` beim ersten Start `configured: false`. Vorgabe 0.
+   */
+  restartPolls = 0;
+  // Stufe B: Home Assistant aus der App (3). Die Umgebung gibt der Test vor.
+  /** STOWLY_HA_URL, STOWLY_HA_TOKEN, STOWLY_HA_TODO_ENTITY; gesetzt = die Verbindung kommt aus der Umgebung. */
+  haEnv: { url: string; entity: string } | null = null;
+  /** STOWLY_HA_SUMMARY_TOKEN; null = keiner (dann gilt der aus der App). */
+  haSensorEnv: string | null = null;
+  /** STOWLY_HA_CA ist gesetzt. */
+  haCa = false;
+  /** Was „Verbindung prüfen" ergibt (`POST /api/server-config/ha/check`). */
+  haCheckResult: HaCheck = FAKE_HA_CHECK;
+  /** Die Prüfungen bei HA, wie sie kamen (Adresse und ob ein Token dabei war). */
+  readonly haChecks: { url: string | null; token: boolean }[] = [];
+
   private tables: Tables = EMPTY_TABLES;
   /** Was der Server an der Einkaufsliste selbst schreibt (7.6), samt Sperren und Uhren. */
   private shopping = new ShoppingRules();
@@ -778,6 +970,34 @@ export class FakeServer {
   /** Wie die App die Schritte des Assistenten markiert hat (11.6). */
   private readonly setupSteps = new Map<SetupStepId, { state: SetupStepState; changed_at: string }>();
   private readonly pairings = new Map<string, FakePairing>();
+  /** Sicherung aus der App: Schalter (null = nie geschaltet: an), Uhrzeit, öffentliche Schlüssel. */
+  private backupSwitch: boolean | null = null;
+  private backupTimeApp: string | null = null;
+  private backupRecipientsApp: { key: string; added_at: string }[] = [];
+  /** Die Sicherungen im Ordner, neueste zuerst. */
+  private backupFiles: FakeBackupFile[] = [];
+  private lastBackupRun: number | null = null;
+  /** Die Stände, auf die Dateien der Nachbildung verweisen. */
+  private readonly snapshots = new Map<string, FakeSnapshot>();
+  private readonly uploads = new Map<string, FakeUpload>();
+  private readonly candidates = new Map<string, FakeCandidate>();
+  /** Zeitpunkte der letzten Versuche zum Zurückspielen (Bremse). */
+  private restoreAttempts: number[] = [];
+  private restoreState: { state: RestoreState; at: string | null; message: string | null; next: RestoreState; polls: number } = {
+    state: "idle",
+    at: null,
+    message: null,
+    next: "idle",
+    polls: 0,
+  };
+  /** Die Datenbank von vor dem Zurückspielen, für „Rückgängig". */
+  private restorePrevious: { snapshot: FakeSnapshot; until: number } | null = null;
+  /** So oft meldet `/api/health` nach einem Zurückspielen beim ersten Start noch „nicht eingerichtet". */
+  private healthPolls = 0;
+  /** Home Assistant aus der App: Adresse, Liste, Token (nur hier, nie in einer Antwort). */
+  private haApp: { url: string | null; entity: string | null; token: string | null; token_set_at: string | null } = { url: null, entity: null, token: null, token_set_at: null };
+  private haSensorApp: { token: string; set_at: string } | null = null;
+  private lastHaCheck: number | null = null;
 
   private readonly now: () => Date;
   private password: string;
@@ -978,8 +1198,11 @@ export class FakeServer {
     const ready: Record<SetupStepId, boolean> = {
       https: this.https.seen_at !== null,
       printer: [...this.tables.printers.values()].some((printer) => printer.deleted_at === null),
+      // Wirksam und mit einer gelungenen Sicherung (SetupStep.ready).
+      backup: this.backupConfigured && this.backupFiles.length > 0,
       updates: this.effectiveUpdateRepo !== null,
       notifications: this.pushContact !== null,
+      home_assistant: this.haConfig().configured,
     };
     return {
       password_source: this.passwordSource,
@@ -1013,7 +1236,598 @@ export class FakeServer {
         source: this.updateRepo !== null ? "env" : this.updateSwitch === null ? "default" : "app",
         available: this.updateRepo === null && this.updateRepoDefault !== null,
       },
+      backup: this.backupConfig(),
     };
+  }
+
+  // ---------------------------------------------------------------- Stufe B: Sicherung
+
+  /** `ServerConfig.backup`: die wirksamen Werte mit ihrer Quelle (docs/plan-einrichtung-b.md, 1). */
+  backupConfig(): BackupConfig {
+    const fromEnv = this.backupEnvRecipients.length > 0;
+    const short = (key: string) => `${key.slice(0, 8)}…${key.slice(-4)}`;
+    return {
+      enabled: fromEnv || (this.backupSwitch ?? true),
+      enabled_source: fromEnv ? "env" : this.backupSwitch === null ? "default" : "app",
+      recipients: fromEnv
+        ? this.backupEnvRecipients.map((key) => ({ key, short: short(key), added_at: null }))
+        : this.backupRecipientsApp.map(({ key, added_at }) => ({ key, short: short(key), added_at })),
+      recipients_source: fromEnv ? "env" : this.backupRecipientsApp.length > 0 ? "app" : "default",
+      time: this.backupEnvTime ?? this.backupTimeApp ?? BACKUP_TIME_DEFAULT,
+      time_source: this.backupEnvTime !== null ? "env" : this.backupTimeApp !== null ? "app" : "default",
+      folder: this.backupEnvDir ?? (this.backupMounted ? "/backups" : "/data/backups"),
+      folder_source: this.backupEnvDir !== null ? "env" : this.backupMounted ? "mounted" : "data",
+      folder_problem: this.backupFolderProblem,
+      folder_hint: this.backupFolderHint,
+    };
+  }
+
+  /** Wirksam: an, mit mindestens einem Schlüssel und einem brauchbaren Ordner. */
+  get backupConfigured(): boolean {
+    const config = this.backupConfig();
+    return config.enabled && config.recipients.length > 0 && config.folder_problem === null;
+  }
+
+  /** Die Sicherungen im Ordner, neueste zuerst. */
+  get backupFileList(): BackupFile[] {
+    return this.backupFiles.map(({ name, size, created_at }) => ({ name, size, created_at }));
+  }
+
+  /** `BackupStatus` in `GET /api/integrations`. */
+  private backupStatus(): BackupStatus {
+    const config = this.backupConfig();
+    const configured = this.backupConfigured;
+    const last = this.backupFiles[0];
+    return {
+      configured,
+      folder: config.folder,
+      files: this.backupFileList.slice(0, LIMITS.backup_files_listed),
+      problem: !configured && config.recipients.length > 0 ? (config.folder_problem ?? (config.enabled ? null : "Die automatische Sicherung ist ausgeschaltet.")) : null,
+      time: config.time,
+      recipients: config.recipients.map((recipient) => recipient.short),
+      last_ok_at: last?.created_at ?? null,
+      last_file: last?.name ?? null,
+      last_size: last?.size ?? null,
+      last_error: null,
+      last_error_at: null,
+      next_at: null,
+      warning: false,
+    };
+  }
+
+  /** Der jetzige Stand, wie ihn eine Sicherung festhielte. */
+  private snapshot(): FakeSnapshot {
+    return { tables: this.tables, password: this.configured ? this.password : null, devices: [...this.devices.values()].map((device) => ({ ...device })), at: this.stamp() };
+  }
+
+  /**
+   * Eine Datei der Nachbildung mit dem jetzigen Stand: "age" für diese öffentlichen Schlüssel (kein
+   * echtes age: Die Datei nennt nur die Schlüssel und verweist auf den Stand), "gzip" oder "sqlite"
+   * wie eine ältere, unverschlüsselte Sicherung.
+   */
+  backupBytes(kind: "age" | "gzip" | "sqlite", recipients: readonly string[] = []): Uint8Array {
+    const id = hex(16);
+    this.snapshots.set(id, this.snapshot());
+    const head = kind === "age" ? `${AGE_MAGIC}${recipients.map((key) => `${FAKE_STANZA}${key}\n`).join("")}` : kind === "sqlite" ? SQLITE_MAGIC : "";
+    const text = new TextEncoder().encode(`${head}${FAKE_SNAPSHOT}${id}\n`);
+    if (kind !== "gzip") {
+      return text;
+    }
+    const bytes = new Uint8Array(text.length + 2);
+    bytes.set([0x1f, 0x8b]);
+    bytes.set(text, 2);
+    return bytes;
+  }
+
+  /** `POST /api/backup/run`: dieselbe Sicherung wie die tägliche, in den Ordner. */
+  private runBackup(): FakeResponseData {
+    if (this.backupRunning) {
+      return failure(409, "conflict", "Es läuft schon eine Sicherung.");
+    }
+    const nowMs = this.now().getTime();
+    if (this.lastBackupRun !== null && nowMs - this.lastBackupRun < BACKUP_RUN_GAP_MS) {
+      const wait = Math.max(1, Math.ceil((this.lastBackupRun + BACKUP_RUN_GAP_MS - nowMs) / 1000));
+      return failure(429, "rate_limited", "Höchstens eine Sicherung je Minute.", { retry_after_s: wait }, { "retry-after": String(wait) });
+    }
+    const config = this.backupConfig();
+    if (config.recipients.length === 0) {
+      return failure(503, "not_configured", "Für die Sicherung fehlt ein öffentlicher Schlüssel.");
+    }
+    if (config.folder_problem !== null) {
+      return failure(503, "not_configured", config.folder_problem);
+    }
+    this.lastBackupRun = nowMs;
+    const bytes = this.backupBytes("age", config.recipients.map((recipient) => recipient.key));
+    const file: FakeBackupFile = { name: backupFileName(this.now(), this.timezone), size: bytes.length, created_at: this.stamp(), bytes };
+    this.backupFiles = [file, ...this.backupFiles.filter((other) => other.name !== file.name)];
+    return json(200, { name: file.name, size: file.size, created_at: file.created_at });
+  }
+
+  /** `GET /api/backup/files/{name}`: nur Dateien von Stowly aus dem Ordner. */
+  private backupFile(name: string): FakeResponseData {
+    const file = OWN_BACKUP_FILE.test(name) ? this.backupFiles.find((candidate) => candidate.name === name) : undefined;
+    if (!file) {
+      return failure(404, "not_found", "Diese Sicherung gibt es nicht.");
+    }
+    return {
+      status: 200,
+      headers: { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="${file.name}"`, "cache-control": "no-store" },
+      body: file.bytes,
+    };
+  }
+
+  /**
+   * Bringt `backup_recipients` einen Schlüssel, den die App noch nicht hat, braucht es das Haushalts-Passwort
+   * (`current_password`): fehlt es, 422 an ["body", "current_password"]; falsch, 401 über die Bremse der
+   * Anmeldung (dann 429). Liefert die Antwort, wenn es nicht passt, sonst null.
+   */
+  private confirmNewKey(changes: ServerConfigChanges, keys: string[]): FakeResponseData | null {
+    if (keys.every((key) => this.backupRecipientsApp.some((known) => known.key === key))) {
+      return null;
+    }
+    if (changes.current_password === undefined) {
+      const msg = "Zum Hinzufügen eines Schlüssels braucht es das Haushalts-Passwort.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "current_password"], msg, type: "missing" }] });
+    }
+    const locked = this.lockout();
+    if (locked) {
+      return locked;
+    }
+    if (changes.current_password !== this.password) {
+      this.failedAttempt();
+      return failure(401, "invalid_password", "Das Passwort stimmt nicht.");
+    }
+    this.failedLogins = [];
+    return null;
+  }
+
+  /** Die Felder `backup_*` von `PATCH /api/server-config`: die Antwort, wenn etwas nicht passt, sonst wie es sich ändert. */
+  private patchBackup(changes: ServerConfigChanges): FakeResponseData | (() => void) {
+    const fromEnv = this.backupEnvRecipients.length > 0;
+    if ((changes.backup_enabled !== undefined || changes.backup_recipients !== undefined) && fromEnv) {
+      return failure(409, "conflict", "Die Schlüssel der Sicherung kommen aus der Umgebung (STOWLY_BACKUP_RECIPIENTS).");
+    }
+    if (changes.backup_time !== undefined && this.backupEnvTime !== null) {
+      return failure(409, "conflict", "Die Uhrzeit der Sicherung kommt aus der Umgebung (STOWLY_BACKUP_TIME).");
+    }
+    let recipients: { key: string; added_at: string }[] | undefined;
+    if (changes.backup_recipients !== undefined) {
+      const keys: string[] = [];
+      for (const [index, raw] of changes.backup_recipients.entries()) {
+        const key = raw.trim().toLowerCase();
+        if (/AGE-SECRET-KEY-/i.test(raw)) {
+          // Wie der Server: abgelehnt, ohne den Schlüssel zu wiederholen.
+          const msg = "Das ist ein geheimer Schlüssel. An Stowly geht nur der öffentliche (age1…).";
+          return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "backup_recipients", index], msg, type: "value_error" }] });
+        }
+        if (!AGE_PUBLIC.test(key)) {
+          const msg = "Das ist kein öffentlicher Schlüssel von age (age1…).";
+          return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "backup_recipients", index], msg, type: "value_error" }] });
+        }
+        if (!keys.includes(key)) {
+          keys.push(key);
+        }
+      }
+      const refused = this.confirmNewKey(changes, keys);
+      if (refused) {
+        return refused;
+      }
+      const at = this.stamp();
+      recipients = keys.map((key) => ({ key, added_at: this.backupRecipientsApp.find((known) => known.key === key)?.added_at ?? at }));
+    }
+    return () => {
+      if (changes.backup_enabled !== undefined) {
+        this.backupSwitch = changes.backup_enabled;
+      }
+      if (changes.backup_time !== undefined) {
+        this.backupTimeApp = changes.backup_time;
+      }
+      if (recipients !== undefined) {
+        this.backupRecipientsApp = recipients;
+      }
+    };
+  }
+
+  // ---------------------------------------------------------------- Stufe B: Zurückspielen
+
+  /** Die Bremse des Zurückspielens: eine Antwort 429, oder null, wenn es weitergeht (dann zählt der Versuch). */
+  private restoreBrake(): FakeResponseData | null {
+    const nowMs = this.now().getTime();
+    this.restoreAttempts = this.restoreAttempts.filter((at) => nowMs - at < RESTORE_WINDOW_MS);
+    if (this.restoreAttempts.length >= RESTORE_LIMIT) {
+      const wait = Math.max(1, Math.ceil(((this.restoreAttempts[0] ?? nowMs) + RESTORE_WINDOW_MS - nowMs) / 1000));
+      return failure(429, "rate_limited", "Zu viele Versuche zum Zurückspielen. Bitte etwas warten.", { retry_after_s: wait }, { "retry-after": String(wait) });
+    }
+    this.restoreAttempts.push(nowMs);
+    return null;
+  }
+
+  /** 409, wenn gerade etwas läuft, das sich mit dem Zurückspielen nicht verträgt; sonst null. */
+  private restoreConflict(): FakeResponseData | null {
+    if (this.restoreBusy) {
+      return failure(409, "conflict", "Gerade läuft schon ein Zurückspielen.");
+    }
+    if (this.updateRequest !== null) {
+      return failure(409, "conflict", "Gerade steht ein Update an. Zurückspielen geht danach wieder.");
+    }
+    return null;
+  }
+
+  /** `PUT /api/restore/upload`: die Datei als Rohdaten; erkannt an den ersten Bytes. */
+  private restoreUpload(request: FakeRequestData): FakeResponseData {
+    const bytes = request.bytes ?? new TextEncoder().encode(request.body);
+    if (bytes.length > this.restoreMaxBytes) {
+      return failure(413, "payload_too_large", "Die Datei ist zu groß.");
+    }
+    const conflict = this.restoreConflict() ?? this.restoreBrake();
+    if (conflict) {
+      return conflict;
+    }
+    const kind = startsWith(bytes, AGE_MAGIC) ? "age" : bytes[0] === 0x1f && bytes[1] === 0x8b ? "gzip" : startsWith(bytes, SQLITE_MAGIC) ? "sqlite" : null;
+    if (kind === null) {
+      return failure(422, "invalid_request", "Das ist keine Sicherung von Stowly.", { reason: "not_stowly" });
+    }
+    const upload: FakeUpload = { id: hex(16), kind, bytes, expires: this.now().getTime() + RESTORE_ID_TTL_MS };
+    this.uploads.set(upload.id, upload);
+    const answer: RestoreUpload = { upload_id: upload.id, kind, size: bytes.length };
+    return json(201, answer);
+  }
+
+  /** Der Stand hinter einer Datei der Nachbildung; null, wenn sie keiner ist. */
+  private snapshotIn(bytes: Uint8Array): FakeSnapshot | null {
+    const text = new TextDecoder().decode(bytes);
+    const at = text.indexOf(FAKE_SNAPSHOT);
+    const id = at === -1 ? "" : text.slice(at + FAKE_SNAPSHOT.length).split("\n")[0]?.trim() ?? "";
+    return this.snapshots.get(id) ?? null;
+  }
+
+  /** `POST /api/restore/check`: entschlüsseln (nachgespielt) und prüfen; die Vorschau samt `restore_id`. */
+  private restoreCheck(body: unknown): FakeResponseData {
+    if (!object({ upload_id: req(text(32, 32)), identity: opt(nullable(text(0, LIMITS.restore_identity))) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const { upload_id: uploadId, identity } = body as { upload_id: string; identity?: string | null };
+    const upload = this.uploads.get(uploadId);
+    if (!upload || upload.expires < this.now().getTime()) {
+      return failure(404, "not_found", "Die hochgeladene Datei ist abgelaufen. Bitte noch einmal hochladen.");
+    }
+    const conflict = this.restoreConflict() ?? this.restoreBrake();
+    if (conflict) {
+      return conflict;
+    }
+    if (upload.kind === "age") {
+      const publics = identity ? fakeIdentities(identity) : null;
+      if (publics === null) {
+        return failure(422, "invalid_request", "Das ist kein geheimer Schlüssel von age (AGE-SECRET-KEY-1…).", { reason: "not_a_key" });
+      }
+      const text = new TextDecoder().decode(upload.bytes);
+      const recipients = text
+        .split("\n")
+        .filter((line) => line.startsWith(FAKE_STANZA))
+        .map((line) => line.slice(FAKE_STANZA.length).trim());
+      if (!publics.some((key) => recipients.includes(key))) {
+        return failure(422, "invalid_request", "Der Schlüssel passt nicht zu dieser Sicherung.", { reason: "wrong_key" });
+      }
+    }
+    const snapshot = this.snapshotIn(upload.bytes);
+    if (snapshot === null) {
+      return failure(422, "invalid_request", "Die Sicherung ist beschädigt.", { reason: "damaged" });
+    }
+    const candidate: FakeCandidate = { id: hex(16), expires: this.now().getTime() + RESTORE_ID_TTL_MS, snapshot };
+    this.candidates.set(candidate.id, candidate);
+    const { tables } = snapshot;
+    const preview: RestorePreview = {
+      restore_id: candidate.id,
+      expires_at: new Date(candidate.expires).toISOString(),
+      kind: upload.kind,
+      schema_version: FAKE_SCHEMA_VERSION,
+      current_schema_version: FAKE_SCHEMA_VERSION,
+      last_activity_at: snapshot.at,
+      has_password: snapshot.password !== null,
+      devices: snapshot.devices.filter((device) => device.revoked_at === null).length,
+      counts: {
+        products: [...tables.products.values()].filter((product) => product.deleted_at === null && product.merged_into === null).length,
+        items: [...tables.packages.values()].filter((pkg) => pkg.removed_at === null).length,
+        zones: [...tables.zones.values()].filter((zone) => zone.deleted_at === null).length,
+        shopping: [...tables.shopping_items.values()].filter((item) => item.done_at === null && item.deleted_at === null).length,
+      },
+    };
+    return json(200, preview);
+  }
+
+  /** Spielt den Bestand eines Stands ein, unter einer neuen `dataset_id`: Alle Geräte bekommen `reset`. */
+  private swapIn(snapshot: FakeSnapshot): void {
+    const rows: { [T in TableName]?: TableRows[T][] } = {};
+    for (const table of TABLE_NAMES) {
+      (rows as Record<TableName, unknown[]>)[table] = [...snapshot.tables[table].values()];
+    }
+    this.load({ ...rows, settings: snapshot.tables.settings ?? undefined });
+    this.datasetId = newUuid();
+  }
+
+  /**
+   * `POST /api/restore/apply` (202). Laufender Stowly (`device`): mit dem jetzigen Passwort; Geräte,
+   * Passwort und Einstellungen des Servers bleiben, „Rückgängig" geht sieben Tage. Erster Start (kein
+   * Passwort, ohne Token): mit dem Passwort aus der Sicherung oder einem neuen; das Gerät entsteht mit.
+   */
+  private restoreApply(body: unknown, device: FakeDevice | null): FakeResponseData {
+    if (!object({ restore_id: req(text(32, 32)), password: req(text(1, LIMITS.password)), device_name: opt(nullable(text(1, LIMITS.device_name))) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const { restore_id: restoreId, password, device_name: name } = body as { restore_id: string; password: string; device_name?: string | null };
+    const candidate = this.candidates.get(restoreId);
+    if (!candidate || candidate.expires < this.now().getTime()) {
+      return failure(404, "not_found", "Die geprüfte Sicherung ist abgelaufen. Bitte noch einmal prüfen.");
+    }
+    const conflict = this.restoreConflict();
+    if (conflict) {
+      return conflict;
+    }
+    const locked = this.lockout();
+    if (locked) {
+      return locked;
+    }
+    const at = this.stamp();
+    if (device) {
+      if (password !== this.password) {
+        this.failedAttempt();
+        return failure(401, "invalid_password", "Das Passwort stimmt nicht.");
+      }
+      this.candidates.delete(restoreId);
+      this.restorePrevious = { snapshot: this.snapshot(), until: this.now().getTime() + RESTORE_UNDO_MS };
+      this.swapIn(candidate.snapshot);
+      this.restoreState = { state: "pending", at, message: null, next: "done", polls: this.restartPolls };
+      return json(202, { login: null });
+    }
+    // Erster Start.
+    const snapshot = candidate.snapshot;
+    if (!name) {
+      const msg = "Beim ersten Start braucht dieses Gerät einen Namen.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "device_name"], msg, type: "value_error" }] });
+    }
+    if (snapshot.password !== null && password !== snapshot.password) {
+      this.failedAttempt();
+      return failure(401, "invalid_password", "Das Passwort stimmt nicht mit dem aus der Sicherung überein.");
+    }
+    if (snapshot.password === null && password.length < LIMITS.password_min) {
+      const msg = `Das Passwort braucht mindestens ${String(LIMITS.password_min)} Zeichen.`;
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "password"], msg, type: "value_error" }] });
+    }
+    this.candidates.delete(restoreId);
+    this.swapIn(snapshot);
+    this.password = snapshot.password ?? password;
+    this.configured = true;
+    this.passwordSource = "app";
+    this.devices.clear();
+    if (snapshot.password !== null) {
+      // Mit dem Passwort aus der Sicherung gelten ihre Geräte weiter.
+      for (const known of snapshot.devices) {
+        this.devices.set(known.id, { ...known });
+      }
+    }
+    this.restoreState = { state: "done", at, message: null, next: "done", polls: 0 };
+    this.restorePrevious = null;
+    this.healthPolls = this.restartPolls;
+    return json(202, { login: this.newDevice(name) });
+  }
+
+  /** `GET /api/restore`: der Stand; nach dem Anwenden erst „pending" (`restartPolls`), dann das Ergebnis. */
+  private restoreStatus(): RestoreStatus {
+    if (this.restoreState.state === "pending") {
+      if (this.restoreState.polls > 0) {
+        this.restoreState.polls -= 1;
+      } else {
+        this.restoreState = { ...this.restoreState, state: this.restoreState.next, at: this.stamp() };
+      }
+    }
+    const previous = this.restorePrevious;
+    const open = previous !== null && previous.until > this.now().getTime();
+    return { state: this.restoreState.state, at: this.restoreState.at, message: this.restoreState.message, undo_until: open ? new Date(previous.until).toISOString() : null };
+  }
+
+  /** `POST /api/restore/undo` (202): zurück zur Datenbank von vor dem Zurückspielen; auch das lässt sich wieder umkehren. */
+  private restoreUndo(): FakeResponseData {
+    const previous = this.restorePrevious;
+    if (previous === null || previous.until <= this.now().getTime()) {
+      return failure(404, "not_found", "Es gibt nichts zurückzunehmen.");
+    }
+    const conflict = this.restoreConflict();
+    if (conflict) {
+      return conflict;
+    }
+    const current = this.snapshot();
+    this.swapIn(previous.snapshot);
+    this.restorePrevious = { snapshot: current, until: previous.until };
+    this.restoreState = { state: "pending", at: this.stamp(), message: null, next: "undone", polls: this.restartPolls };
+    return json(202, { login: null });
+  }
+
+  /** Alles unter `/api/restore`: mit Token für einen laufenden Stowly, ohne nur beim ersten Start. */
+  private restoreRequest(request: FakeRequestData, body: unknown): FakeResponseData {
+    const { method, path } = request;
+    const device = this.deviceFor(request);
+    const firstRun = !this.configured;
+    if (!device && !firstRun) {
+      // Beim ersten Start hätte es geklappt; inzwischen gibt es ein Passwort.
+      return request.headers.authorization ? failure(401, "unauthorized", "Das Gerät ist nicht angemeldet.") : failure(409, "conflict", "Es gibt schon ein Haushalts-Passwort. Zurückspielen geht jetzt nur angemeldet.");
+    }
+    if (method === "PUT" && path === "/api/restore/upload") {
+      return this.restoreUpload(request);
+    }
+    if (method === "POST" && path === "/api/restore/check") {
+      return this.restoreCheck(body);
+    }
+    if (method === "POST" && path === "/api/restore/apply") {
+      return this.restoreApply(body, device);
+    }
+    if (!device) {
+      return failure(401, "unauthorized", "Das Gerät ist nicht angemeldet.");
+    }
+    if (method === "GET" && path === "/api/restore") {
+      return json(200, this.restoreStatus());
+    }
+    if (method === "POST" && path === "/api/restore/undo") {
+      return this.restoreUndo();
+    }
+    if (method === "DELETE" && path === "/api/restore/previous") {
+      this.restorePrevious = null;
+      return { status: 204, headers: {}, body: null };
+    }
+    return failure(404, "not_found", "Diesen Aufruf gibt es nicht.");
+  }
+
+  // ---------------------------------------------------------------- Stufe B: Home Assistant
+
+  /** `HaConfig`: die wirksame Einrichtung mit Quelle; nie ein Token. */
+  haConfig(): HaConfig {
+    const env = this.haEnv;
+    const app = this.haApp;
+    const sensor = { source: (this.haSensorEnv !== null ? "env" : this.haSensorApp ? "app" : "default") as ConfigSource, set: this.haSensorEnv !== null || this.haSensorApp !== null, set_at: this.haSensorApp?.set_at ?? null };
+    if (env) {
+      return { source: "env", url: env.url, entity: env.entity, token_set: true, token_set_at: null, ca: this.haCa, configured: true, problem: null, sensor };
+    }
+    const any = app.url !== null || app.entity !== null || app.token !== null;
+    const configured = app.url !== null && app.entity !== null && app.token !== null;
+    return {
+      source: any ? "app" : "default",
+      url: app.url,
+      entity: app.entity,
+      token_set: app.token !== null,
+      token_set_at: app.token_set_at,
+      ca: this.haCa,
+      configured,
+      problem: any && !configured ? (app.url === null ? "Für Home Assistant fehlen noch die Adresse und der Token." : app.token === null ? "Für Home Assistant fehlt noch der Token." : "Es ist noch keine Liste gewählt.") : null,
+      sensor,
+    };
+  }
+
+  /** Der Token, mit dem der Sensor liest; null = keiner (der Sensor antwortet dann mit 503). */
+  get sensorToken(): string | null {
+    return this.haSensorEnv ?? this.haSensorApp?.token ?? null;
+  }
+
+  /** Nach einer Änderung: der Zustand des Abgleichs folgt der Einrichtung, der erste Abgleich steht aus. */
+  private haChanged(): void {
+    const config = this.haConfig();
+    this.haStatus = config.configured
+      ? { ...this.haStatus, configured: true, problem: null, entity: config.entity, state: "pending", last_ok_at: null, last_error: null, last_error_at: null, linked: config.entity === this.haStatus.entity ? this.haStatus.linked : 0, sensor: config.sensor.set }
+      : { ...HA_OFF, problem: config.problem, entity: config.entity, sensor: config.sensor.set };
+  }
+
+  /** `PATCH /api/server-config/ha`: nur vorhandene Felder; eine neue Adresse ohne Token löscht den gespeicherten. */
+  private patchHa(body: unknown): FakeResponseData {
+    if (!object({ url: opt(nullable(text(1, LIMITS.ha_url))), entity: opt(nullable(text(1, 255))), token: opt(nullable(text(1, LIMITS.ha_token))) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    if (this.haEnv) {
+      return failure(409, "conflict", "Die Verbindung zu Home Assistant steht in der Umgebung (STOWLY_HA_URL, STOWLY_HA_TOKEN, STOWLY_HA_TODO_ENTITY) und lässt sich nur dort ändern.");
+    }
+    const changes = body as HaConfigChanges;
+    if (typeof changes.url === "string" && !HA_URL.test(changes.url)) {
+      const msg = "Erwartet ist http(s)://Rechner[:Port].";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "url"], msg, type: "value_error" }] });
+    }
+    if (typeof changes.entity === "string" && !HA_ENTITY.test(changes.entity)) {
+      const msg = "Erwartet ist todo.<name>.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "entity"], msg, type: "value_error" }] });
+    }
+    const url = typeof changes.url === "string" ? normalizeHaUrl(changes.url) : changes.url;
+    if (typeof changes.token === "string" && (url === null || (url === undefined && this.haApp.url === null))) {
+      const msg = "Erst die Adresse von Home Assistant eintragen: Der Token gilt nur für sie.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "token"], msg, type: "value_error" }] });
+    }
+    const app = { ...this.haApp };
+    if (url !== undefined && url !== app.url) {
+      app.url = url;
+      if (changes.token === undefined) {
+        // Ein Token gilt nur für die Adresse, für die er eingetragen wurde.
+        app.token = null;
+        app.token_set_at = null;
+      }
+    }
+    if (changes.entity !== undefined) {
+      app.entity = changes.entity;
+    }
+    if (changes.token !== undefined) {
+      app.token = changes.token;
+      app.token_set_at = changes.token === null ? null : this.stamp();
+    }
+    this.haApp = app;
+    this.haChanged();
+    return json(200, this.haConfig());
+  }
+
+  /** `POST /api/server-config/ha/check`: liefert `haCheckResult`; eine Prüfung mit Abstand. */
+  private checkHa(body: unknown): FakeResponseData {
+    if (!object({ url: opt(text(1, LIMITS.ha_url)), token: opt(text(1, LIMITS.ha_token)) })(body ?? {})) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const input = (body ?? {}) as { url?: string; token?: string };
+    if (this.haEnv && (input.url !== undefined || input.token !== undefined)) {
+      return failure(409, "conflict", "Die Verbindung kommt aus der Umgebung; geprüft wird die von dort.");
+    }
+    const nowMs = this.now().getTime();
+    if (this.lastHaCheck !== null && nowMs - this.lastHaCheck < HA_CHECK_GAP_MS) {
+      const wait = Math.max(1, Math.ceil((this.lastHaCheck + HA_CHECK_GAP_MS - nowMs) / 1000));
+      return failure(429, "rate_limited", "Bitte kurz warten, dann noch einmal prüfen.", { retry_after_s: wait }, { "retry-after": String(wait) });
+    }
+    const config = this.haConfig();
+    if (input.url === undefined && config.url === null) {
+      const msg = "Keine Adresse angegeben, und in der App ist keine eingetragen.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "url"], msg, type: "value_error" }] });
+    }
+    this.lastHaCheck = nowMs;
+    this.haChecks.push({ url: input.url ?? null, token: input.token !== undefined });
+    // Der gespeicherte Token geht nur an seine Adresse.
+    const hasToken = input.token !== undefined || (config.token_set && (input.url === undefined || normalizeHaUrl(input.url) === config.url));
+    if (!hasToken && this.haCheckResult.state === "ok") {
+      return json(200, { ...this.haCheckResult, state: "token_needed", message: "Home Assistant antwortet; für die Listen braucht es den Token.", lists: [], entity_found: null });
+    }
+    const entity = config.entity;
+    const found = entity === null ? null : this.haCheckResult.lists.some((list) => list.entity_id === entity);
+    const message = found === false && this.haCheckResult.state === "ok" ? `${this.haCheckResult.message} Die Liste ${entity ?? ""} gibt es dort nicht.` : this.haCheckResult.message;
+    return json(200, { ...this.haCheckResult, message, entity_found: found });
+  }
+
+  /** `/api/server-config/ha/sensor-token`: erzeugen, anzeigen, entfernen; aus der Umgebung 409. */
+  private sensorTokenRequest(method: string): FakeResponseData {
+    if (this.haSensorEnv !== null) {
+      return failure(409, "conflict", "Der Sensor-Token kommt aus der Umgebung (STOWLY_HA_SUMMARY_TOKEN).");
+    }
+    if (method === "POST") {
+      this.haSensorApp = { token: hex(32), set_at: this.stamp() };
+      this.haStatus = { ...this.haStatus, sensor: true };
+      return json(201, { token: this.haSensorApp.token });
+    }
+    if (method === "GET") {
+      return this.haSensorApp ? json(200, { token: this.haSensorApp.token }) : failure(404, "not_found", "Es gibt noch keinen Sensor-Token aus der App; bitte einen erzeugen.");
+    }
+    if (method === "DELETE") {
+      this.haSensorApp = null;
+      this.haStatus = { ...this.haStatus, sensor: false };
+      return { status: 204, headers: {}, body: null };
+    }
+    return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "GET, POST, DELETE" });
+  }
+
+  /** Alles unter `/api/server-config/ha`. */
+  private haRequest(method: string, path: string, body: unknown): FakeResponseData {
+    if (path === "/api/server-config/ha") {
+      if (method === "GET") {
+        return json(200, this.haConfig());
+      }
+      if (method === "PATCH") {
+        return this.patchHa(body);
+      }
+      return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "GET, PATCH" });
+    }
+    if (path === "/api/server-config/ha/check" && method === "POST") {
+      return this.checkHa(body);
+    }
+    if (path === "/api/server-config/ha/sensor-token") {
+      return this.sensorTokenRequest(method);
+    }
+    return failure(404, "not_found", "Diesen Aufruf gibt es nicht.");
   }
 
   /** Alle Kopplungen, älteste zuerst. */
@@ -1734,11 +2548,11 @@ export class FakeServer {
     return json(202, this.updateStatus());
   }
 
-  /** `GET /api/integrations`: Die Sicherung ist hier nie eingerichtet; Home Assistant gibt `haStatus` vor. */
+  /** `GET /api/integrations`: Sicherung aus Einstellungen und Ordner; Home Assistant gibt `haStatus` vor (auch nach Änderungen in der App). */
   private integrations(device: FakeDevice): IntegrationStatus {
     return {
       timezone: this.timezone,
-      backup: { configured: false, problem: null, time: null, recipients: [], last_ok_at: null, last_file: null, last_size: null, last_error: null, last_error_at: null, next_at: null, warning: false },
+      backup: this.backupStatus(),
       ha: { ...this.haStatus },
       push: {
         configured: this.pushConfigured,
@@ -1809,10 +2623,23 @@ export class FakeServer {
 
   /** `PATCH /api/server-config` (11.7): Was aus der Umgebung kommt, ist nur zu sehen (409). */
   private patchServerConfig(body: unknown): FakeResponseData {
-    if (!object({ push_contact: opt(nullable(text(1, LIMITS.push_contact))), update_enabled: opt(bool) })(body)) {
+    const valid = object({
+      push_contact: opt(nullable(text(1, LIMITS.push_contact))),
+      update_enabled: opt(bool),
+      backup_enabled: opt(bool),
+      backup_time: opt(nullable(timeOfDay)),
+      backup_recipients: opt(listOf(text(1, LIMITS.backup_recipient), 0, LIMITS.backup_recipients)),
+      current_password: opt(text(1, LIMITS.password)),
+    });
+    if (!valid(body)) {
       return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
     }
     const changes = body as ServerConfigChanges;
+    // Erst alles prüfen, dann ändern: Ein abgelehntes Feld (etwa ein geheimer Schlüssel) ändert nichts.
+    const backup = this.patchBackup(changes);
+    if (typeof backup !== "function") {
+      return backup;
+    }
     let contact: string | null | undefined;
     if (changes.push_contact !== undefined) {
       if (this.pushContactSource === "env") {
@@ -1837,6 +2664,7 @@ export class FakeServer {
     if (changes.update_enabled !== undefined) {
       this.updateSwitch = changes.update_enabled;
     }
+    backup();
     return json(200, this.serverConfig());
   }
 
@@ -1931,6 +2759,10 @@ export class FakeServer {
   /** Beantwortet einen Aufruf unter /api. */
   handle(request: FakeRequestData): FakeResponseData {
     const { method, path } = request;
+    // Die Sicherung zum Zurückspielen kommt als Rohdaten, nicht als JSON.
+    if (method === "PUT" && path === "/api/restore/upload") {
+      return this.restoreRequest(request, undefined);
+    }
     let body: unknown;
     if (request.body !== "") {
       try {
@@ -1941,8 +2773,16 @@ export class FakeServer {
     }
 
     if (method === "GET" && path === "/api/health") {
-      const health: ServerHealth = { app: "stowly", status: "ok", version: FAKE_VERSION, protocol: this.protocol, time: this.stamp(), configured: this.configured };
+      // Nach einem Zurückspielen beim ersten Start meldet der alte Prozess noch kurz „nicht eingerichtet".
+      const configured = this.configured && this.healthPolls === 0;
+      if (this.healthPolls > 0) {
+        this.healthPolls -= 1;
+      }
+      const health: ServerHealth = { app: "stowly", status: "ok", version: FAKE_VERSION, protocol: this.protocol, time: this.stamp(), configured };
       return json(200, health);
+    }
+    if (path === "/api/restore" || path.startsWith("/api/restore/")) {
+      return this.restoreRequest(request, body);
     }
     if (method === "POST" && path === "/api/auth/login") {
       return this.login(body);
@@ -1982,6 +2822,16 @@ export class FakeServer {
         return setup ? this.patchSetup(body) : this.patchServerConfig(body);
       }
       return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "GET, PATCH" });
+    }
+    if (path === "/api/server-config/ha" || path.startsWith("/api/server-config/ha/")) {
+      return this.haRequest(method, path, body);
+    }
+    if (method === "POST" && path === "/api/backup/run") {
+      return this.runBackup();
+    }
+    const backupMatch = /^\/api\/backup\/files\/([^/]+)$/.exec(path);
+    if (method === "GET" && backupMatch) {
+      return this.backupFile(decodeURIComponent(backupMatch[1] ?? ""));
     }
     if (method === "POST" && path === "/api/pi/pairings") {
       return this.createPairing(body);
@@ -2031,14 +2881,6 @@ export class FakeServer {
     const lookupMatch = /^\/api\/lookup\/([^/]+)$/.exec(path);
     if (method === "GET" && lookupMatch) {
       return this.lookupNow(decodeURIComponent(lookupMatch[1] ?? ""), request.query ?? "");
-    }
-    if (method === "GET" && path === "/api/backup") {
-      const header = new TextEncoder().encode("SQLite format 3\u0000 (Nachbildung, keine echte Datenbank)\n");
-      return {
-        status: 200,
-        headers: { "content-type": "application/vnd.sqlite3", "content-disposition": `attachment; filename="stowly-${toIsoDate(this.now())}.sqlite3"` },
-        body: header,
-      };
     }
     return failure(501, "not_implemented", "Die nachgebaute Schnittstelle kennt diesen Aufruf nicht.");
   }

@@ -63,7 +63,6 @@ DEFAULT_CSP = (
 
 
 DEFAULT_TIMEZONE = "Europe/Berlin"
-DEFAULT_BACKUP_TIME = "03:30"
 # Die To-do-Liste in Home Assistant (docs/integrationen.md, 5.1).
 HA_TODO_ENTITY = re.compile(r"^todo\.[a-z0-9_]+$")
 # Kürzer darf der Token des Sensors nicht sein (docs/integrationen.md, 7).
@@ -154,8 +153,11 @@ def _backup_recipients(env: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(keys))
 
 
-def _time_of_day(env: Mapping[str, str], name: str, default: str) -> str:
-    raw = _text(env, name) or default
+def _time_of_day(env: Mapping[str, str], name: str) -> str | None:
+    """Eine Uhrzeit ``HH:MM``; ``None``, wenn die Variable fehlt (dann gilt der Wert aus der App)."""
+    raw = _text(env, name)
+    if raw is None:
+        return None
     if not (raw.isascii() and is_time_of_day(raw)):
         raise ValueError(f"{name}: '{raw}' ist keine Uhrzeit HH:MM (00:00 bis 23:59).")
     return raw
@@ -166,34 +168,44 @@ def _plain_ascii(text: str) -> bool:
     return text.isascii() and all(" " < char <= "~" for char in text)
 
 
-def _ha_url(env: Mapping[str, str]) -> str | None:
-    """``STOWLY_HA_URL``: ``http(s)://Host[:Port]``, ohne Pfad, Abfrage und Zugangsdaten.
+def normalize_ha_url(raw: str) -> str | None:
+    """Eine Adresse von Home Assistant: ``http(s)://Host[:Port]``, ohne Pfad, Abfrage und Zugangsdaten.
 
-    Ein ``/`` am Ende ist erlaubt und fällt weg. Die Meldung zitiert den Wert nicht: Er könnte
-    Zugangsdaten enthalten.
+    Ein ``/`` am Ende ist erlaubt und fällt weg. Liefert ``scheme://netloc``; ``None``, wenn die Adresse
+    nicht taugt. Dieselbe Prüfung gilt für ``STOWLY_HA_URL`` und die Adresse aus der App (``haconfig.py``).
     """
-    raw = _text(env, "STOWLY_HA_URL")
-    if raw is None:
-        return None
-    problem = ValueError(
-        "STOWLY_HA_URL: erwartet ist eine Adresse wie http://192.168.1.20:8123 "
-        "(http oder https, ohne Pfad, Abfrage und Benutzerangabe)."
-    )
     if not _plain_ascii(raw) or "?" in raw or "#" in raw or "@" in raw:
-        raise problem
+        return None
     try:
         parts = urlsplit(raw)
         port = parts.port
     except ValueError:
-        raise problem from None
+        return None
     if (
         parts.scheme not in ("http", "https")
         or not parts.hostname
         or parts.path not in ("", "/")
         or port == 0
     ):
-        raise problem
+        return None
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def _ha_url(env: Mapping[str, str]) -> str | None:
+    """``STOWLY_HA_URL`` nach ``normalize_ha_url``.
+
+    Die Meldung zitiert den Wert nicht: Er könnte Zugangsdaten enthalten.
+    """
+    raw = _text(env, "STOWLY_HA_URL")
+    if raw is None:
+        return None
+    url = normalize_ha_url(raw)
+    if url is None:
+        raise ValueError(
+            "STOWLY_HA_URL: erwartet ist eine Adresse wie http://192.168.1.20:8123 "
+            "(http oder https, ohne Pfad, Abfrage und Benutzerangabe)."
+        )
+    return url
 
 
 def _ha_todo_entity(env: Mapping[str, str]) -> str | None:
@@ -418,10 +430,12 @@ class Settings:
     csp: str | None = DEFAULT_CSP
     # Zeitzone für „heute" und alle Uhrzeiten (docs/integrationen.md, Abschnitt 2).
     timezone: str = DEFAULT_TIMEZONE
-    # Automatische Sicherung (docs/integrationen.md, Abschnitt 3): Ordner, öffentliche age-Schlüssel, Uhrzeit.
+    # Automatische Sicherung (docs/integrationen.md, Abschnitt 3): Ordner, öffentliche age-Schlüssel, Uhrzeit,
+    # je nur aus der Umgebung; None bzw. leer = nicht gesetzt. Wirksam sind die Werte aus
+    # ``serverconfig.backup_setup``, die auch die App, die Vorgaben und die Wahl des Ordners kennen.
     backup_dir: Path | None = None
     backup_recipients: tuple[str, ...] = ()
-    backup_time: str = DEFAULT_BACKUP_TIME
+    backup_time: str | None = None
     # Home Assistant und Bring! (Abschnitt 5) und der Sensor (Abschnitt 6). Tokens nie in einer Ausgabe.
     ha_url: str | None = None
     ha_token: str | None = field(default=None, repr=False)
@@ -471,27 +485,6 @@ class Settings:
     def tz(self) -> zoneinfo.ZoneInfo:
         """Die Zeitzone des Servers (``STOWLY_TIMEZONE``), beim Start geprüft."""
         return zoneinfo.ZoneInfo(self.timezone)
-
-    # --- Sicherung -------------------------------------------------------------------------
-
-    @property
-    def backup_configured(self) -> bool:
-        """Ordner und Empfänger gesetzt: Die automatische Sicherung läuft."""
-        return self.backup_dir is not None and bool(self.backup_recipients)
-
-    @property
-    def backup_mentioned(self) -> bool:
-        """Etwas von Ordner und Empfängern ist gesetzt (sonst: gar nicht eingerichtet, ohne Hinweis)."""
-        return self.backup_dir is not None or bool(self.backup_recipients)
-
-    @property
-    def backup_problem(self) -> str | None:
-        """Warum die Sicherung aus ist, obwohl etwas gesetzt ist (docs/integrationen.md, 3.1)."""
-        if self.backup_dir is None and self.backup_recipients:
-            return "STOWLY_BACKUP_DIR fehlt."
-        if self.backup_dir is not None and not self.backup_recipients:
-            return "STOWLY_BACKUP_RECIPIENTS fehlt."
-        return None
 
     # --- Home Assistant --------------------------------------------------------------------
 
@@ -579,7 +572,7 @@ class Settings:
             timezone=_timezone(env),
             backup_dir=_backup_dir(env),
             backup_recipients=_backup_recipients(env),
-            backup_time=_time_of_day(env, "STOWLY_BACKUP_TIME", DEFAULT_BACKUP_TIME),
+            backup_time=_time_of_day(env, "STOWLY_BACKUP_TIME"),
             ha_url=_ha_url(env),
             ha_token=_text(env, "STOWLY_HA_TOKEN"),
             ha_todo_entity=_ha_todo_entity(env),
@@ -599,3 +592,9 @@ class Settings:
     def tls_dir(self) -> Path:
         """CA, Schlüssel und Zertifikat des HTTPS-Listeners (docs/integrationen.md, Abschnitt 11)."""
         return self.data_dir / "tls"
+
+    @property
+    def secrets_dir(self) -> Path:
+        """Tokens aus der App (Home Assistant, Sensor), außerhalb der Datenbank und jeder Sicherung
+        (``secretstore.py``)."""
+        return self.data_dir / "secrets"

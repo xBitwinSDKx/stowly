@@ -34,8 +34,10 @@ export type SetupStepKey = SetupStepId | "done";
 export const SETUP_SLUGS: Readonly<Record<SetupStepKey, string>> = {
   https: "sicher",
   printer: "drucker",
+  backup: "sicherung",
   updates: "updates",
   notifications: "mitteilungen",
+  home_assistant: "home-assistant",
   done: "fertig",
 };
 

@@ -30,12 +30,33 @@ def test_images_are_served_without_login_and_cached_forever(client, con):
     assert response.headers["content-type"] == "image/jpeg"
     assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
     assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "default-src 'none'; sandbox"
     assert int(response.headers["content-length"]) == len(JPEG)
 
     assert (
         client.get("/api/images/00112233445566778899aabbccddeeff.webp").headers["content-type"]
         == "image/webp"
     )
+
+
+@pytest.mark.parametrize(
+    "content_type, data",
+    [
+        ("text/html", b"<script>fetch('/api/devices')</script>"),
+        ("image/svg+xml", b"<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>"),
+        ("image/png", b"<html><script>alert(1)</script></html>"),  # die Bytes passen nicht zum Typ
+        ("image/jpeg; charset=utf-8", JPEG),
+        ("IMAGE/JPEG", JPEG),
+    ],
+)
+def test_only_real_images_are_served(client, con, content_type, data):
+    """Was kein JPEG, PNG oder WebP ist (etwa aus einer gefälschten Sicherung), liefert Stowly nie aus: Es liefe
+    sonst als Seite unter dem Ursprung der App, und dort liegt das Geräte-Token."""
+    add_image(con, "0123456789abcdef0123456789abcdef.x", content_type, data)
+    response = client.get("/api/images/0123456789abcdef0123456789abcdef.x")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+    assert b"script" not in response.content and b"svg" not in response.content
 
 
 @pytest.mark.parametrize(

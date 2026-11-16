@@ -19,14 +19,12 @@
 """
 
 import asyncio
-import contextlib
 import ipaddress
 import logging
 import os
 import re
 import secrets
 import ssl
-import stat
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -40,7 +38,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from stowly import db, localtime, scheduler
+from stowly import db, localtime, safefile, scheduler
 from stowly.config import Settings
 from stowly.contract.api import PI_CERT_DAYS, SERVER_CERT_DAYS, SERVER_CERT_RENEW_DAYS
 from stowly.contract.timeutil import format_timestamp
@@ -211,46 +209,13 @@ def _sans(certificate: x509.Certificate) -> list[str]:
 
 
 def _write(directory: Path, name: str, data: bytes, mode: int) -> None:
-    """Schreibt atomar: Zwischendatei (``mode`` von Anfang an), ``fsync``, ``os.replace``.
-
-    Nach dem Muster von ``autobackup.write_file``: Scheitert etwas, ist die Zwischendatei wieder weg.
-    """
-    temp = directory / f".{name}.{secrets.token_hex(6)}.tmp"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    handle = os.open(temp, flags, mode)
-    try:
-        with os.fdopen(handle, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if _POSIX:
-            os.chmod(temp, mode)  # die umask hätte beim Anlegen Rechte wegnehmen können
-        os.replace(temp, directory / name)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(temp)
-        raise
-    if _POSIX:
-        folder = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(folder)
-        except OSError:
-            log.warning("TLS: fsync des Ordners ist fehlgeschlagen", exc_info=True)
-        finally:
-            os.close(folder)
+    """Schreibt atomar (``safefile.write_atomic``): Zwischendatei, ``fsync``, ``os.replace``."""
+    safefile.write_atomic(directory, name, data, mode)
 
 
 def _ensure_mode(path: Path, mode: int) -> None:
     """Nur unter POSIX: setzt die Rechte, wenn sie anders sind (etwa bei einer von Hand gelegten Datei)."""
-    if not _POSIX:
-        return
-    try:
-        current = stat.S_IMODE(os.stat(path).st_mode)
-        if current != mode:
-            os.chmod(path, mode)
-            log.info("TLS: Rechte von %s auf %s gesetzt (vorher %s).", path.name, oct(mode), oct(current))
-    except OSError:
-        log.warning("TLS: Die Rechte von %s ließen sich nicht setzen.", path.name, exc_info=True)
+    safefile.ensure_mode(path, mode, label="TLS")
 
 
 # --- Der Manager -------------------------------------------------------------------------------

@@ -57,6 +57,23 @@ def stored(settings: Settings) -> dict[str, tuple[object, str | None]]:
         con.close()
 
 
+def no_backup(settings: Settings) -> dict:
+    """Die Sicherung ohne Einstellungen: an (Vorgabe), ohne Schlüssel, 03:30, im Datenordner
+    (Einzelheiten: test_backup_config.py)."""
+    return {
+        "enabled": True,
+        "enabled_source": "default",
+        "recipients": [],
+        "recipients_source": "default",
+        "time": "03:30",
+        "time_source": "default",
+        "folder": str(settings.data_dir / "backups"),
+        "folder_source": "data",
+        "folder_problem": None,
+        "folder_hint": None,
+    }
+
+
 @pytest.fixture
 def with_default(settings) -> Settings:
     """Wie das veröffentlichte Image: Es kennt das Repository für den Schalter."""
@@ -72,11 +89,12 @@ def bench(with_default) -> Iterator[tuple[TestClient, Device]]:
 # --- Vorgaben und Vorrang -----------------------------------------------------------------------
 
 
-def test_the_defaults(client):
+def test_the_defaults(client, settings):
     device = Device(client, "Handy")
     assert read(client, device) == {
         "push": {"contact": None, "source": "default"},
         "update": {"enabled": False, "repo": None, "source": "default", "available": False},
+        "backup": no_backup(settings),
     }
     assert client.get("/api/server-config").status_code == 401
     assert client.patch("/api/server-config", json={"update_enabled": True}).status_code == 401
@@ -101,6 +119,7 @@ def test_the_environment_goes_first_and_cannot_be_changed(settings):
         assert read(client, device) == {
             "push": {"contact": CONTACT, "source": "env"},
             "update": {"enabled": True, "repo": REPO, "source": "env", "available": False},
+            "backup": no_backup(fixed),
         }
         for body in ({"push_contact": OTHER}, {"push_contact": None}, {"update_enabled": False}):
             response = patch(client, device, **body)
@@ -182,6 +201,7 @@ def test_a_broken_value_in_the_table_counts_as_none(client, settings):
     assert read(client, device) == {
         "push": {"contact": None, "source": "default"},
         "update": {"enabled": False, "repo": None, "source": "default", "available": False},
+        "backup": no_backup(settings),
     }
 
 
@@ -352,5 +372,6 @@ def test_the_daily_message_reads_the_contact_when_it_is_due(client, settings):
 
 
 def test_the_app_always_schedules_the_daily_message(client):
-    """Ohne Kontakt beim Start: Die Aufgabe steht trotzdem im Zeitplan und wird fällig, sobald es einen gibt."""
-    assert client.app.state.scheduler.jobs == ["push_daily"]
+    """Ohne Kontakt beim Start: Die Aufgabe steht trotzdem im Zeitplan und wird fällig, sobald es einen gibt.
+    Ebenso die Sicherung: Sie ruht ohne Schlüssel (test_backup_config.py)."""
+    assert client.app.state.scheduler.jobs == ["backup", "push_daily"]

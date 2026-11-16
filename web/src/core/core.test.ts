@@ -763,7 +763,7 @@ describe("Sitzung und Sync", () => {
     await core.zones.create({ name: "Garage" });
     expect(value(core.sync.status).pending).toBe(5);
     await expectCoreError(core.devices.list(), "offline");
-    await expectCoreError(core.backup.download(), "offline");
+    await expectCoreError(core.backup.run(), "offline");
 
     await core.sync.now();
     expect(value(core.sync.status)).toMatchObject({ online: false, phase: "error", pending: 5 });
@@ -904,12 +904,14 @@ describe("Geräte und Sicherung (brauchen den Server)", () => {
     expect(value(core.session.state)).toMatchObject({ status: "signed_out", reason: "revoked" });
   });
 
-  it("lädt die Sicherung als Blob mit dem Namen des Servers", async () => {
-    const { core } = await household();
-    const { blob, filename } = await core.backup.download();
-    expect(filename).toBe("stowly-2026-11-13.sqlite3");
-    expect(blob.size).toBeGreaterThan(10);
-    expect((await blob.text()).startsWith("SQLite format 3")).toBe(true);
+  it("legt auf Knopfdruck eine Sicherung in den Ordner und lädt sie als Blob", async () => {
+    const { core, server } = await household();
+    server.backupEnvRecipients = ["age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq"];
+    const file = await core.backup.run();
+    expect(file.name).toMatch(/^stowly-\d{4}-\d{2}-\d{2}-\d{4}\.sqlite3\.gz\.age$/);
+    const blob = await core.backup.file(file.name);
+    expect(blob.size).toBe(file.size);
+    expect((await blob.text()).startsWith("age-encryption.org/v1")).toBe(true);
   });
 });
 
@@ -1024,7 +1026,7 @@ describe("Eigene Daten", () => {
   it("erfüllt die Schnittstelle vollständig", async () => {
     const { core } = await household("empty");
     const typed: Core = core;
-    const groups = ["session", "sync", "data", "stock", "products", "zones", "settings", "prefs", "printers", "print", "devices", "backup", "app"] as const;
+    const groups = ["session", "sync", "data", "stock", "products", "zones", "settings", "prefs", "printers", "print", "devices", "backup", "app", "restore", "haConfig"] as const;
     for (const group of groups) {
       expect(typed[group], group).toBeTypeOf("object");
     }

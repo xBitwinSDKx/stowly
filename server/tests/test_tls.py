@@ -838,9 +838,9 @@ def test_the_daily_job_renews_and_notes_it(tmp_path):
 
 def test_the_app_schedules_the_job_only_with_https(tmp_path):
     with TestClient(create_app(make_settings(tmp_path / "ohne", https=False))) as client:
-        assert client.app.state.scheduler.jobs == ["push_daily"]
+        assert client.app.state.scheduler.jobs == ["backup", "push_daily"]
     with TestClient(create_app(make_settings(tmp_path / "mit"))) as client:
-        assert client.app.state.scheduler.jobs == ["push_daily", "tls_renew"]
+        assert client.app.state.scheduler.jobs == ["backup", "push_daily", "tls_renew"]
 
 
 def test_the_log_names_fingerprints_never_a_key(tmp_path, caplog):

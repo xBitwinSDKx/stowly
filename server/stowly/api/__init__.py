@@ -13,11 +13,13 @@ from stowly.api import (
     devices,
     events,
     ha,
+    haconfig,
     images,
     integrations,
     lookup,
     pi,
     push,
+    restore,
     serverconfig,
     setup,
     stats,
@@ -44,5 +46,8 @@ router.include_router(update.router)
 router.include_router(setup.router)
 router.include_router(serverconfig.router)
 router.include_router(pi.router)
+# Stufe B: Home Assistant aus der App, Zurückspielen einer Sicherung
+router.include_router(haconfig.router)
+router.include_router(restore.router)
 
 __all__ = ["router"]

@@ -71,20 +71,31 @@ describe("Schritte", () => {
   it("findet den ersten offenen Schritt, blättert und zählt", async () => {
     const open = await statusOf({ scenarios: ["setup-open"] });
     // Mit Beispieldaten gibt es schon Drucker: Dieser Schritt ist erledigt.
-    expect(open.steps.map((step) => progressOf(step, false))).toEqual(["open", "done", "open", "open"]);
+    expect(open.steps.map((step) => step.id)).toEqual(["https", "printer", "backup", "updates", "notifications", "home_assistant"]);
+    expect(open.steps.map((step) => progressOf(step, false))).toEqual(["open", "done", "open", "open", "open", "open"]);
     expect(firstOpenStep(open)).toBe("https");
     // Über HTTPS ist die sichere Verbindung erledigt.
-    expect(firstOpenStep(open, true)).toBe("updates");
+    expect(firstOpenStep(open, true)).toBe("backup");
     expect(doneCount(open)).toBe(1);
     expect(doneCount(open, true)).toBe(2);
-    const skipped = { ...open, steps: open.steps.map((step) => (step.id === "https" || step.id === "updates" ? { ...step, state: "skipped" as const } : step)) };
-    expect(firstOpenStep(skipped)).toBe("notifications");
+    const skipped = { ...open, steps: open.steps.map((step) => (step.id === "https" || step.id === "backup" ? { ...step, state: "skipped" as const } : step)) };
+    expect(firstOpenStep(skipped)).toBe("updates");
     expect(progressOf(stepOf(skipped, "https"), false)).toBe("skipped");
-    expect(firstOpenStep(await statusOf())).toBe("done");
+    // Abgeschlossen: immer die Übersicht, auch wenn ein neuer Schritt offen ist (Home Assistant).
+    const finished = await statusOf();
+    expect(progressOf(stepOf(finished, "home_assistant"), false)).toBe("open");
+    expect(firstOpenStep(finished)).toBe("done");
 
-    expect([nextStep("https"), nextStep("notifications"), nextStep("done")]).toEqual(["printer", "done", "done"]);
-    expect([previousStep("https"), previousStep("printer"), previousStep("done")]).toEqual([null, "https", "notifications"]);
-    expect([stepNumber("https"), stepNumber("notifications"), stepNumber("done")]).toEqual([2, 5, 5]);
+    expect([nextStep("https"), nextStep("printer"), nextStep("backup"), nextStep("notifications"), nextStep("home_assistant"), nextStep("done")]).toEqual([
+      "printer",
+      "backup",
+      "updates",
+      "home_assistant",
+      "done",
+      "done",
+    ]);
+    expect([previousStep("https"), previousStep("printer"), previousStep("updates"), previousStep("done")]).toEqual([null, "https", "backup", "home_assistant"]);
+    expect([stepNumber("https"), stepNumber("backup"), stepNumber("home_assistant"), stepNumber("done")]).toEqual([2, 4, 7, 7]);
     // Ein Schritt, den der Server nicht nennt, gilt als offen.
     expect(stepOf({ ...open, steps: [] }, "printer")).toMatchObject({ id: "printer", state: "open", ready: false });
   });
@@ -98,8 +109,10 @@ describe("Schritte", () => {
   });
 
   it("nennt den Stand in den Einstellungen und die Restzeit eines Codes", () => {
-    expect(setupProgressText(null, 2)).toBe("2 von 4 erledigt");
-    expect(setupProgressText("2026-11-16T10:00:00.000Z", 4)).toMatch(/^Abgeschlossen am \d{2}\.\d{2}\.2026$/);
+    expect(setupProgressText(null, 2)).toBe("2 von 6 erledigt");
+    expect(setupProgressText("2026-11-16T10:00:00.000Z", 6)).toMatch(/^Abgeschlossen am \d{2}\.\d{2}\.2026$/);
+    // Abgeschlossen, aber ein Schritt kam mit einem Update dazu.
+    expect(setupProgressText("2026-11-16T10:00:00.000Z", 5)).toMatch(/^Abgeschlossen am \d{2}\.\d{2}\.2026; 5 von 6 erledigt, der Rest lässt sich nachholen$/);
     expect([countdownText(581), countdownText(1800), countdownText(0), countdownText(-3)]).toEqual(["9:41", "30:00", "0:00", "0:00"]);
     expect(pairedText({ hostname: "stowly-pi", addresses: ["192.168.1.10"], model: "QL-570", printer_found: true, version: "0.3.0", not_after: null })).toBe(
       "Gekoppelt: QL-570 am Pi stowly-pi (192.168.1.10)",
@@ -402,8 +415,10 @@ describe("Rahmen", () => {
       "Zugang, erledigt",
       "2Sichere Verbindung",
       "Drucker, erledigt",
-      "4Updates",
-      "5Benachrichtigungen",
+      "4Sicherung",
+      "5Updates",
+      "6Benachrichtigungen",
+      "7Home Assistant",
       "Fertig",
     ]);
     expect(within(progress()).getByRole("link", { name: /Sichere Verbindung/ })).toHaveAttribute("aria-current", "step");
@@ -416,18 +431,18 @@ describe("Rahmen", () => {
     expect(await screen.findByRole("heading", { name: "Drucker", level: 2 })).toBeInTheDocument();
     expect(within(progress()).getByRole("link", { name: "Sichere Verbindung, übersprungen" })).toBeInTheDocument();
     // Der Drucker ist schon da: weiter statt überspringen.
-    expect(screen.getByRole("link", { name: "Weiter" })).toHaveAttribute("href", setupPath("updates"));
+    expect(screen.getByRole("link", { name: "Weiter" })).toHaveAttribute("href", setupPath("backup"));
     expect(screen.getByRole("link", { name: "Zurück" })).toHaveAttribute("href", setupPath("https"));
     expect(screen.getByRole("heading", { name: "Drucker", level: 2 })).toHaveFocus();
   });
 
-  it("zeigt am Handy „Schritt 2 von 5“ mit Balken", async () => {
+  it("zeigt am Handy „Schritt 2 von 7“ mit Balken", async () => {
     setTestViewport(375);
     await openStep({ scenarios: ["setup-open"] }, "https");
     const bar = screen.getByRole("progressbar", { name: "Fortschritt der Einrichtung" });
     expect(bar).toHaveAttribute("aria-valuenow", "2");
-    expect(bar).toHaveAttribute("aria-valuemax", "5");
-    expect(screen.getByText("Schritt 2 von 5: Sichere Verbindung")).toBeInTheDocument();
+    expect(bar).toHaveAttribute("aria-valuemax", "7");
+    expect(screen.getByText("Schritt 2 von 7: Sichere Verbindung")).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Fortschritt der Einrichtung" })).not.toBeInTheDocument();
   });
 
@@ -443,7 +458,7 @@ describe("Rahmen", () => {
     const core = renderApp({ scenarios: ["setup-open"] }, ROUTES.setup);
     const update = vi.spyOn(core.setup, "update");
     // Der erste offene Schritt ist dann der nach dem Drucker.
-    expect(await screen.findByRole("heading", { name: "Updates", level: 2 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sicherung", level: 2 })).toBeInTheDocument();
     await waitFor(() => expect(update).toHaveBeenCalledWith({ step: { id: "https", state: "done" } }));
     expect(within(progress()).getByRole("link", { name: "Sichere Verbindung, erledigt" })).toBeInTheDocument();
   });
@@ -617,7 +632,7 @@ describe("Drucker", () => {
     expect(await screen.findByText("Der Druckdienst antwortet.")).toBeInTheDocument();
     // Die Kopplung übersteht Weiter und Zurück.
     await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
-    expect(await screen.findByRole("heading", { name: "Updates", level: 2 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sicherung", level: 2 })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("link", { name: "Zurück" }));
     expect(await screen.findByText("Gekoppelt: QL-570 am Pi stowly-pi (192.168.1.20)")).toBeInTheDocument();
   });
@@ -856,7 +871,13 @@ describe("Fertig", () => {
     const core = await openStep({ scenarios: ["setup-open"] }, "done");
     const update = vi.spyOn(core.setup, "update");
     const rows = screen.getAllByRole("link", { name: /^Nachholen: / });
-    expect(rows.map((link) => link.getAttribute("aria-label"))).toEqual(["Nachholen: Sichere Verbindung", "Nachholen: Updates", "Nachholen: Benachrichtigungen"]);
+    expect(rows.map((link) => link.getAttribute("aria-label"))).toEqual([
+      "Nachholen: Sichere Verbindung",
+      "Nachholen: Sicherung",
+      "Nachholen: Updates",
+      "Nachholen: Benachrichtigungen",
+      "Nachholen: Home Assistant",
+    ]);
     expect(rows[0]).toHaveAttribute("href", setupPath("https"));
     expect(screen.getByText("Jedes weitere Gerät braucht das Zertifikat einmal: Einstellungen → Einrichtung und Zugang.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Überspringen" })).not.toBeInTheDocument();
@@ -888,14 +909,15 @@ describe("Einstellungen: Einrichtung und Zugang", () => {
     await screen.findByRole("heading", { name: "Einstellungen" });
     const setup = section("Einrichtung und Zugang");
     expect(document.getElementById("einrichtung")).toBe(setup);
-    expect(await within(setup).findByText("1 von 4 erledigt")).toBeInTheDocument();
+    expect(await within(setup).findByText("1 von 6 erledigt")).toBeInTheDocument();
     expect(within(setup).getByRole("link", { name: "Öffnen" })).toHaveAttribute("href", ROUTES.setup);
     expect(within(setup).getByRole("link", { name: "Anleitung" })).toHaveAttribute("href", setupPath("https"));
     cleanup();
 
     renderApp({}, ROUTES.settings);
     await screen.findByRole("heading", { name: "Einstellungen" });
-    expect(await within(section("Einrichtung und Zugang")).findByText(/^Abgeschlossen am \d{2}\.\d{2}\.\d{4}$/)).toBeInTheDocument();
+    // Home Assistant kam mit Stufe B dazu und ist noch offen.
+    expect(await within(section("Einrichtung und Zugang")).findByText(/^Abgeschlossen am \d{2}\.\d{2}\.\d{4}; 5 von 6 erledigt, der Rest lässt sich nachholen$/)).toBeInTheDocument();
   });
 
   it("ändert das Haushalts-Passwort; ein falsches bisheriges meldet nicht ab", async () => {

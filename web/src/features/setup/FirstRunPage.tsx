@@ -1,11 +1,15 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { isCoreError, LIMITS, useCore } from "@/contract";
 import { suggestDeviceName, waitText } from "@/features/auth";
 import styles from "@/features/auth/LoginPage.module.css";
+import { FilePicker } from "@/features/backup/files";
+import { RestoreFlow } from "@/features/backup/RestoreFlow";
 import { errorText, Logo, Notice } from "@/ui";
 import { Button, Card, IconButton, TextField, useToast } from "@/ui/base";
-import { EyeIcon, EyeOffIcon, InfoIcon, WarningIcon } from "@/ui/icons";
+import { EyeIcon, EyeOffIcon, InfoIcon, RestoreIcon, WarningIcon } from "@/ui/icons";
+
+import setupStyles from "./SetupPage.module.css";
 
 /** Der Satz zu einem Fehler beim Festlegen des ersten Passworts. */
 export function firstRunErrorText(error: unknown): string {
@@ -26,16 +30,29 @@ export interface FirstRunPageProps {
    * Einrichtung, damit nach der Anmeldung nicht kurz der Bestand aufblitzt.
    */
   onFirstRun?: () => void;
+  /**
+   * Die Seite spielt gerade eine Sicherung ein (true) oder nicht mehr (false): Solange soll die
+   * Anmeldeschranke sie zeigen, auch wenn der Server nach dem Neustart schon ein Passwort meldet.
+   */
+  onBusy?: (busy: boolean) => void;
 }
 
 /**
  * „Willkommen bei Stowly": Der Server hat noch kein Haushalts-Passwort (`server_configured ===
  * false`). Wer die Seite zuerst öffnet, legt es fest, und dieses Gerät ist damit angemeldet.
  * Ist inzwischen eines gesetzt ("conflict"), wechselt die Anmeldeschranke von selbst zur Anmeldung.
+ *
+ * Daneben „Aus einer Sicherung wiederherstellen" (Umzug, Plattenausfall; docs/plan-einrichtung-b.md,
+ * 2): Sicherungsdatei und Schlüssel wählen, die Vorschau ansehen, das Passwort aus der Sicherung
+ * eingeben; Stowly startet neu, und dieses Gerät ist danach angemeldet (`RestoreFlow`).
  */
-export function FirstRunPage({ onFirstRun }: FirstRunPageProps) {
+export function FirstRunPage({ onFirstRun, onBusy }: FirstRunPageProps) {
   const core = useCore();
   const toast = useToast();
+  /** Die gewählte Sicherung: Mit ihr beginnt das Wiederherstellen gleich beim Hochladen. */
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  // Angemeldet (oder abgebrochen): Die Seite verschwindet, und mit ihr gilt nichts mehr als „läuft".
+  useEffect(() => () => onBusy?.(false), [onBusy]);
   const [password, setPassword] = useState("");
   const [repeat, setRepeat] = useState("");
   const [deviceName, setDeviceName] = useState(() => suggestDeviceName());
@@ -73,6 +90,18 @@ export function FirstRunPage({ onFirstRun }: FirstRunPageProps) {
       }
       setError(firstRunErrorText(caught));
     }
+  }
+
+  if (restoreFile !== null) {
+    return (
+      <main className={styles.page}>
+        <div className={styles.column}>
+          <Logo size="lg" className={styles.logo} />
+          <h1 className={styles.title}>Aus einer Sicherung wiederherstellen</h1>
+          <RestoreFlow mode="first_run" initialFile={restoreFile} onCancel={() => setRestoreFile(null)} onFirstRun={onFirstRun} onBusyChange={onBusy} />
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -129,9 +158,22 @@ export function FirstRunPage({ onFirstRun }: FirstRunPageProps) {
             </Button>
           </form>
         </Card>
+        <Card padding="lg">
+          <div className={styles.form}>
+            <div className={styles.intro}>
+              <h2 className={setupStyles.subtitle}>Aus einer Sicherung wiederherstellen</h2>
+              <p className={styles.muted}>
+                Umzug oder neues NAS? Mit einer Sicherung und ihrem geheimen Schlüssel kommt der ganze Bestand zurück, samt Passwort und Geräten.
+              </p>
+            </div>
+            <FilePicker icon={<RestoreIcon />} block onFile={setRestoreFile}>
+              Sicherung wählen
+            </FilePicker>
+          </div>
+        </Card>
         <p className={styles.foot}>
           <InfoIcon size={15} aria-hidden="true" />
-          Danach führt Stowly durch die Einrichtung: sichere Verbindung, Drucker, Updates und Benachrichtigungen. Jeder Schritt lässt sich überspringen.
+          Danach führt Stowly durch die Einrichtung: sichere Verbindung, Drucker, Sicherung, Updates, Benachrichtigungen und Home Assistant. Jeder Schritt lässt sich überspringen.
         </p>
       </div>
     </main>

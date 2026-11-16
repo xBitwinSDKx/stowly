@@ -463,18 +463,21 @@ def test_after_an_outage_the_server_catches_up_at_start(backup_settings, househo
     assert status["last_ok_at"] == "2026-11-14T20:15:00.000Z"
 
 
-def test_the_backup_job_is_off_without_folder_or_keys(backup_settings):
-    for settings in (
-        dataclasses.replace(backup_settings, backup_dir=None),
-        dataclasses.replace(backup_settings, backup_recipients=()),
-    ):
-        assert not autobackup.BackupJob(settings).due(scheduler.JobRun("backup"), utc(2026, 11, 14, 12, 0))
+def test_the_backup_job_rests_without_keys_and_needs_no_folder_from_the_environment(backup_settings):
+    db.initialise(backup_settings.database_path)
+    noon = utc(2026, 11, 14, 12, 0)
+    no_keys = dataclasses.replace(backup_settings, backup_recipients=())
+    assert not autobackup.BackupJob(no_keys).due(scheduler.JobRun("backup"), noon)
+    # Ohne STOWLY_BACKUP_DIR gehen die Sicherungen in den Datenordner (serverconfig.backup_folder).
+    no_dir = dataclasses.replace(backup_settings, backup_dir=None)
+    assert autobackup.BackupJob(no_dir).due(scheduler.JobRun("backup"), noon)
 
 
 # --- Zustand für die App (3.6) -------------------------------------------------------------
 
 
 def state_of(settings: Settings, run: scheduler.JobRun, now: datetime) -> dict:
+    db.initialise(settings.database_path)  # die Einstellungen aus der App stehen in der Datenbank
     return autobackup.status(settings, run, now)
 
 
@@ -483,6 +486,8 @@ def test_the_status_of_a_backup_that_is_not_set_up(backup_settings):
     status = state_of(off, scheduler.JobRun("backup"), utc(2026, 11, 14, 12, 0))
     assert status == {
         "configured": False,
+        "folder": str(off.data_dir / "backups"),
+        "files": [],
         "problem": None,
         "time": None,
         "recipients": [],
@@ -498,7 +503,7 @@ def test_the_status_of_a_backup_that_is_not_set_up(backup_settings):
     status = state_of(half, scheduler.JobRun("backup"), utc(2026, 11, 14, 12, 0))
     assert (status["configured"], status["problem"], status["time"], status["next_at"]) == (
         False,
-        "STOWLY_BACKUP_RECIPIENTS fehlt.",
+        "Es fehlt ein öffentlicher Schlüssel (in der App oder in STOWLY_BACKUP_RECIPIENTS).",
         "03:30",
         None,
     )

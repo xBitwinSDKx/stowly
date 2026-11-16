@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from support import TEST_PASSWORD, Device, events_of
+from support import TEST_PASSWORD, Device, asgi_call, events_of
 
 from stowly import auth, db
 from stowly.app import create_app
@@ -188,7 +188,11 @@ def test_neither_token_nor_password_reach_the_log(client, caplog):
         ("PATCH", f"/api/devices/{ID}", {"name": "Neu"}),
         ("DELETE", f"/api/devices/{ID}", None),
         ("POST", "/api/sync", {}),
-        ("GET", "/api/backup", None),
+        ("POST", "/api/backup/run", None),
+        ("GET", "/api/backup/files/stowly-2026-11-14-0330.sqlite3.gz.age", None),
+        ("GET", "/api/restore", None),
+        ("POST", "/api/restore/undo", None),
+        ("DELETE", "/api/restore/previous", None),
         ("GET", "/api/events", None),
     ],
 )
@@ -354,6 +358,42 @@ def test_an_oversized_request_is_refused_before_it_is_read(client):
     assert response.json()["error"]["details"] == {"max_bytes": 4 * 1024 * 1024}
     # Die Grenze gilt für alles, was der Server annimmt, und zählt nicht als Fehlversuch.
     assert login(client).status_code == 200
+
+
+def test_without_content_length_the_body_is_counted_while_it_is_read(client, settings):
+    """Chunked, ohne Content-Length: Die Grenze zählt jedes Byte beim Lesen. Nach gut 4 MiB hört der Server auf
+    zu lesen und antwortet 413, auch ohne Anmeldung; was kleiner ist, geht wie gewohnt."""
+    too_large = {
+        "code": "payload_too_large",
+        "message": "Die Anfrage ist zu groß.",
+        "details": {"max_bytes": 4 * 1024 * 1024},
+    }
+    huge = iter([b'{"password": "', *[b"x" * (1024 * 1024)] * 5, b'", "device_name": "Handy"}'])
+    response = client.post("/api/auth/login", content=huge, headers={"Content-Type": "application/json"})
+    assert "content-length" not in response.request.headers
+    assert (response.status_code, response.json()["error"]) == (413, too_large)
+
+    read: list[int] = []
+
+    async def parts():
+        yield b'{"password": "'
+        for number in range(10):
+            read.append(number)
+            yield b"x" * (1024 * 1024)
+
+    app = create_app(settings)
+    for path in ("/api/auth/login", "/api/restore/check", "/api/restore/apply", "/api/sync"):
+        read.clear()
+        status, body = asgi_call(app, "POST", path, {"content-type": "application/json"}, parts())
+        assert (status, body["error"]) == (413, too_large), path
+        assert len(read) == 4, path  # mit dem vierten MiB ging es über die Grenze; weitergelesen wurde nicht
+
+    async def small():
+        for part in (b'{"password": "', TEST_PASSWORD.encode(), b'", "device_name": "Handy"}'):
+            yield part
+
+    status, body = asgi_call(app, "POST", "/api/auth/login", {"content-type": "application/json"}, small())
+    assert status == 200 and body["device"]["name"] == "Handy"
 
 
 # --- Passwort ändern (POST /api/auth/password) -------------------------------------------------

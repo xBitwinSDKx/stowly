@@ -780,7 +780,11 @@ def test_the_state_never_shows_paths_or_the_log(bench):
     bench.reported("failed", NEWER, message=f"Die neue Version startete nicht, zurück auf {CURRENT}.")
     bench.updater_seen()
     response = bench.client.get("/api/integrations", headers=bench.device.headers)
-    text = response.text
+    body = response.json()
+    # Der Ordner der Sicherungen im Container gehört seit Stufe B dazu (BackupStatus.folder, im Test unter
+    # dem Datenordner); sonst steht kein Pfad darin.
+    assert body["backup"].pop("folder") == str(bench.settings.data_dir / "backups")
+    text = json.dumps(body)
     for secret in ("GEHEIMES-LOG", "/volume1", "before-", "SQLite format"):
         assert secret not in text, secret
     for form in (str(bench.settings.data_dir), json.dumps(str(bench.settings.data_dir))[1:-1]):

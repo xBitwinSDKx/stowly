@@ -213,6 +213,10 @@ def is_allowed_image_url(url: Any) -> bool:
     )
 
 
+# Die Typen, in denen Stowly Bilder speichert und ausliefert (api/images.py); sniff_image kennt genau diese.
+IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")
+
+
 def sniff_image(data: bytes) -> tuple[str, str] | None:
     """``(Inhaltstyp, Endung)`` für JPEG, PNG und WebP, bestimmt am Inhalt; sonst ``None``."""
     if data[:3] == b"\xff\xd8\xff":

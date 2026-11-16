@@ -26,7 +26,9 @@ import { FakeServer, type FakeRequestData, type FakeResponseData } from "./fake-
 export { FAKE_PRINT_TOKEN, FakePrintService, type FakePrintOptions } from "./fake-print";
 export {
   checkPushSubscription,
+  FAKE_HA_CHECK,
   FAKE_PASSWORD,
+  FAKE_SCHEMA_VERSION,
   FakeServer,
   HA_OFF,
   pushTestPayload,
@@ -94,10 +96,13 @@ function singleHeaders(headers: FakeRequest["headers"]): Record<string, string |
 export function readFakeRequest(request: FakeRequest): Promise<FakeRequestData> {
   const [path = "", query] = (request.url ?? "").split("?");
   const method = request.method ?? "GET";
-  const data = (body: string): FakeRequestData => ({ method, path, query, headers: singleHeaders(request.headers), body });
+  const headers = singleHeaders(request.headers);
+  const data = (body: string, bytes?: Uint8Array): FakeRequestData => ({ method, path, query, headers, body, ...(bytes ? { bytes } : {}) });
   if (method === "GET" || method === "HEAD") {
     return Promise.resolve(data(""));
   }
+  // Rohdaten (eine Sicherung zum Zurückspielen) bleiben Bytes.
+  const raw = (headers["content-type"] ?? "").startsWith("application/octet-stream");
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];
     request.on("data", (chunk) => {
@@ -112,7 +117,7 @@ export function readFakeRequest(request: FakeRequest): Promise<FakeRequestData> 
         bytes.set(chunk, offset);
         offset += chunk.length;
       }
-      resolve(data(new TextDecoder().decode(bytes)));
+      resolve(raw ? data("", bytes) : data(new TextDecoder().decode(bytes)));
     });
   });
 }
@@ -380,6 +385,8 @@ export function createFakeNetwork(server: FakeServer): FakeNetwork {
         headers[name.toLowerCase()] = value;
       }
       const text = typeof init?.body === "string" ? init.body : "";
+      // Ein Blob (das Hochladen einer Sicherung) geht als Rohdaten an die Gegenstelle.
+      const bytes = init?.body instanceof Blob ? new Uint8Array(await init.body.arrayBuffer()) : undefined;
       const authorization = headers.authorization ?? "";
       const absolute = /^https?:\/\//.test(input);
       // Die Adresse eines Druckdienstes unter eigener Adresse: die längste passende Basis gewinnt.
@@ -460,7 +467,7 @@ export function createFakeNetwork(server: FakeServer): FakeNetwork {
         return foreign;
       }
       network.calls.push(call);
-      const data = await abortable(server.respond({ method, path, query, headers, body: text }), init?.signal);
+      const data = await abortable(server.respond({ method, path, query, headers, body: text, ...(bytes ? { bytes } : {}) }), init?.signal);
       await network.beforeResponse?.(call);
       if (network.dropResponses > 0) {
         network.dropResponses -= 1;

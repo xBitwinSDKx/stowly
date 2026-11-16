@@ -2,7 +2,7 @@
 
 Auf dem Entwicklungsrechner laufen Server, Druckdienst und App zusammen: automatische Tests auf allen Seiten, dazu ein Durchgang im Browser mit dem Bild-Treiber. Alles, was Docker, echte Handys, einen echten Drucker oder den Raspberry Pi braucht, ließ sich dort nicht prüfen. Diese Liste führt in der Reihenfolge hindurch, in der man es tut.
 
-Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis M in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
+Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis N in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
 
 ## A. Container
 
@@ -138,7 +138,7 @@ Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Erg
 
 ## J. Sicherung
 
-- [ ] **32.** Sicherung herunterladen, prüfen, zurückspielen (D1–D6).
+- [ ] **32.** „Jetzt sichern", die Sicherung herunterladen, mit `age` prüfen, in der App zurückspielen (D1–D6). Seit 0.4.0 gibt es nur noch die verschlüsselte Sicherung.
 
 ## K. Aktualisieren
 
@@ -199,7 +199,7 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 
 ## P. Automatische Sicherung
 
-- [ ] **45.** Zwei Schlüssel mit `age-keygen` erzeugen, die öffentlichen in die `.env`, `./backups` für uid 10001 anlegen ([`betrieb.md`](betrieb.md), Abschnitt 8.1; D7–D9).
+- [ ] **45.** Nur für die Sicherung aus der `.env`: Zwei Schlüssel mit `age-keygen` erzeugen, die öffentlichen in die `.env`, `./backups` für uid 10001 anlegen ([`betrieb.md`](betrieb.md), Abschnitt 8.5; D7–D9). In der App geht es seit 0.4.0 ohne `age` (Abschnitt V).
 - [ ] **46.** Nach dem Start liegt `stowly-…sqlite3.gz.age` mit den Rechten 0600 im Ordner. Die App zeigt unter „Sicherung" Uhrzeit, letzte Sicherung und die gekürzten Schlüssel.
 - [ ] **47.** Probe-Entschlüsselung mit jedem privaten Schlüssel: `age -d -i … | gunzip | head -c 15` zeigt `SQLite format 3`. Danach an einer Testkopie zurückspielen (D10–D13).
 - [ ] **48.** Den Ordner nicht beschreibbar machen: Die App meldet den Fehler und nach 48 Stunden die Warnung.
@@ -285,3 +285,18 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
   - Dein Stowly kam gleichzeitig über den Host-Updater auf 0.3.1.
 - **M13** zum Teil: Die Anmeldung mit dem Passwort aus der `.env` geht nach dem Umstieg weiter. Ob sich der Assistent von selbst öffnet, ist nicht eigens geprüft.
 - Offen: M5 (Fingerabdruck mit dem Log vergleichen), M6, M10, M12.
+
+## V. Stufe B: Sicherung und Home Assistant in der App (0.4.0)
+
+Bisher nur mit automatischen Tests geprüft, auch gegen den echten Server samt Neustart beim Zurückspielen und mit einem nachgebildeten Home Assistant; am NAS und an den Geräten noch nichts. Erst an einem Testcontainer per Mausklick (`v0.4.0-rc.1`), dann am eigenen Stowly; Home Assistant zuerst gegen eine Probe-Liste in HA, nicht gegen die echte Bring!-Liste.
+
+- [ ] **65.** Im Assistenten des Testcontainers die Sicherung einrichten ([`betrieb.md`](betrieb.md), Abschnitt 8.2): Schlüssel erzeugen und an zwei Orten aufheben, mit dem Haushalts-Passwort übernehmen, prüfen, „Jetzt sichern", den Schalter einmal aus (N1–N5).
+- [ ] **66.** Eine Sicherung herunterladen und am Rechner mit `age` und der Schlüsseldatei aus der App öffnen (N6, D10).
+- [ ] **67.** Erst ohne, dann mit zweitem Ordner `/backups` in DSM (Abschnitt 19.4); einmal ohne Schreibrecht für Benutzer 10001: Stowly weicht in den Datenordner aus und sagt es (N3, N7, N8).
+- [ ] **68.** Daten ändern, zurückspielen, die Gegenproben mit falschem Schlüssel und Passwort, dann „Rückgängig" und „Alte Datenbank löschen" (N9–N13). Die Handys laden neu, niemand muss sich neu anmelden.
+- [ ] **69.** Ein frischer Container mit derselben Sicherung: „Aus einer Sicherung wiederherstellen", danach die sichere Verbindung neu, die Tokens für HA fehlen (N14–N16).
+- [ ] **70.** Home Assistant am Testcontainer gegen eine Probe-Liste („Local To-do"): Verbindung, Liste, Wechsel der Liste, Sensor-Token mit YAML (N17–N19, N21, N22).
+- [ ] **71.** Das eigene Stowly per Knopf auf 0.4.0:
+  - Home Assistant bleibt aus der `.env`; die App zeigt die Werte nur an, und „Verbindung prüfen" listet „Zuhause" (N20).
+  - Die Sicherung in der App einrichten. Dabei prüfen, ob uid 10001 in `./backups` schreiben darf; sonst zeigt die App „Der eigene Ordner wird nicht benutzt" (oder, mit `STOWLY_BACKUP_DIR` in der `.env`, „… nicht beschreibbar").
+  - Erste Sicherung, dann „Schlüssel prüfen".

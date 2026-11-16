@@ -8,7 +8,9 @@ import { errorText, Logo, Notice, useUiFlag } from "@/ui";
 import { Button, ButtonLink, IconButton, useToast } from "@/ui/base";
 import { CloseIcon, CloudOffIcon, SkipIcon, WarningIcon } from "@/ui/icons";
 
+import { BackupStep } from "./BackupStep";
 import { DoneStep } from "./DoneStep";
+import { HomeAssistantStep } from "./HomeAssistantStep";
 import { NotifyStep } from "./NotifyStep";
 import { PrinterStep } from "./PrinterStep";
 import { securePage } from "./navigateAway";
@@ -132,8 +134,10 @@ export function SetupPage() {
             }}
           />
         ) : null}
+        {key === "backup" ? <BackupStep onChanged={reload} /> : null}
         {key === "updates" ? <UpdatesStep onChanged={reload} /> : null}
         {key === "notifications" ? <NotifyStep onChanged={reload} /> : null}
+        {key === "home_assistant" ? <HomeAssistantStep onChanged={reload} /> : null}
         {key === "done" ? <DoneStep status={status} update={update} secure={secure} /> : null}
       </>
     );

@@ -339,7 +339,7 @@ export function SettingsPage() {
 
       <SetupSection serverConfig={serverConfig} />
 
-      <BackupSection integrations={integrations.state} onReload={integrations.reload} />
+      <BackupSection integrations={integrations.state} onReload={integrations.reload} serverConfig={serverConfig} />
 
       <HomeAssistantSection integrations={integrations.state} onReload={integrations.reload} />
 

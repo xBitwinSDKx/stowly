@@ -12,13 +12,18 @@ import { PasswordDialog } from "./PasswordDialog";
 import { PushContactForm } from "./PushContactForm";
 import styles from "./SettingsPage.module.css";
 
-/** Der Stand der Einrichtung in Worten: „Abgeschlossen am 16.11.2026" oder „2 von 4 erledigt". */
+/**
+ * Der Stand der Einrichtung in Worten: „Abgeschlossen am 16.11.2026" oder „2 von 6 erledigt". Ist sie
+ * abgeschlossen, aber ein Schritt offen (etwa einer, der mit einem Update dazukam), steht das dabei.
+ */
 export function setupProgressText(finishedAt: string | null, done: number, total: number = WIZARD_STEPS.length): string {
+  const count = `${String(done)} von ${String(total)} erledigt`;
   if (finishedAt !== null) {
     const ms = Date.parse(finishedAt);
-    return Number.isNaN(ms) ? "Abgeschlossen" : `Abgeschlossen am ${formatDate(toLocalDate(new Date(ms)))}`;
+    const finished = Number.isNaN(ms) ? "Abgeschlossen" : `Abgeschlossen am ${formatDate(toLocalDate(new Date(ms)))}`;
+    return done < total ? `${finished}; ${count}, der Rest lässt sich nachholen` : finished;
   }
-  return `${String(done)} von ${String(total)} erledigt`;
+  return count;
 }
 
 /**
@@ -64,7 +69,7 @@ export function SetupSection({ serverConfig }: { serverConfig: LoadedResource<Se
         </Notice>
       ) : null}
       <List>
-        <ListRow label="Einrichtung" hint={status ? setupProgressText(status.finished_at, doneCount(status, secure)) : "Sichere Verbindung, Drucker, Updates und Benachrichtigungen."}>
+        <ListRow label="Einrichtung" hint={status ? setupProgressText(status.finished_at, doneCount(status, secure)) : "Sichere Verbindung, Drucker, Sicherung, Updates, Benachrichtigungen und Home Assistant."}>
           <ButtonLink to={ROUTES.setup}>Öffnen</ButtonLink>
         </ListRow>
         <ListRow label="Weitere Geräte" hint="Jedes weitere Gerät braucht das Zertifikat von Stowly einmal; die Anleitung je Gerät steht in der Einrichtung.">

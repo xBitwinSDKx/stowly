@@ -2143,5 +2143,45 @@
         ]
       }
     ]
+  },
+  "age_keys": {
+    "_hinweis": "Schlüsselpaare von pyrage (age X25519). Aus secret ergibt sich public; die Web-App erzeugt und prüft Schlüssel im Browser (docs/plan-einrichtung-b.md, Abschnitt 1).",
+    "pairs": [
+      {
+        "secret": "AGE-SECRET-KEY-16P2TJYCHX4QDCZPA78R7DTQTREQ4SUQH9C8C3PXCT2CTJ39RVC8Q4J2QFU",
+        "public": "age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq"
+      },
+      {
+        "secret": "AGE-SECRET-KEY-1HCGP7G6NAEN4KQAC5SLTFKVU0CXX9JTMLWT0TJYUMK5HNSEXWC3SF3UK7T",
+        "public": "age1extfnsjccl9nvgulg3rayht3xz07rtkl6j4029r3dk4c2kpaugaqnctge3"
+      },
+      {
+        "secret": "AGE-SECRET-KEY-1VCRK9U8HKEN8GG34K206EPERG55J0X2LD5PATAUTEHQK8MQMH5VSJ2SRXF",
+        "public": "age1a4a084usnv0ymtualzy2avn8mxgwypnxzlg7z9al2t38tfmxke0qs9ewk9"
+      }
+    ],
+    "key_file": {
+      "text": "# created: 2026-11-16T20:00:00+01:00\n# public key: age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq\nAGE-SECRET-KEY-16P2TJYCHX4QDCZPA78R7DTQTREQ4SUQH9C8C3PXCT2CTJ39RVC8Q4J2QFU\n",
+      "public": "age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq"
+    },
+    "invalid_secrets": [
+      "AGE-SECRET-KEY-1",
+      "AGE-SECRET-KEY-16p2TJYCHX4QDCZPA78R7DTQTREQ4SUQH9C8C3PXCT2CTJ39RVC8Q4J2QFU",
+      "AGE-SECRET-KEY-16P2TJYCHX4QDCZPA78R7DTQTREQ4SUQH9C8C3PXCT2CTJ39RVC8Q4J2QF",
+      "age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq",
+      ""
+    ],
+    "invalid_publics": [
+      "AGE-SECRET-KEY-16P2TJYCHX4QDCZPA78R7DTQTREQ4SUQH9C8C3PXCT2CTJ39RVC8Q4J2QFU",
+      "age1Wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq",
+      "age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxj",
+      "age1"
+    ],
+    "case_variants": {
+      "_hinweis": "bech32 kennt keine Groß- und Kleinschreibung, solange sie nicht gemischt ist: Diese gelten.",
+      "secret_lower": "age-secret-key-16p2tjychx4qdczpa78r7dtqtreq4suqh9c8c3pxct2ctj39rvc8q4j2qfu",
+      "public_upper": "AGE1WD93F5PMU4Q002SRQCX02VJWHEX9KA0DRHG73KAAWZ9NNP4RCETQPNDXJQ",
+      "public": "age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq"
+    }
   }
 }

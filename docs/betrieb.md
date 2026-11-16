@@ -2,12 +2,12 @@
 
 Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar machen, auf den Handys installieren, sichern, aktualisieren. Was Stowly ist und wie es aufgebaut ist, steht in [`../README.md`](../README.md) und [`plan-stufe-1.md`](plan-stufe-1.md).
 
-> **Stand.** `Dockerfile`, `docker-compose.yml` und `docker-compose.usb.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate, Drucker und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst samt Druckdienst mit dem Bild-Treiber (automatische Tests und Durchläufe von Hand unter Windows, die Web-App mit eingeschalteter Content-Security-Policy im Browser). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden. Aus Stufe 2 sind die automatische Sicherung, die Benachrichtigungen samt Tagesnachricht, die Zeitzone, der Abgleich mit Bring! über Home Assistant und der Sensor für Home Assistant bisher nur mit automatischen Tests geprüft (Testschlüssel für age, nachgebildete Push-Dienste, ein nachgebildetes Home Assistant, eingestellte Uhr); am Gerät, mit `age` und am echten Home Assistant prüfen sie D7 bis D13, I, J und K. Für den Raspberry Pi gibt es eine eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md). Am 14.11.2026 liefen Bau und Start erstmals in einer Zielumgebung, auf einer Synology mit DSM 6.2.4 (Abschnitt 4.4); was dort geprüft ist, steht in [`pruefliste.md`](pruefliste.md).
+> **Stand.** `Dockerfile`, `docker-compose.yml` und `docker-compose.usb.yml` sind auf dem Entwicklungsrechner **nicht gebaut und nicht gestartet** worden: Dort gibt es kein Docker. Auch Reverse Proxy, Zertifikate, Drucker und die Installation auf den Handys ließen sich nur beschreiben, nicht ausprobieren. Geprüft ist der Server selbst samt Druckdienst mit dem Bild-Treiber (automatische Tests und Durchläufe von Hand unter Windows, die Web-App mit eingeschalteter Content-Security-Policy im Browser). Alles Übrige prüft die [Prüfliste](#prüfliste-für-die-zielumgebung) am Ende; bitte beim ersten Aufsetzen Schritt für Schritt abhaken und Abweichungen melden. Aus Stufe 2 sind die automatische Sicherung, die Benachrichtigungen samt Tagesnachricht, die Zeitzone, der Abgleich mit Bring! über Home Assistant und der Sensor für Home Assistant bisher nur mit automatischen Tests geprüft (Testschlüssel für age, nachgebildete Push-Dienste, ein nachgebildetes Home Assistant, eingestellte Uhr); am Gerät, mit `age` und am echten Home Assistant prüfen sie D7 bis D13, I, J und K. Sicherung, Zurückspielen und Home Assistant in der App (0.4.0) sind mit automatischen Tests geprüft, auch gegen den echten Server und ein nachgebildetes Home Assistant; am NAS und an den Geräten prüft sie N. Für den Raspberry Pi gibt es eine eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md). Am 14.11.2026 liefen Bau und Start erstmals in einer Zielumgebung, auf einer Synology mit DSM 6.2.4 (Abschnitt 4.4); was dort geprüft ist, steht in [`pruefliste.md`](pruefliste.md).
 
 ## 1. Überblick
 
 - Stowly läuft als **ein Container mit einem Prozess**. Er liefert die Web-App und die Schnittstelle auf Port 8010 über HTTP und seit 0.3.0 dieselbe App auf Port 8443 über HTTPS, mit einer eigenen Zertifizierungsstelle (Abschnitt 20).
-- **Am einfachsten** legt man den Container per Mausklick in der Docker-Oberfläche des NAS an und richtet alles Weitere im Einrichtungsassistenten der App ein: Passwort, Zertifikat, Raspberry Pi, Updates, Benachrichtigungen (Abschnitt 19). Eine Kommandozeile braucht es dafür nicht.
+- **Am einfachsten** legt man den Container per Mausklick in der Docker-Oberfläche des NAS an und richtet alles Weitere im Einrichtungsassistenten der App ein: Passwort, Zertifikat, Raspberry Pi, Sicherung, Updates, Benachrichtigungen, Home Assistant (Abschnitt 19). Eine Kommandozeile braucht es dafür nicht.
 - **Alternativ stellt ein Reverse Proxy HTTPS davor bereit.** Beschrieben sind Nginx Proxy Manager mit eigener Zertifizierungsstelle (Abschnitt 4), der Reverse Proxy von Synology DSM (Abschnitt 4.4) und Tailscale (Abschnitt 5). Der Weg mit Docker Compose und `.env` (Abschnitt 3) bleibt für Rechner mit Kommandozeile.
 - **Offline-Betrieb, Kamera und die Installation als App gehen nur über die HTTPS-Adresse** (Abschnitt 6).
 - Alle Daten liegen in **einer SQLite-Datei** in einem Docker-Volume (Abschnitt 10).
@@ -23,7 +23,7 @@ Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar mach
 | HTTPS: Stowly selbst mit eigener Zertifizierungsstelle (Abschnitt 20) **oder** ein Reverse Proxy (Nginx Proxy Manager, Synology DSM, Tailscale) | siehe Abschnitte 4, 4.4, 5 und 20 |
 | eine feste IP-Adresse des NAS im Heimnetz (im Router einstellen) | Zertifikat und Adresse der App hängen daran (Abschnitt 6) |
 | im Betrieb optional Internet | für das Nachschlagen bei Open Food Facts und für Benachrichtigungen (die Push-Dienste von Apple, Google, Mozilla und Microsoft, Abschnitt 15) |
-| für die automatische Sicherung: `age` auf einem eigenen Rechner | Schlüssel erzeugen und Sicherungen öffnen (Abschnitt 8.1); auf dem Server nicht nötig |
+| für die Sicherung: einen Ort für den geheimen Schlüssel (USB-Stick, Passwort-Manager) | Den Schlüssel erzeugt die App im Browser (Abschnitt 8.2). `age` auf einem eigenen Rechner braucht nur der Notweg auf der Kommandozeile (8.4), auf dem Server nie. |
 | optional Home Assistant mit der Integration Bring! | die Einkaufsliste in Bring! (Abschnitt 17) und der Sensor mit Ansage (Abschnitt 18) |
 
 ## 3. Start mit Docker Compose
@@ -54,12 +54,12 @@ Die Einstellungen stehen in `.env` und sind dort beschrieben ([`.env.example`](.
 | `STOWLY_LOG_LEVEL` | `info` (Vorgabe), `debug`, `warning` … |
 | `STOWLY_CSP` | Content-Security-Policy der Web-App: leer = vorsichtige Vorgabe, `off` = keine, sonst der angegebene Wert (Abschnitt 13) |
 | `STOWLY_TIMEZONE` | Zeitzone für „heute" und alle Uhrzeiten, Vorgabe `Europe/Berlin` (Abschnitt 16) |
-| `STOWLY_BACKUP_DIR`, `STOWLY_BACKUP_RECIPIENTS`, `STOWLY_BACKUP_TIME` | automatische, verschlüsselte Sicherung: Ordner im Container (`/backups`), öffentliche age-Schlüssel, Uhrzeit (Vorgabe `03:30`) (Abschnitt 8.1) |
+| `STOWLY_BACKUP_DIR`, `STOWLY_BACKUP_RECIPIENTS`, `STOWLY_BACKUP_TIME` | freiwillig, die Sicherung geht auch ganz in der App: Ordner im Container, öffentliche age-Schlüssel (dann fest an), Uhrzeit. Leer = Wahl des Ordners nach 8.1, Schlüssel und Uhrzeit aus der App (Vorgabe `03:30`) (Abschnitt 8.5) |
 | `STOWLY_PUSH_CONTACT` | Absender für Benachrichtigungen, `mailto:<Adresse>` oder eine `https://`-Adresse; leer = Kontakt aus der App, sonst kein Push (Abschnitt 15) |
 | `STOWLY_UPDATE_REPO` | Updates über GitHub immer an (Abschnitt 9.2); leer = Schalter in der App |
 | `STOWLY_HTTPS_PORT` | Port des HTTPS-Listeners im Container; im Image `8443`. Veröffentlicht wird er nur über `docker-compose.override.yml` (Abschnitt 20) |
-| `STOWLY_HA_URL`, `STOWLY_HA_TOKEN`, `STOWLY_HA_TODO_ENTITY`, `STOWLY_HA_CA` | Einkaufsliste nach Bring! über Home Assistant: Adresse, Token, To-do-Liste, eigene Zertifizierungsstelle; leer = kein Bring! (Abschnitt 17) |
-| `STOWLY_HA_SUMMARY_TOKEN` | Token des Sensors für Home Assistant, mindestens 32 Zeichen; leer = kein Sensor (Abschnitt 18) |
+| `STOWLY_HA_URL`, `STOWLY_HA_TOKEN`, `STOWLY_HA_TODO_ENTITY`, `STOWLY_HA_CA` | Einkaufsliste nach Bring! über Home Assistant: Adresse, Token, To-do-Liste, eigene Zertifizierungsstelle. Ist eine der ersten drei gesetzt, kommen alle drei von hier; leer = Einrichtung in der App (Abschnitt 17.2). Die Zertifizierungsstelle gibt es nur hier (17.4) |
+| `STOWLY_HA_SUMMARY_TOKEN` | Token des Sensors für Home Assistant, mindestens 32 Zeichen; leer = der Sensor-Token aus der App, sonst kein Sensor (Abschnitt 18.1) |
 | `STOWLY_PUBLISH` | unter welcher Adresse des Rechners der Container erreichbar ist; Vorgabe `127.0.0.1:8010` |
 | `STOWLY_USB_GID` | nur mit `docker-compose.usb.yml`: Gruppe, der der USB-Drucker gehört; Vorgabe `46` (plugdev) (Abschnitt 14.3) |
 | `TZ` | Zeitzone des Containers; Stowly selbst richtet sich nach `STOWLY_TIMEZONE` |
@@ -188,7 +188,7 @@ Dazu:
 
 - **Druckdienst:** Der Pi muss die neue Adresse als Ursprung kennen: `https://<IP des NAS>:8443` in `origins` (`pi/README.md`, Abschnitt „Konfiguration"), danach `sudo systemctl restart stowly-print`.
 - **Passwort sichtbar:** Die Docker-App von DSM zeigt beim Container alle Umgebungsvariablen an, auch `STOWLY_PASSWORD`. Dieses Fenster nicht abfotografieren oder weitergeben.
-- **Noch nicht erprobt:** der Ordner `./backups` der automatischen Sicherung auf einer Freigabe von DSM. Dort entscheidet die Windows-ACL der Freigabe über den Zugriff, nicht allein `chown 10001:10001` (Abschnitt 8.1).
+- **Noch nicht erprobt:** der Ordner `./backups` der automatischen Sicherung auf einer Freigabe von DSM. Dort entscheidet die Windows-ACL der Freigabe über den Zugriff, nicht allein `chown 10001:10001`. Darf Stowly nicht hinein, nimmt es ohne `STOWLY_BACKUP_DIR` den Datenordner und sagt es; mit der Variable ruht die Sicherung (Abschnitt 8.1).
 
 ## 5. Tailscale
 
@@ -239,106 +239,156 @@ Auf dem iPhone ist die Installation nötig: Safari löscht die lokalen Daten ein
 
 ## 8. Sicherung
 
-Es gibt zwei Arten, beide eine vollständige, in sich stimmige Kopie der Datenbank, gezogen bei laufendem Betrieb:
+Seit 0.4.0 richtet man die Sicherung in der App ein: unter Einstellungen → „Sicherung" oder im Assistenten (Abschnitt 19.2). Es gibt nur noch die **verschlüsselte Sicherung** im Ordner auf dem Server, jede Nacht von selbst und auf Knopfdruck („Jetzt sichern"). Genau diese Dateien lassen sich auch herunterladen. Die unverschlüsselte Sicherung zum Herunterladen aus 0.3.x gibt es nicht mehr.
 
-- die **automatische, verschlüsselte Sicherung** jede Nacht in den Ordner `./backups` auf dem Server (8.1),
-- die **Sicherung zum Herunterladen** in der App (8.2).
-
-Beide enthalten den ganzen Haushalt: Bestand, Lösch-Historie, Einkaufsliste, Ereignisprotokoll, Produktbilder, die Liste der Geräte (ohne deren Tokens, nur Prüfsummen), die Zugangsdaten eingerichteter Drucker und den Schlüssel des Servers für Benachrichtigungen. Zurückspielen: 8.3.
+Eine Sicherung ist eine vollständige, in sich stimmige Kopie der Datenbank, gezogen bei laufendem Betrieb: Bestand, Lösch-Historie, Einkaufsliste, Ereignisprotokoll, Produktbilder, die Liste der Geräte (ohne deren Tokens, nur Prüfsummen), der Hash des Haushalts-Passworts, die Zugangsdaten eingerichteter Drucker, der Schlüssel des Servers für Benachrichtigungen und die Einstellungen aus der App. Nicht darin ist, was daneben im Datenordner liegt (Abschnitt 10): die Zertifizierungsstelle, die Tokens für Home Assistant und den Sensor, der Druckdienst.
 
 ### 8.1 Automatische, verschlüsselte Sicherung
 
-Jeden Tag zur Uhrzeit `STOWLY_BACKUP_TIME` (Vorgabe `03:30`, in `STOWLY_TIMEZONE`) legt der Server eine Datei `stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age` in den Ordner: gepackt und im Format [age](https://age-encryption.org) an **öffentliche Schlüssel** verschlüsselt. Den passenden privaten Schlüssel hat nur der Betreiber; wer Server oder Ordner erbeutet, kann die Sicherungen nicht lesen.
+Jeden Tag zur eingestellten Uhrzeit (Vorgabe `03:30`, in `STOWLY_TIMEZONE`) legt der Server eine Datei `stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age` in den Ordner: gepackt und im Format [age](https://age-encryption.org) an **öffentliche Schlüssel** verschlüsselt. Die geheimen Schlüssel dazu hat nur der Haushalt (8.2); wer Server oder Ordner erbeutet, kann die Sicherungen nicht lesen.
 
 - **Aufbewahrung:** die Sicherungen der 7 neuesten Tage, der 4 neuesten Wochen und der 12 neuesten Monate (gezählt werden Tage, Wochen und Monate, *an denen* es eine gibt; nach einem langen Ausfall bleiben also die letzten erhalten). Aufgeräumt wird nur nach einer gelungenen Sicherung und nur unter den eigenen Dateien; andere Dateien im Ordner fasst der Server nie an.
 - **Nachholen:** War der Server zur Uhrzeit aus, macht er die Sicherung gleich nach dem Start, auch abends. Scheitert sie, versucht er es jede Stunde wieder, bis eine des Tages gelingt.
+- **Auf Knopfdruck:** „Jetzt sichern" legt dieselbe Datei an, höchstens einmal je Minute, auch bei ausgeschaltetem Schalter. Sie zählt als Sicherung des Tages: Die automatische läuft an diesem Tag nicht noch einmal.
+- **Ohne Schlüssel** ruht die Sicherung. Sobald es einen gibt, beginnt sie, ohne Neustart; ist die Uhrzeit heute schon vorbei, kommt die erste gleich.
 - **Kein Klartext im Ordner:** Der Server schreibt in eine Zwischendatei (`.stowly-backup-….tmp`, schon verschlüsselt, Rechte `0600`) und benennt sie erst um, wenn sie vollständig auf der Platte steht.
-- **In der App** unter „Einstellungen → Sicherung": letzte gelungene Sicherung, Größe, die Schlüssel (gekürzt), der nächste Versuch und ein Fehler, falls es einen gab. Nach 48 Stunden ohne gelungene Sicherung warnt die App.
 
-**Einrichten**
+**Der Ordner.** Stowly wählt ihn selbst, bei jeder Sicherung neu, in dieser Reihenfolge:
 
-1. Auf einem **eigenen Rechner**, nicht auf dem Server: `age` installieren (Debian `sudo apt install age`, macOS `brew install age`; für Windows nennt die Seite des Projekts die Wege) und zwei Schlüssel erzeugen:
+| Ordner im Container | wann |
+|---|---|
+| `STOWLY_BACKUP_DIR` | wenn die Variable gesetzt ist (8.5). Diesen Ordner legt Stowly nie an, und es weicht nicht aus: Fehlt er oder ist er nicht beschreibbar, ruht die Sicherung, und die App sagt warum. |
+| `/backups` | wenn dort ein eigener Ordner eingebunden ist und der Benutzer des Containers (10001) hineinschreiben darf. Bei Docker Compose ist das `./backups` aus `docker-compose.yml`, in DSM ein zweiter Ordner (Abschnitt 19.4). |
+| `/data/backups` | sonst, im Datenordner. Stowly legt ihn vor der ersten Sicherung an (Rechte `0700`). |
 
-   ```
-   age-keygen -o stowly-schluessel-1.txt
-   age-keygen -o stowly-schluessel-2.txt
-   ```
+Ist `/backups` eingebunden, aber nicht beschreibbar, gehen die Sicherungen in den Datenordner, und die App sagt es unter „Sicherung" („Der eigene Ordner wird nicht benutzt"): „Der eigene Ordner /backups ist eingebunden, taugt aber nicht: Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001). Die Sicherungen gehen deshalb in den Datenordner." Abhilfe bei Docker Compose: `sudo chown 10001:10001 backups`; in DSM das Schreibrecht wie in 19.4. Danach nimmt Stowly `/backups` von selbst, ohne Neustart. Ins Log kommt der Hinweis einmal je Start.
 
-   Jeder Aufruf zeigt den öffentlichen Schlüssel (`Public key: age1…`); er steht auch in der Datei. **Mehrere Schlüssel sind empfohlen**, etwa einer im Passwortmanager und einer ausgedruckt an einem anderen Ort: Jeder öffnet jede Sicherung allein. Geht jeder private Schlüssel verloren, sind alle Sicherungen wertlos. Die Dateien mit den privaten Schlüsseln (`AGE-SECRET-KEY-1…`) gehören **nie** auf den Server; trägt jemand einen privaten Schlüssel in `STOWLY_BACKUP_RECIPIENTS` ein, verweigert der Server den Start.
-2. In `.env` die öffentlichen Schlüssel eintragen, getrennt durch Komma oder Leerzeichen (`STOWLY_BACKUP_DIR=/backups` steht schon in `.env.example`):
+**Ein Ordner auf derselben Platte ersetzt keine Kopie außer Haus.** Er hilft gegen Fehlbedienung und kaputte Daten, nicht gegen einen Plattenschaden, Diebstahl, Brand oder einen Fehler, der den ganzen Rechner trifft. Für `/data/backups` gilt das erst recht: Geht der Datenträger kaputt, sind Daten und Sicherungen zugleich weg. Die Dateien deshalb regelmäßig an einen anderen Ort kopieren (anderer Rechner, externe Platte, auch ein Cloud-Speicher: Sie sind verschlüsselt), auf einer Synology etwa mit Hyper Backup oder Cloud Sync, sonst etwa mit `rsync -a <benutzer>@<server>:~/stowly/backups/ /pfad/zur/kopie/`.
 
-   ```
-   STOWLY_BACKUP_DIR=/backups
-   STOWLY_BACKUP_RECIPIENTS=age1…,age1…
-   ```
-3. Den Ordner im Ordner des Repositorys anlegen und dem Benutzer des Containers geben (`docker-compose.yml` legt `./backups` nach `/backups`). Den Ordner legt der Server nicht selbst an: Er läge sonst womöglich im Container statt auf der Platte des Rechners.
+### 8.2 Einrichten in der App
 
-   ```
-   mkdir -p backups
-   sudo chown 10001:10001 backups
-   sudo chmod 700 backups
-   ```
-4. `docker compose up -d`, dann `docker compose logs stowly`: „Automatische Sicherung täglich um 03:30 nach /backups an 2 Schlüssel." Ist die Uhrzeit heute schon vorbei, folgt gleich „Sicherung geschrieben: stowly-….sqlite3.gz.age (… Byte, 2 Schlüssel)".
+Unter Einstellungen → „Sicherung", im Assistenten im Schritt „Sicherung":
 
-**Probe-Entschlüsselung:** einmal nach dem Einrichten und dann ab und zu, **mit jedem privaten Schlüssel**. Auf dem eigenen Rechner:
+1. **Schlüssel erzeugen.** Der Browser erzeugt ein Schlüsselpaar für age, auch über http. Den geheimen Teil (`AGE-SECRET-KEY-1…`) zeigt Stowly nur jetzt: zum Kopieren und mit **Als Datei speichern** als `stowly-schluessel-JJJJ-MM-TT.txt` (dasselbe Format wie von `age-keygen`). **Den geheimen Schlüssel an zwei Orten aufheben**, etwa auf einem USB-Stick und im Passwort-Manager: Nur mit ihm lässt sich eine Sicherung zurückspielen, und Stowly speichert ihn nicht. Erst nach dem Haken „Ich habe ihn gesichert." und mit dem **Haushalts-Passwort** schickt **Schlüssel übernehmen** den öffentlichen Schlüssel (`age1…`) an Stowly; der geheime verlässt das Gerät nie.
+2. **Weitere Schlüssel**, höchstens 10: noch einmal „Schlüssel erzeugen", oder **Öffentlichen Schlüssel hinzufügen** für einen, der schon anderswo liegt (etwa aus `age-keygen` auf einem anderen Rechner). Jeder geheime Schlüssel öffnet jede neue Sicherung allein. Einen geheimen Schlüssel schickt die App an dieser Stelle nie an den Server, und der Server lehnt ihn ab. **Entfernen** wirkt nur für neue Sicherungen; ältere lassen sich mit dem entfernten Schlüssel weiter öffnen.
+
+   **Einen Schlüssel hinzuzufügen braucht das Haushalts-Passwort**, auch den ersten, ob erzeugt oder eingefügt; gilt `STOWLY_PASSWORD`, ist es dieses. Wer einen Schlüssel hinzufügt, kann jede künftige Sicherung öffnen, samt Passwort-Hash, Schlüssel des Servers für Benachrichtigungen und Push-Abos. Ein falsches Passwort ergibt „Das Haushalts-Passwort stimmt nicht."; das erzeugte Paar bleibt stehen, und es lässt sich gleich noch einmal versuchen. Falsche Passwörter zählen wie bei der Anmeldung: nach 5 in 5 Minuten 60 Sekunden Sperre, gemeinsam mit der Anmeldung (Abschnitt 3, Hinweise). Entfernen braucht kein Passwort. Hat ein anderes Gerät die Schlüssel inzwischen geändert, sagt die App es; dann neu laden und noch einmal versuchen.
+3. **Uhrzeit** (Zeit des Servers, Vorgabe 03:30) und Schalter **Automatische Sicherung**. Ohne Einstellung ist er an. Aus heißt: Stowly sichert nicht von selbst; „Jetzt sichern" geht trotzdem.
+4. **Ordner** zeigt, wohin die Sicherungen gehen (8.1). Liegt er im Datenordner, steht der Rat dabei, einen zweiten Ordner einzubinden (19.4) oder den Ordner wegzukopieren.
+5. **Jetzt sichern** als Probe. Im Assistenten ist der Schritt erledigt, sobald die Sicherung wirkt und eine gelungen ist.
+6. **Schlüssel prüfen:** den aufgehobenen geheimen Schlüssel einfügen oder die Schlüsseldatei wählen. Der Browser errechnet daraus den öffentlichen und vergleicht ihn mit den gespeicherten: „Der Schlüssel passt" oder „Der Schlüssel passt nicht". Nichts davon geht an den Server. Ab und zu wiederholen, mit jedem aufgehobenen Schlüssel.
+
+Unter „Ordner und Sicherungen" stehen die Sicherungen im Ordner, neueste zuerst (höchstens 50), je mit **Herunterladen**: die verschlüsselte Datei, wie sie dort liegt. Öffnen lässt sie sich mit dem geheimen Schlüssel, in Stowly (8.3) oder mit `age` (8.4). Darüber zeigt die App die letzte gelungene Sicherung mit Größe, einen Fehler und den nächsten Versuch; nach 48 Stunden ohne gelungene Sicherung warnt sie. Ist die Sicherung nur zum Teil eingerichtet, nennt sie den Grund, etwa „Es fehlt ein öffentlicher Schlüssel (in der App oder in STOWLY_BACKUP_RECIPIENTS)." oder „Die automatische Sicherung ist ausgeschaltet."
+
+Was aus der Umgebung kommt (8.5), ist in der App gesperrt und so beschriftet.
+
+### 8.3 Zurückspielen in der App
+
+Stowly nimmt seine verschlüsselten Sicherungen (`.sqlite3.gz.age`), dazu gepackte (`.sqlite3.gz`) und reine Datenbanken (`.sqlite3`, etwa die Sicherung zum Herunterladen aus 0.3.x); nur die verschlüsselten brauchen einen Schlüssel. Eine Datei darf höchstens 512 MiB groß sein, entpackt höchstens 2 GiB, und auf der Platte braucht es etwa dreimal so viel Platz, wie die Datei groß ist. Ein Reverse Proxy davor kann große Dateien schon vorher abweisen. Kommen beim Hochladen 60 Sekunden lang keine Daten oder dauert es länger als 20 Minuten, bricht Stowly ab und löscht das schon Hochgeladene. Eine hochgeladene Datei und eine geprüfte Sicherung gelten 30 Minuten; was abgelaufen ist, räumt Stowly alle 5 Minuten weg. Ein neues Hochladen oder Prüfen ersetzt das vorige erst, wenn es gelingt.
+
+**Laufender Stowly:** Einstellungen → „Sicherung" → „Zurückspielen …":
+
+1. **Datei wählen.** Sie wird hochgeladen, mit Fortschritt.
+2. **Schlüssel eingeben:** den geheimen Schlüssel einfügen oder die Schlüsseldatei wählen, dann **Prüfen**. Stowly entschlüsselt im Arbeitsspeicher, prüft die Datenbank genau und bringt eine Kopie auf den eigenen Stand. Den Schlüssel speichert und loggt es nie. Passt er nicht, lässt sich gleich ein anderer versuchen, ohne neues Hochladen.
+3. **Was in der Sicherung steckt:** Stand, Produkte, Vorräte, Zonen, Einkaufsliste, Geräte und ob ein Haushalts-Passwort darin ist.
+4. Das **jetzige Haushalts-Passwort** eingeben, **Zurückspielen …**, die Rückfrage „Sicherung jetzt einspielen?" mit **Einspielen** bestätigen.
+
+Stowly startet dann neu und tauscht die Datenbank, bevor etwas sie öffnet. Das dauert meist unter einer Minute; danach lädt die Seite neu. Die geprüfte Sicherung gilt 30 Minuten, danach braucht es ein neues Hochladen. Was danach gilt:
+
+- **Der Bestand kommt aus der Sicherung.** Aus dem laufenden Stowly bleiben die Geräte samt Anmeldungen und Sperren, das Haushalts-Passwort, für Benachrichtigungen der Schlüssel des Servers und die Abos, die Einstellungen aus der App und die Läufe der Aufgaben. Niemand wird abgemeldet, und gesperrte Geräte bleiben gesperrt. `STOWLY_PASSWORD` geht weiter vor.
+- **Alle Geräte holen den Bestand beim nächsten Abgleich vollständig neu** (neue Kennung des Datenbestands). Auf den Handys ist nichts zu tun. Änderungen, die ein Gerät noch nicht abgeglichen hatte, sendet es erneut; was schon in der Sicherung steckt, erkennt der Server und führt es nicht doppelt aus.
+- Was nach der Sicherung geschah und schon abgeglichen war, ist weg: Das ist der Sinn des Zurückspielens.
+- **Kennungen:** Packungen, die erst nach der Sicherung entstanden, behalten ihre Kennungen als reserviert. So bekommt kein schon gedrucktes Etikett eine Kennung ein zweites Mal.
+- **Bring!:** Zu welcher Liste in Home Assistant die gespiegelten Artikel gehören, kommt mit der Sicherung (17.5). Eine Sicherung aus 0.3.x weiß das nicht: Dann vergisst Stowly diese Artikel, ohne etwas abzuhaken, und spiegelt die offenen Einträge neu.
+- **Was wegfällt:** Produktbilder, die kein JPEG, PNG oder WebP sind oder deren Inhalt nicht dazu passt (das Produkt hat dann kein Bild; das Log nennt ihre Zahl), und Kopplungen eines Pi, die in der Sicherung noch offen waren: Sie gelten als abgebrochen, für den Pi einen neuen Kopplungscode erzeugen.
+- **Rückgängig:** Sieben Tage lang hebt Stowly die Datenbank von vor dem Zurückspielen auf (`/data/restore/previous.sqlite3`). Unter „Zurückspielen" stehen so lange **Rückgängig** (holt sie auf demselben Weg zurück, mit Neustart; auch das lässt sich wieder umkehren) und **Alte Datenbank löschen** (danach geht Rückgängig nicht mehr). Nach sieben Tagen löscht Stowly sie selbst.
+
+**Erster Start auf einem neuen Rechner** (Umzug, Plattenausfall): „Willkommen bei Stowly" bietet neben dem ersten Passwort **Aus einer Sicherung wiederherstellen**:
+
+1. **Sicherung wählen**, dann wie oben Schlüssel und Vorschau.
+2. Das **Passwort aus der Sicherung** eingeben; das zeigt zugleich, dass die Sicherung echt ist. Enthält sie keins, legt man ein neues fest (mindestens 8 Zeichen); die Geräte aus der Sicherung gelten dann nicht mehr.
+3. Den **Namen dieses Geräts** eingeben, **Wiederherstellen**.
+
+Stowly startet neu, und dieses Gerät ist danach angemeldet. Weil die Zertifizierungsstelle auf dem neuen Rechner neu ist, beginnt der Assistent mit der sicheren Verbindung (Abschnitt 19.2). Die Tokens für Home Assistant und den Sensor stehen in keiner Sicherung und sind neu einzutragen (20.4). Das alles geht nur, solange es kein Passwort gibt (auch keines in `STOWLY_PASSWORD`), und nur im Heimnetz, wie das erste Passwort. Ein erstes Passwort und dieses Zurückspielen schließen sich aus; wer zuerst kommt, gewinnt. Ein Rückgängig gibt es beim ersten Start nicht.
+
+**Über http** geht der geheime Schlüssel unverschlüsselt durchs Heimnetz; die App weist darauf hin („Unverschlüsselte Verbindung"). Sicherer ist es über die HTTPS-Adresse von Stowly (Abschnitt 20).
+
+**Wenn etwas nicht passt,** sagt die App warum:
+
+| Meldung | Grund |
+|---|---|
+| „Der Schlüssel passt nicht zu dieser Sicherung." | Die Sicherung ist für einen anderen Schlüssel verschlüsselt. „Schlüssel prüfen" (8.2) zeigt, ob ein aufgehobener Schlüssel zu den gespeicherten passt. |
+| „Das ist kein geheimer age-Schlüssel (AGE-SECRET-KEY-1…)." | Etwas anderes eingefügt; für einen öffentlichen Schlüssel (`age1…`) gibt es einen eigenen Satz. |
+| „Das ist keine Sicherung von Stowly …", „Das ist keine Datenbank von Stowly." | eine fremde Datei, oder eine Datenbank mit anderem Aufbau, mit Triggern oder Views (unter welchem Namen auch immer). Der Aufbau muss Zeichen für Zeichen dem aus den Migrationen gleichen; was abweicht, nennt das Log. |
+| „Die Datei ist beschädigt oder unvollständig." | abgeschnitten oder verändert: eine andere Sicherung nehmen |
+| „Die Sicherung stammt von einem neueren Stowly …" | erst Stowly aktualisieren |
+| „Gerade läuft ein Update. Zurückspielen geht erst danach." | Updates und Zurückspielen schließen sich aus; umgekehrt wartet auch ein Update. |
+| „Beim Hochladen kamen 60 Sekunden lang keine Daten …", „Das Hochladen dauerte länger als 20 Minuten …" | Verbindung zu langsam oder unterbrochen: noch einmal hochladen, am besten im Heimnetz. |
+| „Zu viele Versuche. Nächster Versuch in …" | Hochladen und Prüfen gehen einzeln und höchstens sechsmal in 10 Minuten; falsche Passwörter zählen wie bei der Anmeldung. |
+| „Das Zurückspielen ist gescheitert: … Die bisherige Datenbank läuft weiter." | Beim Neustart ging etwas schief; der Grund steht im Satz und im Log. Stowly startet dann normal, ohne Neustart-Schleife. Kommt der Neustart erst mehr als 10 Minuten nach dem Einspielen, verwirft Stowly die Sicherung. |
+
+Für den Neustart ersetzt Stowly seinen eigenen Prozess; der Container läuft weiter. Gelingt das nicht, endet der Prozess, und Docker startet den Container neu (dafür muss der automatische Neustart an sein, 19.1); getauscht wird dann dort.
+
+### 8.4 Notweg auf der Kommandozeile
+
+Nur, wenn es in der App nicht geht, etwa bei einem Stowly vor 0.4.0 oder wenn er gar nicht mehr startet, und mit Docker Compose. Dafür braucht es `age` auf einem eigenen Rechner (Debian `sudo apt install age`, macOS `brew install age`; für Windows nennt die Seite des Projekts die Wege). Die Schlüsseldatei aus der App (8.2) nimmt `age` so, wie sie ist.
+
+**Probe-Entschlüsselung**, ab und zu und mit jedem geheimen Schlüssel:
 
 ```
-scp <benutzer>@<server>:~/stowly/backups/stowly-2026-11-14-0330.sqlite3.gz.age .
-age -d -i stowly-schluessel-1.txt stowly-2026-11-14-0330.sqlite3.gz.age | gunzip | head -c 15
-age -d -i stowly-schluessel-2.txt stowly-2026-11-14-0330.sqlite3.gz.age | gunzip | head -c 15
+age -d -i stowly-schluessel-2026-11-16.txt stowly-2026-11-16-0330.sqlite3.gz.age | gunzip | head -c 15
 ```
 
-Beide Male muss `SQLite format 3` erscheinen. Gründlicher, mit dem Programm `sqlite3`: `age -d -i stowly-schluessel-1.txt stowly-….sqlite3.gz.age | gunzip > probe.sqlite3`, dann `sqlite3 probe.sqlite3 "PRAGMA integrity_check; SELECT COUNT(*) FROM packages;"` (zeigt `ok` und die Zahl der Packungen); `probe.sqlite3` danach löschen.
+Es muss `SQLite format 3` erscheinen. Gründlicher, mit dem Programm `sqlite3`: `age -d -i stowly-schluessel-….txt stowly-….sqlite3.gz.age | gunzip > probe.sqlite3`, dann `sqlite3 probe.sqlite3 "PRAGMA integrity_check; SELECT COUNT(*) FROM packages;"` (zeigt `ok` und die Zahl der Packungen); `probe.sqlite3` danach löschen.
 
-**Ein Ordner auf derselben Platte ersetzt keine Kopie außer Haus.** Er hilft gegen Fehlbedienung und kaputte Daten, nicht gegen einen Plattenschaden, Diebstahl, Brand oder einen Fehler, der den ganzen Rechner trifft. Die Dateien deshalb regelmäßig an einen anderen Ort kopieren (anderer Rechner, externe Platte, auch ein Cloud-Speicher: Sie sind verschlüsselt), etwa mit `rsync -a <benutzer>@<server>:~/stowly/backups/ /pfad/zur/kopie/`.
-
-Meldet die App „Der Ordner für Sicherungen fehlt." oder „Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).", stimmen Schritt 3 oder die Einbindung in `docker-compose.yml` nicht; der nächste Versuch kommt nach einer Stunde von selbst.
-
-### 8.2 Sicherung zum Herunterladen
-
-In der App unter „Einstellungen → Sicherung": eine Datei `stowly-JJJJ-MM-TT.sqlite3` (Tag in `STOWLY_TIMEZONE`), **unverschlüsselt**. Entsprechend aufbewahren. Sie bleibt neben der automatischen Sicherung bestehen, etwa für eine schnelle Kopie vor jedem Aktualisieren.
-
-### 8.3 Zurückspielen
-
-Eine automatische Sicherung wird zuerst auf dem eigenen Rechner entschlüsselt und entpackt; danach ist sie eine Datei wie die zum Herunterladen:
+**Zurückspielen:** entschlüsseln und entpacken, Server anhalten, Datei ersetzen, neue Kennung, starten:
 
 ```
-age -d -i stowly-schluessel-1.txt stowly-2026-11-14-0330.sqlite3.gz.age | gunzip > stowly-2026-11-14.sqlite3
-```
-
-**Wieder einspielen:** Server anhalten, Datei ersetzen, starten. Wer den jetzigen Stand noch brauchen könnte, zieht vorher auch davon eine Sicherung.
-
-```
+age -d -i stowly-schluessel-2026-11-16.txt stowly-2026-11-16-0330.sqlite3.gz.age | gunzip > stowly-2026-11-16.sqlite3
 docker compose stop
 docker compose run --rm -T --no-deps stowly sh -c \
   'rm -f /data/stowly.sqlite3-wal /data/stowly.sqlite3-shm && cat > /data/stowly.sqlite3' \
-  < stowly-2026-11-13.sqlite3
-docker compose up -d
-```
-
-Der mittlere Befehl schreibt die Datei als der Benutzer des Containers ins Volume; so stimmen die Rechte. Was danach geschieht:
-
-- Der Server erkennt an der Kennung des Datenbestands, dass er einen anderen Stand hat. **Alle Geräte holen den Bestand beim nächsten Abgleich von selbst vollständig neu.** Auf den Handys ist nichts zu tun.
-- Änderungen, die ein Gerät noch nicht abgeglichen hatte, sendet es erneut. Was schon in der Sicherung steckt, erkennt der Server und führt es nicht doppelt aus.
-- Was nach der Sicherung geschah und schon abgeglichen war, ist weg: Das ist der Sinn des Zurückspielens.
-- Geräte, die erst nach der Sicherung angemeldet wurden, kennt der eingespielte Stand nicht. Sie melden sich neu an; ihre lokalen Daten und ungesendeten Änderungen bleiben dabei erhalten.
-- Der Schlüssel des Servers für Benachrichtigungen kommt mit. Abos für Benachrichtigungen, die nach der Sicherung entstanden sind, fehlen; die App meldet sich beim nächsten Start von selbst neu an.
-
-**Andere Kopien der Datenbank** (Schnappschuss des Volumes, Kopie der Datei bei angehaltenem Server, Sicherung des ganzen Rechners) lassen sich genauso zurückspielen, brauchen aber einen Schritt mehr. Nur die beiden Sicherungen von Stowly (8.1 und 8.2) tragen von sich aus eine neue Kennung des Datenbestands. Jede andere Kopie trägt die alte, und die Geräte bemerkten das Zurückspielen nicht zuverlässig: Sie behielten Packungen, die es auf dem Server nicht mehr gibt. Deshalb nach dem Zurückspielen einer solchen Kopie, vor dem Start:
-
-```
+  < stowly-2026-11-16.sqlite3
 docker compose run --rm --no-deps stowly python -m stowly --new-dataset
 docker compose up -d
 ```
 
-Der Befehl gibt dem Datenbestand eine neue Kennung und endet. Danach verhält sich alles wie oben beschrieben.
+- Der dritte Befehl schreibt die Datei als der Benutzer des Containers ins Volume; so stimmen die Rechte.
+- `--new-dataset` gibt dem Datenbestand eine neue Kennung und endet; danach holen alle Geräte den Bestand vollständig neu. Eine Sicherung von Stowly bringt zwar eine eigene Kennung mit; war dieselbe Datei aber schon einmal eingespielt, kennen die Geräte sie bereits. Andere Kopien der Datenbank (Schnappschuss des Volumes, Kopie der Datei bei angehaltenem Server, Sicherung des ganzen Rechners) tragen die alte; ohne neue Kennung behielten die Geräte Packungen, die es auf dem Server nicht mehr gibt. Der Befehl schadet nie.
+- **Anders als in der App** behält dieser Weg nichts aus der laufenden Datenbank: Geräte, Passwort, Abos für Benachrichtigungen und die Einstellungen aus der App kommen aus der Sicherung, und Kennungen von Packungen, die erst nach der Sicherung entstanden, sind nicht reserviert. Geräte, die erst nach der Sicherung angemeldet wurden, melden sich neu an; ihre lokalen Daten und ungesendeten Änderungen bleiben dabei erhalten. Abos für Benachrichtigungen, die nach der Sicherung entstanden sind, fehlen; die App meldet sich beim nächsten Start von selbst neu an.
+
+### 8.5 Sicherung über die `.env`
+
+Mit Docker Compose lässt sich die Sicherung weiter in der `.env` einstellen. Alle drei Variablen sind freiwillig; was dort steht, geht vor und ist in der App gesperrt:
+
+| Variable | Wirkung |
+|---|---|
+| `STOWLY_BACKUP_RECIPIENTS` | öffentliche Schlüssel (`age1…`), getrennt durch Komma oder Leerzeichen. Damit ist die Sicherung fest an; Schlüssel und Schalter sind in der App nur zu sehen. Ein geheimer Schlüssel hier beendet den Start mit einem Konfigurationsfehler, der ihn nicht zitiert. |
+| `STOWLY_BACKUP_TIME` | Uhrzeit `HH:MM`; leer = die Uhrzeit aus der App, sonst 03:30 |
+| `STOWLY_BACKUP_DIR` | Ordner im Container; leer = Wahl nach 8.1. Ein gesetzter Ordner gilt fest, auch wenn er nicht taugt. |
+
+Öffentliche Schlüssel für die `.env` entstehen auf einem eigenen Rechner, nicht auf dem Server, mit `age-keygen -o stowly-schluessel-1.txt`; jeder Aufruf zeigt den öffentlichen Schlüssel (`Public key: age1…`), er steht auch in der Datei. Die Dateien mit den geheimen Schlüsseln (`AGE-SECRET-KEY-1…`) gehören **nie** auf den Server.
+
+Den Ordner `./backups` (in `docker-compose.yml` nach `/backups` eingebunden) im Ordner des Repositorys anlegen und dem Benutzer des Containers geben:
+
+```
+mkdir -p backups
+sudo chown 10001:10001 backups
+sudo chmod 700 backups
+```
+
+Fehlt der Ordner auf dem Rechner, legt Docker ihn beim Start für root an; dann darf Stowly nicht hinein und nimmt ohne `STOWLY_BACKUP_DIR` den Datenordner (8.1).
+
+Die frühere `.env.example` (bis 0.3.x) setzte `STOWLY_BACKUP_DIR=/backups` und `STOWLY_BACKUP_TIME=03:30`. Wer das übernommen hat, behält beides aus der `.env`: Die Uhrzeit ist in der App gesperrt, und taugt `./backups` nicht, ruht die Sicherung statt auszuweichen. Ohne die beiden Zeilen nimmt Stowly `/backups` trotzdem, sobald es hineinschreiben darf, und die Uhrzeit lässt sich in der App einstellen.
+
+Beim Start nennt das Log die wirksame Einrichtung: „Automatische Sicherung täglich um 03:30 nach /backups an 2 Schlüssel." oder „Keine automatische Sicherung: …" mit dem Grund.
 
 ## 9. Aktualisieren
 
 Läuft Stowly mit dem fertigen Image von GitHub, geht ein Update per Knopf in der App (9.2) oder von Hand mit `docker compose pull` (9.3). Wer selbst baut:
 
 ```
-# vorher eine Sicherung herunterladen (Abschnitt 8)
+# vorher in der App „Jetzt sichern" und die Sicherung herunterladen (Abschnitt 8)
 git pull                       # neuen Stand holen; ohne Remote siehe Abschnitt 12
 docker compose up -d --build
 docker compose logs --tail 50 stowly
@@ -419,7 +469,7 @@ Es gibt zwei Updater. Für einen Container aus der Docker-Oberfläche (Abschnitt
 
 ### 9.3 Von Hand, mit dem fertigen Image
 
-Ohne Updater, oder wenn er streikt: eine Sicherung herunterladen (Abschnitt 8), `STOWLY_VERSION` in der `.env` auf die neue Version setzen, dann
+Ohne Updater, oder wenn er streikt: in der App „Jetzt sichern" und die Sicherung herunterladen (Abschnitt 8), `STOWLY_VERSION` in der `.env` auf die neue Version setzen, dann
 
 ```
 docker compose pull
@@ -447,17 +497,21 @@ Beim allerersten Image muss das Paket auf GitHub einmal öffentlich gestellt wer
 
 | Was | Wo |
 |---|---|
-| Datenbank mit allem: Bestand, Einkaufsliste, Produktbilder, Geräte und ihre Abos für Benachrichtigungen, Ereignisprotokoll, der Schlüssel des Servers für Benachrichtigungen, was Stowly zuletzt nach Bring! geschrieben hat (ohne Token) | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
+| Datenbank mit allem: Bestand, Einkaufsliste, Produktbilder, Geräte und ihre Abos für Benachrichtigungen, Ereignisprotokoll, der Schlüssel des Servers für Benachrichtigungen, was Stowly zuletzt nach Bring! geschrieben hat, die Einstellungen aus der App (ohne Tokens) | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
 | Druckdienst des Servers: Auftragsspeicher samt `boot_id`, Bilder des Bild-Treibers | im selben Volume unter `/data/print/` (`jobs.sqlite3`, `images/`). Nicht in den Sicherungen; geht er verloren, fragt die App bei offenen Etiketten nach, statt doppelt zu drucken |
-| automatische Sicherungen, verschlüsselt | Ordner `backups` im Ordner des Repositorys, im Container `/backups` (Abschnitt 8.1); die privaten Schlüssel dazu nur beim Betreiber |
-| Einstellungen des Servers samt Passwort und Tokens (auch die für Home Assistant und den Sensor) | `.env` im Ordner des Repositorys; was in der App eingestellt wurde (Push-Kontakt, Updates, Stand der Einrichtung), in der Datenbank (`server_config`), das Passwort aus der App nur als Hash |
+| Sicherungen, verschlüsselt | `/backups`, wenn dort ein eigener Ordner eingebunden ist (Docker Compose: `backups` im Ordner des Repositorys; DSM: Abschnitt 19.4), sonst im Volume unter `/data/backups/` (Abschnitt 8.1); die geheimen Schlüssel dazu nur beim Haushalt |
+| Tokens aus der App: für Home Assistant und den Sensor | im Volume unter `/data/secrets/` (Ordner `0700`, Dateien `0600`); nicht in den Sicherungen (Abschnitte 17.2, 18.1) |
+| Zurückspielen: die hochgeladene Datei, die geprüfte Kopie und 7 Tage lang die Datenbank von vor dem Zurückspielen (`previous.sqlite3`) | im Volume unter `/data/restore/` (`0700`); nicht in den Sicherungen (Abschnitt 8.3) |
+| Einstellungen des Servers | `.env` im Ordner des Repositorys bzw. die Umgebung des Containers, samt Passwort und Tokens, soweit dort gesetzt; was in der App eingestellt wurde (Push-Kontakt, Updates, Sicherung, Adresse und Liste von Home Assistant, Stand der Einrichtung), in der Datenbank (`server_config`), das Passwort aus der App nur als Hash, die Tokens aus der App in `/data/secrets/` |
 | Zertifizierungsstelle und Zertifikat für HTTPS (Abschnitt 20) | im Volume unter `/data/tls/`; nicht in den Sicherungen, beim Umzug den ganzen Datenordner mitnehmen |
 | eigene Anpassung an den Proxy, die Zertifizierungsstelle für Home Assistant | `docker-compose.override.yml`, falls angelegt; die Zertifizierungsstelle etwa als `ha-ca.pem` im Ordner des Repositorys (Abschnitt 17.4) |
 | lokale Kopie je Gerät, ungesendete Änderungen, Token | im Browser-Speicher des Handys (IndexedDB) |
 
-Das Volume findet `docker volume inspect <ordnername>_stowly-data` (unter Debian üblicherweise `/var/lib/docker/volumes/…/_data`). `docker compose down` lässt es bestehen; erst `docker compose down -v` löscht es und damit den ganzen Haushalt.
+Das Volume findet `docker volume inspect <ordnername>_stowly-data` (unter Debian üblicherweise `/var/lib/docker/volumes/…/_data`). `docker compose down` lässt es bestehen; erst `docker compose down -v` löscht es und damit den ganzen Haushalt. Beim Container per Mausklick (Abschnitt 19) ist der Datenordner der Ordner, der unter `/data` eingebunden ist, etwa `docker/stowly`.
 
-Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, nie Passwort oder Tokens.
+**Was neben der Datenbank liegt** (`/data/tls`, `/data/secrets`, `/data/restore`, `/data/print`), steht in keiner Sicherung. Wer umzieht, nimmt deshalb den ganzen Datenordner mit (Abschnitt 20.4). Sonst entsteht eine neue Zertifizierungsstelle, und die Tokens für Home Assistant und den Sensor sind neu einzutragen.
+
+Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, nie Passwort, Tokens oder ein geheimer Schlüssel.
 
 ## 11. Wenn etwas nicht geht
 
@@ -475,27 +529,32 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 | Scannen fehlt oder die App lässt sich nicht installieren | Die App läuft über `http://` statt über die HTTPS-Adresse (Abschnitt 6). |
 | Eine neue Version kommt nicht auf den Handys an | „Cache Assets" im Proxy ist an; Probe B4. |
 | Gescannte Produkte bleiben ohne Namen | Der Container kommt nicht ins Internet, oder Open Food Facts kennt den Barcode nicht; Probe A14. Der Name lässt sich immer von Hand eintragen. |
-| Nach dem Zurückspielen: Fehler „readonly database" im Log | Die Datei gehört nicht dem Benutzer des Containers. Nach Abschnitt 8 einspielen oder `chown 10001:10001` auf die Datei im Volume. |
+| Nach dem Zurückspielen auf der Kommandozeile: Fehler „readonly database" im Log | Die Datei gehört nicht dem Benutzer des Containers. Nach Abschnitt 8.4 einspielen oder `chown 10001:10001` auf die Datei im Volume. |
+| Beim Zurückspielen: „Der Schlüssel passt nicht zu dieser Sicherung." | Die Sicherung ist für einen anderen Schlüssel verschlüsselt. Unter „Sicherung" zeigt „Schlüssel prüfen", ob ein aufgehobener Schlüssel zu den gespeicherten passt (Abschnitt 8.2). |
+| Unter „Zurückspielen" steht „Das Zurückspielen ist gescheitert: …" | Beim Neustart ging etwas schief; die bisherige Datenbank läuft weiter. Grund im Satz und im Log (Abschnitt 8.3). |
+| „Beim ersten Start lässt sich eine Sicherung nur im Heimnetz zurückspielen …" | Die Seite ist über einen Namen oder eine Adresse außerhalb des Heimnetzes offen: Stowly über seine IP-Adresse öffnen, etwa `http://192.168.1.10:8010`. |
 | Die Anmeldung wird trotz richtigem Passwort abgelehnt (zu viele Fehlversuche) | Sperre nach 5 falschen Passwörtern; 60 Sekunden warten. |
 | Etiketten für einen Drucker am Server bleiben „ausstehend" | Sagt die App „Der Druckdienst des Servers läuft nicht": Im Log steht „Der Druckdienst des Servers ließ sich nicht starten", meist ist `/data/print` nicht beschreibbar (`docker compose exec stowly ls -ld /data/print`); `/print/…` antwortet dann mit 503. Sonst ist das Etikett noch nicht abgeglichen; die App versucht es nach dem nächsten Abgleich wieder („Jetzt drucken" gleicht vorher ab). |
 | Im Log „Schrift DejaVuSans… fehlt" | Die Etiketten entstehen mit einer Ersatzschrift ohne Umlaute. Die Schriften liegen im Paket `stowly_print` (Ordner `fonts`) und im Image zusätzlich als `fonts-dejavu-core`; fehlen sie an beiden Stellen, ist die Installation unvollständig: Image neu bauen (`docker compose build --no-cache`), ohne Docker `sudo apt install fonts-dejavu-core` und den Server neu starten. |
 | Ein Brother am Server meldet `config` | Modell, Adresse oder Rolle passen nicht, oder die Brother-Bibliothek fehlt; Grund im Log (Abschnitt 14). |
 | Der Container startet nicht; im Log „Konfigurationsfehler: STOWLY_…" | Ein Wert in `.env` hat die falsche Form: Die Meldung nennt die Variable und, außer bei Tokens und Schlüsseln, den Wert. Korrigieren, dann `docker compose up -d`. |
-| Die App meldet unter „Sicherung": „Der Ordner für Sicherungen fehlt." | `./backups` ist nicht eingebunden oder fehlt auf dem Rechner (Abschnitt 8.1, Schritt 3). |
-| „… ist nicht beschreibbar (Benutzer 10001)." | `sudo chown 10001:10001 backups`; der nächste Versuch kommt nach einer Stunde von selbst. |
-| Die App nennt bei der Sicherung „STOWLY_BACKUP_RECIPIENTS fehlt." | Der Ordner ist gesetzt, aber kein öffentlicher Schlüssel: Abschnitt 8.1, Schritte 1 und 2. Wer keine automatische Sicherung will, lässt `STOWLY_BACKUP_DIR` leer. |
+| Die App meldet unter „Sicherung": „Der Ordner für Sicherungen fehlt." | Der Ordner aus `STOWLY_BACKUP_DIR` ist nicht eingebunden oder fehlt auf dem Rechner. Einbindung prüfen oder die Variable leeren; dann wählt Stowly den Ordner selbst (Abschnitt 8.1). |
+| „… ist nicht beschreibbar (Benutzer 10001)." | Mit `STOWLY_BACKUP_DIR`: `sudo chown 10001:10001 backups`; der nächste Versuch kommt nach einer Stunde von selbst, oder gleich mit „Jetzt sichern". |
+| Unter „Sicherung" steht „Der eigene Ordner wird nicht benutzt" | `/backups` ist eingebunden, aber Benutzer 10001 darf nicht hineinschreiben; die Sicherungen gehen so lange in den Datenordner. Docker Compose: `sudo chown 10001:10001 backups`; DSM: Schreibrecht wie in Abschnitt 19.4. |
+| Die App nennt bei der Sicherung „Es fehlt ein öffentlicher Schlüssel …" | Etwas ist eingestellt (Uhrzeit, Schalter oder Ordner), aber es gibt keinen Schlüssel: in der App „Schlüssel erzeugen" (Abschnitt 8.2). |
 | „Benachrichtigungen" fehlen in der App oder melden „nicht eingerichtet" | `STOWLY_PUSH_CONTACT` ist leer (Abschnitt 15). |
 | Die Testnachricht meldet „Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?" | Der Absender ist keine gültige `mailto:`- oder `https:`-Adresse; Apple prüft das streng. |
 | Die Testnachricht meldet „nicht erreichbar" | Der Container kommt nicht ins Internet (die Push-Dienste von Apple, Google, Mozilla und Microsoft). |
 | Die Tagesnachricht kommt nicht | Sie kommt nur, wenn seit der letzten etwas neu bald fällig oder abgelaufen ist, und nur bis 21 Uhr (Abschnitt 15.1). Unter „Einstellungen" nennt die App den letzten Lauf und einen Fehler; im Log steht „Tagesnachricht: nichts Neues." oder „… kein Abo erreicht". |
-| Unter „Home Assistant" steht „Home Assistant lehnt den Token ab." | `STOWLY_HA_TOKEN` ist falsch oder der Token wurde in HA gelöscht: neuen langlebigen Token anlegen (Abschnitt 17.2), eintragen, `docker compose up -d`. |
-| „Die Liste todo.… gibt es in Home Assistant nicht." | `STOWLY_HA_TODO_ENTITY` stimmt nicht: in HA unter „Entwicklerwerkzeuge → Zustände" nach `todo.` suchen. |
+| Unter „Home Assistant" steht „Home Assistant lehnt den Token ab." | Der Token ist falsch, oder er wurde in HA gelöscht: neuen langlebigen Token anlegen (Abschnitt 17.2) und in der App unter „Zugangs-Token" → „Ersetzen" eintragen; aus der `.env`: `STOWLY_HA_TOKEN` ändern, `docker compose up -d`. |
+| „Der Token für Home Assistant fehlt (steht in keiner Sicherung); bitte neu eintragen." | Nach dem Zurückspielen auf einem neuen Rechner oder einem Umzug ohne Datenordner: den Token in der App neu eintragen (Abschnitt 17.2). Ebenso „Der Sensor-Token fehlt …": neu erzeugen und in HA eintragen (18.1). |
+| „Die Liste todo.… gibt es in Home Assistant nicht." | Die Liste stimmt nicht: in der App „Verbindung prüfen" und eine Liste wählen; aus der `.env`: `STOWLY_HA_TODO_ENTITY`, in HA unter „Entwicklerwerkzeuge → Zustände" nach `todo.` suchen. |
 | „Die Liste ist in Home Assistant gerade nicht verfügbar." | HA startet gerade neu, oder die Integration Bring! hat ein Problem (in HA unter „Geräte & Dienste"). Stowly versucht es alle zwei Minuten wieder; die Einkaufsliste in Stowly bleibt, wie sie ist. |
-| „Home Assistant ist nicht erreichbar." | Adresse in `STOWLY_HA_URL` falsch, ein Name auf `.local` (löst im Container nicht auf: IP nehmen), Firewall oder HA aus. Probe aus dem Container: `docker compose exec stowly python -c "import httpx2; print(httpx2.get('http://192.168.1.20:8123/api/').status_code)"` zeigt `401` (erreichbar; ohne Token lehnt HA ab). |
+| „Home Assistant ist nicht erreichbar." | Adresse falsch (in der App oder in `STOWLY_HA_URL`), ein Name auf `.local` (löst im Container nicht auf: IP nehmen), Firewall oder HA aus. Probe aus dem Container: `docker compose exec stowly python -c "import httpx2; print(httpx2.get('http://192.168.1.20:8123/api/').status_code)"` zeigt `401` (erreichbar; ohne Token lehnt HA ab). |
 | „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA." | HA läuft per https mit eigenem Zertifikat: Abschnitt 17.4. |
 | „Home Assistant antwortet mit …" | Ein Fehler in HA; Einzelheiten im Log von HA, bei Stowly steht nur Status und Pfad. „… kennt todo.get_items nicht so (400)": HA liefert über seine Schnittstelle keine Antworten von Diensten (`?return_response`); HA aktualisieren. |
 | Ein Eintrag erscheint nicht in Bring! | Er ist keine zwei Minuten offen, oder er hat keinen Namen (ein Platzhalter, der noch auf Open Food Facts wartet), oder in Bring! steht schon ein Artikel desselben Namens: Dann bindet Stowly den Eintrag an ihn, statt einen zweiten anzulegen (Abschnitt 17.1). |
-| Der Sensor in HA ist „nicht verfügbar", im Log von HA steht 401 | In `secrets.yaml` fehlt `Bearer ` vor dem Token, oder er stimmt nicht mit `STOWLY_HA_SUMMARY_TOKEN` überein (Abschnitt 18). Bei 503: `STOWLY_HA_SUMMARY_TOKEN` ist leer. Bei einem Fehler zum Zertifikat: Abschnitt 18.3. |
+| Der Sensor in HA ist „nicht verfügbar", im Log von HA steht 401 | In `secrets.yaml` fehlt `Bearer ` vor dem Token, oder er stimmt nicht mit dem Sensor-Token überein, etwa nach „Neu erzeugen" (Abschnitt 18.1). Bei 503: Es gibt keinen Sensor-Token, weder aus der App noch aus `STOWLY_HA_SUMMARY_TOKEN`. Bei einem Fehler zum Zertifikat: Abschnitt 18.3. |
 | Die App bleibt nach einer Änderung an `STOWLY_CSP` leer, oder die Konsole des Browsers meldet „Content Security Policy" | Die eigene Policy verbietet etwas, das die App braucht: zurück zur Vorgabe (`STOWLY_CSP` leer) und Abschnitt 13. |
 
 ## 12. Das Repository auf den Server bringen
@@ -561,7 +620,7 @@ cd ~/stowly && docker compose up -d --build
 
 ## 13. Content-Security-Policy
 
-Jede Antwort der Web-App trägt eine Content-Security-Policy (Kopfzeile `Content-Security-Policy`). Sie verbietet Inline-Skripte und fremde Quellen und schränkt so ein, was eingeschleuster Code im Browser tun könnte. Die Schnittstelle (`/api`) und der Druckdienst (`/print`) liefern keine Seiten und tragen keine.
+Jede Antwort der Web-App trägt eine Content-Security-Policy (Kopfzeile `Content-Security-Policy`). Sie verbietet Inline-Skripte und fremde Quellen und schränkt so ein, was eingeschleuster Code im Browser tun könnte. Die Schnittstelle (`/api`) und der Druckdienst (`/print`) liefern keine Seiten und tragen keine; einzig die Produktbilder unter `/api/images` kommen seit 0.4.0 mit `default-src 'none'; sandbox`, damit der Browser sie nur als Bild nimmt.
 
 | `STOWLY_CSP` | Wirkung |
 |---|---|
@@ -641,7 +700,7 @@ STOWLY_PUSH_CONTACT=mailto:betrieb@example.org
 ```
 
 - Der Absender ist eine `mailto:`-Adresse oder eine `https://`-Adresse, unter der der Betreiber erreichbar ist. Die Push-Dienste bekommen ihn mit jeder Nachricht zu sehen; **Apple lehnt Nachrichten ohne gültigen Absender ab**. Ohne `STOWLY_PUSH_CONTACT` ist Push aus, und der Server meldet der App „nicht eingerichtet".
-- Den Schlüssel, mit dem der Server seine Nachrichten unterschreibt, legt er beim ersten Start selbst an und bewahrt ihn in der Datenbank auf (er kommt mit jeder Sicherung mit). Wird eine ältere Sicherung zurückgespielt, melden sich die Geräte beim nächsten Start von selbst neu an.
+- Den Schlüssel, mit dem der Server seine Nachrichten unterschreibt, legt er beim ersten Start selbst an und bewahrt ihn in der Datenbank auf (er kommt mit jeder Sicherung mit). Beim Zurückspielen in der App behält ein laufender Stowly seinen Schlüssel und die Abos (Abschnitt 8.3). Kommt der Schlüssel aus einer älteren Sicherung (Notweg, 8.4), melden sich die Geräte beim nächsten Start von selbst neu an.
 - Der Container braucht dafür Zugang ins Internet (ausgehend, https). Angesprochen werden nur Adressen der bekannten Push-Dienste; ein Gerät kann den Server keine Anfragen ins Heimnetz schicken lassen.
 
 **Auf den Handys:** unter „Einstellungen → Dieses Gerät" einschalten (der Browser fragt dabei um Erlaubnis), dann „Testnachricht senden".
@@ -664,7 +723,7 @@ Einmal am Tag schickt Stowly allen Geräten mit Benachrichtigungen eine Nachrich
 
 ## 16. Zeitzone
 
-„Heute" (für das MHD in Sensor und Tagesnachricht, die Monate der Statistik, die Dateinamen der Sicherungen) und alle Uhrzeiten (`STOWLY_BACKUP_TIME`, die Uhrzeit der Tagesnachricht in den Einstellungen der App) gelten in `STOWLY_TIMEZONE`, Vorgabe `Europe/Berlin`. Erlaubt ist jeder IANA-Name, genau so geschrieben (`Europe/Vienna`, `UTC`); ein unbekannter Name beendet den Start mit einem Konfigurationsfehler. Die Zeitzonendaten bringt Stowly selbst mit; die Variable `TZ` des Containers spielt dafür keine Rolle. Gespeicherte Zeitpunkte sind immer UTC; die App zeigt sie in der Zeitzone des Handys und nennt die Zeitzone des Servers dazu, wenn sie abweicht.
+„Heute" (für das MHD in Sensor und Tagesnachricht, die Monate der Statistik, die Dateinamen der Sicherungen) und alle Uhrzeiten (die der Sicherung und die der Tagesnachricht, beide in den Einstellungen der App) gelten in `STOWLY_TIMEZONE`, Vorgabe `Europe/Berlin`. Erlaubt ist jeder IANA-Name, genau so geschrieben (`Europe/Vienna`, `UTC`); ein unbekannter Name beendet den Start mit einem Konfigurationsfehler. Die Zeitzonendaten bringt Stowly selbst mit; die Variable `TZ` des Containers spielt dafür keine Rolle. Gespeicherte Zeitpunkte sind immer UTC; die App zeigt sie in der Zeitzone des Handys und nennt die Zeitzone des Servers dazu, wenn sie abweicht.
 
 Sommer- und Winterzeit brauchen nichts: Fällt die Uhrzeit einer Aufgabe in die Lücke beim Umstellen auf Sommerzeit (etwa 02:30), läuft sie mit dem Sprung um 03:00; gibt es sie beim Umstellen auf Winterzeit zweimal, läuft sie beim ersten Mal.
 
@@ -696,43 +755,66 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
 
 ### 17.2 Einrichten
 
-1. In HA die Integration **Bring!** einrichten (Einstellungen → Geräte & Dienste → Integration hinzufügen → Bring!). Jede Liste von Bring! erscheint als To-do-Liste, etwa `todo.zuhause` (Bring! nennt seine erste Liste „Zuhause"). Gleich die Liste nehmen, die ihr wirklich nutzt: Ein späterer Wechsel hakt Einträge ab (17.5). Nicht verwechseln mit der eingebauten Einkaufsliste von HA, die bei deutscher Sprache `todo.einkaufsliste` heißt.
+Seit 0.4.0 geht das in der App, ohne Neustart. In HA:
+
+1. Die Integration **Bring!** einrichten (Einstellungen → Geräte & Dienste → Integration hinzufügen → Bring!). Jede Liste von Bring! erscheint als To-do-Liste, etwa `todo.zuhause` (Bring! nennt seine erste Liste „Zuhause"). Nicht verwechseln mit der eingebauten Einkaufsliste von HA, die bei deutscher Sprache `todo.einkaufsliste` heißt.
 2. Einen **eigenen HA-Benutzer** für Stowly anlegen (Einstellungen → Personen → Benutzer). Administratorrechte sollte er nicht brauchen (Prüfliste J1). So lässt sich der Zugang später einzeln sperren, und im Verlauf von HA steht, was Stowly geändert hat.
 3. Als dieser Benutzer anmelden, dann Profil → Sicherheit → **Langlebige Zugangs-Token** → Token erstellen (Name „Stowly"). HA zeigt den Token nur einmal.
-4. Den Namen der Liste nachsehen: Entwicklerwerkzeuge → Zustände, nach `todo.` filtern.
-5. In `.env` eintragen und `docker compose up -d`:
 
-   ```
-   STOWLY_HA_URL=http://192.168.1.20:8123
-   STOWLY_HA_TOKEN=…
-   STOWLY_HA_TODO_ENTITY=todo.zuhause
-   ```
+In Stowly unter Einstellungen → „Home Assistant und Bring!" → „Verbindung", im Assistenten im Schritt „Home Assistant":
 
-   Die Adresse ist die IP von HA oder ein Name aus dem eigenen DNS (Pi-hole); Namen auf `.local` lösen im Container nicht auf. Ohne Pfad, ein `/` am Ende fällt weg. Läuft HA per https mit eigenem Zertifikat: 17.4.
-6. `docker compose logs stowly` zeigt „Einkaufsliste nach Bring! über Home Assistant, Liste todo.zuhause." und kurz danach „Home Assistant: Abgleich mit todo.zuhause läuft." In der App steht unter „Einstellungen → Home Assistant" der Zustand „ok".
+4. **Adresse von Home Assistant** eintragen, etwa `http://192.168.1.20:8123`, und den Token unter **Zugangs-Token** einfügen.
+   - Die Adresse ist die IP von HA oder ein Name aus dem eigenen DNS (Pi-hole); Namen auf `.local` lösen im Container nicht auf. http oder https, ohne Pfad, Abfrage und Benutzerangabe; ein `/` am Ende fällt weg. Läuft HA per https mit eigenem Zertifikat: 17.4.
+   - Nicht erlaubt sind Link-local-, Multicast- und unbestimmte Adressen (etwa `169.254.…` oder `0.0.0.0`) und IP-Adressen in ungewohnter Schreibweise („Eine IP-Adresse bitte in der üblichen Schreibweise, etwa 192.168.1.20."). Diese Regeln gelten für die eingetragene Adresse; einen Namen löst Stowly dafür nicht auf.
+5. **Verbindung prüfen:** Stowly fragt HA, höchstens 12 Sekunden lang, und speichert dabei nichts. Unter **Liste in Home Assistant** stehen danach die To-do-Listen von HA mit der Zahl ihrer offenen Einträge, etwa „Zuhause (3 offen)". Die mit Bring! verbundene wählen; „Von Hand eingeben …" nimmt die Kennung direkt (`todo.…`).
+6. **Speichern.** Kurz danach steht unter „Bring! über Home Assistant" „verbunden", im Log „Home Assistant: Abgleich mit todo.zuhause läuft."
 
-Der Token steht nur in `.env`: nie in der Datenbank, einer Sicherung, dem Log oder einer Antwort an die App. Fehlermeldungen nennen den Status und den Pfad des Aufrufs, nie den Token.
+Was „Verbindung prüfen" sagen kann:
+
+| Meldung | Bedeutung |
+|---|---|
+| „Verbindung zu Home Assistant steht; 3 To-do-Listen gefunden." | Adresse und Token stimmen. Folgt „Die Liste todo.… gibt es dort nicht.", stimmt die gespeicherte Liste nicht. |
+| „Home Assistant antwortet. Bitte einen langlebigen Zugangs-Token eintragen …" | Die Adresse stimmt, der Token fehlt. |
+| „Home Assistant lehnt den Token ab." | Der Token ist falsch oder in HA gelöscht. |
+| „Unter dieser Adresse antwortet kein Home Assistant." | anderer Dienst oder falscher Port |
+| „Home Assistant ist nicht erreichbar." | Adresse, Netz, Firewall oder HA aus; beim Zertifikat „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA." (17.4) |
+| „Die Adresse leitet weiter (301); Stowly folgt dem nicht. …" | etwa http statt https oder ein anderer Port: die Adresse eintragen, unter der HA selbst antwortet |
+| „Gerade erst geprüft. Bitte ein paar Sekunden warten." | höchstens eine Prüfung zugleich und eine in 3 Sekunden |
+
+**Der Token** liegt außerhalb der Datenbank, in `/data/secrets` (Abschnitt 10), und gilt nur für die Adresse, für die er eingetragen wurde. Eine neue Adresse braucht ihn deshalb noch einmal („Für eine neue Adresse braucht es den Token noch einmal."); so lässt er sich nicht an einen anderen Rechner umleiten. Er steht nie in der Datenbank, einer Sicherung, dem Log oder einer Antwort an die App; die App zeigt nur, wann er gespeichert wurde, und bietet **Ersetzen** an. Fehlermeldungen nennen den Status und den Pfad des Aufrufs, nie den Token. Nach dem Zurückspielen auf einem neuen Rechner oder einem Umzug ohne Datenordner fehlt er, und die App sagt es: „Der Token für Home Assistant fehlt (steht in keiner Sicherung); bitte neu eintragen." (20.4).
+
+**Verbindung entfernen** vergisst Adresse, Token und Liste. Die Einkaufsliste in Stowly bleibt; in Bring! erscheint nichts Neues mehr.
+
+**Aus der `.env`** (Docker Compose) geht es weiter wie bisher: eintragen, dann `docker compose up -d`.
+
+```
+STOWLY_HA_URL=http://192.168.1.20:8123
+STOWLY_HA_TOKEN=…
+STOWLY_HA_TODO_ENTITY=todo.zuhause
+```
+
+Adresse, Token und Liste gehören zusammen: Steht eine der drei Variablen in der Umgebung, kommen alle drei von dort, und die App zeigt sie nur an (Adresse, Liste, Token „gesetzt" oder „fehlt"). „Verbindung prüfen" geht trotzdem und zeigt die Listen von HA. Fehlt in der Umgebung etwas, nennt die App die Variable, etwa „STOWLY_HA_TOKEN fehlt." Beim Start steht im Log „Einkaufsliste nach Bring! über Home Assistant, Liste todo.zuhause (aus der Umgebung)." bzw. „(aus der App)". Der Token steht dann nur in der `.env`, mit denselben Regeln für Log und Antworten. Die eigene Zertifizierungsstelle gibt es nur über die Umgebung (17.4), auch wenn die Verbindung aus der App kommt.
 
 ### 17.3 Was der Zustand in der App sagt
 
 Die Meldungen schreibt der Server; die App zeigt sie mit dem Zeitpunkt des letzten Erfolgs und des Fehlers.
 
-| Zustand | Meldung | Was tun |
-|---|---|---|
-| `ok` | – (der letzte Abgleich ist gelungen) | – |
-| `pending` | – (eingerichtet, seit dem Start noch kein Abgleich) | einen Moment warten |
-| `unauthorized` | „Home Assistant lehnt den Token ab." | neuen Token anlegen (17.2, Schritt 3) |
-| `not_found` | „Die Liste todo.… gibt es in Home Assistant nicht." | Namen prüfen (17.2, Schritt 4) |
-| `unavailable` | „Die Liste ist in Home Assistant gerade nicht verfügbar." (etwa beim Neustart von HA oder wenn Bring! nicht antwortet) | nichts; es geht von selbst weiter |
-| `unreachable` | „Home Assistant ist nicht erreichbar." (Netz, Zeitüberschreitung nach 10 Sekunden), beim Zertifikat „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA." | Adresse, Firewall, 17.4 |
-| `error` | „Home Assistant antwortet mit 500." oder „… antwortet unerwartet." | Log von HA |
-| `off` | – (nicht eingerichtet; ist nur ein Teil gesetzt, nennt die App, was fehlt) | 17.2, Schritt 5 |
+| Zustand | In der App | Meldung | Was tun |
+|---|---|---|---|
+| `ok` | verbunden | – (der letzte Abgleich ist gelungen) | – |
+| `pending` | eingerichtet | – (seit dem Start oder der letzten Änderung noch kein Abgleich) | einen Moment warten |
+| `unauthorized` | Token abgelehnt | „Home Assistant lehnt den Token ab." | neuen Token anlegen (17.2, Schritt 3), unter „Zugangs-Token" → „Ersetzen" eintragen |
+| `not_found` | Liste fehlt | „Die Liste todo.… gibt es in Home Assistant nicht." | „Verbindung prüfen" und eine Liste wählen (17.2, Schritt 5) |
+| `unavailable` | Liste nicht verfügbar | „Die Liste ist in Home Assistant gerade nicht verfügbar." (etwa beim Neustart von HA oder wenn Bring! nicht antwortet) | nichts; es geht von selbst weiter |
+| `unreachable` | nicht erreichbar | „Home Assistant ist nicht erreichbar." (Netz, Zeitüberschreitung nach 10 Sekunden), beim Zertifikat „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA." | Adresse, Firewall, 17.4 |
+| `error` | Fehler | „Home Assistant antwortet mit 500.", „… antwortet unerwartet." oder „Die Antwort von Home Assistant ist zu groß (mehr als 8 MiB)." | Log von HA |
+| `off` | aus | – (nicht eingerichtet) | 17.2 |
 
-Außerdem nennt die App die Zahl der offenen Einträge, die gerade in Bring! stehen. Solange etwas nicht geht, bleibt die Einkaufsliste in Stowly vollständig; der nächste Versuch kommt nach zwei Minuten. Ins Log schreibt Stowly nur einen Wechsel des Zustands, nicht jeden gescheiterten Versuch.
+Ist nur ein Teil eingerichtet, nennt die App, was fehlt, etwa „Für Home Assistant fehlt noch die To-do-Liste.", „Der Token für Home Assistant fehlt (steht in keiner Sicherung); bitte neu eintragen." oder aus der Umgebung „STOWLY_HA_TOKEN fehlt." Außerdem nennt die App die Zahl der offenen Einträge, die gerade in Bring! stehen. Solange etwas nicht geht, bleibt die Einkaufsliste in Stowly vollständig; der nächste Versuch kommt nach zwei Minuten. Ins Log schreibt Stowly nur einen Wechsel des Zustands, nicht jeden gescheiterten Versuch.
 
 ### 17.4 Eigene Zertifizierungsstelle
 
-Läuft HA im Heimnetz per http, entfällt dieser Schritt. Läuft HA per https mit einem Zertifikat der eigenen Zertifizierungsstelle, muss Stowly ihr vertrauen: die Zertifizierungsstelle (das Wurzelzertifikat im Format PEM, nicht den Schlüssel) als `ha-ca.pem` in den Ordner des Repositorys legen und in `docker-compose.override.yml` einbinden (Compose liest die Datei von selbst mit, siehe Abschnitt 4.3; gibt es sie schon, etwa für das Netz des Proxys, kommt `volumes` dort dazu):
+Läuft HA im Heimnetz per http, entfällt dieser Schritt. Läuft HA per https mit einem Zertifikat der eigenen Zertifizierungsstelle, muss Stowly ihr vertrauen. Das geht nur über die Umgebung, auch wenn Adresse, Token und Liste aus der App kommen: die Zertifizierungsstelle (das Wurzelzertifikat im Format PEM, nicht den Schlüssel) als `ha-ca.pem` in den Ordner des Repositorys legen und in `docker-compose.override.yml` einbinden (Compose liest die Datei von selbst mit, siehe Abschnitt 4.3; gibt es sie schon, etwa für das Netz des Proxys, kommt `volumes` dort dazu):
 
 ```yaml
 services:
@@ -741,7 +823,7 @@ services:
       - ./ha-ca.pem:/config/ha-ca.pem:ro
 ```
 
-In `.env`: `STOWLY_HA_URL=https://ha.example:8123` (der Name, auf den das Zertifikat ausgestellt ist) und `STOWLY_HA_CA=/config/ha-ca.pem`, dann `docker compose up -d`. Lässt sich die Datei nicht lesen oder ist sie kein PEM, beendet der Server den Start mit einem Konfigurationsfehler. Stowly vertraut dann dieser Zertifizierungsstelle, zusätzlich zu denen des Systems.
+In `.env`: `STOWLY_HA_CA=/config/ha-ca.pem`, dann `docker compose up -d`. Als Adresse von HA (in der App oder in `STOWLY_HA_URL`) gilt der Name, auf den das Zertifikat ausgestellt ist, etwa `https://ha.example:8123`. Lässt sich die Datei nicht lesen oder ist sie kein PEM, beendet der Server den Start mit einem Konfigurationsfehler. Stowly vertraut dann dieser Zertifizierungsstelle, zusätzlich zu denen des Systems, im Abgleich und bei „Verbindung prüfen". Allein gesetzt ist `STOWLY_HA_CA` keine halbe Einrichtung: Die Verbindung lässt sich trotzdem in der App eintragen.
 
 ### 17.5 Neustart von HA und andere Ausfälle
 
@@ -749,7 +831,8 @@ In `.env`: `STOWLY_HA_URL=https://ha.example:8123` (der Name, auf den das Zertif
 - **Kurz eine leere Liste:** Als in Bring! gelöscht gilt ein Artikel erst, wenn er **zweimal nacheinander** fehlt, während HA und die Liste erreichbar sind. Ein Neustart, der die Liste einen Abgleich lang leer zeigt, leert so nicht die Liste von Stowly.
 - **Fehlen zählt nur bei Artikeln, die schon einmal in der Liste standen.** Ändert HA oder Bring! beim Anlegen den Namen (etwa gekürzt), sieht Stowly den Artikel nie: Er gilt dann nie als gelöscht oder abgehakt, und nach zehn Minuten steht einmal eine Warnung im Log („… steht zehn Minuten nach dem Anlegen noch nicht in der Liste").
 - **Ohne Antwort von HA auf das Anlegen** (Zeitüberschreitung) gilt der Artikel als angelegt: lieber so als ein zweiter Artikel desselben Namens.
-- **Die Liste nicht wechseln, solange Einträge in Bring! stehen.** Stowly merkt sich die Artikel nach ihrem Namen, nicht nach der Liste. Nach einem Wechsel von `STOWLY_HA_TODO_ENTITY` sucht es die schon gespiegelten Artikel in der neuen Liste, findet sie nicht und hakt die Einträge nach zwei Abgleichen als eingekauft ab. Deshalb gleich die richtige Liste einrichten, statt erst eine Testliste zu nehmen; die Probe-Einträge aus der Prüfliste J sind nach dem Test schnell wieder entfernt.
+- **Die Liste wechseln** hakt seit 0.4.0 nichts mehr ab. Stowly merkt sich, zu welcher Liste seine gespiegelten Artikel gehören. Liest es zum ersten Mal erfolgreich eine andere Liste, vergisst es die Artikel der alten und löst die Bindungen der Einkaufsliste, in einem Schritt; die offenen Einträge gehen danach neu in die neue Liste. **In der alten Liste bleiben sie stehen:** dort von Hand löschen. Stehen gerade Einträge in Bring!, fragt die App vor dem Speichern nach („Liste wechseln?"). Das gilt auch für einen Wechsel von `STOWLY_HA_TODO_ENTITY`. Im Log steht „Home Assistant: Liste gewechselt (todo.neu statt todo.alt): … Nichts wird abgehakt."
+- **Nach dem Zurückspielen** kommt mit der Sicherung auch, zu welcher Liste ihre Artikel gehören (8.3). Eine Sicherung aus 0.3.x weiß das nicht: Dann vergisst Stowly diese Artikel wie bei einem Wechsel, ohne etwas abzuhaken. Stehen sie noch offen in Bring!, bindet Stowly die Einträge an sie, statt zweite anzulegen; diese Artikel behandelt es dann wie eure eigenen (17.1).
 
 ## 18. Sensor für Home Assistant
 
@@ -757,23 +840,35 @@ HA liest über seine `rest`-Integration eine Zusammenfassung: Zustand des Sensor
 
 ### 18.1 Token
 
-Auf einem beliebigen Rechner einen Token erzeugen, etwa mit `openssl rand -hex 32`, und in `.env` eintragen, dann `docker compose up -d`:
+In der App unter Einstellungen → „Home Assistant und Bring!" → „Sensor", im Assistenten im Schritt „Home Assistant": **Sensor-Token erzeugen**. Stowly erzeugt einen Token aus 64 Hex-Zeichen und zeigt gleich das YAML für HA mit diesem Token zum Kopieren (18.2). Später:
+
+- **YAML zeigen:** dasselbe noch einmal, mit dem gespeicherten Token.
+- **Neu erzeugen:** Der bisherige gilt dann nicht mehr; HA braucht den neuen in der `secrets.yaml`.
+- **Entfernen:** Danach liest HA keine Zusammenfassung mehr, Stowly antwortet mit 503.
+
+Jede Änderung gilt sofort, ohne Neustart. Der Sensor-Token liegt wie der Token für HA in `/data/secrets`, in keiner Sicherung. Nach dem Zurückspielen auf einem neuen Rechner oder einem Umzug ohne Datenordner fehlt er, und die App sagt es: „Der Sensor-Token fehlt (steht in keiner Sicherung); bitte neu erzeugen."
+
+**Aus der `.env`** geht `STOWLY_HA_SUMMARY_TOKEN` vor. Er muss mindestens 32 Zeichen lang sein und darf nur druckbare Zeichen ohne Leerraum enthalten; auf einem beliebigen Rechner erzeugen, etwa mit `openssl rand -hex 32`, eintragen, dann `docker compose up -d`:
 
 ```
 STOWLY_HA_SUMMARY_TOKEN=…
 ```
 
-Er muss mindestens 32 Zeichen lang sein und darf nur druckbare Zeichen ohne Leerraum enthalten. Probe, ohne HA (`-k` nur bei eigener Zertifizierungsstelle, die der Rechner nicht kennt):
+Die App zeigt ihn dann nur als „gesetzt"; in ihrem YAML steht statt des Tokens ein Platzhalter.
+
+Probe, ohne HA (`-k` nur bei eigener Zertifizierungsstelle, die der Rechner nicht kennt):
 
 ```
 curl -s -H "Authorization: Bearer …" https://stowly.example/api/ha/summary
 ```
 
-zeigt JSON mit `"state"` und `"message"`. Ohne Token antwortet Stowly mit 401, ohne `STOWLY_HA_SUMMARY_TOKEN` mit 503.
+zeigt JSON mit `"state"` und `"message"`. Ohne Token antwortet Stowly mit 401, ohne Sensor-Token (weder aus der App noch aus `STOWLY_HA_SUMMARY_TOKEN`) mit 503: „Der Sensor ist auf diesem Server nicht eingerichtet (Sensor-Token in der App unter Einstellungen, Home Assistant, oder STOWLY_HA_SUMMARY_TOKEN)."
 
 ### 18.2 In Home Assistant
 
-Den Token mit `Bearer ` davor in die `secrets.yaml` von HA:
+**Aus der App:** Nach „Sensor-Token erzeugen" oder „YAML zeigen" (18.1) stehen beide Dateien fertig zum Kopieren da, der erste Block für die `secrets.yaml`, der zweite für die `configuration.yaml`. Darin stehen die Adresse, unter der die App gerade offen ist, der Token, der Sensor mit den Vorlagen-Sensoren von unten und der Bestand aus 18.4 samt `recorder:`. Die App deshalb über ihre HTTPS-Adresse öffnen; über http weist sie darauf hin. Läuft Stowly mit seiner eigenen Zertifizierungsstelle, die HA nicht kennt, steht `verify_ssl: false` mit einem Kommentar dabei (18.3). Danach HA neu starten.
+
+**Von Hand:** den Token mit `Bearer ` davor in die `secrets.yaml` von HA:
 
 ```yaml
 # secrets.yaml
@@ -858,7 +953,7 @@ Die andere Richtung, Stowly vertraut HA, steht in 17.4.
 
 Ein zweiter Sensor holt mit demselben Token die Liste aller Waren im Bestand, je Zone (`/api/ha/stock`, Inhalt in [`integrationen.md`](integrationen.md), 6.3). Sein Zustand ist die Zahl der Packungen; die Liste steht im Attribut `zones` und ist für eine Markdown-Karte gedacht.
 
-In die `configuration.yaml`, unter den vorhandenen Abschnitt `rest:` aus 18.2 (die Adresse und `verify_ssl` wie dort):
+Das YAML aus der App (18.2) enthält diesen Sensor und den Abschnitt `recorder:` schon. Von Hand in die `configuration.yaml`, unter den vorhandenen Abschnitt `rest:` aus 18.2 (die Adresse und `verify_ssl` wie dort):
 
 ```yaml
 rest:
@@ -921,7 +1016,7 @@ Der einfachste Weg auf einer Synology: den Container in der Docker-Oberfläche a
 2. **Image laden:** Docker → **Registrierung** → nach `stowly` suchen → `<konto>/stowly` markieren → **Download** → Tag `latest`.
 3. **Starten:** Docker → **Image** → `<konto>/stowly` markieren → **Starten**. Containername `stowly`, dann **Erweiterte Einstellungen**:
    - Reiter **Erweiterte Einstellungen:** Haken bei „Automatischen Neustart aktivieren".
-   - Reiter **Volume:** **Ordner hinzufügen** → im Ordner `docker` mit **Ordner erstellen** einen Ordner `stowly` anlegen und auswählen → Mount-Pfad `/data`.
+   - Reiter **Volume:** **Ordner hinzufügen** → im Ordner `docker` mit **Ordner erstellen** einen Ordner `stowly` anlegen und auswählen → Mount-Pfad `/data`. Freiwillig, besser auf einem anderen Datenträger: ein zweiter Ordner mit Mount-Pfad `/backups` für die Sicherungen (19.4).
    - Reiter **Port-Einstellungen:** DSM zeigt zwei Zeilen; links „Lokaler Port" mit „Automatisch", rechts „Container-Port" mit 8010 bzw. 8443. **Nur links** etwas eintragen, rechts nichts ändern:
 
      | Lokaler Port (links) | Container-Port (rechts) |
@@ -941,12 +1036,16 @@ Ohne Passwort steht im Log des Containers „Noch kein Passwort: Wer Stowly jetz
 
 `http://<IP des NAS>:8010` im Browser öffnen, am besten am PC.
 
-1. **Willkommen:** Passwort für den Haushalt zweimal eingeben, dazu den Namen des Geräts. Wer die Seite zuerst öffnet, vergibt das Passwort; deshalb gleich nach dem Anlegen des Containers erledigen.
+1. **Willkommen:** Passwort für den Haushalt zweimal eingeben, dazu den Namen des Geräts. Wer die Seite zuerst öffnet, vergibt das Passwort; deshalb gleich nach dem Anlegen des Containers erledigen. Daneben steht **Aus einer Sicherung wiederherstellen**, für einen Umzug oder ein neues NAS: Die Sicherung bringt den ganzen Bestand und ihr Passwort mit (Abschnitt 8.3).
 2. **Sichere Verbindung:** Stowly hat schon ein Zertifikat für die Adresse, unter der die Seite offen ist. Das Zertifikat der Zertifizierungsstelle auf jedes Gerät laden und ihm vertrauen; der Assistent zeigt die Schritte für iPhone/iPad, Android, Windows und Mac (Abschnitt 20.3) und prüft, ob es geklappt hat. Dann „Zur sicheren Adresse wechseln" und dort einmal anmelden.
 3. **Drucker:** SD-Karte für den Raspberry Pi vorbereiten (Raspberry Pi Imager: Raspberry Pi OS Lite, Hostname mit `stowly` am Anfang wie `stowly-pi`, Benutzer, Heim-WLAN, SSH), den Drucker per USB anschließen, dann den Befehl aus dem Assistenten per SSH auf dem Pi ausführen. Der Pi richtet sich ein, koppelt sich mit Stowly und druckt ein Testetikett ([`../pi/README.md`](../pi/README.md)).
-4. **Updates:** Den Schalter „Nach Updates suchen" einschalten. Für Updates per Knopf den Updater-Container einmal anlegen (19.3).
-5. **Benachrichtigungen:** eine Kontakt-Adresse für die Push-Dienste eintragen, dann auf dem Gerät einschalten. Auf dem iPhone geht das nur in der App auf dem Home-Bildschirm (Abschnitt 7).
-6. **Fertig:** Übersprungene Schritte lassen sich unter Einstellungen → „Einrichtung und Zugang" nachholen.
+4. **Sicherung:** „Schlüssel erzeugen", den geheimen Schlüssel an zwei Orten aufheben und mit dem Haushalts-Passwort übernehmen, dann Uhrzeit, Ordner und „Jetzt sichern" als Probe (Abschnitt 8.2). Erledigt ist der Schritt, sobald die Sicherung wirkt und eine gelungen ist. Wo die Sicherungen liegen, zeigt der Schritt; besser als der Datenordner ist ein zweiter Ordner (19.4).
+5. **Updates:** Den Schalter „Nach Updates suchen" einschalten. Für Updates per Knopf den Updater-Container einmal anlegen (19.3).
+6. **Benachrichtigungen:** eine Kontakt-Adresse für die Push-Dienste eintragen, dann auf dem Gerät einschalten. Auf dem iPhone geht das nur in der App auf dem Home-Bildschirm (Abschnitt 7).
+7. **Home Assistant:** Adresse und Token eintragen, „Verbindung prüfen", die Liste wählen, „Speichern"; danach „Sensor-Token erzeugen" mit dem YAML für HA (Abschnitte 17.2 und 18.1). Wer kein Home Assistant hat, überspringt den Schritt.
+8. **Fertig:** jeder Schritt mit seinem Stand. Übersprungene lassen sich hier mit „Nachholen" oder später unter Einstellungen → „Einrichtung und Zugang" nachholen.
+
+Wer die Einrichtung schon abgeschlossen hat, etwa vor dem Update auf 0.4.0, dem drängt sich der Assistent nicht auf. Öffnet man ihn unter Einstellungen → „Einrichtung und Zugang", beginnt er bei „Fertig"; Sicherung und Home Assistant stehen dort als offen, mit „Nachholen".
 
 Ein vergessenes Passwort: beim Container die Umgebungsvariable `STOWLY_PASSWORD` setzen (Container anhalten → Bearbeiten → Umgebung), neu starten, anmelden und dann in der App ein neues Passwort vergeben.
 
@@ -961,6 +1060,20 @@ DSM 6.2 kann in der Oberfläche den Socket von Docker nicht in einen Container e
 5. Die Aufgabe wieder löschen. Der Updater-Container `stowly-updater` läuft von selbst weiter, auch nach einem Neustart des NAS.
 
 Meldet die App, dass der Updater älter ist als Stowly, den Befehl auf dieselbe Weise noch einmal ausführen; er ersetzt den alten Updater.
+
+### 19.4 Ein zweiter Ordner für die Sicherungen
+
+Ohne weiteres Zutun legt Stowly die Sicherungen in den Datenordner (`docker/stowly/backups`, im Container `/data/backups`). Geht der Datenträger kaputt, sind Daten und Sicherungen zugleich weg. Besser liegen sie in einem zweiten Ordner, am besten auf einem anderen Datenträger:
+
+1. Docker → **Container** → `stowly` anhalten → **Bearbeiten**.
+2. Reiter **Volume:** **Ordner hinzufügen** → einen Ordner wählen oder mit **Ordner erstellen** anlegen, etwa `stowly-backups` → Mount-Pfad `/backups`.
+3. **Übernehmen**, dann den Container wieder starten.
+
+Stowly findet den Ordner von selbst; eine Umgebungsvariable braucht es nicht, und `STOWLY_BACKUP_DIR` sollte leer bleiben. Unter Einstellungen → „Sicherung" steht danach als Ordner `/backups` („Ein eigener Ordner, in DSM als /backups eingebunden"), und die nächste Sicherung landet dort. Die älteren bleiben im Datenordner liegen; Stowly zeigt und räumt nur den wirksamen Ordner.
+
+**Schreibrecht:** Ein Ordner, den DSM unter `docker` anlegt, ist für Stowly (Benutzer 10001) beschreibbar. Bei einem anderen freigegebenen Ordner, etwa mit Windows-ACL, kann das fehlen. Dann zeigt die App „Der eigene Ordner wird nicht benutzt" mit dem Grund, und die Sicherungen gehen weiter in den Datenordner (8.1). Abhilfe wie in 19.1: in der File Station beim Ordner → Eigenschaften → Berechtigung → „Jeder" (oder der Benutzer 10001) mit Lesen und Schreiben. Danach nimmt Stowly den Ordner von selbst, ohne Neustart.
+
+**Statt eines zweiten Ordners** lässt sich der Ordner der Sicherungen mit Hyper Backup oder Cloud Sync regelmäßig auf ein anderes Gerät oder in die Cloud kopieren; die Sicherungen sind verschlüsselt.
 
 ## 20. HTTPS durch Stowly selbst
 
@@ -1000,7 +1113,12 @@ Den Fingerabdruck der CA zeigt die App unter Einstellungen → „Einrichtung un
 
 ### 20.4 Sichern und umziehen
 
-`/data/tls` gehört zum Datenordner, aber nicht zu den Sicherungen der Datenbank (Abschnitt 8): Wer auf einen anderen Rechner umzieht, nimmt den ganzen Datenordner mit. Sonst entsteht dort eine neue CA, und jedes Gerät und jeder Pi muss neu vertrauen bzw. neu gekoppelt werden.
+`/data/tls` (die CA) und `/data/secrets` (die Tokens für Home Assistant und den Sensor) gehören zum Datenordner, aber zu keiner Sicherung (Abschnitt 8). Für einen Umzug auf einen anderen Rechner deshalb:
+
+1. Stowly anhalten und den **ganzen Datenordner** mitnehmen (DSM: der Ordner unter `/data`, etwa `docker/stowly`; Docker Compose: das Volume `stowly-data`, Abschnitt 10), dazu den Ordner der Sicherungen, wenn er außerhalb liegt.
+2. Auf dem neuen Rechner den Container mit diesem Ordner anlegen (19.1). Dieselbe CA, dieselben Tokens, alle Anmeldungen: Es läuft weiter wie vorher.
+
+Geht das nicht, etwa nach einem Plattenausfall, bleibt die Sicherung: beim ersten Start „Aus einer Sicherung wiederherstellen" (8.3). Dann entsteht eine neue CA: Jedes Gerät muss ihr neu vertrauen und jeder Pi neu gekoppelt werden; der Assistent beginnt mit der sicheren Verbindung. Die Tokens für Home Assistant und den Sensor fehlen und sind neu einzutragen bzw. neu zu erzeugen (17.2, 18.1); die App sagt es.
 
 ## Prüfliste für die Zielumgebung
 
@@ -1065,20 +1183,22 @@ Je einmal auf dem Android-Gerät und dem iPhone, über die HTTPS-Adresse:
 
 ### D. Sicherung und Zurückspielen
 
+Die Abläufe in der App prüft N; hier geht es um die Dateien auf dem Server, die `.env` und den Notweg.
+
 | # | Schritt | Erwartet |
 |---|---|---|
-| D1 | In der App die Sicherung herunterladen | Datei `stowly-JJJJ-MM-TT.sqlite3` |
-| D2 | Auf einem Rechner: `sqlite3 stowly-….sqlite3 "PRAGMA integrity_check; SELECT COUNT(*) FROM packages;"` | `ok` und die Zahl der Packungen |
+| D1 | In der App „Jetzt sichern" (Abschnitt 8.2), dann die neueste Sicherung herunterladen | Datei `stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age`, so groß wie in der Liste |
+| D2 | Auf einem Rechner mit `age` und `sqlite3`: `age -d -i stowly-schluessel-….txt stowly-….sqlite3.gz.age \| gunzip > probe.sqlite3`, dann `sqlite3 probe.sqlite3 "PRAGMA integrity_check; SELECT COUNT(*) FROM packages;"` | `ok` und die Zahl der Packungen; `probe.sqlite3` danach löschen |
 | D3 | Danach in der App eine Packung einlagern (sie fehlt in der Sicherung) | – |
-| D4 | Zurückspielen nach Abschnitt 8 | Befehle laufen ohne Fehler; `docker compose exec stowly ls -l /data` zeigt die Datei im Besitz von `stowly` |
+| D4 | Diese Sicherung in der App zurückspielen (Abschnitt 8.3) | Vorschau mit Stand und Zahlen; nach dem Neustart lädt die Seite neu; `docker compose exec stowly ls -l /data` zeigt `stowly.sqlite3` im Besitz von `stowly` |
 | D5 | Beide Handys öffnen | Sie gleichen ab und zeigen den Stand der Sicherung; die Packung aus D3 ist weg; niemand muss sich neu anmelden |
 | D6 | Nur wer Schnappschüsse des Volumes zurückspielen will: `docker compose run --rm --no-deps stowly python -m stowly --new-dataset` | Ausgabe „Neue Kennung des Datenbestands: …"; nach dem Start holen beide Handys den Bestand neu |
-| D7 | Automatische Sicherung nach Abschnitt 8.1 einrichten (zwei Schlüssel, Ordner, `.env`), `docker compose up -d`, `docker compose logs stowly` | „Automatische Sicherung täglich um 03:30 nach /backups an 2 Schlüssel."; ist 03:30 heute vorbei, gleich danach „Sicherung geschrieben: stowly-….sqlite3.gz.age" |
+| D7 | Nur mit `.env`: Sicherung nach Abschnitt 8.5 einrichten (zwei öffentliche Schlüssel in `STOWLY_BACKUP_RECIPIENTS`, `./backups` für Benutzer 10001), `docker compose up -d`, `docker compose logs stowly` | „Automatische Sicherung täglich um 03:30 nach /backups an 2 Schlüssel."; ist 03:30 heute vorbei, gleich danach „Sicherung geschrieben: stowly-….sqlite3.gz.age"; in der App sind Schlüssel und Schalter gesperrt |
 | D8 | `ls -l backups` auf dem Rechner | eine Datei `stowly-JJJJ-MM-TT-HHMM.sqlite3.gz.age` mit Rechten `-rw-------`, Besitzer 10001; keine `.tmp`-Datei |
-| D9 | In der App „Einstellungen → Sicherung" | letzte Sicherung mit Uhrzeit und Größe, zwei gekürzte Schlüssel (`age1…`), der nächste Versuch; keine Warnung |
-| D10 | Probe-Entschlüsselung nach 8.1 mit **jedem** der beiden privaten Schlüssel | beide Male `SQLite format 3`; mit `sqlite3`: `ok` und die Zahl der Packungen |
-| D11 | Eine automatische Sicherung nach 8.3 entschlüsseln und zurückspielen | wie D4 und D5 |
-| D12 | `sudo chown root:root backups`, `docker compose restart`, in der App „Sicherung" ansehen; danach wieder `sudo chown 10001:10001 backups` | Ist 03:30 vorbei und heute noch keine Sicherung gelungen: „Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)."; eine Stunde später gelingt sie von selbst |
+| D9 | In der App „Einstellungen → Sicherung" | „Letzte gelungene" mit Uhrzeit und Größe, die gekürzten Schlüssel (`age1…`), „Nächster Versuch"; keine Warnung |
+| D10 | Probe-Entschlüsselung nach 8.4 mit **jedem** geheimen Schlüssel | beide Male `SQLite format 3`; mit `sqlite3`: `ok` und die Zahl der Packungen |
+| D11 | Eine Sicherung auf dem Notweg zurückspielen (8.4, samt `--new-dataset`) | Befehle laufen ohne Fehler; danach wie D5. Geräte, die erst nach der Sicherung angemeldet wurden, melden sich neu an |
+| D12 | Mit `STOWLY_BACKUP_DIR=/backups`: `sudo chown root:root backups`, `docker compose restart`, in der App „Sicherung" ansehen; danach wieder `sudo chown 10001:10001 backups` | „Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)."; „Jetzt sichern" nennt denselben Grund. Nach dem Zurücksetzen gelingt „Jetzt sichern", sonst die nächste Sicherung spätestens eine Stunde nach dem letzten Versuch |
 | D13 | Die Sicherungen an einen anderen Ort kopieren (Abschnitt 8.1, „Kopie außer Haus") | Die Kopie lässt sich wie in D10 öffnen |
 
 ### E. Aktualisieren
@@ -1142,11 +1262,11 @@ Die eigene Prüfliste in [`../pi/README.md`](../pi/README.md#prüfliste-am-gerä
 
 ### J. Einkaufsliste nach Bring! über Home Assistant
 
-Mit der Liste, die ihr wirklich nutzt (Abschnitt 17.2; ein späterer Wechsel hakt Einträge ab, 17.5). Die Probe-Einträge danach in Bring! löschen. Abgeglichen wird alle zwei Minuten; Bring! braucht in HA bis zu 90 Sekunden.
+Mit der Liste, die ihr wirklich nutzt, oder mit einer Probe-Liste: Seit 0.4.0 hakt ein späterer Wechsel nichts mehr ab (17.5). Die Probe-Einträge danach in Bring! löschen, nach einem Wechsel auch in der alten Liste. Abgeglichen wird alle zwei Minuten; Bring! braucht in HA bis zu 90 Sekunden.
 
 | # | Schritt | Erwartet |
 |---|---|---|
-| J1 | Abschnitt 17.2 durchgehen, mit einem eigenen HA-Benutzer **ohne** Administratorrechte | Log: „Home Assistant: Abgleich mit todo.… läuft."; in der App „ok". Sonst bitte melden, mit der Meldung aus der App. |
+| J1 | Abschnitt 17.2 durchgehen, mit einem eigenen HA-Benutzer **ohne** Administratorrechte | Log: „Home Assistant: Abgleich mit todo.… läuft."; in der App „verbunden" (Zustand `ok`). Sonst bitte melden, mit der Meldung aus der App. |
 | J2 | In Stowly einen Eintrag „Milch Probe" anlegen | nach zwei bis vier Minuten in Bring! als „Milch Probe" mit der Spezifikation „Stowly" |
 | J3 | Einen Mindestbestand setzen und unterschreiten (automatischer Eintrag „fehlt 2"), dann eine Packung einlagern | in Bring! mit „fehlt 2 · Stowly", danach „fehlt 1 · Stowly" |
 | J4 | „Milch Probe" in Stowly abhaken | in Bring! unter „zuletzt gekauft" |
@@ -1155,19 +1275,19 @@ Mit der Liste, die ihr wirklich nutzt (Abschnitt 17.2; ein späterer Wechsel hak
 | J7 | Einen gespiegelten Artikel in der App von Bring! abhaken | nach einigen Minuten in Stowly erledigt; ein automatischer Eintrag kommt bis zum nächsten Einlagern nicht wieder |
 | J8 | Einen gespiegelten Artikel in Bring! löschen | in Stowly erledigt, nach zwei Abgleichen (etwa vier bis sechs Minuten) |
 | J9 | Einen in Stowly erledigten Eintrag wieder öffnen | Er geht nach zwei Minuten wieder nach Bring! (zurück aus „zuletzt gekauft" oder als neuer Artikel: bitte notieren, welches) |
-| J10 | HA neu starten, während Einträge in Bring! stehen | In der App zeitweise „nicht erreichbar" oder „nicht verfügbar"; danach „ok". Kein Eintrag in Stowly ist erledigt. |
-| J11 | `STOWLY_HA_TOKEN` absichtlich verfälschen, `docker compose up -d`; danach zurück | „Home Assistant lehnt den Token ab."; die Einkaufsliste in Stowly bleibt unverändert |
-| J12 | Nur bei HA über https mit eigener Zertifizierungsstelle: Abschnitt 17.4; einmal ohne `STOWLY_HA_CA` | ohne: „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA."; mit: „ok" |
+| J10 | HA neu starten, während Einträge in Bring! stehen | In der App zeitweise „nicht erreichbar" oder „Liste nicht verfügbar"; danach „verbunden". Kein Eintrag in Stowly ist erledigt. |
+| J11 | Den Token absichtlich verfälschen (in der App unter „Zugangs-Token" → „Ersetzen"; aus der `.env`: `STOWLY_HA_TOKEN`, `docker compose up -d`); danach zurück | „Home Assistant lehnt den Token ab."; die Einkaufsliste in Stowly bleibt unverändert |
+| J12 | Nur bei HA über https mit eigener Zertifizierungsstelle: Abschnitt 17.4; einmal ohne `STOWLY_HA_CA` | ohne: „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA."; mit: „verbunden" |
 | J13 | `docker compose logs stowly \| grep -i "home assistant"` | Wechsel des Zustands und erledigte Einträge, nie der Token und nie die Adresse von HA |
 
 ### K. Sensor für Home Assistant
 
 | # | Schritt | Erwartet |
 |---|---|---|
-| K1 | Token nach 18.1, `curl` wie dort | JSON mit `state`, `today`, `expired`, `total`, `next`, `shopping`, den Listen und `message` |
+| K1 | Sensor-Token nach 18.1 (in der App oder aus der `.env`), `curl` wie dort | JSON mit `state`, `today`, `expired`, `total`, `next`, `shopping`, den Listen und `message` |
 | K2 | Dasselbe ohne Token und mit dem Token eines Geräts | beide Male 401 |
 | K3 | Den Sensor-Token an `/api/devices` schicken | 401 |
-| K4 | Schnipsel aus 18.2 in HA, HA neu starten | `sensor.stowly` mit der Zahl der bald ablaufenden Packungen und allen Attributen; die drei Vorlagen-Sensoren mit Werten |
+| K4 | Das YAML aus der App oder die Schnipsel aus 18.2 in HA, HA neu starten | `sensor.stowly` mit der Zahl der bald ablaufenden Packungen und allen Attributen; die drei Vorlagen-Sensoren mit Werten |
 | K5 | Die Automation „Stowly am Morgen" auf eine Minute von jetzt stellen | Der Satz wird vorgelesen. |
 | K6 | Nur mit eigener Zertifizierungsstelle: 18.3 (`REQUESTS_CA_BUNDLE` im Container von HA, sonst `verify_ssl: false`) | Der Sensor bekommt Werte; im Log von HA kein Fehler zum Zertifikat. Bitte notieren, welcher Weg ging. |
 | K7 | `curl` wie in 18.1, aber an `/api/ha/stock` | JSON mit `state`, `product_count`, `zones` (je Zone `name`, `count`, `products`) und `truncated` |
@@ -1203,3 +1323,32 @@ Mit der Liste, die ihr wirklich nutzt (Abschnitt 17.2; ein späterer Wechsel hak
 | M11 | Eine neue Version veröffentlichen, dann „Update installieren“ | Der Updater-Container tauscht den Container aus; „Aktualisiert auf X.Y.Z“; Daten, Ports, Ordner und Neustart-Regel bleiben; in DSM keine Reste wie `stowly-vorher` |
 | M12 | Container in DSM neu starten | Stowly kommt mit denselben Zertifikaten zurück; kein neues Profil nötig |
 | M13 | Compose-Installation mit Reverse Proxy auf 0.3.0 aktualisieren | Anmeldung mit dem Passwort aus der `.env` geht weiter; der Assistent öffnet sich nicht von selbst; unter Einstellungen → „Einrichtung und Zugang“ steht „Sichere Verbindung“ als erledigt, sobald die App über HTTPS läuft |
+
+### N. Sicherung und Home Assistant in der App (0.4.0)
+
+Erst in einem Testcontainer (19.1), dann am eigenen Stowly. Home Assistant gegen eine Probe-Liste in HA (etwa „Local To-do"), nicht gegen die echte Bring!-Liste.
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| N1 | Im Assistenten (oder Einstellungen → Sicherung) „Schlüssel erzeugen", „Als Datei speichern", Haken „Ich habe ihn gesichert.", „Haushalts-Passwort" eingeben, „Schlüssel übernehmen"; vorher einmal mit falschem Passwort | Datei `stowly-schluessel-JJJJ-MM-TT.txt` mit `# public key: age1…` und dem geheimen Schlüssel; „Schlüssel übernehmen" geht erst nach dem Haken. Mit falschem Passwort „Das Haushalts-Passwort stimmt nicht.", das Paar bleibt stehen; mit richtigem steht der Schlüssel gekürzt in der Liste, und der geheime ist aus der Ansicht verschwunden. „Entfernen" fragt nicht nach dem Passwort |
+| N2 | „Schlüssel prüfen" mit der Datei aus N1; dann mit einem fremden geheimen Schlüssel (etwa aus `age-keygen`); dann mit dem öffentlichen | „Der Schlüssel passt"; „Der Schlüssel passt nicht"; „Kein geheimer Schlüssel". Im Log des Servers nichts davon |
+| N3 | Ohne zweiten Ordner unter „Ordner" nachsehen | `/data/backups`, mit dem Rat, einen zweiten Ordner einzubinden oder den Ordner wegzukopieren |
+| N4 | „Jetzt sichern", gleich danach noch einmal | „Sicherung angelegt: stowly-….sqlite3.gz.age"; das zweite Mal „Jetzt sichern geht höchstens einmal je Minute"; im Assistenten ist „Sicherung" erledigt |
+| N5 | Schalter „Automatische Sicherung" aus; nach einer Minute „Jetzt sichern" | „Aus: Stowly sichert nicht von selbst. …"; „Jetzt sichern" geht trotzdem; „Nächster Versuch" zeigt „–". Danach den Schalter wieder an |
+| N6 | Eine Sicherung „Herunterladen", am Rechner `age -d -i stowly-schluessel-….txt stowly-….sqlite3.gz.age \| gunzip \| head -c 15` | `SQLite format 3` |
+| N7 | Einen zweiten Ordner `/backups` in DSM einbinden (19.4), dann „Jetzt sichern" | „Ordner" zeigt `/backups` („Ein eigener Ordner, in DSM als /backups eingebunden"); die neue Sicherung liegt im zweiten Ordner |
+| N8 | Denselben Ordner für Benutzer 10001 schreibgeschützt machen, „Sicherung" neu laden; danach wieder Schreibrecht | Hinweis „Der eigene Ordner wird nicht benutzt" mit dem Grund; „Jetzt sichern" schreibt nach `/data/backups`. Mit Schreibrecht nimmt Stowly `/backups` wieder, ohne Neustart |
+| N9 | Eine Packung einlagern, dann Einstellungen → Sicherung → „Zurückspielen …" mit einer Sicherung von vorher: Datei, Schlüssel, „Prüfen", jetziges Passwort, „Einspielen" | Vorschau mit Stand und Zahlen; „Stowly startet neu …", nach unter einer Minute lädt die Seite neu; die Packung ist weg; Geräteliste und Anmeldungen wie vorher; die Testnachricht (Abschnitt 15) kommt weiter an |
+| N10 | Dasselbe mit einem falschen Schlüssel, dann mit einem falschen Passwort | „Der Schlüssel passt nicht zu dieser Sicherung."; „Das Passwort stimmt nicht." Nichts ist eingespielt |
+| N11 | Das zweite Handy öffnen | Es lädt den Bestand neu, ohne neue Anmeldung; die Packung aus N9 ist auch dort weg |
+| N12 | „Rückgängig", Rückfrage bestätigen | Stowly startet neu; die Packung aus N9 ist wieder da; „Rückgängig gemacht am …", wieder mit „Rückgängig" |
+| N13 | „Alte Datenbank löschen" | Die Zeile mit „Rückgängig" verschwindet; `/data/restore/previous.sqlite3` ist weg |
+| N14 | Ein frischer Container (19.1, eigener Datenordner, andere Ports): „Aus einer Sicherung wiederherstellen" mit einer Sicherung und ihrem Schlüssel, Passwort aus der Sicherung, Gerätename | Nach dem Neustart ist das Gerät angemeldet; der Assistent beginnt mit „Sichere Verbindung"; der Bestand ist der aus der Sicherung |
+| N15 | Danach Einstellungen → „Home Assistant und Bring!" (falls die Sicherung eine Verbindung aus der App hatte) | „Der Token für Home Assistant fehlt (steht in keiner Sicherung); bitte neu eintragen."; beim Sensor „Er fehlt (steht in keiner Sicherung) …". Neu eingetragen bzw. neu erzeugt läuft beides wieder |
+| N16 | Das Zurückspielen über `http://` öffnen, bis zum Schlüssel | Hinweis „Unverschlüsselte Verbindung" |
+| N17 | Home Assistant in der App einrichten (17.2): Adresse, Token, „Verbindung prüfen", Liste wählen, „Speichern" | „Verbindung zu Home Assistant steht; … gefunden."; die Listen mit der Zahl offener Einträge; nach dem Speichern ohne Neustart „verbunden"; im Log „Home Assistant: Abgleich mit todo.… läuft." und nirgends der Token |
+| N18 | Nur die Adresse ändern (etwa die IP statt eines Namens), ohne Token | „Für eine neue Adresse braucht es den Token noch einmal." |
+| N19 | Mit Einträgen in Bring! eine andere Liste wählen, „Speichern" | Rückfrage „Liste wechseln?"; danach ist in Stowly nichts erledigt, die offenen Einträge erscheinen in der neuen Liste, in der alten bleiben sie stehen |
+| N20 | Am eigenen Stowly mit HA aus der `.env` | Adresse, Liste und Token „gesetzt" nur zu sehen, mit dem Hinweis auf die Umgebung; „Verbindung prüfen" zeigt die Listen von HA |
+| N21 | „Sensor-Token erzeugen", das YAML in HA übernehmen, HA neu starten; dann „Neu erzeugen" | Der Sensor hat Werte (wie K4); nach „Neu erzeugen" bekommt HA mit dem alten Token 401, bis das neue YAML drin ist |
+| N22 | „Entfernen" beim Sensor-Token, dann `curl` wie in 18.1 | 503 mit „Der Sensor ist auf diesem Server nicht eingerichtet …" |

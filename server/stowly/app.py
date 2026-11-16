@@ -12,13 +12,14 @@ Reihenfolge beim Aufbau:
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from types import MappingProxyType
 from typing import Any
 
 import httpx2
 from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from stowly import (
     __version__,
@@ -27,10 +28,14 @@ from stowly import (
     bring,
     daily,
     db,
+    hacheck,
+    haconfig,
     label_templates,
     off,
     push,
+    restore,
     scheduler,
+    secretstore,
     serverconfig,
     tls,
     updates,
@@ -39,7 +44,7 @@ from stowly import (
 from stowly.api import router as api_router
 from stowly.auth import LoginGuard
 from stowly.config import MAX_REQUEST_BYTES, Settings
-from stowly.contract.api import ErrorCode
+from stowly.contract.api import RESTORE_MAX_BYTES, ErrorCode
 from stowly.contract.schema import build_openapi
 from stowly.errors import error_response, install_error_handlers
 from stowly.printing import PrintGateway, ServerPrinting
@@ -49,29 +54,63 @@ log = logging.getLogger("stowly")
 
 
 class BodyLimit:
-    """Weist Anfragen ab, die einen zu großen Rumpf ankündigen (413 im Fehlerformat).
+    """Weist Anfragen ab, deren Rumpf zu groß ist (413 im Fehlerformat): angekündigt (``Content-Length``) oder
+    beim Lesen gezählt (chunked, ohne ``Content-Length``).
 
     Kein Aufruf der Schnittstelle braucht mehr als ein paar hundert Kilobyte. Ohne die
-    Grenze läse der Server auch ein Gigabyte „Anmeldung" erst einmal in den Speicher.
+    Grenze läse der Server auch ein Gigabyte „Anmeldung" erst einmal in den Speicher, auch ohne
+    Anmeldung (Anmelden, erster Start). Darum liest die Middleware den Rumpf selbst, zählt jedes Byte
+    aus ``receive`` und reicht ihn erst danach weiter; über der Grenze antwortet sie gleich mit 413.
+    Ausnahme: Das Hochladen einer Sicherung (``PUT /api/restore/upload``) darf bis
+    ``RESTORE_MAX_BYTES`` groß sein; der Endpunkt liest den Rumpf in Teilen und zählt selbst mit,
+    auch ohne ``Content-Length``. Ihn reicht die Middleware ungelesen weiter.
     """
+
+    LARGER: Mapping[str, int] = MappingProxyType({"/api/restore/upload": RESTORE_MAX_BYTES})
 
     def __init__(self, app: ASGIApp, max_bytes: int = MAX_REQUEST_BYTES) -> None:
         self.app = app
         self.max_bytes = max_bytes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            for name, value in scope.get("headers", ()):
-                if name == b"content-length" and value.isdigit() and int(value) > self.max_bytes:
-                    response = error_response(
-                        413,
-                        ErrorCode.PAYLOAD_TOO_LARGE,
-                        "Die Anfrage ist zu groß.",
-                        {"max_bytes": self.max_bytes},
-                    )
-                    await response(scope, receive, send)
-                    return
-        await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        limit = self.LARGER.get(path, self.max_bytes)
+        for name, value in scope.get("headers", ()):
+            if name == b"content-length" and value.isdigit() and int(value) > limit:
+                await self._too_large(limit, scope, receive, send)
+                return
+        if path in self.LARGER:
+            await self.app(scope, receive, send)
+            return
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                # Der Aufrufer ist gegangen (http.disconnect): Niemand wartet mehr auf eine Antwort.
+                return
+            body += message.get("body", b"")
+            if len(body) > limit:
+                await self._too_large(limit, scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+        replay: list[Message] = [{"type": "http.request", "body": bytes(body), "more_body": False}]
+
+        async def replayed() -> Message:
+            # Erst der gelesene Rumpf, danach wie gewohnt (etwa http.disconnect).
+            return replay.pop() if replay else await receive()
+
+        await self.app(scope, replayed, send)
+
+    @staticmethod
+    async def _too_large(limit: int, scope: Scope, receive: Receive, send: Send) -> None:
+        response = error_response(
+            413, ErrorCode.PAYLOAD_TOO_LARGE, "Die Anfrage ist zu groß.", {"max_bytes": limit}
+        )
+        await response(scope, receive, send)
 
 
 def report_configuration(settings: Settings) -> None:
@@ -84,29 +123,36 @@ def report_configuration(settings: Settings) -> None:
         has_password = auth.has_password(settings, con)
         contact = serverconfig.push_contact(settings, con)
         repo = serverconfig.update_repo(settings, con)
+        # Home Assistant aus der Umgebung oder der App, die Tokens im eigenen Speicher.
+        ha = haconfig.effective(settings, con)
+        # Die Sicherung ebenso (Umgebung, App, Vorgabe; der Ordner nach serverconfig.backup_folder).
+        backup = serverconfig.backup_setup(settings, con)
     finally:
         con.close()
     if not has_password:
         log.warning("Noch kein Passwort: Wer Stowly jetzt öffnet, vergibt es.")
     log.info("Zeitzone des Servers: %s", settings.timezone)
-    if settings.backup_configured:
-        assert settings.backup_dir is not None
+    if backup.configured:
         log.info(
             "Automatische Sicherung täglich um %s nach %s an %d Schlüssel.",
-            settings.backup_time,
-            settings.backup_dir,
-            len(settings.backup_recipients),
+            backup.time,
+            backup.folder.path,
+            len(backup.keys),
         )
-        if not settings.backup_dir.is_dir():
-            log.warning("Sicherung: %s", autobackup.MISSING_DIR)
-    elif settings.backup_problem is not None:
-        log.warning("Keine automatische Sicherung: %s", settings.backup_problem)
-    if settings.ha_configured:
-        log.info("Einkaufsliste nach Bring! über Home Assistant, Liste %s.", settings.ha_todo_entity)
-    elif settings.ha_problem is not None:
-        log.warning("Kein Abgleich mit Home Assistant: %s", settings.ha_problem)
-    if settings.ha_summary_token is not None:
+    elif backup.problem is not None:
+        log.warning("Keine automatische Sicherung: %s", backup.problem)
+    if ha.configured:
+        log.info(
+            "Einkaufsliste nach Bring! über Home Assistant, Liste %s (%s).",
+            ha.entity,
+            "aus der Umgebung" if ha.source == "env" else "aus der App",
+        )
+    elif ha.problem is not None:
+        log.warning("Kein Abgleich mit Home Assistant: %s", ha.problem)
+    if ha.sensor_token is not None:
         log.info("Sensor für Home Assistant unter /api/ha/summary eingerichtet.")
+    elif ha.sensor_problem is not None:
+        log.warning("Sensor für Home Assistant: %s", ha.sensor_problem)
     if contact is None:
         log.info("Push ist aus: Es gibt keinen Kontakt für die Push-Dienste (App oder STOWLY_PUSH_CONTACT).")
     if repo is not None:
@@ -151,12 +197,10 @@ def build_app(
         # (Umgebung oder App) erst beim Einsatz, so wirkt eine Änderung in der App ohne Neustart.
         sender = push.PushService(settings, transport=push_transport, clock=push_clock)
         app.state.push = sender
-        # Aufgaben des Zeitplans (docs/integrationen.md, 1.1), in dieser Reihenfolge: die Sicherung, nur
-        # wenn sie eingerichtet ist, die Tagesnachricht (sie prüft den Kontakt selbst) und mit HTTPS die
-        # Erneuerung des Zertifikats.
-        tasks: list[scheduler.Job] = []
-        if settings.backup_configured:
-            tasks.append(autobackup.BackupJob(settings))
+        # Aufgaben des Zeitplans (docs/integrationen.md, 1.1), in dieser Reihenfolge: die Sicherung (immer;
+        # sie liest ihre Einstellungen bei jedem Takt und ruht ohne Schlüssel), die Tagesnachricht (sie prüft
+        # den Kontakt selbst) und mit HTTPS die Erneuerung des Zertifikats.
+        tasks: list[scheduler.Job] = [autobackup.BackupJob(settings)]
         tasks.append(daily.PushDailyJob(settings, sender, clock=job_clock))
         if settings.https_port is not None:
             tasks.append(
@@ -167,29 +211,30 @@ def build_app(
         jobs = scheduler.Scheduler(settings.database_path, tasks, clock=job_clock)
         app.state.scheduler = jobs
         schedule = asyncio.create_task(jobs.run(), name="stowly-scheduler")
-        # Der Abgleich mit Home Assistant und Bring! hat seine eigene Schleife (5.4), nur wenn HA
-        # eingerichtet ist.
-        ha: bring.BringSync | None = None
-        ha_task: asyncio.Task[None] | None = None
-        if settings.ha_configured:
-            ha = bring.BringSync(settings, transport=ha_transport, clock=ha_clock)
-            app.state.bring = ha
-            ha_task = asyncio.create_task(ha.run(), name="stowly-ha")
+        # Der Abgleich mit Home Assistant und Bring! hat seine eigene Schleife (5.4). Sie läuft immer, liest
+        # die Einrichtung (Umgebung oder App) vor jedem Lauf und ruht ohne sie, bis reconfigure sie weckt.
+        ha = bring.BringSync(settings, app.state.secrets, transport=ha_transport, clock=ha_clock)
+        app.state.bring = ha
+        ha_task = asyncio.create_task(ha.run(), name="stowly-ha")
         # Die Abfrage bei GitHub hat ebenfalls ihre eigene Schleife (10.2); sie schläft, solange Updates
         # aus sind, und wacht auf, wenn der Schalter in der App sie einschaltet (reconfigure).
         checker = updates.UpdateChecker(settings, sender, transport=update_transport, clock=update_timer)
         app.state.updates = checker
         checker_task = asyncio.create_task(checker.run(), name="stowly-updates")
+        # Zurückspielen: Abgelaufenes (hochgeladene Dateien, Kandidaten, die alte Datenbank nach 7 Tagen) räumt
+        # diese Schleife weg, auch wenn niemand mehr fragt.
+        sweeper = asyncio.create_task(_sweep_restore(app.state.restore), name="stowly-restore")
         try:
             async with _serving(app):
                 yield
         finally:
+            sweeper.cancel()
+            await asyncio.gather(sweeper, return_exceptions=True)
             # Nicht abbrechen: Ein Takt, der gerade die Datenbank liest, wird fertig; ein laufender
             # Lauf bekommt ein paar Sekunden (Scheduler.aclose), der Abgleich mit HA und die Abfrage
             # bei GitHub ebenso.
             jobs.stop()
-            if ha is not None:
-                ha.stop()
+            ha.stop()
             checker.stop()
             await asyncio.gather(schedule, return_exceptions=True)
             await asyncio.gather(
@@ -202,8 +247,7 @@ def build_app(
             app.state.updates = None
             app.state.push = None
             await sender.aclose()
-            if ha is not None:
-                await ha.aclose()
+            await ha.aclose()
             await checker.aclose()
 
     @contextlib.asynccontextmanager
@@ -277,6 +321,15 @@ def build_app(
     # Die Uhr der Updates gilt auch ohne laufende Schleife: Die Endpunkte messen damit das Alter der
     # Dateien des Updaters.
     app.state.update_clock = update_timer
+    # Tokens aus der App außerhalb der Datenbank (stowly/secretstore.py; den Ordner legt create_app an) und
+    # die Prüfung der Verbindung zu HA (stowly/hacheck.py: Transport wie der Abgleich, eine zugleich).
+    app.state.secrets = secretstore.SecretStore(settings.secrets_dir)
+    app.state.ha_transport = ha_transport
+    app.state.ha_check = hacheck.CheckGuard(ha_clock)
+    # Zurückspielen (stowly/restore.py): Hochgeladenes und Geprüftes im Arbeitsspeicher, dazu der Neustart,
+    # den die Listener bereitstellen (__main__.Listeners.request_restart); ohne sie gibt es keinen.
+    app.state.restore = restore.RestoreManager(settings)
+    app.state.request_restart = None
 
     install_error_handlers(app)
     app.add_middleware(BodyLimit)
@@ -294,6 +347,17 @@ def build_app(
     # Muss der letzte Schritt bleiben (siehe stowly/web.py).
     install_web(app, settings.web_dir, csp=settings.csp)
     return app
+
+
+async def _sweep_restore(manager: restore.RestoreManager) -> None:
+    """Alle ``restore.SWEEP_EVERY_S`` Sekunden ``RestoreManager.sweep``; ein Fehler steht im Log, die Schleife
+    läuft weiter."""
+    while True:
+        await asyncio.sleep(restore.SWEEP_EVERY_S)
+        try:
+            await run_in_threadpool(manager.sweep)
+        except Exception:
+            log.exception("Zurückspielen: Das Aufräumen ist fehlgeschlagen.")
 
 
 async def _stop(task: "asyncio.Task[None] | None", timeout_s: float) -> None:
@@ -372,6 +436,8 @@ def create_app(
         update_clock=update_clock,
     )
     app.state.tls.prepare(wizard.stored_certificate_addresses(settings))
+    # /data/secrets (0700); scheitert das, steht es im Zustand von HA, und der Server startet trotzdem.
+    app.state.secrets.prepare()
     return app
 
 

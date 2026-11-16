@@ -69,7 +69,25 @@
  * Browser) meldet sich der Pi nach einer Weile von selbst und koppelt. Den Ablauf der Zertifikate
  * gekoppelter Pi meldet `setup.load` in `paired_printers`; mit "pi-cert-expiring" läuft das des Pi
  * im Keller in gut 20 Tagen ab.
+ *
+ * Stufe B (docs/plan-einrichtung-b.md): Ohne Ausgangslage kommt die Sicherung aus der Umgebung
+ * (Schlüssel, Uhrzeit, Ordner /backups), wie bisher; "backup-app" richtet sie in der App ein (ein
+ * Schlüssel, eigener Ordner /backups), "backup-none" (und die offene Einrichtung) gar nicht.
+ * „Jetzt sichern" legt eine Datei in den nachgespielten Ordner (höchstens eine je Minute nach der Uhr
+ * der Attrappe), `backup.file` liefert ein paar Bytes. Zurückspielen nimmt Dateien von age, gzip
+ * und SQLite (an den ersten Bytes erkannt) und prüft den geheimen Schlüssel wirklich: Es passt der
+ * zu einem der öffentlichen Schlüssel (`MOCK_BACKUP_SECRET` gehört zum ersten). Mit
+ * "restore-preview" gilt jede Datei als Sicherung und jeder gültige geheime Schlüssel passt, und
+ * eine Sicherung wurde schon vor zwei Tagen zurückgespielt („Rückgängig" geht noch). Der Neustart
+ * dauert ein paar Augenblicke; beim ersten Start („unconfigured") meldet das Anwenden danach an und
+ * bringt die Beispieldaten. Home Assistant: "ha-env" kommt ganz aus der Umgebung (nur zu sehen),
+ * "ha-token-missing" ist in der App eingerichtet, aber ohne Token (nach einem Zurückspielen); die
+ * übrigen "ha-…" sind in der App eingerichtet. „Verbindung prüfen" findet zwei Listen; nach dem
+ * Speichern ist der Abgleich erst "pending", dann "ok".
  */
+import { x25519 } from "@noble/curves/ed25519.js";
+import { bech32 } from "@scure/base";
+
 import {
   addDays,
   APP_VERSION,
@@ -109,18 +127,22 @@ import {
   progressAfterOutcome,
   PUSH_TEST_INTERVAL_S,
   randomPackageId,
+  RESTORE_MAX_BYTES,
   requiredText,
   stockCount,
   toLocalDate,
   UPDATE_CHECK_MIN_GAP_S,
   willLookUp,
   type AppState,
+  type BackupConfig,
+  type BackupFile,
   type BackupStatus,
   type Core,
   type Device,
   type DevicePrefs,
   type DisplacedChange,
   type ConfigSource,
+  type HaConfig,
   type HaState,
   type HaStatus,
   type HttpsStatus,
@@ -147,6 +169,10 @@ import {
   type PushTestResult,
   type PushTestStatus,
   type RemovalReason,
+  type RestoreKind,
+  type RestorePreview,
+  type RestoreStatus,
+  type RestoreUpload,
   type ServerConfig,
   type ServiceHealth,
   type SessionState,
@@ -196,7 +222,7 @@ import { computeStats } from "./stats";
  * - "push-rate-limited": Push ist an, und eben ging eine Testnachricht hinaus: Die nächste
  *                  scheitert mit "rate_limited" (`details.retry_after_s` 7), danach geht es wieder.
  * - "backup-warning": die letzte gelungene Sicherung liegt drei Tage zurück, seither scheitert sie
- * - "backup-problem": die automatische Sicherung ist nur halb eingerichtet (ein Schlüssel fehlt)
+ * - "backup-problem": die Schlüssel kommen aus der App, der Ordner aus der Umgebung (STOWLY_BACKUP_DIR), und er ist nicht beschreibbar
  * - "ha-ok":       Home Assistant eingerichtet, der letzte Abgleich gelang eben (mit Sensor)
  * - "ha-pending":  eingerichtet, seit dem Start des Servers noch kein Abgleich
  * - "ha-unreachable", "ha-unauthorized": eingerichtet, der letzte Abgleich scheiterte so
@@ -211,6 +237,12 @@ import { computeStats } from "./stats";
  * - "setup-env":   Passwort, Kontakt für Push und Updates kommen aus der Umgebung
  * - "no-https":    Stowly hat keinen eigenen HTTPS-Listener (STOWLY_HTTPS_PORT fehlt)
  * - "pi-cert-expiring": Der Pi im Keller ist gekoppelt, sein Zertifikat läuft in gut 20 Tagen ab
+ * - "backup-none": keine Sicherung eingerichtet: kein Schlüssel, Ablage im Datenordner (/data/backups)
+ * - "backup-app":  Sicherung in der App eingerichtet: ein Schlüssel, eigener Ordner /backups
+ * - "ha-env":      Home Assistant kommt ganz aus der Umgebung (in der App nur zu sehen), mit Sensor
+ * - "ha-token-missing": Home Assistant in der App eingerichtet, aber der Token fehlt (nach einem Zurückspielen)
+ * - "restore-preview": jede Datei gilt als Sicherung, jeder gültige geheime Schlüssel passt; vor zwei
+ *                  Tagen wurde schon einmal zurückgespielt („Rückgängig" geht noch)
  */
 export type MockScenario =
   | "empty"
@@ -249,7 +281,12 @@ export type MockScenario =
   | "setup-open"
   | "setup-env"
   | "no-https"
-  | "pi-cert-expiring";
+  | "pi-cert-expiring"
+  | "backup-none"
+  | "backup-app"
+  | "ha-env"
+  | "ha-token-missing"
+  | "restore-preview";
 
 export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "empty",
@@ -289,6 +326,11 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "setup-env",
   "no-https",
   "pi-cert-expiring",
+  "backup-none",
+  "backup-app",
+  "ha-env",
+  "ha-token-missing",
+  "restore-preview",
 ];
 
 /** Wie ein nachgespielter Druck ausgeht. */
@@ -298,6 +340,58 @@ export type MockPrintOutcome = "printed" | "failed" | "unknown";
 export type MockPushPermission = "granted" | "denied" | "default";
 
 export const MOCK_PASSWORD = "stowly";
+
+/**
+ * Die öffentlichen Schlüssel der Sicherung in den Beispielen (aus docs/vectors.json, `age_keys`):
+ * zwei aus der Umgebung, der erste auch in der App ("backup-app").
+ */
+export const MOCK_BACKUP_KEYS = [
+  "age1wd93f5pmu4q002srqcx02vjwhex9ka0drhg73kaawz9nnp4rcetqpndxjq",
+  "age1extfnsjccl9nvgulg3rayht3xz07rtkl6j4029r3dk4c2kpaugaqnctge3",
+] as const;
+
+/** Der geheime Schlüssel zum ersten öffentlichen: Mit ihm passt „Schlüssel prüfen", und das Zurückspielen gelingt. */
+export const MOCK_BACKUP_SECRET = "AGE-SECRET-KEY-16P2TJYCHX4QDCZPA78R7DTQTREQ4SUQH9C8C3PXCT2CTJ39RVC8Q4J2QFU";
+
+/** Die Adresse von Home Assistant in den Beispielen. */
+export const MOCK_HA_URL = "http://homeassistant.local:8123";
+
+/** Was „Verbindung prüfen" bei Home Assistant in den Beispielen findet: wie beim Server nach Namen sortiert. */
+const MOCK_HA_LISTS = [
+  { entity_id: "todo.baumarkt", name: "Baumarkt", open: 0 },
+  { entity_id: "todo.einkaufsliste", name: "Einkaufsliste", open: 4 },
+] as const;
+
+/** Der Satz des Servers, wenn der Token von HA nach einem Zurückspielen fehlt (docs/plan-einrichtung-b.md, 3). */
+export const HA_TOKEN_MISSING = "Der Token für Home Assistant fehlt (steht in keiner Sicherung); bitte neu eintragen.";
+
+/** Die öffentlichen Schlüssel zu den geheimen in einem Text (Zeilen mit # zählen nicht); null, wenn eine Zeile keiner ist. */
+function mockIdentities(text: string): string[] | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  const publics: string[] = [];
+  for (const line of lines) {
+    try {
+      const decoded = bech32.decode(line);
+      const secret = bech32.fromWords(decoded.words);
+      if (decoded.prefix !== "age-secret-key-" || secret.length !== 32) {
+        return null;
+      }
+      publics.push(bech32.encode("age", bech32.toWords(x25519.getPublicKey(secret))));
+    } catch {
+      return null;
+    }
+  }
+  return publics.length > 0 ? publics : null;
+}
+
+function randomHex(bytes: number): string {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join("");
+}
 
 /** Ausgangslagen zu Push und der Zustand, den sie ergeben. */
 const PUSH_SCENARIOS: readonly [MockScenario, PushState][] = [
@@ -328,6 +422,8 @@ const HA_SCENARIOS: readonly [MockScenario, HaSetup][] = [
   ["ha-unreachable", "unreachable"],
   ["ha-unauthorized", "unauthorized"],
   ["ha-problem", "problem"],
+  ["ha-env", "ok"],
+  ["ha-token-missing", "problem"],
 ];
 
 /** Die To-do-Liste in Home Assistant, mit der Bring! verbunden ist (STOWLY_HA_TODO_ENTITY). */
@@ -627,7 +723,6 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   const clock = options.now ?? (() => new Date());
   const latency = options.latency ?? 600;
   const stamp = () => clock().toISOString();
-  const today = () => toLocalDate(clock());
 
   const unconfigured = scenarios.has("unconfigured");
   const chosen = scenarios.has("empty") || unconfigured
@@ -709,8 +804,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   /** Wie die Updates eingeschaltet sind: aus der Umgebung, mit dem Schalter der App, oder nie geschaltet. */
   let updateSource: ConfigSource = fromEnv ? "env" : updates.configured ? "app" : "default";
   const setupSince = new Date(clock().getTime() - 3 * 86_400_000).toISOString();
+  // Die Schritte von Stufe B kamen nach dem Abschluss dazu: In einem eingerichteten Haushalt sind sie unmarkiert.
   const setupSteps = new Map<SetupStepId, { state: SetupStepState; changed_at: string | null }>(
-    (["https", "printer", "updates", "notifications"] as const).map((id) => [id, setupOpen ? { state: "open", changed_at: null } : { state: "done", changed_at: setupSince }]),
+    (["https", "printer", "backup", "updates", "notifications", "home_assistant"] as const).map((id) => [
+      id,
+      setupOpen || id === "backup" || id === "home_assistant" ? { state: "open", changed_at: null } : { state: "done", changed_at: setupSince },
+    ]),
   );
   let setupFinishedAt: string | null = setupOpen ? null : setupSince;
   let https: HttpsStatus = mockHttps(scenarios.has("no-https"), setupOpen ? null : setupSince, clock().getTime());
@@ -723,6 +822,41 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   if (scenarios.has("pi-cert-expiring")) {
     piCertificates.set(PRINTER_IDS.cellar, { hostname: "stowly-pi", not_after: new Date(clock().getTime() + 20.5 * 86_400_000).toISOString() });
   }
+
+  // Stufe B: Sicherung (siehe Kopf der Datei). Was aus der Umgebung kommt, steht fest.
+  const backupSetup: "env" | "app" | "none" = scenarios.has("backup-none") || setupOpen ? "none" : scenarios.has("backup-app") || scenarios.has("backup-problem") ? "app" : "env";
+  /** Mit "backup-problem" steht der Ordner in der Umgebung (STOWLY_BACKUP_DIR) und ist nicht beschreibbar. */
+  const backupDirFromEnv = backupSetup === "env" || scenarios.has("backup-problem");
+  const backupFromEnv = backupSetup === "env";
+  let backupSwitch: boolean | null = null;
+  let backupTimeApp: string | null = null;
+  let backupRecipientsApp: { key: string; added_at: string }[] = backupSetup === "app" ? [{ key: MOCK_BACKUP_KEYS[0], added_at: setupSince }] : [];
+  const backupFolderProblem = scenarios.has("backup-problem") ? "Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)." : null;
+  /** Mit „Jetzt sichern" angelegte Sicherungen (neueste zuerst); die täglichen rechnet `integrationStatus` dazu. */
+  let backupRuns: BackupFile[] = [];
+  /** Zeitpunkt der letzten Sicherung auf Knopfdruck in Millisekunden (Uhr der Attrappe) oder null. */
+  let lastBackupRun: number | null = null;
+
+  // Stufe B: Zurückspielen.
+  const lenientRestore = scenarios.has("restore-preview");
+  const twoDaysAgo = new Date(clock().getTime() - 2 * 86_400_000).toISOString();
+  let restoreStatus: RestoreStatus = lenientRestore
+    ? { state: "done", at: twoDaysAgo, message: null, undo_until: new Date(clock().getTime() + 5 * 86_400_000).toISOString() }
+    : { state: "idle", at: null, message: null, undo_until: null };
+  /** Was nach dem nachgespielten Neustart gilt ("done" nach dem Anwenden, "undone" nach Rückgängig). */
+  let restoreNext: RestoreStatus["state"] = "done";
+  const restoreUploads = new Map<string, RestoreUpload>();
+  const restoreCandidates = new Map<string, RestorePreview>();
+
+  // Stufe B: Home Assistant aus der App. Ohne Ausgangslage nicht eingerichtet; die Zustände "ha-…" sind in der App eingerichtet.
+  const haFromEnv = scenarios.has("ha-env") || scenarios.has("ha-problem");
+  let haApp: { url: string | null; entity: string | null; token: boolean; token_set_at: string | null } =
+    haFromEnv || initialHa === "off"
+      ? { url: null, entity: null, token: false, token_set_at: null }
+      : { url: MOCK_HA_URL, entity: HA_ENTITY, token: !scenarios.has("ha-token-missing"), token_set_at: scenarios.has("ha-token-missing") ? null : setupSince };
+  let haSensorApp: { token: string; set_at: string } | null = initialHa !== "off" && !haFromEnv && !scenarios.has("ha-token-missing") ? { token: randomHex(32), set_at: setupSince } : null;
+  /** Zeitpunkt der letzten Prüfung bei HA in Millisekunden (Uhr der Attrappe) oder null. */
+  let lastHaCheck: number | null = null;
 
   // Einkaufsliste: was der Server selbst tut (siehe Kopf der Datei und `ServerEffect`).
   const serverEffects: ServerEffect[] = [];
@@ -790,6 +924,20 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   function requireOnline(): void {
     if (!syncStatus.get().online) {
       throw new CoreError("offline", "Der Server ist nicht erreichbar.");
+    }
+  }
+
+  /** Wie `runtime.server` im Kern: Aufrufe der Verwaltung gehen nur angemeldet. */
+  function requireSignedIn(): void {
+    if (session.get().status !== "signed_in") {
+      throw new CoreError("unauthorized", "Dieses Gerät ist nicht angemeldet.");
+    }
+  }
+
+  /** Zurückspielen: angemeldet, oder abgemeldet beim ersten Start (der Server hat noch kein Passwort). */
+  function requireRestoreAccess(): void {
+    if (session.get().status !== "signed_in" && syncStatus.get().server_configured !== false) {
+      throw new CoreError("conflict", "Es gibt schon ein Haushalts-Passwort. Zurückspielen geht jetzt nur angemeldet.");
     }
   }
 
@@ -1301,11 +1449,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       return off;
     }
     if (setup === "problem") {
-      // Adresse und Liste stehen in der .env, der Token fehlt: kein Abgleich (5.1).
-      return { ...off, problem: "STOWLY_HA_TOKEN fehlt.", entity: HA_ENTITY };
+      // Adresse und Liste stehen fest, der Token fehlt: in der .env (5.1) oder nach einem Zurückspielen in der App.
+      return { ...off, problem: haFromEnv ? "STOWLY_HA_TOKEN fehlt." : HA_TOKEN_MISSING, entity: haApp.entity ?? HA_ENTITY, sensor: haSensorApp !== null };
     }
     const at = (msAgo: number) => new Date(nowMs - msAgo).toISOString();
-    const configured: HaStatus = { ...off, configured: true, entity: HA_ENTITY, state: setup, linked: linkedItems(nowMs), sensor: true };
+    const entity = haFromEnv ? HA_ENTITY : (haApp.entity ?? HA_ENTITY);
+    const configured: HaStatus = { ...off, configured: true, entity, state: setup, linked: linkedItems(nowMs), sensor: haFromEnv || haSensorApp !== null };
     if (setup === "pending") {
       return configured;
     }
@@ -1344,54 +1493,34 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       }
       return run;
     };
-    const recipients = ["age1ql3z…ac8p", "age1x7m2…9kqd"];
-    let backup: BackupStatus;
-    if (scenarios.has("backup-problem")) {
-      backup = {
-        configured: false,
-        problem: "STOWLY_BACKUP_RECIPIENTS fehlt.",
-        time: "03:30",
-        recipients: [],
-        last_ok_at: null,
-        last_file: null,
-        last_size: null,
-        last_error: null,
-        last_error_at: null,
-        next_at: null,
-        warning: false,
-      };
-    } else if (scenarios.has("backup-warning")) {
-      // Vor drei Tagen gelungen, seither scheitert jeder Versuch; nach einem Fehler folgt der nächste eine Stunde später.
-      const lastOk = pastRun(3);
-      backup = {
-        configured: true,
-        problem: null,
-        time: "03:30",
-        recipients,
-        last_ok_at: iso(lastOk),
-        last_file: fileOf(lastOk),
-        last_size: 48_213,
-        last_error: "Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).",
-        last_error_at: at(1),
-        next_at: at(0),
-        warning: true,
-      };
-    } else {
-      // Heute um 03:30 gelungen (oder gestern, wenn es noch früher ist); die nächste morgen um 03:30.
-      const lastOk = pastRun(0);
-      backup = {
-        configured: true,
-        problem: null,
-        time: "03:30",
-        recipients,
-        last_ok_at: iso(lastOk),
-        last_file: fileOf(lastOk),
-        last_size: 51_874,
-        last_error: null,
-        last_error_at: null,
-        next_at: iso(backupRun(lastOk + HALF_HOUR_MS, 1)),
-        warning: false,
-      };
+    // Die täglichen Läufe um 03:30 (heute oder gestern und die zwei Tage davor; mit "backup-warning" der
+    // letzte vor drei Tagen), davor die auf Knopfdruck.
+    const config = backupConfig();
+    const effective = config.enabled && config.recipients.length > 0 && config.folder_problem === null;
+    const daily = backupSetup === "none" || config.folder_problem !== null ? [] : (scenarios.has("backup-warning") ? [3, 4, 5] : [0, 1, 2]).map((days) => pastRun(days));
+    const files: BackupFile[] = [...backupRuns, ...daily.map((ms, index) => ({ name: fileOf(ms), size: 51_874 - index * 1_211, created_at: iso(ms) }))].slice(
+      0,
+      LIMITS.backup_files_listed,
+    );
+    const last = files[0];
+    let backup: BackupStatus = {
+      configured: effective,
+      folder: config.folder,
+      files,
+      problem: !effective && config.recipients.length > 0 ? (config.folder_problem ?? "Die automatische Sicherung ist ausgeschaltet.") : null,
+      time: config.time,
+      recipients: config.recipients.map((recipient) => recipient.short),
+      last_ok_at: last?.created_at ?? null,
+      last_file: last?.name ?? null,
+      last_size: last?.size ?? null,
+      last_error: null,
+      last_error_at: null,
+      next_at: effective ? iso(backupRun(nowMs, 1)) : null,
+      warning: false,
+    };
+    if (scenarios.has("backup-warning")) {
+      // Seit drei Tagen scheitert jeder Versuch; nach einem Fehler folgt der nächste eine Stunde später.
+      backup = { ...backup, last_error: "Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001).", last_error_at: at(1), next_at: at(0), warning: true };
     }
     const push = pushState.get();
     const configured = push !== "not_configured";
@@ -1457,11 +1586,15 @@ export function createMockCore(options: MockOptions = {}): MockCore {
 
   /** Der Stand der Einrichtung (Protokoll 11.6): `ready` aus Sicht des Servers. */
   function setupStatus(): SetupStatus {
+    const backup = integrationStatus().backup;
     const ready: Record<SetupStepId, boolean> = {
       https: https.seen_at !== null,
       printer: hasPrinter(),
+      // Wirksam und mit einer gelungenen Sicherung.
+      backup: backup.configured && backup.last_ok_at !== null,
       updates: updates.configured,
       notifications: pushContact !== null,
+      home_assistant: haStatus(clock().getTime()).configured,
     };
     // Wie der Server: nur nicht gelöschte Drucker, früheste Ablaufzeit zuerst.
     const printers = state.get().printers;
@@ -1483,6 +1616,50 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     return {
       push: { contact: pushContact, source: pushContactSource },
       update: { enabled: updates.configured, repo: UPDATE_REPO, source: updateSource, available: !fromEnv },
+      backup: backupConfig(),
+    };
+  }
+
+  /** `ServerConfig.backup` der Attrappe (docs/plan-einrichtung-b.md, 1): Umgebung vor App vor Vorgabe. */
+  function backupConfig(): BackupConfig {
+    const short = (key: string) => `${key.slice(0, 8)}…${key.slice(-4)}`;
+    return {
+      enabled: backupFromEnv || (backupSwitch ?? true),
+      enabled_source: backupFromEnv ? "env" : backupSwitch === null ? "default" : "app",
+      recipients: backupFromEnv
+        ? MOCK_BACKUP_KEYS.map((key) => ({ key, short: short(key), added_at: null }))
+        : backupRecipientsApp.map(({ key, added_at }) => ({ key, short: short(key), added_at })),
+      recipients_source: backupFromEnv ? "env" : backupRecipientsApp.length > 0 ? "app" : "default",
+      time: backupFromEnv ? "03:30" : (backupTimeApp ?? "03:30"),
+      time_source: backupFromEnv ? "env" : backupTimeApp === null ? "default" : "app",
+      folder: backupSetup === "none" ? "/data/backups" : "/backups",
+      folder_source: backupDirFromEnv ? "env" : backupSetup === "app" ? "mounted" : "data",
+      folder_problem: backupFolderProblem,
+      folder_hint: null,
+    };
+  }
+
+  /** `HaConfig` der Attrappe: Umgebung ("ha-env", "ha-problem") oder App; nie ein Token. */
+  function haConfigNow(): HaConfig {
+    const sensor = haFromEnv
+      ? { source: "env" as const, set: true, set_at: null }
+      : { source: haSensorApp ? ("app" as const) : ("default" as const), set: haSensorApp !== null, set_at: haSensorApp?.set_at ?? null };
+    if (haFromEnv) {
+      const tokenSet = !scenarios.has("ha-problem");
+      return { source: "env", url: MOCK_HA_URL, entity: HA_ENTITY, token_set: tokenSet, token_set_at: null, ca: false, configured: tokenSet, problem: tokenSet ? null : "STOWLY_HA_TOKEN fehlt.", sensor };
+    }
+    const any = haApp.url !== null || haApp.entity !== null || haApp.token;
+    const configured = haApp.url !== null && haApp.entity !== null && haApp.token;
+    return {
+      source: any ? "app" : "default",
+      url: haApp.url,
+      entity: haApp.entity,
+      token_set: haApp.token,
+      token_set_at: haApp.token_set_at,
+      ca: false,
+      configured,
+      problem: any && !configured ? (haApp.url === null ? "Für Home Assistant fehlen noch die Adresse und der Token." : haApp.token ? "Es ist noch keine Liste gewählt." : HA_TOKEN_MISSING) : null,
+      sensor,
     };
   }
 
@@ -2433,14 +2610,293 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
     },
 
+    // Sicherung (Stufe B, siehe Kopf der Datei), nachgespielt: braucht den Server.
     backup: {
-      async download() {
+      async run() {
         await wait();
         requireOnline();
-        return {
-          blob: new Blob(["Attrappe: Hier käme die Kopie der Datenbank.\n"], { type: "application/vnd.sqlite3" }),
-          filename: `stowly-${today()}.sqlite3`,
+        const nowMs = clock().getTime();
+        if (lastBackupRun !== null && nowMs - lastBackupRun < 60_000) {
+          const retryAfter = Math.max(1, Math.ceil((lastBackupRun + 60_000 - nowMs) / 1000));
+          throw new CoreError("rate_limited", "Höchstens eine Sicherung je Minute.", { retry_after_s: retryAfter });
+        }
+        const config = backupConfig();
+        if (config.recipients.length === 0) {
+          throw new CoreError("not_configured", "Für die Sicherung fehlt ein öffentlicher Schlüssel.");
+        }
+        if (config.folder_problem !== null) {
+          throw new CoreError("not_configured", config.folder_problem);
+        }
+        lastBackupRun = nowMs;
+        const file: BackupFile = { name: `stowly-${serverDay(nowMs)}-${serverTime(nowMs).replace(":", "")}.sqlite3.gz.age`, size: 52_118, created_at: stamp() };
+        backupRuns = [file, ...backupRuns.filter((other) => other.name !== file.name)];
+        return file;
+      },
+      async file(name) {
+        await wait();
+        requireOnline();
+        if (!integrationStatus().backup.files.some((file) => file.name === name)) {
+          throw new CoreError("not_found", "Diese Sicherung gibt es nicht.");
+        }
+        const recipients = backupConfig().recipients.map((recipient) => `-> X25519 ${recipient.short}`);
+        return new Blob([`age-encryption.org/v1\n${recipients.join("\n")}\n--- Attrappe: Hier stünde die verschlüsselte Sicherung.\n`], { type: "application/octet-stream" });
+      },
+    },
+
+    // Zurückspielen (Stufe B, siehe Kopf der Datei), nachgespielt: braucht den Server.
+    restore: {
+      async upload(file, options) {
+        if (!(file instanceof Blob) || file.size === 0) {
+          throw new CoreError("invalid", "Die Datei ist leer.");
+        }
+        if (file.size > RESTORE_MAX_BYTES) {
+          throw new CoreError("invalid", `Die Datei ist zu groß: Eine Sicherung darf höchstens ${String(RESTORE_MAX_BYTES / 1024 / 1024)} MiB haben.`);
+        }
+        requireOnline();
+        requireRestoreAccess();
+        const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+        const text = new TextDecoder().decode(head);
+        const kind: RestoreKind | null = text.startsWith("age-encryption") ? "age" : head[0] === 0x1f && head[1] === 0x8b ? "gzip" : text.startsWith("SQLite format 3") ? "sqlite" : lenientRestore ? "sqlite" : null;
+        // Der Fortschritt in drei Schritten, wie ihn der Browser beim Hochladen meldet.
+        for (const share of [0.3, 0.7]) {
+          await wait(0.5);
+          options?.onProgress?.({ loaded: Math.round(file.size * share), total: file.size });
+        }
+        await wait(0.5);
+        if (kind === null) {
+          throw new CoreError("invalid", "Das ist keine Sicherung von Stowly.", { reason: "not_stowly", status: 422 });
+        }
+        options?.onProgress?.({ loaded: file.size, total: file.size });
+        const upload: RestoreUpload = { upload_id: randomHex(16), kind, size: file.size };
+        restoreUploads.set(upload.upload_id, upload);
+        return upload;
+      },
+      async check(uploadId, identity) {
+        await wait(2);
+        requireOnline();
+        requireRestoreAccess();
+        const upload = restoreUploads.get(uploadId);
+        if (!upload) {
+          throw new CoreError("not_found", "Die hochgeladene Datei ist abgelaufen. Bitte noch einmal hochladen.");
+        }
+        if (upload.kind === "age") {
+          const publics = mockIdentities(identity ?? "");
+          if (publics === null) {
+            throw new CoreError("invalid", "Das ist kein geheimer Schlüssel von age (AGE-SECRET-KEY-1…).", { reason: "not_a_key", status: 422 });
+          }
+          const known = new Set<string>([...MOCK_BACKUP_KEYS, ...backupConfig().recipients.map((recipient) => recipient.key)]);
+          if (!lenientRestore && !publics.some((key) => known.has(key))) {
+            throw new CoreError("invalid", "Der Schlüssel passt nicht zu dieser Sicherung.", { reason: "wrong_key", status: 422 });
+          }
+        }
+        const data = syncStatus.get().server_configured === false ? createSampleData(clock()) : state.get();
+        const preview: RestorePreview = {
+          restore_id: randomHex(16),
+          expires_at: new Date(clock().getTime() + 1_800_000).toISOString(),
+          kind: upload.kind,
+          schema_version: 5,
+          current_schema_version: 5,
+          last_activity_at: new Date(clock().getTime() - 86_400_000).toISOString(),
+          has_password: true,
+          devices: data.devices.filter((device) => device.revoked_at === null).length,
+          counts: {
+            products: data.products.filter((product) => product.deleted_at === null && product.merged_into === null).length,
+            items: data.packages.filter((pkg) => pkg.removed_at === null).length,
+            zones: data.zones.filter((zone) => zone.deleted_at === null).length,
+            shopping: data.shoppingItems.filter(isOpenItem).length,
+          },
         };
+        restoreCandidates.set(preview.restore_id, preview);
+        return preview;
+      },
+      async apply(input) {
+        await wait();
+        requireOnline();
+        requireRestoreAccess();
+        if (!restoreCandidates.has(input.restore_id)) {
+          throw new CoreError("not_found", "Die geprüfte Sicherung ist abgelaufen. Bitte noch einmal prüfen.");
+        }
+        const firstRun = session.get().status !== "signed_in";
+        const name = firstRun ? checkDeviceName(input.device_name) : null;
+        // Laufender Stowly: das jetzige Passwort; erster Start: das aus der Sicherung (die der Attrappe hat MOCK_PASSWORD).
+        if (input.password !== (firstRun ? MOCK_PASSWORD : householdPassword)) {
+          throw new CoreError("invalid_password", "Das Passwort stimmt nicht.");
+        }
+        restoreCandidates.delete(input.restore_id);
+        if (name !== null) {
+          // Erster Start: Stowly startet neu, dann ist dieses Gerät mit dem Bestand der Sicherung angemeldet.
+          await wait(3);
+          householdPassword = MOCK_PASSWORD;
+          state.set({ ...createSampleData(clock()), ...options.data });
+          restoreStatus = { state: "done", at: stamp(), message: null, undo_until: null };
+          syncStatus.update((status) => ({ ...status, server_configured: true }));
+          signIn(name);
+          return;
+        }
+        restoreStatus = { ...restoreStatus, state: "pending", at: stamp() };
+        restoreNext = "done";
+      },
+      async status() {
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        return { ...restoreStatus };
+      },
+      async undo() {
+        await wait();
+        requireOnline();
+        requireSignedIn();
+        if (restoreStatus.undo_until === null || Date.parse(restoreStatus.undo_until) <= clock().getTime()) {
+          throw new CoreError("not_found", "Es gibt nichts zurückzunehmen.");
+        }
+        restoreStatus = { ...restoreStatus, state: "pending", at: stamp() };
+        restoreNext = "undone";
+      },
+      async discardPrevious() {
+        await wait();
+        requireOnline();
+        requireSignedIn();
+        restoreStatus = { ...restoreStatus, undo_until: null };
+      },
+      async waitForRestart() {
+        requireSignedIn();
+        if (restoreStatus.state === "pending") {
+          // Der Neustart: Der Server ist einen Augenblick weg, dann gilt der neue Stand.
+          syncStatus.update((status) => ({ ...status, online: false }));
+          await wait(3);
+          syncStatus.update((status) => ({ ...status, online: true }));
+          const undoUntil = restoreNext === "done" ? new Date(clock().getTime() + 7 * 86_400_000).toISOString() : restoreStatus.undo_until;
+          restoreStatus = { state: restoreNext, at: stamp(), message: null, undo_until: undoUntil };
+        }
+        return { ...restoreStatus };
+      },
+    },
+
+    // Home Assistant aus der App (Stufe B, siehe Kopf der Datei), nachgespielt: braucht den Server.
+    haConfig: {
+      async load() {
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        return haConfigNow();
+      },
+      async update(changes) {
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        if (haFromEnv) {
+          throw new CoreError("conflict", "Die Verbindung zu Home Assistant steht in der Umgebung (STOWLY_HA_URL, STOWLY_HA_TOKEN, STOWLY_HA_TODO_ENTITY) und lässt sich nur dort ändern.");
+        }
+        const url = typeof changes.url === "string" ? changes.url.trim().replace(/\/$/, "") : changes.url;
+        if (typeof url === "string" && (url.length > LIMITS.ha_url || !/^https?:\/\/[^\s/?#@]+$/i.test(url))) {
+          throw new CoreError("invalid", "Die Adresse beginnt mit http:// oder https://, etwa http://192.168.1.20:8123, ohne Pfad und ohne Benutzer.");
+        }
+        const entity = typeof changes.entity === "string" ? changes.entity.trim() : changes.entity;
+        if (typeof entity === "string" && !/^todo\.[a-z0-9_]+$/.test(entity)) {
+          throw new CoreError("invalid", "Eine Liste heißt in Home Assistant todo.… (Kleinbuchstaben, Ziffern und _), etwa todo.einkaufsliste.");
+        }
+        const token = typeof changes.token === "string" ? changes.token.trim() : changes.token;
+        if (typeof token === "string" && (token === "" || token.length > LIMITS.ha_token || /\s/.test(token))) {
+          throw new CoreError("invalid", "Bitte den langlebigen Zugangs-Token aus dem Profil von Home Assistant einfügen (ohne Leerzeichen).");
+        }
+        const next = { ...haApp };
+        if (url !== undefined && url !== next.url) {
+          next.url = url;
+          if (token === undefined) {
+            // Ein Token gilt nur für die Adresse, für die er eingetragen wurde.
+            next.token = false;
+            next.token_set_at = null;
+          }
+        }
+        if (entity !== undefined) {
+          next.entity = entity;
+        }
+        if (token !== undefined) {
+          next.token = token !== null;
+          next.token_set_at = token === null ? null : stamp();
+        }
+        const listChanged = next.entity !== haApp.entity;
+        haApp = next;
+        const config = haConfigNow();
+        haSetup = config.configured ? "pending" : config.source === "default" ? "off" : "problem";
+        if (listChanged) {
+          // Wie der Server: Die Bindungen der alten Liste lösen sich; nichts wird abgehakt.
+          const { ha: _ha, ...rest } = integrationChanges;
+          integrationChanges = rest;
+        }
+        if (config.configured) {
+          // Der erste Abgleich nach dem Speichern.
+          later(() => {
+            if (haSetup === "pending") {
+              haSetup = "ok";
+            }
+          }, 4);
+        }
+        return config;
+      },
+      async check(input) {
+        await wait(1.5);
+        requireOnline();
+        requireSignedIn();
+        const fields = input !== undefined && (input.url !== undefined || input.token !== undefined);
+        if (haFromEnv && fields) {
+          throw new CoreError("conflict", "Die Verbindung kommt aus der Umgebung; geprüft wird die von dort.");
+        }
+        const nowMs = clock().getTime();
+        if (lastHaCheck !== null && nowMs - lastHaCheck < 3_000) {
+          throw new CoreError("rate_limited", "Bitte kurz warten, dann noch einmal prüfen.", { retry_after_s: Math.max(1, Math.ceil((lastHaCheck + 3_000 - nowMs) / 1000)) });
+        }
+        const config = haConfigNow();
+        const url = input?.url?.trim().replace(/\/$/, "");
+        if ((url ?? config.url) === null) {
+          throw new CoreError("invalid", "Keine Adresse angegeben, und in der App ist keine eingetragen.");
+        }
+        lastHaCheck = nowMs;
+        const hasToken = (input?.token ?? "").trim() !== "" || (config.token_set && (url === undefined || url === config.url));
+        if (!hasToken) {
+          return { state: "token_needed", message: "Home Assistant antwortet; für die Listen braucht es den Token.", ha_version: "2026.11.0", location_name: "Zuhause", lists: [], entity_found: null };
+        }
+        const entity = config.entity;
+        const found = entity === null ? null : MOCK_HA_LISTS.some((list) => list.entity_id === entity);
+        return {
+          state: "ok",
+          message: `Verbindung zu Home Assistant steht; ${String(MOCK_HA_LISTS.length)} To-do-Listen gefunden.${found === false ? ` Die Liste ${entity ?? ""} gibt es dort nicht.` : ""}`,
+          ha_version: "2026.11.0",
+          location_name: "Zuhause",
+          lists: MOCK_HA_LISTS.map((list) => ({ ...list })),
+          entity_found: found,
+        };
+      },
+      async sensorToken() {
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        if (haFromEnv) {
+          throw new CoreError("conflict", "Der Sensor-Token kommt aus der Umgebung (STOWLY_HA_SUMMARY_TOKEN).");
+        }
+        if (!haSensorApp) {
+          throw new CoreError("not_found", "Es gibt noch keinen Sensor-Token aus der App; bitte einen erzeugen.");
+        }
+        return haSensorApp.token;
+      },
+      async createSensorToken() {
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        if (haFromEnv) {
+          throw new CoreError("conflict", "Der Sensor-Token kommt aus der Umgebung (STOWLY_HA_SUMMARY_TOKEN).");
+        }
+        haSensorApp = { token: randomHex(32), set_at: stamp() };
+        return haSensorApp.token;
+      },
+      async deleteSensorToken() {
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        if (haFromEnv) {
+          throw new CoreError("conflict", "Der Sensor-Token kommt aus der Umgebung (STOWLY_HA_SUMMARY_TOKEN).");
+        }
+        haSensorApp = null;
       },
     },
 
@@ -2769,6 +3225,55 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         }
         if (changes.update_enabled !== undefined && updateSource === "env") {
           throw new CoreError("conflict", "Updates sind über STOWLY_UPDATE_REPO fest eingeschaltet.");
+        }
+        // Die Sicherung (Stufe B): erst alles prüfen, dann ändern.
+        if ((changes.backup_enabled !== undefined || changes.backup_recipients !== undefined) && backupFromEnv) {
+          throw new CoreError("conflict", "Die Schlüssel der Sicherung kommen aus der Umgebung (STOWLY_BACKUP_RECIPIENTS).");
+        }
+        if (changes.backup_time !== undefined && backupFromEnv) {
+          throw new CoreError("conflict", "Die Uhrzeit der Sicherung kommt aus der Umgebung (STOWLY_BACKUP_TIME).");
+        }
+        if (typeof changes.backup_time === "string" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(changes.backup_time)) {
+          throw new CoreError("invalid", "Die Uhrzeit braucht die Form HH:MM, etwa 03:30.");
+        }
+        let recipients: { key: string; added_at: string }[] | undefined;
+        if (changes.backup_recipients !== undefined) {
+          if (changes.backup_recipients.length > LIMITS.backup_recipients) {
+            throw new CoreError("invalid", `Höchstens ${String(LIMITS.backup_recipients)} Schlüssel.`);
+          }
+          const keys: string[] = [];
+          for (const raw of changes.backup_recipients) {
+            if (/AGE-SECRET-KEY-/i.test(raw)) {
+              // Wie der Server: abgelehnt, ohne den Schlüssel zu wiederholen.
+              throw new CoreError("invalid", "Das ist ein geheimer Schlüssel. An Stowly geht nur der öffentliche (age1…).");
+            }
+            const key = raw.trim().toLowerCase();
+            if (!/^age1[02-9ac-hj-np-z]{58}$/.test(key)) {
+              throw new CoreError("invalid", "Das ist kein öffentlicher Schlüssel von age (age1…).");
+            }
+            if (!keys.includes(key)) {
+              keys.push(key);
+            }
+          }
+          // Wie der Server: Ein neuer Schlüssel braucht das Haushalts-Passwort, Entfernen nicht.
+          if (keys.some((key) => !backupRecipientsApp.some((known) => known.key === key))) {
+            if (changes.current_password === undefined) {
+              throw new CoreError("invalid", "Zum Hinzufügen eines Schlüssels braucht es das Haushalts-Passwort.");
+            }
+            if (changes.current_password !== householdPassword) {
+              throw new CoreError("invalid_password", "Das Passwort stimmt nicht.");
+            }
+          }
+          recipients = keys.map((key) => ({ key, added_at: backupRecipientsApp.find((known) => known.key === key)?.added_at ?? stamp() }));
+        }
+        if (changes.backup_enabled !== undefined) {
+          backupSwitch = changes.backup_enabled;
+        }
+        if (changes.backup_time !== undefined) {
+          backupTimeApp = changes.backup_time;
+        }
+        if (recipients !== undefined) {
+          backupRecipientsApp = recipients;
         }
         if (contact !== undefined) {
           pushContact = contact;

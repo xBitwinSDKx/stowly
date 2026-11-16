@@ -1,15 +1,25 @@
 """Einkaufsliste nach Bring! über Home Assistant (docs/integrationen.md, Abschnitt 5).
 
 Ein eigener Hintergrund-Ablauf nach dem Muster von ``off.OffWorker``: eine asyncio-Aufgabe im
-``lifespan`` der App, nur wenn HA eingerichtet ist, mit eingereichter Uhr (``off.Clock``) und
-``run_once()`` für Tests. Er läuft alle zwei Minuten, nach einem Sync, der die Einkaufsliste
-geändert hat (``changed``, frühestens 5 Sekunden nach der letzten solchen Änderung), und dann, wenn
-der nächste offene Eintrag zwei Minuten offen ist.
+``lifespan`` der App, mit eingereichter Uhr (``off.Clock``) und ``run_once()`` für Tests. Er läuft
+immer, wie ``updates.UpdateChecker``: Vor jedem Lauf liest er die wirksame Einrichtung
+(``haconfig.effective``: Umgebung oder App). Ohne Einrichtung ruht er mit dem Zustand ``off``, bis
+``reconfigure`` ihn weckt. Er läuft alle zwei Minuten, nach einem Sync, der die Einkaufsliste geändert
+hat (``changed``, frühestens 5 Sekunden nach der letzten solchen Änderung), und dann, wenn der nächste
+offene Eintrag zwei Minuten offen ist.
+
+**Ohne Neustart** (docs/plan-einrichtung-b.md, 3): ``reconfigure`` setzt einen Merker; ein laufender
+Abgleich hört nach der laufenden Anfrage auf. Hat sich der Fingerabdruck geändert (Adresse, Hash des
+Tokens, Liste, CA), schließt der Ablauf den alten Client und baut einen neuen, Zustand ``pending``, und
+gleicht gleich ab. Lesen der Einrichtung und Läufe geschehen in derselben Aufgabe, also nie mitten in
+einer Anfrage.
 
 Ein Lauf (5.4):
 
 1. **Liste da?** ``GET /api/states/<entity>``. Fehlt etwas, schreibt der Lauf nichts und zählt kein Fehlen.
-2. **Lesen:** ``todo.get_items`` mit offenen und erledigten Artikeln.
+2. **Lesen:** ``todo.get_items`` mit offenen und erledigten Artikeln. Gehört ``ha_links`` zu einer
+   anderen Liste (Merker ``ha_links_entity``), vergisst Stowly deren Artikel und löst die Bindungen,
+   ohne etwas abzuhaken; die offenen Einträge gehen neu in diese Liste.
 3. **Zurück** aus Bring!: Was dort abgehakt oder (zweimal in Folge nicht gesehen) gelöscht ist,
    erledigt die gebundenen offenen Einträge; bei automatischen mit Sperre.
 4. **Hin** nach Bring!: neue Einträge anlegen oder an einen gleichnamigen Artikel binden, die
@@ -28,26 +38,30 @@ Was dabei immer gilt:
 * Der Token steht nur in der Kopfzeile ``Authorization``: nie im Log, in der Datenbank, einer Antwort
   oder einer Fehlermeldung. Meldungen nennen Status und Pfad, nicht die Adresse von HA.
 
-Der Zustand für die App (5.6) lebt im Arbeitsspeicher und beginnt mit jedem Start bei ``pending``.
+Der Zustand für die App (5.6) lebt im Arbeitsspeicher und beginnt mit jedem Start und jeder geänderten
+Einrichtung bei ``pending``.
 """
 
 import asyncio
 import contextlib
+import json
 import logging
 import sqlite3
 import ssl
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx2
 
-from stowly import db, shopping, texts
+from stowly import db, haconfig, serverconfig, shopping, texts
 from stowly.config import Settings
 from stowly.contract.api import HA_MIRROR_DELAY_S, HA_SYNC_INTERVAL_S
 from stowly.contract.timeutil import format_timestamp, parse_timestamp
 from stowly.off import Clock
+from stowly.secretstore import SecretStore
 
 log = logging.getLogger("stowly.ha")
 
@@ -61,8 +75,12 @@ UNSEEN_WARN_AFTER = timedelta(minutes=10)
 # So oft in Folge fehlt ein schon gesehener Artikel, bis er als in Bring! gelöscht gilt.
 MISSES_FOR_REMOVED = 2
 TIMEOUT_S = 10.0
+# Mehr liest der Server aus keiner Antwort von HA (auch eine lange Liste bleibt weit darunter).
+BODY_MAX = 8 * 1024 * 1024
 # So lange wartet das Herunterfahren auf einen laufenden Abgleich.
 SHUTDOWN_WAIT_S = 5.0
+# Kopfzeilen jedes Aufrufs: JSON, ungepackt (so zählt die Grenze für den Rumpf, was ankommt).
+HEADERS = {"Accept": "application/json", "Accept-Encoding": "identity"}
 
 # ha_links.status: was Stowly zuletzt geschrieben (eigene) oder gesehen (fremde) hat.
 OPEN = shopping.BRING_OPEN
@@ -76,6 +94,7 @@ UNTRUSTED = "Home Assistant ist nicht erreichbar: Zertifikat nicht vertraut, sie
 UNEXPECTED = "Home Assistant antwortet unerwartet."
 NO_GET_ITEMS = "Home Assistant kennt todo.get_items nicht so (400)."
 FAILED = "Unerwarteter Fehler beim Abgleich mit Home Assistant (Einzelheiten im Log des Servers)."
+CA_UNUSABLE = "Die Zertifizierungsstelle aus STOWLY_HA_CA lässt sich nicht laden."
 
 # Zustände, bei denen ein Lauf sofort endet: Jeder weitere Aufruf scheiterte genauso.
 _FATAL = frozenset({"unauthorized", "unreachable"})
@@ -172,13 +191,34 @@ class Problem:
     detail: str
 
 
-class _Failed(Exception):
-    """Ein Aufruf an HA ist gescheitert. ``sent``: Die Anfrage kann HA trotzdem erreicht haben."""
+class Failed(Exception):
+    """Ein Aufruf an HA ist gescheitert. ``sent``: Die Anfrage kann HA trotzdem erreicht haben. ``status``:
+    die Antwort von HA (nicht 2xx); ``None`` ohne Antwort."""
 
-    def __init__(self, problem: Problem, *, sent: bool) -> None:
+    def __init__(self, problem: Problem, *, sent: bool, status: int | None = None) -> None:
         super().__init__(problem.detail)
         self.problem = problem
         self.sent = sent
+        self.status = status
+
+
+@dataclass(frozen=True)
+class Reply:
+    """Eine Antwort 2xx von HA: Status und Rumpf (höchstens die Grenze des Aufrufs)."""
+
+    status: int
+    body: bytes
+
+    def data(self) -> Any:
+        """Der Rumpf als JSON; ``None``, wenn er keines ist."""
+        try:
+            return json.loads(self.body)
+        except (ValueError, RecursionError):
+            return None
+
+
+class _TooLarge(Exception):
+    """Der Rumpf einer Antwort überschreitet die Grenze des Aufrufs."""
 
 
 def untrusted(exc: BaseException) -> bool:
@@ -196,13 +236,94 @@ def untrusted(exc: BaseException) -> bool:
     return False
 
 
-def _trust(settings: Settings) -> ssl.SSLContext | bool:
-    """Die eigene Zertifizierungsstelle aus ``STOWLY_HA_CA`` zusätzlich zu denen des Systems."""
-    if settings.ha_ca is None:
+def trust(ca: Path | None) -> ssl.SSLContext | bool:
+    """Die eigene Zertifizierungsstelle aus ``STOWLY_HA_CA`` zusätzlich zu denen des Systems. Wirft
+    ``OSError`` oder ``ssl.SSLError``, wenn sie sich nicht laden lässt."""
+    if ca is None:
         return True
     context = ssl.create_default_context()
-    context.load_verify_locations(cafile=str(settings.ha_ca))
+    context.load_verify_locations(cafile=str(ca))
     return context
+
+
+def _size(limit: int) -> str:
+    mib = 1024 * 1024
+    return f"{limit // mib} MiB" if limit % mib == 0 else f"{limit // 1024} KiB"
+
+
+def transport_problem(exc: BaseException, shown: str) -> tuple[Problem, bool]:
+    """Ein Aufruf ohne Antwort: Netz, Zeitüberschreitung, Zertifikat. Liefert das Problem und ob die Anfrage
+    HA trotzdem erreicht haben kann."""
+    detail = f"{shown}: {type(exc).__name__}"
+    if isinstance(exc, httpx2.ConnectError | httpx2.ConnectTimeout | httpx2.PoolTimeout):
+        # Die Anfrage hat HA nicht erreicht.
+        return Problem("unreachable", UNTRUSTED if untrusted(exc) else UNREACHABLE, detail), False
+    if isinstance(exc, httpx2.InvalidURL | UnicodeError):
+        return Problem("unreachable", UNREACHABLE, detail), False
+    if isinstance(exc, TimeoutError | httpx2.TimeoutException):
+        return Problem("unreachable", UNREACHABLE, detail), True
+    return Problem("unreachable", UNTRUSTED if untrusted(exc) else UNREACHABLE, detail), True
+
+
+def status_problem(
+    status: int, shown: str, *, missing: str | None = None, bad_request: str | None = None
+) -> Problem:
+    """Eine Antwort, die nicht 2xx ist. Meldungen nennen Status und Pfad, nie einen Rumpf von HA."""
+    if status == 401:
+        return Problem("unauthorized", UNAUTHORIZED, f"{shown}: 401")
+    if status == 404 and missing is not None:
+        return Problem("not_found", missing, f"{shown}: 404")
+    if status == 400 and bad_request is not None:
+        return Problem("error", bad_request, f"{shown}: 400")
+    return Problem("error", f"Home Assistant antwortet mit {status}.", f"{shown}: {status}")
+
+
+async def request(
+    client: httpx2.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    shown: str,
+    payload: Mapping[str, Any] | None = None,
+    missing: str | None = None,
+    bad_request: str | None = None,
+    timeout: float | None = None,
+    limit: int | None = None,
+) -> Reply:
+    """Ein Aufruf an HA; ``Failed`` bei allem außer 2xx, ohne einer Weiterleitung zu folgen.
+
+    Höchstens ``timeout`` Sekunden (Vorgabe ``TIMEOUT_S``) für Anfrage und Antwort zusammen, auch wenn die
+    Antwort tröpfchenweise kommt, und höchstens ``limit`` Byte Rumpf (Vorgabe ``BODY_MAX``). ``shown``
+    (Methode und Pfad) steht in den Meldungen, nie die Adresse von HA oder ein Rumpf. Der Abgleich und die
+    Prüfung der Einrichtung (``hacheck.py``) teilen diesen Aufruf und seine Fehlerabbildung.
+    """
+    timeout = TIMEOUT_S if timeout is None else timeout
+    limit = BODY_MAX if limit is None else limit
+
+    async def exchange() -> Reply:
+        async with client.stream(method, url, json=payload) as response:
+            if not 200 <= response.status_code < 300:
+                return Reply(response.status_code, b"")  # den Rumpf eines Fehlers liest Stowly nicht
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body += chunk
+                if len(body) > limit:
+                    raise _TooLarge
+            return Reply(response.status_code, bytes(body))
+
+    try:
+        reply = await asyncio.wait_for(exchange(), timeout)
+    except _TooLarge:
+        message = f"Die Antwort von Home Assistant ist zu groß (mehr als {_size(limit)})."
+        raise Failed(Problem("error", message, f"{shown}: mehr als {limit} Byte"), sent=True) from None
+    except (TimeoutError, httpx2.HTTPError, httpx2.InvalidURL, UnicodeError) as exc:
+        # UnicodeError: Der Resolver lehnt einen Namen ab (etwa mit leerem Teil), bevor ein Paket hinausgeht.
+        problem, sent = transport_problem(exc, shown)
+        raise Failed(problem, sent=sent) from None
+    if 200 <= reply.status < 300:
+        return reply
+    problem = status_problem(reply.status, shown, missing=missing, bad_request=bad_request)
+    raise Failed(problem, sent=True, status=reply.status)
 
 
 # --- Was ein Lauf schreibt ---------------------------------------------------------------------
@@ -238,50 +359,57 @@ class _Run:
     problems: list[Problem] = field(default_factory=list)
 
 
+def _fresh(state: str) -> dict[str, Any]:
+    return {"state": state, "last_ok_at": None, "last_error": None, "last_error_at": None}
+
+
 class BringSync:
     """Gleicht die Einkaufsliste mit der To-do-Liste in Home Assistant ab.
 
-    ``transport`` und ``clock`` sind der Ersatz für Tests; im Betrieb bleiben sie ``None``.
+    Entsteht immer und baut seinen Client erst, wenn HA eingerichtet ist (``_refresh``). ``store`` ist der
+    Speicher der Tokens (``app.state.secrets``; ohne einer zum Lesen im Datenordner). ``transport`` und
+    ``clock`` sind der Ersatz für Tests; im Betrieb bleiben sie ``None``.
     """
 
     def __init__(
         self,
         settings: Settings,
+        store: SecretStore | None = None,
         *,
         transport: httpx2.AsyncBaseTransport | None = None,
         clock: Clock | None = None,
     ) -> None:
-        if not settings.ha_configured:
-            raise ValueError("Home Assistant ist nicht eingerichtet.")
+        self._settings = settings
+        self._store = store
         self._path = settings.database_path
-        self._base = str(settings.ha_url)
-        self._entity = str(settings.ha_todo_entity)
+        self._transport = transport
         self._clock = clock or Clock()
-        self._client = httpx2.AsyncClient(
-            transport=transport,
-            headers={"Authorization": f"Bearer {settings.ha_token}", "Accept": "application/json"},
-            timeout=httpx2.Timeout(TIMEOUT_S),
-            follow_redirects=False,  # Weiterleitungen folgt der Server nicht (5.4)
-            verify=_trust(settings),
-        )
+        # Der Client gehört zur Einrichtung mit diesem Fingerabdruck; None = nicht eingerichtet.
+        self._client: httpx2.AsyncClient | None = None
+        self._fingerprint: haconfig.Fingerprint | None = None
+        self._base = ""
+        self._entity = ""
         self._wake = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stopping = False
+        self._reconfigured = False  # die Einrichtung hat sich geändert: aufhören und neu lesen
         self._next_run: float | None = None  # monoton; None = sofort
         self._settle_until: float | None = None
         self._warned: set[str] = set()
-        self._status: dict[str, Any] = {
-            "state": "pending",
-            "last_ok_at": None,
-            "last_error": None,
-            "last_error_at": None,
-        }
+        # Bis zum ersten Lesen der Einrichtung ``pending``; ``integrations.ha_status`` zeigt ohne Einrichtung
+        # ohnehin ``off`` und vor dem ersten Lauf mit dieser Einrichtung ``pending``.
+        self._status: dict[str, Any] = _fresh("pending")
 
     # ------------------------------------------------------------------ Zustand (5.6)
 
     def status(self) -> dict[str, Any]:
         """``state``, ``last_ok_at``, ``last_error`` und ``last_error_at`` für ``HaStatus``."""
         return dict(self._status)
+
+    @property
+    def fingerprint(self) -> haconfig.Fingerprint | None:
+        """Die Einrichtung, für die ``status`` gilt (``haconfig.Effective.fingerprint``); ``None`` = keine."""
+        return self._fingerprint
 
     def _succeed(self, now: datetime) -> None:
         previous = self._status["state"]
@@ -311,30 +439,53 @@ class BringSync:
     # ------------------------------------------------------------------ Lebenslauf
 
     async def run(self) -> None:
-        """Läuft bis ``stop``. Ein Fehler beendet den Ablauf nie."""
+        """Läuft bis ``stop``: liest die Einrichtung, ruht ohne sie, gleicht mit ihr im Takt ab. Ein Fehler
+        beendet den Ablauf nie."""
         self._loop = asyncio.get_running_loop()
         while not self._stopping:
             try:
+                if not await self._refresh():
+                    await self._sleep()
+                    continue
                 await self._wait()
-                if self._stopping:
-                    break
-                await self.run_once()
+                if self._halted():
+                    continue  # beendet, oder die Einrichtung ist neu zu lesen
+                await self._run()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("Home Assistant: unerwarteter Fehler im Abgleich")
                 self._next_run = self._clock.monotonic() + PERIOD_S
                 self._fail(Problem("error", FAILED, "unerwartet"), self._clock.now())
+                await self._sleep(PERIOD_S)
 
     def changed(self) -> None:
         """Die Einkaufsliste hat sich geändert. Darf aus jedem Thread gerufen werden."""
         loop = self._loop
         if loop is None or loop.is_closed():
             return
-        loop.call_soon_threadsafe(self._on_change)
+        with contextlib.suppress(RuntimeError):  # die Schleife endet gerade
+            loop.call_soon_threadsafe(self._on_change)
 
     def _on_change(self) -> None:
+        if self._client is None:
+            return  # nicht eingerichtet: Erst reconfigure weckt den Ablauf
         self._settle_until = self._clock.monotonic() + SETTLE_S
+        self._wake.set()
+
+    def reconfigure(self) -> None:
+        """Die Einrichtung hat sich geändert (``PATCH /api/server-config/ha``): Ein laufender Abgleich hört
+        nach der laufenden Anfrage auf, dann liest der Ablauf die Einrichtung neu und gleicht gleich ab.
+        Darf aus jedem Thread gerufen werden."""
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            with contextlib.suppress(RuntimeError):  # die Schleife endet gerade
+                loop.call_soon_threadsafe(self._on_reconfigure)
+                return
+        self._reconfigured = True
+
+    def _on_reconfigure(self) -> None:
+        self._reconfigured = True
         self._wake.set()
 
     def stop(self) -> None:
@@ -342,18 +493,90 @@ class BringSync:
         self._stopping = True
         self._wake.set()
 
+    def _halted(self) -> bool:
+        """Soll ein laufender Abgleich aufhören? Beim Beenden und wenn die Einrichtung neu zu lesen ist."""
+        return self._stopping or self._reconfigured
+
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._drop_client()
+        self._fingerprint = None  # ein späterer Lauf baut den Client neu
+
+    async def _drop_client(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
+
+    async def _sleep(self, timeout: float | None = None) -> None:
+        """Ruht, bis ``reconfigure``, eine Änderung der Einkaufsliste oder ``stop`` weckt, höchstens
+        ``timeout`` Sekunden."""
+        if self._halted():
+            return
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._wake.wait(), timeout)
+        self._wake.clear()
 
     async def _wait(self) -> None:
         """Bis der nächste Lauf fällig ist: Takt, Änderung oder ein Eintrag, der zwei Minuten offen ist."""
-        while not self._stopping:
+        while not self._halted():
             delay = await self._delay()
             if delay <= 0:
                 return
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), delay)
             self._wake.clear()
+
+    # ------------------------------------------------------------------ Einrichtung
+
+    def _effective(self) -> haconfig.Effective:
+        con = db.connect(self._path)
+        try:
+            return haconfig.effective(self._settings, con, self._store)
+        finally:
+            con.close()
+
+    async def _refresh(self) -> bool:
+        """Liest die wirksame Einrichtung; liefert, ob HA eingerichtet ist. Nur zwischen zwei Läufen.
+
+        Nicht eingerichtet: Client schließen, Zustand ``off``. Fingerabdruck geändert: alten Client
+        schließen, neuen bauen, Zustand ``pending``, gleich abgleichen.
+        """
+        self._reconfigured = False
+        current = await asyncio.to_thread(self._effective)
+        fingerprint = current.fingerprint
+        if fingerprint is None or current.url is None or current.entity is None or current.token is None:
+            if self._fingerprint is not None:
+                log.info("Home Assistant: Der Abgleich ist aus (nicht mehr eingerichtet).")
+            await self._drop_client()
+            self._fingerprint = None
+            self._status = _fresh("off")
+            return False
+        if fingerprint == self._fingerprint:
+            return self._client is not None
+        again = self._fingerprint is not None
+        await self._drop_client()
+        self._fingerprint = fingerprint
+        self._base, self._entity = current.url, current.entity
+        self._next_run = None
+        self._warned.clear()
+        self._status = _fresh("pending")
+        try:
+            verify = trust(current.ca)
+        except (OSError, ssl.SSLError) as exc:
+            # STOWLY_HA_CA ist beim Start geprüft; fehlt die Datei inzwischen, hilft erst ein Neustart.
+            self._fail(
+                Problem("error", CA_UNUSABLE, f"STOWLY_HA_CA: {type(exc).__name__}"), self._clock.now()
+            )
+            return False
+        self._client = httpx2.AsyncClient(
+            transport=self._transport,
+            headers={"Authorization": f"Bearer {current.token}", **HEADERS},
+            timeout=httpx2.Timeout(TIMEOUT_S),
+            follow_redirects=False,  # Weiterleitungen folgt der Server nicht (5.4)
+            verify=verify,
+        )
+        if again:
+            log.info("Home Assistant: Einrichtung geändert, der Abgleich mit %s beginnt neu.", self._entity)
+        return True
 
     async def _delay(self) -> float:
         now = self._clock.monotonic()
@@ -389,25 +612,42 @@ class BringSync:
     # ------------------------------------------------------------------ Ein Lauf
 
     async def run_once(self) -> bool:
-        """Ein Abgleich, Schritte 1 bis 5. Liefert, ob er gelang."""
+        """Ein Abgleich: erst die Einrichtung lesen (``_refresh``), dann die Schritte 1 bis 5. Liefert, ob er
+        gelang; ohne Einrichtung ``False``, ohne eine Anfrage an HA."""
+        self._loop = asyncio.get_running_loop()
+        if not await self._refresh():
+            return False
+        return await self._run()
+
+    async def _run(self) -> bool:
+        """Die Schritte 1 bis 5 mit dem Client der gelesenen Einrichtung."""
         self._next_run = self._clock.monotonic() + PERIOD_S
         self._settle_until = None
         now = self._clock.now()
         run = _Run()
         try:
             listing = await self._read()
+            if self._halted():
+                return self._interrupted()
+            await asyncio.to_thread(self._adopt, now)
             await asyncio.to_thread(self._back, listing, now)
             await self._forward(listing, now, run)
-        except _Failed as failed:
+        except Failed as failed:
             self._fail(failed.problem, now)
             return False
-        if self._stopping:
-            return False
+        if self._halted():
+            return self._interrupted()
         if run.problems:
             self._fail(run.problems[0], now)
             return False
         self._succeed(now)
         return True
+
+    def _interrupted(self) -> bool:
+        """Der Lauf hört vorzeitig auf. Hat sich die Einrichtung geändert, kommt der nächste gleich danach."""
+        if self._reconfigured:
+            self._next_run = None
+        return False
 
     # ------------------------------------------------------------------ 1. und 2.: lesen
 
@@ -419,72 +659,81 @@ class BringSync:
         json: Mapping[str, Any] | None = None,
         missing: str | None = None,
         bad_request: str | None = None,
-    ) -> httpx2.Response:
-        """Ein Aufruf an HA; ``_Failed`` bei allem außer 2xx. Fehler nennen Methode, Pfad und Status."""
-        shown = f"{method} {path.split('?', 1)[0]}"
-        try:
-            # Höchstens 10 Sekunden je Aufruf, auch wenn die Antwort tröpfchenweise kommt.
-            response = await asyncio.wait_for(
-                self._client.request(method, self._base + path, json=json), TIMEOUT_S
-            )
-        except (httpx2.ConnectError, httpx2.ConnectTimeout, httpx2.PoolTimeout) as exc:
-            # Die Anfrage hat HA nicht erreicht.
-            message = UNTRUSTED if untrusted(exc) else UNREACHABLE
-            raise _Failed(
-                Problem("unreachable", message, f"{shown}: {type(exc).__name__}"), sent=False
-            ) from None
-        except (TimeoutError, httpx2.TimeoutException) as exc:
-            raise _Failed(
-                Problem("unreachable", UNREACHABLE, f"{shown}: {type(exc).__name__}"), sent=True
-            ) from None
-        except httpx2.HTTPError as exc:
-            message = UNTRUSTED if untrusted(exc) else UNREACHABLE
-            raise _Failed(
-                Problem("unreachable", message, f"{shown}: {type(exc).__name__}"), sent=True
-            ) from None
-        status = response.status_code
-        if 200 <= status < 300:
-            return response
-        if status == 401:
-            problem = Problem("unauthorized", UNAUTHORIZED, f"{shown}: 401")
-        elif status == 404 and missing is not None:
-            problem = Problem("not_found", missing, f"{shown}: 404")
-        elif status == 400 and bad_request is not None:
-            problem = Problem("error", bad_request, f"{shown}: 400")
-        else:
-            problem = Problem("error", f"Home Assistant antwortet mit {status}.", f"{shown}: {status}")
-        raise _Failed(problem, sent=True)
-
-    @staticmethod
-    def _json(response: httpx2.Response) -> Any:
-        try:
-            return response.json()
-        except ValueError:
-            return None
+    ) -> Reply:
+        """Ein Aufruf an HA (``request``); ``Failed`` bei allem außer 2xx. Fehler nennen Methode, Pfad und
+        Status."""
+        if self._client is None:
+            raise Failed(Problem("error", FAILED, "kein Client"), sent=False)
+        return await request(
+            self._client,
+            method,
+            self._base + path,
+            shown=f"{method} {path.split('?', 1)[0]}",
+            payload=json,
+            missing=missing,
+            bad_request=bad_request,
+        )
 
     async def _read(self) -> Listing:
         missing = f"Die Liste {self._entity} gibt es in Home Assistant nicht."
         path = f"/api/states/{self._entity}"
-        state = self._json(await self._request("GET", path, missing=missing))
+        state = (await self._request("GET", path, missing=missing)).data()
         value = state.get("state") if isinstance(state, dict) else None
         if not isinstance(value, str):
-            raise _Failed(Problem("error", UNEXPECTED, f"GET {path}: ohne Zustand"), sent=True)
+            raise Failed(Problem("error", UNEXPECTED, f"GET {path}: ohne Zustand"), sent=True)
         if value in ("unavailable", "unknown"):
-            raise _Failed(Problem("unavailable", UNAVAILABLE, f"GET {path}: {value}"), sent=True)
-        response = await self._request(
+            raise Failed(Problem("unavailable", UNAVAILABLE, f"GET {path}: {value}"), sent=True)
+        reply = await self._request(
             "POST",
             "/api/services/todo/get_items?return_response",
             json={"entity_id": self._entity, "status": [OPEN, COMPLETED]},
             missing=missing,
             bad_request=NO_GET_ITEMS,
         )
-        items = parse_items(self._json(response), self._entity)
+        items = parse_items(reply.data(), self._entity)
         if items is None:
-            raise _Failed(
+            raise Failed(
                 Problem("error", UNEXPECTED, "POST /api/services/todo/get_items: ohne service_response"),
                 sent=True,
             )
         return Listing(items)
+
+    # ------------------------------------------------------------------ Listenwechsel
+
+    def _adopt(self, now: datetime) -> None:
+        """Merkt sich, zu welcher Liste ``ha_links`` gehört (``ha_links_entity``), in einer Transaktion.
+
+        Gehört es zu einer anderen Liste, vergisst Stowly deren Artikel und löst die Bindungen aller
+        Einträge der Einkaufsliste (``bring_key`` steht nicht im Sync: kein neuer ``rev``). Nichts wird
+        abgehakt; die offenen Einträge gehen neu in die neue Liste, in der alten bleiben sie stehen. Fehlt
+        der Merker (erster Lauf nach dem Update), setzt Stowly nur ihn.
+        """
+        stamp = format_timestamp(now)
+        con = db.connect(self._path)
+        try:
+            with db.transaction(con):
+                known = serverconfig.get(con, haconfig.LINKS_ENTITY)
+                if known == self._entity:
+                    return
+                if isinstance(known, str):
+                    entries = con.execute(
+                        "SELECT COUNT(*) FROM shopping_items "
+                        "WHERE bring_key IS NOT NULL AND done_at IS NULL AND deleted_at IS NULL"
+                    ).fetchone()[0]
+                    con.execute("UPDATE shopping_items SET bring_key = NULL WHERE bring_key IS NOT NULL")
+                    links = con.execute("DELETE FROM ha_links").rowcount
+                    log.info(
+                        "Home Assistant: Liste gewechselt (%s statt %s): %d Artikel der alten Liste vergessen, "
+                        "%d offene Einträge gehen neu nach Bring!. Nichts wird abgehakt.",
+                        self._entity,
+                        known,
+                        links,
+                        entries,
+                    )
+                serverconfig.put(con, haconfig.LINKS_ENTITY, self._entity, now=stamp, by=None)
+        finally:
+            con.close()
+        self._warned.clear()
 
     # ------------------------------------------------------------------ 3.: zurück aus Bring!
 
@@ -591,14 +840,16 @@ class BringSync:
     # ------------------------------------------------------------------ 4.: hin nach Bring!
 
     async def _forward(self, listing: Listing, now: datetime, run: _Run) -> None:
+        if self._halted():
+            return
         adds = await asyncio.to_thread(self._bind, listing, now)
         for add in adds:
-            if self._stopping:
+            if self._halted():
                 return
             await self._add(add, now, run)
         writes = await asyncio.to_thread(self._writes, listing)
         for write in writes:
-            if self._stopping:
+            if self._halted():
                 return
             await self._write(write, now, run)
 
@@ -681,7 +932,7 @@ class BringSync:
         payload = {"entity_id": self._entity, "item": add.name, "description": add.description}
         try:
             await self._request("POST", "/api/services/todo/add_item", json=payload)
-        except _Failed as failed:
+        except Failed as failed:
             fatal = failed.problem.state in _FATAL
             if failed.sent and failed.problem.state == "unreachable":
                 # Ohne Antwort weiß Stowly nicht, ob HA ihn angelegt hat. Lieber gilt er als angelegt,
@@ -766,7 +1017,7 @@ class BringSync:
             )
         try:
             await self._request("POST", f"/api/services/todo/{service}", json=payload)
-        except _Failed as failed:
+        except Failed as failed:
             if failed.problem.state in _FATAL:
                 raise
             run.problems.append(failed.problem)

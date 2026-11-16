@@ -303,7 +303,11 @@ describe("Sensor", () => {
     expect(await elsewhere("GET", "/api/integrations")).toBe(401);
     expect(await elsewhere("GET", "/api/stats")).toBe(401);
     expect(await elsewhere("GET", "/api/devices")).toBe(401);
-    expect(await elsewhere("GET", "/api/backup")).toBe(401);
+    expect(await elsewhere("POST", "/api/backup/run")).toBe(401);
+    expect(await elsewhere("GET", "/api/restore")).toBe(401);
+    // Auch nicht für die Einrichtung von HA: Der Sensor-Token liest dort nicht einmal sich selbst.
+    expect(await elsewhere("GET", "/api/server-config/ha")).toBe(401);
+    expect(await elsewhere("GET", "/api/server-config/ha/sensor-token")).toBe(401);
     expect(await elsewhere("POST", "/api/sync")).toBe(401);
 
     // Die App sieht, dass der Sensor eingerichtet ist, aber nie seinen Token.

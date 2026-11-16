@@ -22,13 +22,14 @@ def get_integrations(
 ) -> IntegrationStatus:
     """Sicherung, Home Assistant und Push: eingerichtet, letzter Erfolg, letzter Fehler. Nie ein Token."""
     response.headers["Cache-Control"] = "no-store"
-    # Der Abgleich mit Home Assistant hält seinen Zustand im Arbeitsspeicher (docs/integrationen.md, 5.6).
-    sync = getattr(request.app.state, "bring", None)
+    # Der Abgleich mit Home Assistant hält seinen Zustand im Arbeitsspeicher (docs/integrationen.md, 5.6);
+    # die Tokens aus der App liegen im eigenen Speicher (stowly/secretstore.py).
     status = integrations.status(
         get_settings(request),
         con,
         device_id=_device["id"],
         now=server_now(),
-        ha_sync=None if sync is None else sync.status(),
+        ha_sync=getattr(request.app.state, "bring", None),
+        ha_store=getattr(request.app.state, "secrets", None),
     )
     return IntegrationStatus.model_validate(status)

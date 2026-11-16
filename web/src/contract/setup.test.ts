@@ -57,11 +57,16 @@ describe("Adressen der Einrichtung", () => {
   it("haben ein Kürzel je Schritt und führen ohne Kürzel zum ersten offenen", () => {
     expect(ROUTES.setup).toBe("/einrichtung");
     expect(setupPath()).toBe("/einrichtung");
-    expect(Object.values(SETUP_SLUGS)).toEqual(["sicher", "drucker", "updates", "mitteilungen", "fertig"]);
+    expect(Object.values(SETUP_SLUGS)).toEqual(["sicher", "drucker", "sicherung", "updates", "mitteilungen", "home-assistant", "fertig"]);
     expect(setupPath("printer")).toBe("/einrichtung/drucker");
+    expect(setupPath("backup")).toBe("/einrichtung/sicherung");
+    expect(setupPath("home_assistant")).toBe("/einrichtung/home-assistant");
     expect(setupPath("done")).toBe("/einrichtung/fertig");
     expect(setupStepOf("mitteilungen")).toBe("notifications");
     expect(setupStepOf("sicher")).toBe("https");
+    expect(setupStepOf("sicherung")).toBe("backup");
+    expect(setupStepOf("home-assistant")).toBe("home_assistant");
+    expect(setupStepOf("home_assistant")).toBeNull();
     expect(setupStepOf(undefined)).toBeNull();
     expect(setupStepOf("https")).toBeNull();
   });

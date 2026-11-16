@@ -10,40 +10,47 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from stowly import autobackup, daily, scheduler, serverconfig, updates
+from stowly import autobackup, bring, daily, haconfig, scheduler, serverconfig, updates
 from stowly.config import Settings
+from stowly.secretstore import SecretStore
 
 PUSH_DAILY = daily.JOB
 
 
 def ha_status(
-    settings: Settings, con: sqlite3.Connection, sync: Mapping[str, Any] | None = None
+    settings: Settings,
+    con: sqlite3.Connection,
+    sync: bring.BringSync | None = None,
+    store: SecretStore | None = None,
 ) -> dict[str, Any]:
-    """``HaStatus`` (docs/integrationen.md, 5.6 und 8).
+    """``HaStatus`` (docs/integrationen.md, 5.6 und 8) aus der wirksamen Einrichtung (``haconfig.effective``:
+    Umgebung oder App, ``store`` mit den Tokens).
 
-    ``sync`` ist der Zustand des Abgleichs im Arbeitsspeicher (``bring.BringSync.status``). Nicht
-    eingerichtet: ``off``; eingerichtet, aber noch kein Lauf seit dem Start: ``pending``.
+    ``sync`` ist der Abgleich (``app.state.bring``) mit seinem Zustand im Arbeitsspeicher. Nicht eingerichtet:
+    ``off``; eingerichtet, aber noch kein Lauf mit dieser Einrichtung (seit dem Start oder einer Änderung):
+    ``pending``. ``problem`` nennt auch einen Sensor-Token, der nach einem Zurückspielen fehlt.
     """
+    current = haconfig.effective(settings, con, store)
     linked = con.execute(
         "SELECT COUNT(*) FROM shopping_items "
         "WHERE bring_key IS NOT NULL AND done_at IS NULL AND deleted_at IS NULL"
     ).fetchone()[0]
-    if not settings.ha_configured:
+    if not current.configured:
         state: Mapping[str, Any] = {"state": "off"}
-    elif sync is None:
+    elif sync is None or sync.fingerprint != current.fingerprint:
         state = {"state": "pending"}
     else:
-        state = sync
+        state = sync.status()
     return {
-        "configured": settings.ha_configured,
-        "problem": settings.ha_problem,
-        "entity": settings.ha_todo_entity,
+        "configured": current.configured,
+        "problem": current.problems,
+        "entity": current.entity,
         "state": state["state"],
         "last_ok_at": state.get("last_ok_at"),
         "last_error": state.get("last_error"),
         "last_error_at": state.get("last_error_at"),
         "linked": int(linked),
-        "sensor": settings.ha_summary_token is not None,
+        "sensor": current.sensor_token is not None,
     }
 
 
@@ -71,13 +78,14 @@ def status(
     *,
     device_id: str,
     now: datetime,
-    ha_sync: Mapping[str, Any] | None = None,
+    ha_sync: bring.BringSync | None = None,
+    ha_store: SecretStore | None = None,
 ) -> dict[str, Any]:
     """``IntegrationStatus`` für ``GET /api/integrations``."""
     return {
         "timezone": settings.timezone,
         "backup": autobackup.status(settings, scheduler.load_run(con, autobackup.JOB), now),
-        "ha": ha_status(settings, con, ha_sync),
+        "ha": ha_status(settings, con, ha_sync, ha_store),
         "push": push_status(settings, con, device_id),
         "update": update_status(settings, con, now),
     }

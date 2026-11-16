@@ -211,3 +211,8 @@
     padding-left: var(--space-5);
   }
 }
+
+/* Zwischenüberschrift in einem Abschnitt (Home Assistant: Verbindung, Sensor) */
+.subhead {
+  font-size: var(--text-lg);
+}

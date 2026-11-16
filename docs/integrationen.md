@@ -11,7 +11,7 @@ Eine Schleife im Server, nach dem Muster von `server/stowly/off.py`: eine asynci
 ### 1.1 Takt
 
 - Die Schleife prüft **jede Minute** (zur vollen Minute der Serveruhr), dazu sofort nach dem Start und nach `wake()`.
-- Aufgaben: `backup` (Abschnitt 3) und `push_daily` (Abschnitt 4.8), in dieser Reihenfolge. Je Aufgabe läuft höchstens ein Lauf zugleich.
+- Aufgaben: `backup` (Abschnitt 3; sie steht immer im Zeitplan und ruht ohne Schlüssel) und `push_daily` (Abschnitt 4.8), in dieser Reihenfolge. Je Aufgabe läuft höchstens ein Lauf zugleich.
 - Was blockiert (Kopie der Datenbank, Packen, Verschlüsseln, Schreiben), läuft in einem eigenen Thread (`asyncio.to_thread` oder `run_in_threadpool`), damit der Sync nicht wartet. Datenbankzugriffe öffnen eine eigene Verbindung (`db.connect`).
 - Der Abgleich mit Home Assistant ist keine Aufgabe dieses Takts; er hat seine eigene Schleife (5.4).
 - Ein Fehler in einer Aufgabe beendet die Schleife nie; er steht im Log und in `job_runs`.
@@ -57,35 +57,51 @@ Tests stellen die Uhr auf diese Zeitpunkte, ebenso auf einen Neustart nach einem
 ## 2. Zeit
 
 - **`STOWLY_TIMEZONE`**: Name einer IANA-Zeitzone, Vorgabe `Europe/Berlin`. Beim Start mit `zoneinfo.ZoneInfo` geladen; ein unbekannter Name ist ein Konfigurationsfehler (Exit-Code 2). Die Zeitzonendaten liefert das Paket `tzdata`, weil Windows und das schlanke Image keine eigenen mitbringen. Die Variable `TZ` des Containers spielt dafür keine Rolle.
-- **„Heute" im Server** ist der Kalendertag in `STOWLY_TIMEZONE`. Er gilt für den Sensor (6), die Tagesnachricht (4.8), die Monate der Statistik (`sync-protokoll.md`, 11.1), die Dateinamen der Sicherungen (3.3), `job_runs.last_date` und den Dateinamen der Sicherung zum Herunterladen (`stowly-JJJJ-MM-TT.sqlite3`).
-- Zeitstempel bleiben UTC (`sync-protokoll.md`, Abschnitt 4). Uhrzeiten (`notify_time`, `STOWLY_BACKUP_TIME`) sind Ortszeit in `STOWLY_TIMEZONE`, nie in der Zeitzone eines Geräts. Die App zeigt die Zeitzone des Servers dazu (`IntegrationStatus.timezone`), wenn sie von der des Geräts abweicht.
+- **„Heute" im Server** ist der Kalendertag in `STOWLY_TIMEZONE`. Er gilt für den Sensor (6), die Tagesnachricht (4.8), die Monate der Statistik (`sync-protokoll.md`, 11.1), die Dateinamen der Sicherungen (3.3) und `job_runs.last_date`.
+- Zeitstempel bleiben UTC (`sync-protokoll.md`, Abschnitt 4). Uhrzeiten (`notify_time`, die Uhrzeit der Sicherung) sind Ortszeit in `STOWLY_TIMEZONE`, nie in der Zeitzone eines Geräts. Die App zeigt die Zeitzone des Servers dazu (`IntegrationStatus.timezone`), wenn sie von der des Geräts abweicht.
 
 ## 3. Sicherungen
 
-Täglich eine verschlüsselte Kopie der Datenbank in einen Ordner auf dem Server. Die Sicherung zum Herunterladen (`GET /api/backup`) bleibt daneben bestehen.
+Täglich und auf Knopfdruck eine verschlüsselte Kopie der Datenbank in einen Ordner auf dem Server; herunterladen lassen sich genau diese Dateien. Seit 0.4.0 kommen die Einstellungen aus der App oder der Umgebung (`serverconfig.backup_setup`), und die unverschlüsselte Sicherung zum Herunterladen (`GET /api/backup`) gibt es nicht mehr. Anleitung: [`betrieb.md`](betrieb.md), Abschnitt 8.
 
 ### 3.1 Einrichten
 
-| Variable | Bedeutung |
-|---|---|
-| `STOWLY_BACKUP_DIR` | Ordner für die Sicherungen, absoluter Pfad (im Container etwa `/backups`, von Compose auf `./backups` gelegt) |
-| `STOWLY_BACKUP_RECIPIENTS` | öffentliche age-Schlüssel (`age1…`, erzeugt mit `age-keygen`), durch Komma oder Leerraum getrennt; mehrere sind empfohlen |
-| `STOWLY_BACKUP_TIME` | Uhrzeit `HH:MM`, Vorgabe `03:30` |
+Je Einstellung geht die Umgebung vor der App vor der Vorgabe. Die App sieht die Quelle (`env`, `app`, `default`); was aus der Umgebung kommt, ist dort gesperrt (`PATCH /api/server-config` antwortet für das Feld mit 409, `sync-protokoll.md` 11.7).
 
-- Beide, Ordner und Empfänger, gesetzt: Die Sicherung ist eingerichtet.
-- Keines von beiden: keine automatische Sicherung, ohne Hinweis.
-- Nur eines: keine automatische Sicherung; der Server startet, schreibt eine Warnung ins Log, und der Zustand nennt den Grund (`problem`, etwa „STOWLY_BACKUP_RECIPIENTS fehlt").
-- Ein Empfänger, der kein gültiger öffentlicher age-Schlüssel (X25519, `age1…`) ist, eine ungültige Uhrzeit oder ein relativer Ordner: Konfigurationsfehler beim Start (Exit-Code 2). Der Server kennt nur öffentliche Schlüssel; wer Server und Ordner erbeutet, kann die Sicherungen nicht lesen.
+| Einstellung | Umgebung | App (`server_config`) | sonst |
+|---|---|---|---|
+| öffentliche Schlüssel | `STOWLY_BACKUP_RECIPIENTS`, durch Komma oder Leerraum getrennt | `backup_recipients`: höchstens 10, je mit `added_at` | keine: Die Sicherung ruht |
+| an oder aus | fest an, sobald die Schlüssel aus der Umgebung kommen | Schalter `backup_enabled` | an |
+| Uhrzeit | `STOWLY_BACKUP_TIME` (`HH:MM`) | `backup_time` | `03:30` |
+| Ordner | `STOWLY_BACKUP_DIR` (absolut) | – | `/backups` oder `/data/backups` (3.5) |
+
+- **Schlüssel:** nur öffentliche age-Schlüssel (X25519, `age1…`), geprüft mit `pyrage`, in Normalform (klein) und ohne Doppelte; wer bleibt, behält sein `added_at`. Ein geheimer (`AGE-SECRET-KEY-…`) gibt in der App 422 mit `details.errors[].loc = ["body", "backup_recipients", i]`, in der Umgebung einen Konfigurationsfehler beim Start (Exit-Code 2); wiederholt wird er nie, weder in einer Antwort noch im Log. Öffentliche Schlüssel sind kein Geheimnis und dürfen in `server_config`.
+- **Hinzufügen nur mit Passwort:** Kommt mit `backup_recipients` ein Schlüssel hinzu, braucht der Aufruf `current_password`, das Haushalts-Passwort (aus `STOWLY_PASSWORD`, wenn gesetzt, sonst der Hash). Ein Geräte-Token allein genügt nicht: Wer einen Schlüssel hinzufügt, kann jede künftige Sicherung öffnen, samt Passwort-Hash, VAPID-Schlüssel und Push-Abos. Fehlt das Passwort, 422 an `["body", "current_password"]` („Zum Hinzufügen eines Schlüssels braucht es das Haushalts-Passwort."); falsch: 401 `invalid_password` („Das Passwort stimmt nicht."), über die Bremse der Anmeldung, nach 5 Fehlversuchen in 5 Minuten 60 Sekunden lang 429. Entfernen braucht es nicht. Hat ein anderes Gerät inzwischen einen Schlüssel entfernt, den die Liste ohne Passwort zurückbrächte, antwortet der Server mit 409 („Die Schlüssel der Sicherung haben sich inzwischen auf einem anderen Gerät geändert. Bitte neu laden und noch einmal versuchen."). Das Passwort steht nie im Log.
+- **Im Browser:** Das Schlüsselpaar entsteht in der App (`web/src/features/backup/keys.ts`, mit `@noble/curves` und `@scure/base`; nur `crypto.getRandomValues`, also auch über http). An den Server geht nur der öffentliche. Die Schlüsselpaare in `vectors.json` (`age_keys`) stammen von pyrage; Server und App prüfen sich an ihnen.
+- **Ohne Neustart:** Die Aufgabe `backup` steht immer im Zeitplan und liest die Einstellungen bei jedem Takt; ohne Schlüssel oder ausgeschaltet ruht sie. Eine Änderung in der App weckt den Zeitplan.
+- **Wann ein Grund dasteht** (`problem` in 3.6 und 8):
+
+| Lage | `problem` |
+|---|---|
+| wirksam: an, mit Schlüssel, der Ordner taugt | `null` |
+| Schlüssel, aber ausgeschaltet | „Die automatische Sicherung ist ausgeschaltet." |
+| Schlüssel, an, der Ordner taugt nicht (3.5) | „Der Ordner für Sicherungen fehlt." bzw. „Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)." |
+| kein Schlüssel, aber etwas eingestellt (Ordner oder Uhrzeit aus der Umgebung, Schalter oder Uhrzeit aus der App) | „Es fehlt ein öffentlicher Schlüssel (in der App oder in STOWLY_BACKUP_RECIPIENTS)." |
+| nichts eingestellt | `null` |
+
+Beim Start steht dasselbe im Log („Keine automatische Sicherung: …"); eine wirksame Sicherung meldet sich mit „Automatische Sicherung täglich um 03:30 nach /backups an 2 Schlüssel."
 
 ### 3.2 Ablauf
 
-1. **Kopie:** ein in sich stimmiger Schnappschuss wie bei `GET /api/backup` (`sqlite3.Connection.backup`), aber in eine Datenbank im Arbeitsspeicher (`:memory:`). Die Kopie bekommt eine neue `dataset_id` (`sync-protokoll.md`, 6.4), `PRAGMA integrity_check` muss `ok` liefern, dann `serialize()`. Unverschlüsselt berührt die Kopie nie die Platte. Wie der Download ist sie eine einzelne Datei ohne WAL (`journal_mode` `delete`): Nach dem Entschlüsseln genügt diese eine Datei; der Server stellt beim Öffnen selbst wieder auf WAL.
+Ein Lauf, aus dem Zeitplan oder auf Knopfdruck (3.8), unter einem gemeinsamen Lock: Läuft schon einer, wartet der tägliche Lauf bis zum nächsten Takt, und „Jetzt sichern" antwortet mit 409.
+
+1. **Kopie:** ein in sich stimmiger Schnappschuss (`sqlite3.Connection.backup`) in eine Datenbank im Arbeitsspeicher (`:memory:`). Die Kopie bekommt eine neue `dataset_id` (`sync-protokoll.md`, 6.4), `PRAGMA integrity_check` muss `ok` liefern, dann `serialize()`. Unverschlüsselt berührt die Kopie nie die Platte. Sie ist eine einzelne Datei ohne WAL (`journal_mode` `delete`): Nach dem Entschlüsseln genügt diese eine Datei; der Server stellt beim Öffnen selbst wieder auf WAL.
 2. **Packen:** gzip (`gzip.compress(…, mtime=0)`).
-3. **Verschlüsseln:** age, an alle Empfänger aus `STOWLY_BACKUP_RECIPIENTS` zugleich, mit `pyrage` (`pyrage.encrypt` mit `pyrage.x25519.Recipient`), im binären Format von age (nicht ASCII-Armor). Jeder der privaten Schlüssel kann die Datei allein entschlüsseln.
+3. **Verschlüsseln:** age, an alle wirksamen öffentlichen Schlüssel zugleich (3.1), mit `pyrage` (`pyrage.encrypt` mit `pyrage.x25519.Recipient`), im binären Format von age (nicht ASCII-Armor). Jeder der geheimen Schlüssel kann die Datei allein entschlüsseln.
 4. **Schreiben:** in eine Zwischendatei im Ordner, `.stowly-backup-<16 Hex-Zeichen>.tmp`, angelegt mit `O_CREAT | O_EXCL` und Rechten `0600`; schreiben, `flush`, `os.fsync`, schließen. In ihr steht von Anfang an nur Verschlüsseltes.
 5. **Umbenennen:** `os.replace` auf den endgültigen Namen (3.3), danach unter Linux `fsync` des Ordners.
 6. **Aufräumen:** Rotation (3.4).
-7. **Merken:** `job_runs` (`backup`): `last_date`, `last_at`, `last_error = null`, `state = {"file", "size", "recipients"}` (Größe in Byte, Empfänger gekürzt wie in 3.6).
+7. **Merken:** `job_runs` (`backup`): `last_date`, `last_at`, `last_error = null`, `state = {"file", "size", "recipients"}` (Größe in Byte, Empfänger gekürzt wie in 3.6). Auch ein Lauf auf Knopfdruck zählt als Sicherung des Tages; der tägliche läuft dann an diesem Tag nicht mehr.
 
 Scheitert ein Schritt, löscht der Server seine Zwischendatei, vermerkt den Fehler (`last_error` als kurzer deutscher Satz ohne Geheimnisse, `last_error_at`), schreibt ihn ins Log und versucht es **eine Stunde später** erneut, so lange, bis eine Sicherung des Tages gelingt. Liegengebliebene eigene Zwischendateien (Muster oben) löscht jeder Lauf vorab.
 
@@ -101,7 +117,7 @@ Gibt es den Namen schon (zwei Läufe in derselben Minute), ersetzt die neue Date
 
 ### 3.4 Rotation 7/4/12
 
-- Nur **nach einer gelungenen Sicherung**, und nur unter den **eigenen Dateien** (Muster aus 3.3). Andere Dateien im Ordner fasst der Server nie an.
+- Nur **nach einer gelungenen Sicherung**, und nur unter den **eigenen Dateien** (Muster aus 3.3) im wirksamen Ordner. Andere Dateien im Ordner fasst der Server nie an.
 - Grundlage ist das Datum im Dateinamen, nicht das Änderungsdatum der Datei.
 - Behalten wird, vereinigt:
   - die neueste Datei jedes der **7** neuesten Tage, an denen es eine Sicherung gibt,
@@ -113,25 +129,48 @@ So bleiben auch nach einem langen Ausfall die letzten Sicherungen erhalten: Gez�
 
 ### 3.5 Ordner und Rechte
 
-- Der Container läuft als Benutzer mit uid 10001 (Dockerfile). Der Ordner muss ihm gehören oder für ihn beschreibbar sein: `sudo chown 10001:10001 ./backups`. Die Dateien bekommen `0600`.
-- Fehlt der Ordner, legt der Server ihn **nicht** an (er läge sonst womöglich im Container statt auf dem eingebundenen Laufwerk); der Zustand meldet „Der Ordner für Sicherungen fehlt." Ist er nicht beschreibbar: „Der Ordner für Sicherungen ist nicht beschreibbar (Benutzer 10001)." Beides steht als `last_error` des Versuchs im Zustand, nicht als `problem` (eingerichtet ist die Sicherung ja), und beim Start zusätzlich als Warnung im Log.
-- Ein Ordner auf derselben Platte ersetzt keine Kopie außer Haus; `docs/betrieb.md` sagt das.
+- **Wahl** (`serverconfig.backup_folder`, bei jedem Lauf und jeder Anfrage neu):
+  1. `STOWLY_BACKUP_DIR`, wenn gesetzt (`folder_source: env`). Diesen Ordner legt der Server **nie** an (er läge sonst womöglich im Container statt auf dem eingebundenen Laufwerk), und er weicht nicht aus.
+  2. `/backups`, wenn er in `/proc/self/mountinfo` als Einhängepunkt steht und für uid 10001 beschreibbar ist (`mounted`): bei Docker Compose `./backups`, in DSM ein zweiter Ordner. Das Image setzt dafür keine Variable; DSM übernähme sie sonst als Umgebung und sperrte den Ordner in der App.
+  3. Sonst `<STOWLY_DATA_DIR>/backups`, im Container `/data/backups` (`data`). Den legt der Server vor dem ersten Lauf an (`0700`); bis dahin gilt er als brauchbar.
+- **`/backups` eingebunden, aber unbrauchbar:** Die Sicherungen gehen in den Datenordner, und `BackupConfig.folder_hint` sagt es: „Der eigene Ordner /backups ist eingebunden, taugt aber nicht: … Die Sicherungen gehen deshalb in den Datenordner." Im Log steht das einmal je Prozess. Taugt der Ordner wieder, nimmt der Server ihn ohne Neustart.
+- Der Container läuft als Benutzer mit uid 10001 (Dockerfile). Ein Ordner muss ihm gehören oder für ihn beschreibbar sein: `sudo chown 10001:10001 ./backups`; ein Ordner, den DSM unter `docker` anlegt, ist es von selbst. Die Dateien bekommen `0600`.
+- **Taugt der wirksame Ordner nicht** (fehlt, nicht beschreibbar), wirkt die Sicherung nicht: `problem` (3.1) und `BackupConfig.folder_problem` nennen den Grund. Ist sie an und hat einen Schlüssel, versucht der Zeitplan es trotzdem, nach einem Fehler stündlich; der Fehler steht dann auch als `last_error`.
+- Ein Ordner auf derselben Platte ersetzt keine Kopie außer Haus, `/data/backups` erst recht nicht; `docs/betrieb.md` (8.1) sagt das.
 
 ### 3.6 Zustand für die App
 
 `IntegrationStatus.backup` (Abschnitt 8):
 
+- `configured`: Die Sicherung wirkt, also an, mit mindestens einem Schlüssel, und der Ordner taugt. `problem`: nach 3.1.
+- `folder`: der wirksame Ordner im Container (3.5). `files`: die eigenen Sicherungen darin (Muster aus 3.3), neueste zuerst, höchstens `LIMITS.backup_files_listed` (50), je `name`, `size` und `created_at` (aus dem Dateinamen, Uhrzeit in `STOWLY_TIMEZONE`). Andere Dateien, Ordner und Verweise zählen nicht; fehlt der Ordner, ist die Liste leer.
+- `time`: die wirksame Uhrzeit (Umgebung, App oder Vorgabe), auch wenn die Sicherung aus ist; `null` nur ohne Schlüssel und ohne jede Einstellung.
 - `recipients`: die öffentlichen Schlüssel gekürzt auf die ersten 8 Zeichen, „…" und die letzten 4, etwa `age1ql3z…ac8p`.
 - `last_ok_at`, `last_file`, `last_size`: aus `job_runs.state` der letzten gelungenen Sicherung.
 - `last_error`, `last_error_at`: der letzte Fehlschlag, `null` nach einem Erfolg.
-- `next_at`: der nächste geplante Versuch in UTC: heute zur Uhrzeit, wenn sie noch kommt und heute noch nichts lief; nach einem Fehler `last_error_at` plus eine Stunde; sonst morgen zur Uhrzeit (über die Zeitumstellung richtig umgerechnet). `null`, wenn nicht eingerichtet. Maßgeblich ist die Regel „fällig" (1.2): Ist ein Versuch schon jetzt fällig (etwa nach einem Ausfall), ist `next_at` jetzt; ein Fehler kurz vor Mitternacht ergibt die Uhrzeit des nächsten Tages, nicht „eine Stunde später". Liegt `last_error_at` in der Zukunft (Uhr zurückgestellt), wartet die Sicherung nicht darauf.
-- **`warning`** (die App warnt): eingerichtet, und entweder liegt die letzte gelungene Sicherung mehr als **48 Stunden** zurück, oder es gab noch keine und der letzte Versuch ist gescheitert.
+- `next_at`: der nächste geplante Versuch in UTC: heute zur Uhrzeit, wenn sie noch kommt und heute noch nichts lief; nach einem Fehler `last_error_at` plus eine Stunde; sonst morgen zur Uhrzeit (über die Zeitumstellung richtig umgerechnet). Maßgeblich ist die Regel „fällig" (1.2): Ist ein Versuch schon jetzt fällig (etwa nach einem Ausfall), ist `next_at` jetzt; ein Fehler kurz vor Mitternacht ergibt die Uhrzeit des nächsten Tages, nicht „eine Stunde später". Liegt `last_error_at` in der Zukunft (Uhr zurückgestellt), wartet die Sicherung nicht darauf. `null`, solange die Sicherung aus ist oder keinen Schlüssel hat; ein Ordner, der nicht taugt, hält den Versuch nicht auf.
+- **`warning`** (die App warnt): an und mit Schlüssel, und entweder liegt die letzte gelungene Sicherung mehr als **48 Stunden** zurück, oder es gab noch keine und der letzte Versuch ist gescheitert.
+
+Die Einstellungen selbst liefert `GET /api/server-config` als `BackupConfig` (`sync-protokoll.md` 11.7): je Feld der wirksame Wert und seine Quelle, die Schlüssel vollständig und gekürzt, dazu `folder_source` (`env`, `mounted`, `data`), `folder_problem` und `folder_hint`.
 
 ### 3.7 Zurückspielen
 
-1. Vorab, einmal nach dem Einrichten und dann ab und zu: **Probe-Entschlüsselung** mit jedem privaten Schlüssel: `age -d -i schluessel.txt stowly-….sqlite3.gz.age | gunzip | head -c 15` muss `SQLite format 3` zeigen.
-2. Zurückspielen: `age -d -i schluessel.txt stowly-2026-11-14-0330.sqlite3.gz.age | gunzip > stowly.sqlite3`, danach wie bisher `docs/betrieb.md`, Abschnitt 8 (Container anhalten, Datei ersetzen, `-wal` und `-shm` entfernen, starten).
+In der App (`sync-protokoll.md`, 11.9; Anleitung `betrieb.md`, 8.3): hochladen, mit dem geheimen Schlüssel prüfen, einspielen. Stowly startet neu und tauscht die Datenbank, bevor etwas sie öffnet. Ein laufender Stowly behält dabei Geräte, Passwort-Hash, VAPID-Schlüssel (4.1) samt Abos, `server_config` und `job_runs`; beim ersten Start kommt alles aus der Sicherung, auch der VAPID-Schlüssel.
+
+Auf der Kommandozeile, als Notweg (`betrieb.md`, 8.4):
+
+1. Vorab, einmal nach dem Einrichten und dann ab und zu: **Probe-Entschlüsselung** mit jedem geheimen Schlüssel: `age -d -i schluessel.txt stowly-….sqlite3.gz.age | gunzip | head -c 15` muss `SQLite format 3` zeigen. Die Schlüsseldatei aus der App hat das Format von `age-keygen`.
+2. Zurückspielen: `age -d -i schluessel.txt stowly-2026-11-14-0330.sqlite3.gz.age | gunzip > stowly.sqlite3`, dann Container anhalten, Datei ersetzen, `-wal` und `-shm` entfernen, `python -m stowly --new-dataset`, starten.
 3. Die Kopie trägt eine neue `dataset_id`: Alle Geräte holen den Bestand vollständig neu und senden ihre Outbox erneut. Der VAPID-Schlüssel (4.1) kommt mit; Push-Abos, die nach der Sicherung entstanden sind, fehlen, und die App meldet sich beim nächsten Start neu an.
+
+### 3.8 Jetzt sichern und Herunterladen
+
+- **`POST /api/backup/run`** (Geräte-Token): ein Lauf wie der tägliche (3.2), unter demselben Lock, auch wenn der Schalter aus ist. Antwort 200 `BackupFile { name, size, created_at }`, `Cache-Control: no-store`.
+  - 409 `conflict` „Gerade läuft schon eine Sicherung.", wenn schon einer läuft; dieser Versuch zählt nicht für die Bremse.
+  - 429 `rate_limited` mit `Retry-After` bei mehr als einem Knopfdruck je Minute, für den ganzen Server.
+  - 503 `not_configured` ohne öffentlichen Schlüssel oder ohne brauchbaren Ordner, mit dem Satz aus 3.1.
+  - 500 `internal`, wenn die Sicherung selbst scheitert (etwa „Auf der Platte ist kein Platz für die Sicherung."), vermerkt wie in 3.2.
+- **`GET /api/backup/files/{name}`** (Geräte-Token): eine Datei aus dem wirksamen Ordner als `application/octet-stream` mit `Content-Disposition: attachment`, `Cache-Control: no-store`. Nur Namen nach dem Muster aus 3.3 und nur gewöhnliche Dateien, kein Verweis; alles andere 404 „Diese Sicherung gibt es nicht."
 
 ## 4. Push
 
@@ -301,6 +340,14 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
 
 ### 5.1 Einrichten
 
+Adresse, Token und To-do-Liste gehören zusammen (`haconfig.effective`), seit 0.4.0 aus der Umgebung oder aus der App:
+
+- **Umgebung:** Ist eine von `STOWLY_HA_URL`, `STOWLY_HA_TOKEN` oder `STOWLY_HA_TODO_ENTITY` gesetzt, kommen alle drei aus der Umgebung (`source: env`) und sind in der App gesperrt (409). Fehlt dort etwas, nennt `problem` die Variablen, etwa „STOWLY_HA_TOKEN fehlt."
+- **App:** Sonst kommen alle drei aus der App (`PATCH /api/server-config/ha`, `sync-protokoll.md` 11.10; Anleitung `betrieb.md` 17.2). Adresse und Liste stehen in `server_config` (`ha_url`, `ha_todo_entity`), der Token im eigenen Speicher (unten). Fehlt etwas, nennt `problem` es, etwa „Für Home Assistant fehlt noch die To-do-Liste."
+- **Nichts gesetzt:** aus, ohne Hinweis (`source: default`).
+- **`STOWLY_HA_CA`** gibt es nur in der Umgebung. Die CA gilt für beide Wege, im Abgleich und bei der Prüfung (5.7). Allein gesetzt ist sie keine halbe Einrichtung.
+- **Gelesen** wird die Einrichtung bei Gebrauch: vor jedem Lauf des Abgleichs (5.4), bei jeder Prüfung, im Zustand (8), im Assistenten und beim Start fürs Log („Einkaufsliste nach Bring! über Home Assistant, Liste todo.zuhause (aus der App)."). Eine Änderung wirkt so ohne Neustart.
+
 | Variable | Bedeutung |
 |---|---|
 | `STOWLY_HA_URL` | Adresse von HA, etwa `https://192.168.1.20:8123` oder `http://192.168.1.20:8123`; ohne Pfad (ein `/` am Ende fällt weg). Namen auf `.local` lösen im Container nicht auf: IP-Adresse oder einen Namen aus dem eigenen DNS nehmen. |
@@ -308,9 +355,14 @@ Die Einkaufsliste von Stowly erscheint über eine To-do-Liste von Home Assistant
 | `STOWLY_HA_TODO_ENTITY` | die To-do-Liste, die mit Bring! verbunden ist, etwa `todo.zuhause` |
 | `STOWLY_HA_CA` | freiwillig: Pfad zu einer PEM-Datei mit der eigenen Zertifizierungsstelle, wenn HA per https mit eigenem Zertifikat läuft |
 
-- Alle drei von URL, Token und Liste gesetzt: eingerichtet. Keines: aus, ohne Hinweis. Nur ein Teil: aus, der Zustand nennt den Grund (`problem`).
-- Beim Start geprüft: URL absolut mit `http` oder `https`, ohne Pfad, Abfrage und Benutzerangabe; Liste nach dem Muster `^todo\.[a-z0-9_]+$`; die CA-Datei ist lesbar und lässt sich als PEM laden. Sonst Konfigurationsfehler.
-- **Der Token** steht nur in der `.env`: nie in der Datenbank, einer Sicherung, dem Log, dem Ereignisprotokoll oder einer Antwort. Fehlermeldungen nennen Status und Pfad, nie Kopfzeilen.
+- **Geprüft:** aus der Umgebung beim Start, aus der App beim Speichern, nach denselben Regeln (`config.normalize_ha_url`): URL absolut mit `http` oder `https`, ohne Pfad, Abfrage und Benutzerangabe; Liste nach dem Muster `^todo\.[a-z0-9_]+$`. In der Umgebung dazu die CA-Datei (lesbar, als PEM ladbar); ein Fehler dort ist ein Konfigurationsfehler.
+- **Gegen fremde Ziele** gilt für eine Adresse aus der App außerdem (`haconfig.target_problem`): IP-Adressen nur in der üblichen Schreibweise (nicht `2852039166`, `0xa9.0xfe.0xa9.0xfe` oder mit führenden Nullen), keine wörtliche Link-local-, Multicast- oder unbestimmte Adresse, auch nicht in IPv6 verpackt (`::ffff:…`, 6to4, NAT64). Das Heimnetz und Loopback sind erlaubt. Sonst 422 an `["body", "url"]`.
+- **Bekannte Grenze:** Rechnernamen löst Stowly für diese Regeln nicht auf. Ein Name, der auf eine verbotene Adresse zeigt, kommt also durch. Dagegen: Einrichten und Prüfen dürfen nur angemeldete Geräte, keine Anfrage folgt einer Weiterleitung, und der gespeicherte Token geht nur an seine eigene Adresse (unten).
+- **Der Token aus der App** steht in `/data/secrets/ha_token.json` (`{token, url, set_at}`; Ordner `0700`, Datei `0600`, atomar geschrieben wie `/data/tls`, `stowly/secretstore.py`). Er steht nie in der Datenbank, einer Sicherung, dem Log, dem Ereignisprotokoll oder einer Antwort. In `server_config` steht nur der Merker `ha_token_set_at`.
+  - **An seine Adresse gebunden:** Er gilt nur für die Adresse, für die er eingetragen wurde; ein anders gebundener zählt als fehlend. Eine neue Adresse ohne Token im selben Aufruf löscht ihn. So lässt er sich nicht an einen anderen Rechner umleiten.
+  - **Nach Zurückspielen oder Umzug** fehlt die Datei (sie steht in keiner Sicherung), der Merker aber nicht: `problem` „Der Token für Home Assistant fehlt (steht in keiner Sicherung); bitte neu eintragen."
+  - Eine fehlende, zu große (über 64 KiB) oder kaputte Datei gilt als nicht da; die Warnung im Log nennt den Inhalt nie. Lässt sich `/data/secrets` beim Start nicht anlegen, startet der Server trotzdem, und `problem` sagt es.
+- **Der Token aus der Umgebung** steht nur in der `.env` bzw. den Einstellungen des Containers, mit denselben Regeln für Log, Ereignisprotokoll und Antworten. Fehlermeldungen nennen Status und Pfad, nie Kopfzeilen.
 
 ### 5.2 Abbildung
 
@@ -336,17 +388,21 @@ Eine Zeile je Artikel, den Stowly kennt:
 | `written_at`, `seen_at` | zuletzt geschrieben, zuletzt in der Liste gesehen |
 | `misses` | Abgleiche in Folge, in denen er fehlte, während HA erreichbar und die Liste verfügbar war |
 
+Zu welcher Liste diese Zeilen gehören, merkt sich `server_config` (`ha_links_entity`, 5.4, Schritt 2). Der Merker kommt beim Zurückspielen mit der Sicherung (`sync-protokoll.md` 11.9).
+
 ### 5.4 Abgleich
 
-Eine eigene Schleife im Server nach dem Muster von `off.py` (Aufgabe `stowly-ha`, eingereichte Uhr, `wake()`), nur wenn HA eingerichtet ist:
+Eine eigene Schleife im Server nach dem Muster von `off.py` (Aufgabe `stowly-ha`, eingereichte Uhr, `wake()`). Seit 0.4.0 läuft sie immer, wie die Abfrage bei GitHub (10.2):
 
+- **Einrichtung:** Vor jedem Lauf liest sie die wirksame Einrichtung (5.1). Ohne sie ruht sie mit dem Zustand `off`, ohne Anfrage an HA. Eine Änderung in der App weckt sie (`reconfigure`); ein laufender Abgleich hört nach der laufenden Anfrage auf. Hat sich der Fingerabdruck geändert (Adresse, Hash des Tokens, Liste, CA), schließt sie den alten Client und baut einen neuen, nie mitten in einer Anfrage. Bis zum ersten Lauf mit der neuen Einrichtung ist der Zustand `pending`, und dieser Lauf kommt gleich.
 - **Wann:** alle zwei Minuten (`HA_SYNC_INTERVAL_S` = 120); dazu geweckt nach jeder Änderung an der Einkaufsliste (nach dem Sync, wie `off.OffWorker.wake`), frühestens 5 Sekunden nach der letzten solchen Änderung; und zu dem Zeitpunkt, an dem der nächste offene Eintrag zwei Minuten offen ist. Bring! selbst aktualisiert sich in HA etwa alle 90 Sekunden.
-- **HTTP:** `httpx2`, `Authorization: Bearer <STOWLY_HA_TOKEN>`, Zeitgrenze 10 Sekunden je Aufruf, keine Weiterleitungen. `STOWLY_HA_CA` gilt, wenn gesetzt, zusätzlich zu den Zertifizierungsstellen des Systems, nicht statt ihrer.
+- **HTTP:** `httpx2`, `Authorization: Bearer <Token>`, keine Weiterleitungen. Je Aufruf höchstens 10 Sekunden für Anfrage und Antwort zusammen, auch wenn die Antwort tröpfchenweise kommt, und höchstens 8 MiB Rumpf (sonst `error`: „Die Antwort von Home Assistant ist zu groß (mehr als 8 MiB)."). `STOWLY_HA_CA` gilt, wenn gesetzt, zusätzlich zu den Zertifizierungsstellen des Systems, nicht statt ihrer.
 
 Ein Lauf:
 
-1. **Liste da?** `GET {STOWLY_HA_URL}/api/states/{entity}`. 401: Zustand `unauthorized`, Ende. 404: `not_found`, Ende. Netzfehler, Zeitüberschreitung, Zertifikat: `unreachable`, Ende. 5xx: `error`, Ende. `state` ist `unavailable` oder `unknown`: `unavailable`, Ende. In allen diesen Fällen schreibt der Server nichts und zählt kein Fehlen. (Der Zustand einer To-do-Entität ist sonst die Zahl ihrer offenen Artikel.)
-2. **Lesen:** `POST {STOWLY_HA_URL}/api/services/todo/get_items?return_response` mit `{"entity_id": "<entity>", "status": ["needs_action", "completed"]}`. Die Artikel stehen in `service_response["<entity>"]["items"]`, je Artikel `summary`, `uid`, `status` (`needs_action` oder `completed`), `description`. Erwartet ist, dass „zuletzt gekauft" in Bring! als `completed` erscheint (klärt die Probe mit dem Anwender). Fehler wie in Schritt 1; 400 heißt `error` („HA kennt todo.get_items nicht so").
+1. **Liste da?** `GET {Adresse}/api/states/{entity}`. 401: Zustand `unauthorized`, Ende. 404: `not_found`, Ende. Netzfehler, Zeitüberschreitung, Zertifikat: `unreachable`, Ende. 5xx: `error`, Ende. `state` ist `unavailable` oder `unknown`: `unavailable`, Ende. In allen diesen Fällen schreibt der Server nichts und zählt kein Fehlen. (Der Zustand einer To-do-Entität ist sonst die Zahl ihrer offenen Artikel.)
+2. **Lesen:** `POST {Adresse}/api/services/todo/get_items?return_response` mit `{"entity_id": "<entity>", "status": ["needs_action", "completed"]}`. Die Artikel stehen in `service_response["<entity>"]["items"]`, je Artikel `summary`, `uid`, `status` (`needs_action` oder `completed`), `description`. Erwartet ist, dass „zuletzt gekauft" in Bring! als `completed` erscheint (klärt die Probe mit dem Anwender). Fehler wie in Schritt 1; 400 heißt `error` („HA kennt todo.get_items nicht so").
+   - **Liste gewechselt?** Danach vergleicht der Server die gelesene Liste mit dem Merker `ha_links_entity` in `server_config`, in einer Transaktion. Gehört `ha_links` zu einer anderen Liste, leert er `ha_links` und löst die Bindungen aller Einträge der Einkaufsliste (`bring_key = null`). Nichts wird abgehakt: Die offenen Einträge gehen in Schritt 4 neu in die neue Liste, in der alten bleiben sie stehen. Dann gilt der Merker für die neue Liste. Fehlt er (erster Lauf nach dem Update auf 0.4.0), setzt der Server nur ihn. `bring_key` steht nicht im Sync; die Geräte bekommen dafür keinen neuen `rev`. Ins Log kommt eine Zeile „Home Assistant: Liste gewechselt (…): … Nichts wird abgehakt." Bis 0.3.x suchte Stowly die gespiegelten Artikel nach einem Wechsel in der neuen Liste und hakte die Einträge nach zwei Abgleichen als eingekauft ab.
 3. **Zurück** (aus Bring! nach Stowly), je Zeile von `ha_links`, gesucht nach `name_key` (steht ein Name als offen und als erledigt in der Liste, gilt der offene):
    - offen gefunden: `seen_at`, `misses = 0`, `uid` übernehmen; bei fremden `status = needs_action`. Ein eigener Artikel mit `status` `completed` oder `removed`, der wieder offen dasteht, wurde zurückgeholt: Er wird fremd (`own = 0`, `status = needs_action`), Stowly schreibt ihn nie mehr.
    - erledigt gefunden, zuletzt aber offen geschrieben oder gesehen: **in Bring! abgehakt.** Alle offenen Einträge, die an diesen Artikel gebunden sind, werden erledigt: `done_at` = jetzt, `closed_by = bring`, Uhr von `done` = jetzt, Ereignis `shopping_item.bring_done` (`how: completed`); bei einem automatischen Eintrag die Sperre (`sync-protokoll.md`, 7.6). `status = completed`. Hat Stowly den eigenen Artikel seit dem Anlegen noch nie gesehen, zählt ein erledigter Artikel desselben Namens nur, wenn seine `uid` nicht die des alten Artikels aus „zuletzt gekauft" ist (5.3, `uid`).
@@ -391,19 +447,43 @@ Was ihr selbst in Bring! eintragt, übernimmt Stowly nie in seine Liste.
 | Lage | `HaStatus.state` | `last_error` (Beispiel) |
 |---|---|---|
 | nicht eingerichtet | `off` | – |
-| eingerichtet, seit dem Start noch kein Lauf | `pending` | – |
+| eingerichtet, seit dem Start oder der letzten Änderung noch kein Lauf | `pending` | – |
 | letzter Lauf gelungen | `ok` | `null` |
 | 401 | `unauthorized` | „Home Assistant lehnt den Token ab." |
 | 404 der Liste | `not_found` | „Die Liste todo.zuhause gibt es in Home Assistant nicht." |
 | Liste `unavailable` oder `unknown` | `unavailable` | „Die Liste ist in Home Assistant gerade nicht verfügbar." |
 | Netzfehler, Zeitüberschreitung, Zertifikat | `unreachable` | „Home Assistant ist nicht erreichbar." (beim Zertifikat: „… Zertifikat nicht vertraut, siehe STOWLY_HA_CA.") |
 | 5xx, unerwartete Antwort | `error` | „Home Assistant antwortet mit 500." |
+| Antwort über 8 MiB | `error` | „Die Antwort von Home Assistant ist zu groß (mehr als 8 MiB)." |
 
-Nach einem Fehler kommt der nächste Versuch mit dem normalen Takt. Ins Log schreibt der Server einen Wechsel des Zustands, nicht jeden gescheiterten Lauf. Der Zustand lebt im Arbeitsspeicher und beginnt mit dem Start neu (`pending`); `ha_links` bleibt.
+Nach einem Fehler kommt der nächste Versuch mit dem normalen Takt. Ins Log schreibt der Server einen Wechsel des Zustands, nicht jeden gescheiterten Lauf. Der Zustand lebt im Arbeitsspeicher und gehört zu einer Einrichtung (ihrem Fingerabdruck, 5.4): Er beginnt mit dem Start und mit jeder geänderten Einrichtung neu (`pending`); `ha_links` bleibt. Was an der Einrichtung fehlt, steht daneben in `problem` (5.1, 8).
+
+### 5.7 Prüfung der Verbindung
+
+`POST /api/server-config/ha/check` (`sync-protokoll.md` 11.10, `stowly/hacheck.py`): Assistent und Einstellungen prüfen damit Adresse und Token, bevor sie gespeichert werden, und holen die To-do-Listen zur Auswahl. Die Prüfung speichert nichts.
+
+- **Was geprüft wird:** ohne Felder die wirksame Einrichtung, sonst `url` und `token` aus der Anfrage. Ohne `token` geht der gespeicherte nur an seine eigene Adresse, an eine andere keiner. Kommt die Verbindung aus der Umgebung, prüft sie nur die dort eingetragene; Felder geben dann 409.
+- **Ablauf:**
+  1. `GET /api/` (mit dem Token, wenn es einen gibt): `{"message": "API running."}` heißt Home Assistant.
+  2. `GET /api/config`, freiwillig: Version und Name des Zuhauses; ein Fehler hier zählt nicht.
+  3. `GET /api/states`, gestreamt, höchstens 8 MiB: die Entitäten `todo.*` mit ihrem Namen (ohne Steuer- und Formatzeichen, höchstens 100 Zeichen) und der Zahl offener Einträge, nach Namen sortiert, höchstens 100.
+- **Grenzen:** 8 Sekunden je Abfrage, 12 insgesamt. Eine Prüfung zugleich, und zwischen dem Beginn zweier liegen mindestens 3 Sekunden, für den ganzen Server; sonst 429 mit `Retry-After`. Einer Weiterleitung folgt die Prüfung nie. Erlaubte Ziele nach 5.1, mit derselben bekannten Grenze: Namen löst sie dafür nicht auf.
+- **Antwort `HaCheck`:** `state`, `message` (ein deutscher Satz), `ha_version`, `location_name`, `lists` (je `entity_id`, `name`, `open`) und `entity_found` (die wirksame Liste gibt es in HA; `null` ohne Liste). Nie eine rohe Antwort von HA, nie ein Token. Fehler bildet die Prüfung ab wie der Abgleich (5.6).
+
+| `state` | Wann | `message` (Beispiel) |
+|---|---|---|
+| `ok` | `/api/states` gelesen | „Verbindung zu Home Assistant steht; 3 To-do-Listen gefunden.", dazu „Die Liste todo.… gibt es dort nicht.", wenn die wirksame fehlt |
+| `token_needed` | 401 ohne Token | „Home Assistant antwortet. Bitte einen langlebigen Zugangs-Token eintragen (in Home Assistant: Profil, Sicherheit)." |
+| `unauthorized` | 401 mit Token | „Home Assistant lehnt den Token ab." |
+| `not_ha` | `/api/` antwortet nicht wie HA, oder mit 404 bzw. 405 | „Unter dieser Adresse antwortet kein Home Assistant." |
+| `unreachable` | Netz, Zeitüberschreitung, Zertifikat, Frist der Prüfung | „Home Assistant ist nicht erreichbar.", „Home Assistant antwortet zu langsam (die Prüfung dauert höchstens 12 Sekunden)." |
+| `error` | Weiterleitung, anderer Status, zu große oder unerwartete Antwort, unbrauchbare CA | „Die Adresse leitet weiter (301); Stowly folgt dem nicht. …" |
 
 ## 6. Sensor für Home Assistant
 
 `GET /api/ha/summary` (`sync-protokoll.md`, 11.2): nur lesend, mit dem Token des Sensors, `Cache-Control: no-store`.
+
+**Der Sensor-Token** kommt aus `STOWLY_HA_SUMMARY_TOKEN` oder, ohne die Variable, aus der App (`POST /api/server-config/ha/sensor-token`, `sync-protokoll.md` 11.10): 64 Hex-Zeichen, gespeichert wie der Token für HA in `/data/secrets` (`ha_sensor_token.json`, in keiner Sicherung; in `server_config` nur der Merker `ha_sensor_set_at`). Gelesen wird er bei jeder Anfrage: Erzeugen, Ersetzen und Entfernen wirken ohne Neustart. Gibt es keinen, antwortet der Sensor mit 503 `not_configured`. Nach einem Zurückspielen fehlt ein Token aus der App, und `HaStatus.problem` sagt es: „Der Sensor-Token fehlt (steht in keiner Sicherung); bitte neu erzeugen." Er hängt nicht an der Verbindung für Bring!: Der Sensor geht auch ohne sie.
 
 ### 6.1 Antwort
 
@@ -442,7 +522,7 @@ Home Assistant begrenzt den *Zustand* einer Entität auf 255 Zeichen. Der Zustan
 
 ### 6.2 Entwurf für `docs/betrieb.md`
 
-Den Token des Sensors erzeugen (etwa `openssl rand -hex 32`), als `STOWLY_HA_SUMMARY_TOKEN` in die `.env` von Stowly und mit `Bearer ` davor in die `secrets.yaml` von HA:
+Seit 0.4.0 steht die Anleitung in `betrieb.md`, 18; die App erzeugt den Token und liefert das YAML fertig für ihre Adresse (`web/src/features/settings/haSnippet.ts`, ein Test vergleicht es mit `betrieb.md`). Von Hand: den Token des Sensors erzeugen (etwa `openssl rand -hex 32`), als `STOWLY_HA_SUMMARY_TOKEN` in die `.env` von Stowly und mit `Bearer ` davor in die `secrets.yaml` von HA:
 
 ```yaml
 # secrets.yaml
@@ -576,14 +656,14 @@ Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/
 | `STOWLY_OFF_URL` | URL | `https://world.openfoodfacts.org` | – | Vorgabe |
 | `STOWLY_OFF_CONTACT` | Text | – | – | kein Kontakt im User-Agent |
 | `STOWLY_TIMEZONE` | IANA-Name | `Europe/Berlin` | `zoneinfo` kennt sie (aus `tzdata`), genau so geschrieben wie dort (unter Windows fände `zoneinfo` sonst auch „europe/berlin", unter Linux nicht) | Vorgabe |
-| `STOWLY_BACKUP_DIR` | absoluter Pfad | – | absolut | keine automatische Sicherung (mit Empfängern: Hinweis, 3.1) |
-| `STOWLY_BACKUP_RECIPIENTS` | `age1…`, getrennt durch Komma oder Leerraum | – | jeder ein öffentlicher age-Schlüssel (X25519); ein privater (`AGE-SECRET-KEY-…`) beendet den Start mit eigener Meldung, die ihn nicht zitiert | keine automatische Sicherung (mit Ordner: Hinweis) |
-| `STOWLY_BACKUP_TIME` | `HH:MM` | `03:30` | Form `HH:MM` | Vorgabe |
-| `STOWLY_HA_URL` | `http(s)://Host[:Port]` | – | absolut, ohne Pfad; ein `/` am Ende fällt weg | kein Bring! (mit Token oder Liste: Hinweis) |
-| `STOWLY_HA_TOKEN` | Text | – | – | kein Bring! (Hinweis wie oben) |
-| `STOWLY_HA_TODO_ENTITY` | `todo.<name>` | – | Muster `^todo\.[a-z0-9_]+$` | kein Bring! (Hinweis wie oben) |
-| `STOWLY_HA_CA` | Pfad zu einer PEM-Datei | – | Datei lesbar und als PEM ladbar | Vertrauen des Systems |
-| `STOWLY_HA_SUMMARY_TOKEN` | Text, mindestens 32 Zeichen | – | Länge; nur druckbares ASCII ohne Leerraum | kein Sensor (503 `not_configured`) |
+| `STOWLY_BACKUP_DIR` | absoluter Pfad | – | absolut | Wahl nach 3.5: `/backups`, wenn eingebunden und beschreibbar, sonst `/data/backups` |
+| `STOWLY_BACKUP_RECIPIENTS` | `age1…`, getrennt durch Komma oder Leerraum | – | jeder ein öffentlicher age-Schlüssel (X25519); ein privater (`AGE-SECRET-KEY-…`) beendet den Start mit eigener Meldung, die ihn nicht zitiert | die Schlüssel aus der App (3.1); gesetzt ist die Sicherung fest an |
+| `STOWLY_BACKUP_TIME` | `HH:MM` | – | Form `HH:MM` | die Uhrzeit aus der App, sonst `03:30` |
+| `STOWLY_HA_URL` | `http(s)://Host[:Port]` | – | absolut, ohne Pfad; ein `/` am Ende fällt weg | mit Token und Liste aus der App (5.1); ist eine der drei gesetzt, kommen alle drei aus der Umgebung |
+| `STOWLY_HA_TOKEN` | Text | – | – | wie `STOWLY_HA_URL` |
+| `STOWLY_HA_TODO_ENTITY` | `todo.<name>` | – | Muster `^todo\.[a-z0-9_]+$` | wie `STOWLY_HA_URL` |
+| `STOWLY_HA_CA` | Pfad zu einer PEM-Datei | – | Datei lesbar und als PEM ladbar | Vertrauen des Systems; gesetzt gilt sie auch für die Verbindung aus der App |
+| `STOWLY_HA_SUMMARY_TOKEN` | Text, mindestens 32 Zeichen | – | Länge; nur druckbares ASCII ohne Leerraum | der Sensor-Token aus der App (6), sonst kein Sensor (503 `not_configured`) |
 | `STOWLY_PUSH_CONTACT` | `mailto:<Adresse>` oder `https://<Host>` | – | Form: `mailto:` mit einer Adresse samt Domäne oder `https://` mit Host, das Schema klein geschrieben, ohne Benutzerangabe | Kontakt aus der App (12), sonst kein Push (503 `not_configured`) |
 | `STOWLY_UPDATE_REPO` | `<konto>/<name>` | – | Muster `^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`, Name nicht `.` oder `..` | Schalter in der App (12), sonst keine Abfrage bei GitHub (10.1) |
 | `STOWLY_UPDATE_REPO_DEFAULT` | `<konto>/<name>` | im veröffentlichten Image das eigene Repository | wie `STOWLY_UPDATE_REPO` | der Schalter in der App wirkt nicht (`available: false`) |
@@ -592,7 +672,7 @@ Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/
 | `STOWLY_IMAGE_REF` | Image ohne Tag, etwa `docker.io/<konto>/stowly` | im veröffentlichten Image gesetzt | Form einer Docker-Referenz ohne Tag und Digest | kein fertiger Befehl für den Updater-Container (10.7) |
 | `STOWLY_IMAGE_TAG` | Tag des Images, etwa `0.3.1` oder `0.3.1-rc.1` | im veröffentlichten Image gesetzt (seit 0.3.1) | Docker-Tag: bis 128 Zeichen aus Buchstaben, Ziffern, `_`, `.`, `-`, nicht mit `.` oder `-` am Anfang | der Befehl für den Updater-Container nennt die Version des Servers (10.7) |
 
-Ist von Home Assistant nur `STOWLY_HA_CA` gesetzt, gilt das als halbe Einrichtung: `problem` nennt die drei fehlenden Variablen. `STOWLY_HA_SUMMARY_TOKEN` allein gehört nicht dazu: Der Sensor braucht den Abgleich nicht.
+Seit 0.4.0 sind alle Variablen der Sicherung und von Home Assistant freiwillig: Was fehlt, kommt aus der App (3.1, 5.1, 12). Was gesetzt ist, geht vor und ist in der App gesperrt. Öffentliche Schlüssel aus `STOWLY_BACKUP_RECIPIENTS` schalten die Sicherung fest an. Von Home Assistant ist `STOWLY_HA_CA` allein keine halbe Einrichtung mehr: Adresse, Token und Liste kommen dann aus der App, und die CA gilt für sie. Ebenso wenig `STOWLY_HA_SUMMARY_TOKEN` allein: Der Sensor braucht den Abgleich nicht.
 
 Nur für Docker Compose und den Updater, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB_GID`, `TZ` (die Zeitzone für Stowly ist `STOWLY_TIMEZONE`), `STOWLY_IMAGE` und `STOWLY_VERSION` (fertiges Image, 10.1), `STOWLY_VOLUME` (Name des Datenvolumes für den Updater, 10.6). `FORWARDED_ALLOW_IPS` wirkt seit 0.3.0 nicht mehr: Beide Listener werten keine Proxy-Kopfzeilen aus, damit Stowly sicher weiß, ob eine Anfrage über seinen HTTPS-Listener kam (11). `.env.example` nennt jede Variable mit einem kurzen Satz; Beispiele nur mit Platzhaltern (`stowly.example`, `ha.example`, Token als `…`).
 
@@ -601,11 +681,11 @@ Nur für Docker Compose und den Updater, nicht vom Server gelesen: `STOWLY_PUBLI
 `GET /api/integrations` (`sync-protokoll.md`, 11.4) liefert `IntegrationStatus` für die Einstellungen der App:
 
 - **`timezone`:** `STOWLY_TIMEZONE`.
-- **`backup`** (`BackupStatus`): wie in 3.6. `configured` und `problem` nach 3.1, `time` aus `STOWLY_BACKUP_TIME`, auch wenn die Sicherung aus ist; `null` nur, wenn sie gar nicht eingerichtet ist.
-- **`ha`** (`HaStatus`): `configured` und `problem` nach 5.1; `entity` aus `STOWLY_HA_TODO_ENTITY`; `state`, `last_ok_at`, `last_error`, `last_error_at` nach 5.6; `linked` = offene Einträge mit `bring_key`; `sensor` = `STOWLY_HA_SUMMARY_TOKEN` gesetzt.
+- **`backup`** (`BackupStatus`): wie in 3.6. `configured` und `problem` nach 3.1, `folder` und `files` nach 3.5 und 3.6; `time` aus Umgebung, App oder Vorgabe, auch wenn die Sicherung aus ist, `null` nur ohne Schlüssel und ohne jede Einstellung; `next_at` und `warning` nur, wenn sie an ist und einen Schlüssel hat.
+- **`ha`** (`HaStatus`): `configured` = Adresse, Token und Liste sind wirksam, aus der Umgebung oder der App (5.1). `problem` nennt, was an der Verbindung fehlt, und danach, was am Sensor fehlt, etwa „Der Sensor-Token fehlt (steht in keiner Sicherung); bitte neu erzeugen." `entity` = die wirksame Liste; `state`, `last_ok_at`, `last_error`, `last_error_at` nach 5.6, `pending` auch nach einer Änderung, bis der erste Lauf mit der neuen Einrichtung durch ist; `linked` = offene Einträge mit `bring_key`; `sensor` = ein Sensor-Token wirkt (Umgebung oder App).
 - **`push`** (`PushStatus`): `configured` = ein Kontakt ist wirksam (aus der Umgebung oder der App, 12); `problem` ist derzeit immer `null` (ein ungültiger `STOWLY_PUSH_CONTACT` beendet schon den Start, einen ungültigen in der App lehnt `PATCH /api/server-config` ab); `subscriptions` = Abos im Haushalt; `this_device` = das fragende Gerät hat eines; `last_run_at` = `job_runs.push_daily.last_at`; `last_sent_at` = `state.sent_at`; `last_error` = `job_runs.push_daily.last_error`.
 - **`update`** (`UpdateStatus`): nach 10.4.
-- **Nie** darin: ein Token, ein privater Schlüssel, die Adresse von HA, `STOWLY_PUSH_CONTACT`, Pfade des Rechners oder das Log des Updaters. Öffentliche age-Schlüssel nur gekürzt.
+- **Nie** darin: ein Token, ein privater Schlüssel, die Adresse von HA, `STOWLY_PUSH_CONTACT`, Pfade des Rechners oder das Log des Updaters. Öffentliche age-Schlüssel nur gekürzt. `backup.folder` ist ein Pfad im Container, nicht auf dem Rechner.
 
 Die App lädt den Zustand, wenn die Einstellungen offen sind (`core.integrations.load`); offline sagt sie, dass er fehlt.
 
@@ -727,7 +807,7 @@ Der Austausch zwischen Server (uid 10001) und Updater (root) läuft über Dateie
 
 ### 10.5 Anfordern
 
-`POST /api/update/install` mit `{"version": "X.Y.Z"}`. Geprüft wird in dieser Reihenfolge:
+`POST /api/update/install` mit `{"version": "X.Y.Z"}`. Vorab: Läuft gerade ein Schritt des Zurückspielens oder liegt eine Sicherung zum Einspielen bereit (`sync-protokoll.md` 11.9), antwortet der Server mit 409 `conflict` „Gerade wird eine Sicherung zurückgespielt. Ein Update geht erst danach." Umgekehrt wartet das Zurückspielen, solange ein Update angefordert ist oder läuft. Danach wird in dieser Reihenfolge geprüft:
 
 1. **Updates sind aus** (weder `STOWLY_UPDATE_REPO` noch der Schalter): 503 `not_configured` „Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung."
 2. **`updater_ready` ist falsch:** 503 `not_configured` „Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9)."
@@ -802,7 +882,7 @@ Stowly kann HTTPS selbst bereitstellen, ohne Reverse Proxy: mit einer eigenen Ze
 
 ### 11.1 Dateien
 
-Alles liegt in `/data/tls` (Rechte 0700), nicht in der Datenbank: Die manuelle Sicherung (`GET /api/backup`) ist unverschlüsselt und für jedes Gerät abrufbar.
+Alles liegt in `/data/tls` (Rechte 0700), nicht in der Datenbank und damit in keiner Sicherung.
 
 | Datei | Rechte | Inhalt |
 |---|---|---|
@@ -854,9 +934,16 @@ Was früher nur in der Umgebung stand, geht seit 0.3.0 auch in der App (`GET` un
 | Haushalts-Passwort | `STOWLY_PASSWORD` (beim Start als Hash übernommen), sonst der Hash aus der App | bei jeder Anmeldung |
 | Kontakt für die Push-Dienste | `STOWLY_PUSH_CONTACT`, sonst der Kontakt aus der App, sonst keiner | bei jeder Zustellung, in der Tagesnachricht und vor jedem Aufruf unter `/api/push` |
 | Updates | `STOWLY_UPDATE_REPO` (immer an), sonst der Schalter in der App mit `STOWLY_UPDATE_REPO_DEFAULT`, sonst aus | vor jeder Abfrage bei GitHub |
+| Sicherung: öffentliche Schlüssel (seit 0.4.0, 3.1) | `STOWLY_BACKUP_RECIPIENTS`, sonst die Liste aus der App (höchstens 10; Hinzufügen nur mit dem Haushalts-Passwort, Entfernen ohne), sonst keine | bei jedem Takt des Zeitplans und vor jedem „Jetzt sichern" |
+| Sicherung: an oder aus | fest an mit Schlüsseln aus der Umgebung, sonst der Schalter in der App, sonst an | ebenso |
+| Sicherung: Uhrzeit | `STOWLY_BACKUP_TIME`, sonst die Uhrzeit aus der App, sonst `03:30` | ebenso |
+| Sicherung: Ordner (3.5) | `STOWLY_BACKUP_DIR`, sonst `/backups` (eingebunden und beschreibbar), sonst `/data/backups`; in der App nur zu sehen | ebenso, dazu bei jeder Anfrage nach dem Zustand |
+| Home Assistant: Adresse, Token und Liste (seit 0.4.0, 5.1) | als Gruppe: aus der Umgebung, sobald eine der drei Variablen gesetzt ist, sonst aus der App | vor jedem Lauf des Abgleichs und bei jeder Prüfung |
+| Sensor-Token (6) | `STOWLY_HA_SUMMARY_TOKEN`, sonst der Token aus der App | bei jeder Anfrage des Sensors |
+| Zertifizierungsstelle für HA | nur `STOWLY_HA_CA` | beim Start |
 | Port des HTTPS-Listeners | nur `STOWLY_HTTPS_PORT` | beim Start |
 | Adressen, externe Ports, Fortschritt des Assistenten | nur App oder gelernt | bei Gebrauch |
 
-- **Ohne Neustart:** Versand von Push, Tagesnachricht und Abfrage bei GitHub laufen immer und lesen den wirksamen Wert erst beim Einsatz. Wird der Schalter eingeschaltet, kommt die erste Abfrage nach `UPDATE_CHECK_FIRST_S` (60) Sekunden.
-- **Gespeichert** in `server_config`, je Schlüssel ein JSON-Wert mit Zeitpunkt und Gerät. Dort steht nie ein Geheimnis; die Tabelle ist in jeder Sicherung.
-- **Später (Stufe B):** Sicherung und Home Assistant folgen demselben Muster. Der Token von HA kommt dann nicht in `server_config`, sondern in einen Speicher, den beide Sicherungen auslassen.
+- **Ohne Neustart:** Versand von Push, Tagesnachricht, Abfrage bei GitHub, Sicherung und Abgleich mit HA laufen immer und lesen den wirksamen Wert erst beim Einsatz; der Sensor bei jeder Anfrage. Wird der Schalter für Updates eingeschaltet, kommt die erste Abfrage nach `UPDATE_CHECK_FIRST_S` (60) Sekunden. Eine Änderung der Sicherung weckt den Zeitplan, eine von HA den Abgleich.
+- **Gespeichert** in `server_config`, je Schlüssel ein JSON-Wert mit Zeitpunkt und Gerät. Dort steht nie ein Geheimnis; die Tabelle ist in jeder Sicherung. Schlüssel aus der App: `push_contact`, `update_enabled`, `backup_enabled`, `backup_time`, `backup_recipients` (je `{key, added_at}`), `ha_url`, `ha_todo_entity`; dazu Merker ohne Geheimnis: `ha_token_set_at`, `ha_sensor_set_at` und `ha_links_entity` (5.4, vom Server selbst geschrieben).
+- **Tokens aus der App** (HA und Sensor) stehen nicht in `server_config`, sondern in `/data/secrets` (5.1), den keine Sicherung enthält. Wer umzieht, nimmt den Datenordner mit; sonst sind sie neu einzutragen, und der Zustand sagt es.

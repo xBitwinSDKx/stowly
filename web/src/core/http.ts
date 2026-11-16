@@ -54,7 +54,7 @@ const LOOKUP_STATES: ReadonlySet<string> = new Set<LookupResultState>(["found", 
 const PUSH_TEST_STATES: ReadonlySet<string> = new Set<PushTestStatus>(["sent", "gone", "rejected", "failed"]);
 const UPDATE_STATES: ReadonlySet<string> = new Set<UpdateState>(["idle", "requested", "installing", "done", "failed"]);
 
-const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
+export const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
 
 const ERROR_CODES: Record<ErrorCode, CoreErrorCode> = {
   invalid_request: "invalid",
@@ -70,23 +70,24 @@ const ERROR_CODES: Record<ErrorCode, CoreErrorCode> = {
   internal: "internal",
 };
 
-interface Endpoint {
+export interface Endpoint {
   readonly method: string;
   readonly path: string;
 }
 
-interface CallOptions {
+export interface CallOptions {
   token?: string | null;
+  /** JSON-Rumpf; ein Blob geht als Rohdaten hinaus (`application/octet-stream`, das Hochladen einer Sicherung). */
   body?: unknown;
   timeoutMs: number;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Macht aus einer Fehlerantwort einen CoreError. Antworten ohne das Fehlerformat des Servers gelten als „nicht erreichbar". */
-async function errorFrom(response: Response): Promise<CoreError> {
+export async function errorFrom(response: Response): Promise<CoreError> {
   let body: unknown;
   try {
     body = await response.json();
@@ -116,15 +117,19 @@ export class ApiClient {
 
   /**
    * Schickt den Aufruf ab und liest die Antwort mit `read`, wenn sie ein Erfolg ist.
-   * Die Zeitgrenze gilt, bis auch der Rumpf gelesen ist.
+   * Die Zeitgrenze gilt, bis auch der Rumpf gelesen ist. Geschützt statt privat: Die nachgeladenen
+   * Teile des Kerns (admin.ts, restore.ts) bauen ihre Aufrufe darauf.
    */
-  private async call<T>(endpoint: Endpoint, path: string, options: CallOptions, read: (response: Response) => Promise<T>): Promise<T> {
+  protected async call<T>(endpoint: Endpoint, path: string, options: CallOptions, read: (response: Response) => Promise<T>): Promise<T> {
     const headers: Record<string, string> = { accept: "application/json" };
     if (options.token) {
       headers.authorization = `Bearer ${options.token}`;
     }
-    let body: string | undefined;
-    if (options.body !== undefined) {
+    let body: BodyInit | undefined;
+    if (options.body instanceof Blob) {
+      headers["content-type"] = "application/octet-stream";
+      body = options.body;
+    } else if (options.body !== undefined) {
       headers["content-type"] = "application/json";
       body = JSON.stringify(options.body);
     }
@@ -151,12 +156,12 @@ export class ApiClient {
     }
   }
 
-  private json<T>(endpoint: Endpoint, path: string, options: CallOptions): Promise<T> {
+  protected json<T>(endpoint: Endpoint, path: string, options: CallOptions): Promise<T> {
     return this.call(endpoint, path, options, (response) => response.json() as Promise<T>);
   }
 
   /** Eine JSON-Antwort, deren Form `valid` prüft. Was nicht so aussieht, stammt nicht vom Stowly-Server: "offline". */
-  private async checked<T>(endpoint: Endpoint, path: string, options: CallOptions, valid: (value: unknown) => value is T): Promise<T> {
+  protected async checked<T>(endpoint: Endpoint, path: string, options: CallOptions, valid: (value: unknown) => value is T): Promise<T> {
     const answer = await this.json<unknown>(endpoint, path, options);
     if (!valid(answer)) {
       throw new CoreError("offline", OFFLINE_MESSAGE);
@@ -404,19 +409,9 @@ export class ApiClient {
     }
     return answer;
   }
-
-  /** Lädt die Kopie der Datenbank. Der Name steht in `Content-Disposition`. */
-  async backup(token: string): Promise<{ blob: Blob; filename: string | null }> {
-    return this.call(ENDPOINTS.download_backup, ENDPOINTS.download_backup.path, { token, timeoutMs: 8 * REQUEST_TIMEOUT_MS }, async (response) => {
-      const blob = await response.blob();
-      const disposition = response.headers.get("content-disposition") ?? "";
-      const match = /filename="?([^";]+)"?/i.exec(disposition);
-      return { blob, filename: match?.[1]?.trim() || null };
-    });
-  }
 }
 
-const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+export const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
 
 /** Die Felder eines `UpdateStatus`, die Text oder null sind. */
 const UPDATE_TEXTS = [
@@ -455,8 +450,8 @@ function isUpdateStatus(value: unknown): value is UpdateStatus {
   );
 }
 
-const isText = (value: unknown): value is string => typeof value === "string";
-const isTextOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
+export const isText = (value: unknown): value is string => typeof value === "string";
+export const isTextOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
 const isPortOrNull = (value: unknown): boolean => value === null || (typeof value === "number" && Number.isInteger(value));
 
 function isLoginResponse(value: unknown): value is LoginResponse {

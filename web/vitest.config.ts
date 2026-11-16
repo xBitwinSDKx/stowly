@@ -4,6 +4,11 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 const src = fileURLToPath(new URL("./src", import.meta.url));
+/**
+ * Tests dürfen Dateien aus web/ und aus docs/ lesen, auch mit `?raw` (etwa den YAML-Block in
+ * docs/betrieb.md, den die App für Home Assistant baut). Vite lässt `?raw` außerhalb dieser Ordner nicht zu.
+ */
+const fsAllow = { allow: [fileURLToPath(new URL(".", import.meta.url)), fileURLToPath(new URL("../docs", import.meta.url))] };
 
 /**
  * Drei getrennte Test-Projekte, damit jeder Bereich für sich prüfbar ist:
@@ -40,6 +45,7 @@ export default defineConfig({
         plugins: [react()],
         define,
         resolve: { alias: alias("mock") },
+        server: { fs: fsAllow },
         test: {
           name: "ui",
           environment: "jsdom",

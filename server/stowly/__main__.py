@@ -6,6 +6,10 @@ Zwei Listener in einer Ereignisschleife, dieselbe App (docs/integrationen.md, 11
 ``STOWLY_PORT`` und, mit ``STOWLY_HTTPS_PORT``, HTTPS mit der eigenen CA. Der Lebenszyklus der App
 umschließt beide: Die Dienste stehen, bevor ein Port aufgeht, und enden erst nach beiden Listenern.
 Ist ``/data`` nicht beschreibbar, zeigt statt des Servers eine Hilfeseite den Grund (``rescue.py``).
+
+Vor ``create_app`` spielt ``restore.resume`` eine bereitgelegte Sicherung ein (docs/sync-protokoll.md,
+11.9). Nach dem Anwenden ruft die App ``request_restart``: Beide Listener enden sauber, dann ersetzt sich
+der Prozess mit ``os.execv`` selbst (unter Windows startet er im selben Prozess neu).
 """
 
 import argparse
@@ -13,6 +17,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import os
 import signal
 import socket
 import ssl
@@ -25,13 +30,17 @@ import uvicorn
 from fastapi import FastAPI
 from uvicorn.server import HANDLED_SIGNALS
 
-from stowly import __version__, db, rescue
+from stowly import __version__, db, rescue, restore
 from stowly.app import create_app, prepare_database, release_waiting
 from stowly.config import DEV_PASSWORD, Settings
 from stowly.tls import CaUnavailable, TlsManager
 
-# Exit-Code, wenn der Server nicht starten konnte (wie bei uvicorn.run, etwa Port belegt).
+# Exit-Code, wenn der Server nicht starten konnte (wie bei uvicorn.run, etwa Port belegt); ebenso, wenn
+# sich der Prozess nach einem Zurückspielen nicht ersetzen ließ: Dann startet Docker ihn neu.
 STARTUP_FAILURE = 3
+# Unter POSIX ersetzt sich der Prozess nach einem Zurückspielen selbst (os.execv, die PID bleibt);
+# unter Windows (Entwicklung) gibt es kein echtes execv, dort beginnt main() im selben Prozess von vorn.
+RESTART_IN_PROCESS = os.name != "posix"
 # Beim Beenden höchstens so lange auf laufende Anfragen warten: Eine Abfrage mit ?wait=30 am
 # Druckdienst hielte das Herunterfahren sonst auf, und Docker beendet nach 10 Sekunden hart.
 GRACEFUL_SHUTDOWN_S = 5
@@ -92,6 +101,10 @@ class Listeners:
         self.app = app
         self.settings = settings
         self.tls: TlsManager = app.state.tls
+        # Nach dem Anwenden einer Sicherung (api/restore.py): Die App bittet um einen Neustart.
+        self.restart_requested = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        app.state.request_restart = self.request_restart
         self.http = Server(
             uvicorn.Config(
                 app,
@@ -138,6 +151,16 @@ class Listeners:
             if force:
                 server.force_exit = True
 
+    def request_restart(self) -> None:
+        """Beide Listener sauber beenden (laufende Anfragen werden fertig, der Lebenszyklus der App läuft ab);
+        danach startet ``main`` Stowly neu. Darf aus jedem Thread gerufen werden."""
+        self.restart_requested = True
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self.stop)
+        else:
+            self.stop()
+
     def _on_signal(self, signum: int, _frame: FrameType | None) -> None:
         # Ein zweites Strg+C wartet nicht mehr auf laufende Anfragen (wie bei uvicorn).
         self.stop(force=signum == signal.SIGINT and self.http.should_exit)
@@ -156,8 +179,9 @@ class Listeners:
 
     async def serve(self) -> int:
         """Lebenszyklus der App um beide Listener; liefert den Exit-Code (0, oder 3 ohne HTTP)."""
-        restore = self._capture_signals()
-        self.tls.attach(asyncio.get_running_loop())
+        restore_signals = self._capture_signals()
+        self._loop = asyncio.get_running_loop()
+        self.tls.attach(self._loop)
         entered = False
         try:
             async with self.app.router.lifespan_context(self.app):
@@ -170,7 +194,8 @@ class Listeners:
             return STARTUP_FAILURE
         finally:
             self.tls.detach()
-            restore()
+            restore_signals()
+            self._loop = None
 
     async def _listen(self) -> int:
         http_task = asyncio.create_task(_serve(self.http), name="stowly-http")
@@ -285,12 +310,40 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    app = create_app(settings)
-    listeners = Listeners(app, settings)
+    while True:
+        # Bevor irgendetwas die Datenbank öffnet: eine bereitgelegte Sicherung einspielen (wirft nie).
+        restore.resume(settings)
+        app = create_app(settings)
+        listeners = Listeners(app, settings)
+        try:
+            code = asyncio.run(listeners.serve(), loop_factory=listeners.http.config.get_loop_factory())
+        except KeyboardInterrupt:
+            return 0 if listeners.http.started else STARTUP_FAILURE
+        if not listeners.restart_requested:
+            return code
+        if not RESTART_IN_PROCESS:
+            return replace_process()
+        log.info("Stowly startet im selben Prozess neu.")
+
+
+def replace_process() -> int:
+    """Ersetzt den Prozess durch einen frischen mit denselben Argumenten (``os.execv``). Die PID bleibt, der
+    Container läuft weiter, und Docker braucht keine Neustart-Regel. Kehrt nur zurück, wenn das scheitert:
+    mit Exit-Code 3, dann startet Docker den Container neu und der Tausch geschieht dort."""
+    argv = [sys.executable, *sys.orig_argv[1:]]
+    log.info("Stowly startet neu.")
+    for name in ("stowly", "stowly_print"):
+        for handler in logging.getLogger(name).handlers:
+            with contextlib.suppress(Exception):
+                handler.flush()
+    with contextlib.suppress(Exception):
+        sys.stdout.flush()
+        sys.stderr.flush()
     try:
-        return asyncio.run(listeners.serve(), loop_factory=listeners.http.config.get_loop_factory())
-    except KeyboardInterrupt:
-        return 0 if listeners.http.started else STARTUP_FAILURE
+        os.execv(sys.executable, argv)
+    except OSError:
+        log.exception("Stowly ließ sich nicht neu starten.")
+    return STARTUP_FAILURE
 
 
 if __name__ == "__main__":

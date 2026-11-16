@@ -9,7 +9,7 @@ Updater (``updater/stowly-update.sh`` oder der Updater-Container), der die Anfor
 from fastapi import APIRouter, Request, Response
 from starlette.concurrency import run_in_threadpool
 
-from stowly import serverconfig, updates
+from stowly import restore, serverconfig, updates
 from stowly.api.deps import CurrentDevice, Db, get_settings
 from stowly.contract.api import UPDATE_CHECK_MIN_GAP_S, ErrorCode, UpdateInstallInput, UpdateStatus
 from stowly.errors import ApiError
@@ -71,6 +71,10 @@ def install_update(
     gemeldet hat; 409 ``conflict``, wenn ``version`` nicht das zuletzt gesehene neueste Release ist,
     nicht neuer als dieser Server oder schon angefordert bzw. in Arbeit.
     """
+    # Updater und Zurückspielen schließen sich aus (docs/plan-einrichtung-b.md, Abschnitt 2).
+    manager = getattr(request.app.state, "restore", None)
+    if manager is not None and manager.blocks_update():
+        raise ApiError(409, ErrorCode.CONFLICT, restore.BLOCKS_UPDATE)
     try:
         result = updates.install(
             get_settings(request), con, body.version, device=_device["name"], now=_clock(request).now()

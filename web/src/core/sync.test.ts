@@ -240,7 +240,7 @@ describe("Befehle senden", () => {
     expect(value(core.data.settings).warn_days).toBe(7);
     expect(stored.product).toMatchObject({ name: "", lookup: "pending", barcodes: ["4006381333931"] });
     await expectCoreError(core.devices.list(), "offline");
-    await expectCoreError(core.backup.download(), "offline");
+    await expectCoreError(core.backup.run(), "offline");
 
     network.offline = false;
     await core.sync.now();

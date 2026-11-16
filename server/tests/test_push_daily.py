@@ -470,7 +470,7 @@ def test_the_app_runs_the_daily_message_in_its_schedule(settings, clock):
     job_clock = JobClock()
     app = create_app(configured, push_transport=httpx2.MockTransport(services.handle), job_clock=job_clock)
     with TestClient(app) as client:
-        assert app.state.scheduler.jobs == ["push_daily"]
+        assert app.state.scheduler.jobs == ["backup", "push_daily"]  # die Sicherung ruht ohne Schlüssel
         for _ in range(300):
             con = db.connect(configured.database_path)
             try:

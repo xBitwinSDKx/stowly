@@ -20,7 +20,7 @@ from stowly.config import Settings
 from stowly.contract import ids, timeutil
 from stowly.contract.api import SetupStatus
 
-STEPS = ["https", "printer", "updates", "notifications"]
+STEPS = ["https", "printer", "backup", "updates", "notifications", "home_assistant"]
 
 
 def status(client: TestClient, device: Device, **headers: str) -> dict:
@@ -118,7 +118,7 @@ def test_marking_steps_and_finishing(client):
 @pytest.mark.parametrize(
     "body",
     [
-        {"step": {"id": "backup", "state": "done"}},
+        {"step": {"id": "sicherung", "state": "done"}},
         {"step": {"id": "https", "state": "erledigt"}},
         {"step": None},
         {"finished": "ja"},
@@ -159,7 +159,14 @@ def test_ready_is_what_the_server_sees(settings):
         client.patch(
             "/api/server-config", json={"push_contact": "betrieb@example.org"}, headers=device.headers
         )
-        assert ready() == {"https": False, "printer": True, "updates": True, "notifications": True}
+        assert ready() == {
+            "https": False,
+            "printer": True,
+            "backup": False,  # ohne Schlüssel und ohne gelungene Sicherung (test_backup_config.py)
+            "updates": True,
+            "notifications": True,
+            "home_assistant": False,
+        }
 
     with TestClient(create_app(image), base_url="https://192.168.1.10:8443") as secure:
         secure_device = Device(secure, "Tablet")

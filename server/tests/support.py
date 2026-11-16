@@ -5,6 +5,9 @@ schickt Befehle mit ``at`` und ``sent_at`` seiner eigenen Uhr und merkt sich ``c
 ``dataset_id``, den ID-Vorrat und alle gelieferten Datensätze.
 """
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -221,3 +224,59 @@ def events_of(client: TestClient, device: Device, **query: Any) -> list[dict]:
         before = page["next_before"]
         if before is None:
             return list(reversed(collected))
+
+
+def asgi_call(
+    app: Any, method: str, path: str, headers: dict[str, str], parts: AsyncIterator[bytes]
+) -> tuple[int, Any]:
+    """Eine Anfrage direkt an die App (ASGI), ohne TestClient: Der Rumpf kommt Teil für Teil aus ``parts``,
+    ohne Content-Length, und darf stocken. Der TestClient läse ihn vorher ganz. Liefert Status und JSON."""
+
+    async def run() -> tuple[int, Any]:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "root_path": "",
+            "query_string": b"",
+            "server": ("127.0.0.1", 8010),
+            "client": ("127.0.0.1", 50000),
+            "headers": [
+                (name.lower().encode(), value.encode())
+                for name, value in {
+                    "host": "127.0.0.1:8010",
+                    "transfer-encoding": "chunked",
+                    **headers,
+                }.items()
+            ],
+        }
+        feed = aiter(parts)
+        done = False
+
+        async def receive() -> dict[str, Any]:
+            nonlocal done
+            if done:
+                return {"type": "http.disconnect"}
+            part = await anext(feed, None)
+            if part is None:
+                done = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.request", "body": part, "more_body": True}
+
+        sent: list[dict[str, Any]] = []
+
+        async def send(message: dict[str, Any]) -> None:
+            sent.append(message)
+
+        await app(scope, receive, send)
+        start = next(message for message in sent if message["type"] == "http.response.start")
+        body = b"".join(
+            message.get("body", b"") for message in sent if message["type"] == "http.response.body"
+        )
+        return start["status"], json.loads(body) if body else None
+
+    return asyncio.run(run())

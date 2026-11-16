@@ -19,6 +19,8 @@
  *                      (scheduler), Kontakt zum Server über Tabs hinweg (contact), Sperre,
  *                      Aufbewahrung
  *   api/               die Teile der Schnittstelle `Core` (auch die Einkaufsliste, shopping.ts)
+ *   admin.ts           Sicherung jetzt, Dateien und Home Assistant (nachgeladen, Stufe B)
+ *   restore.ts         eine Sicherung zurückspielen (nachgeladen, Stufe B)
  *   images.ts          Produktbilder vorab laden
  *   background.ts      Abgleich im Service Worker
  *   push/              Push auf diesem Gerät (device.ts) und Nachrichten im Service Worker (worker.ts)
@@ -831,6 +833,27 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     }
   }
 
+  /**
+   * Ein Teil der Schnittstelle, dessen Code erst beim ersten Aufruf geladen wird (Sicherung,
+   * Zurückspielen, Home Assistant): Jede Methode lädt ihn und reicht den Aufruf weiter. Scheitert
+   * das Laden (etwa ohne Server und ohne Service Worker), scheitert der Aufruf mit "offline", und
+   * der nächste versucht es noch einmal.
+   */
+  function later<T extends object>(load: () => Promise<T>, names: readonly (keyof T)[]): T {
+    let loading: Promise<T> | null = null;
+    const api: Partial<Record<keyof T, unknown>> = {};
+    for (const name of names) {
+      api[name] = (...args: unknown[]) => {
+        loading ??= load().catch(() => {
+          loading = null;
+          throw new CoreError("offline", OFFLINE_MESSAGE);
+        });
+        return loading.then((loaded) => (loaded[name] as (...rest: unknown[]) => unknown)(...args));
+      };
+    }
+    return api as T;
+  }
+
   // ---------------------------------------------------------------- Die Schnittstelle
 
   const core: StowlyCore = {
@@ -991,14 +1014,29 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       },
     },
 
-    backup: {
-      async download() {
-        const { blob, filename } = await runtime.server((token) => api.backup(token));
-        const today = now();
-        const fallback = `stowly-${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}.sqlite3`;
-        return { blob, filename: filename ?? fallback };
-      },
-    },
+    // Sicherung, Zurückspielen und Home Assistant (Stufe B): nachgeladen, siehe `later`.
+    backup: later(() => import("./admin").then((module) => module.createAdmin(runtime, fetchFn).backup), ["run", "file"]),
+    restore: later(
+      () =>
+        import("./restore").then((module) =>
+          module.createRestore({
+            runtime,
+            fetch: fetchFn,
+            // Fortschritt beim Hochladen gibt es nur über XMLHttpRequest; mit eigenem fetch (Tests) geht es darüber.
+            xhr: options.fetch === undefined && typeof XMLHttpRequest === "function",
+            signIn: (login, name) => signInWith(async () => login, name, () => undefined),
+          }),
+        ),
+      ["upload", "check", "apply", "status", "undo", "discardPrevious", "waitForRestart"],
+    ),
+    haConfig: later(() => import("./admin").then((module) => module.createAdmin(runtime, fetchFn).haConfig), [
+      "load",
+      "update",
+      "check",
+      "sensorToken",
+      "createSensorToken",
+      "deleteSensorToken",
+    ]),
 
     app: {
       state: app,
