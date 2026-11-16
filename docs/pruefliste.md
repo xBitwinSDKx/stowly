@@ -307,3 +307,24 @@ Automatisch geprüft, auch gegen den echten Server samt Neustart beim Zurückspi
   - Home Assistant bleibt aus der `.env`; die App zeigt die Werte nur an, und „Verbindung prüfen" listet „Zuhause" (N20).
   - Die Sicherung in der App einrichten. Dabei prüfen, ob uid 10001 in `./backups` schreiben darf; sonst zeigt die App „Der eigene Ordner wird nicht benutzt" (oder, mit `STOWLY_BACKUP_DIR` in der `.env`, „… nicht beschreibbar").
   - Erste Sicherung, dann „Schlüssel prüfen".
+
+**Stand 16.11.2026, spät** (eigenes NAS):
+- **71** lief anders als geplant:
+  - Das alte Stowly lief zuletzt mit 0.4.0 (`ghcr.io/xbitwinsdkx/stowly:0.4.0`).
+  - Dann hat der Anwender es per Mausklick neu aufgesetzt: Image `xbitwinsdkx/stowly:latest`, eigener Datenordner, Ports 8010 und 8443.
+  - Er hat mit frischen Daten angefangen; zurückgespielt wurde nichts. Die alte Installation samt Volume ist entfernt.
+- **Assistent und Pi:**
+  - Der Assistent erzeugte eine neue CA.
+  - Der Pi koppelte sich mit dem Befehl aus der App. Die Rückprüfung klappte hinter dem NAT von Docker auch hier.
+  - Dabei kam der Druckdienst von 0.3.1 auf 0.4.0, mit einem Zertifikat der neuen CA; der Selbsttest über HTTP und HTTPS lief durch.
+  - Das Testetikett übersprang er, weil der Drucker aus war.
+- **Sicherung in der App** (N1, N2 zum Teil, N4):
+  - Schlüssel erzeugt und übernommen, dann gegen einen neuen getauscht und den alten entfernt.
+  - „Jetzt sichern"; „Schlüssel prüfen" passte.
+- **Home Assistant in der App** (N17; N21 ohne „Neu erzeugen"):
+  - Adresse, Token, „Verbindung prüfen", Liste „Zuhause", „Speichern".
+  - Sensor-Token erzeugt, die Zeile in die `secrets.yaml` von HA übernommen, HA neu gestartet: Laut Anwender läuft beides.
+  - `/api/ha/summary` antwortete vorher mit 503 „nicht eingerichtet", danach ohne Token mit 401.
+- **N20** entfällt am eigenen NAS: Ohne `.env` kommt nichts mehr aus der Umgebung.
+- **Gefunden:** Mit ausgeschaltetem Drucker zeigt die Druckerkarte grün „Der Druckdienst antwortet." neben rot „nicht verbunden". Das wirkte widersprüchlich. Der Rat, den Drucker einzuschalten oder das USB-Kabel zu prüfen, gehört sichtbarer in die Karte.
+- **Updater:** Den Updater-Container legte eine einmalige Aufgabe im DSM-Aufgabenplaner an, mit dem Befehl aus Einrichtung → „Updates“. Stowly zeigt „Updater bereit“. Die Aufgabe des Host-Updaters der alten Installation ist weg.
