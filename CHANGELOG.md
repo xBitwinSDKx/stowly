@@ -2,6 +2,10 @@
 
 Jede Version, die auf GitHub erscheint, steht hier. Der Abschnitt einer Version wird zum Text ihres Releases; die App zeigt ihn unter Einstellungen → Aktualisierung. Muss beim Umstieg etwas von Hand geschehen (`docker-compose.yml`, `.env`, der Updater), steht es unter „Von Hand".
 
+## 0.2.1
+
+Probe des Updates per Knopf in der App. Stowly selbst ändert sich nicht.
+
 ## 0.2.0
 
 Die erste Version auf GitHub.
