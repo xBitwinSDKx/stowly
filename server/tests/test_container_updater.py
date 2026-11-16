@@ -347,6 +347,36 @@ def test_the_command_for_the_updater_container(tmp_path):
     assert command.updater_command(settings, mountinfo=tmp_path / "fehlt") is None
 
 
+def test_the_command_names_the_published_tag_of_a_prerelease(tmp_path):
+    # Eine Vorabversion meldet sich als X.Y.Z, liegt aber unter :X.Y.Z-rc.N; ein Image :X.Y.Z gibt es
+    # zu der Zeit noch nicht (so geschehen mit 0.3.0-rc.4 auf DSM).
+    path = tmp_path / "mountinfo"
+    path.write_text(MOUNTINFO)
+    settings = Settings.from_env(
+        {
+            "STOWLY_DATA_DIR": str(tmp_path),
+            "STOWLY_IMAGE_REF": "docker.io/beispiel/stowly",
+            "STOWLY_IMAGE_TAG": f"{__version__}-rc.4",
+        }
+    )
+    assert command.updater_command(settings, mountinfo=path).endswith(
+        f" docker.io/beispiel/stowly:{__version__}-rc.4 python -m stowly.updater"
+    )
+
+
+@pytest.mark.parametrize("tag", ["0.3.1", "0.3.1-rc.1", "latest", "v1_2"])
+def test_image_tags_as_docker_knows_them(tmp_path, tag):
+    settings = Settings.from_env({"STOWLY_DATA_DIR": str(tmp_path), "STOWLY_IMAGE_TAG": f" {tag} "})
+    assert settings.image_tag == tag
+    assert Settings.from_env({"STOWLY_DATA_DIR": str(tmp_path), "STOWLY_IMAGE_TAG": ""}).image_tag is None
+
+
+@pytest.mark.parametrize("tag", ["-rc.1", ".1", "0.3.1 rc", "0.3.1:x", "0.3.1/x", "a" * 129])
+def test_other_image_tags_are_refused(tmp_path, tag):
+    with pytest.raises(ValueError, match="STOWLY_IMAGE_TAG"):
+        Settings.from_env({"STOWLY_DATA_DIR": str(tmp_path), "STOWLY_IMAGE_TAG": tag})
+
+
 # --- Der Ablauf ------------------------------------------------------------------------------------
 
 

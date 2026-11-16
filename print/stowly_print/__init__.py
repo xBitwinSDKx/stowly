@@ -29,7 +29,7 @@ from stowly_print.model import (
 )
 
 # Setzt scripts/release.py zusammen mit den anderen Versionsnummern; der Pi schickt sie beim Koppeln mit.
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "APP_NAME",

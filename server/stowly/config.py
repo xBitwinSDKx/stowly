@@ -328,6 +328,24 @@ def _image_ref(env: Mapping[str, str]) -> str | None:
     return ref
 
 
+# Ein Docker-Tag: bis 128 Zeichen, erstes Zeichen kein Punkt und kein Bindestrich.
+_IMAGE_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+
+
+def _image_tag(env: Mapping[str, str]) -> str | None:
+    """``STOWLY_IMAGE_TAG``: das Tag, unter dem das Image veröffentlicht wurde (etwa 0.3.1-rc.1).
+
+    Eine Vorabversion meldet sich mit der Nummer der fertigen Version, liegt aber unter ihrem eigenen
+    Tag. Der Befehl für den Updater-Container braucht das echte Tag (docs/integrationen.md, 10.7).
+    """
+    tag = _text(env, "STOWLY_IMAGE_TAG")
+    if tag is None:
+        return None
+    if not _IMAGE_TAG.fullmatch(tag):
+        raise ValueError(f"STOWLY_IMAGE_TAG: '{tag}' ist kein Docker-Tag (etwa 0.3.1 oder 0.3.1-rc.1).")
+    return tag
+
+
 def push_contact_valid(contact: str) -> bool:
     """Ein Kontakt für die Push-Dienste (VAPID ``sub``): ``mailto:`` mit einer Adresse samt Domäne oder
     ``https://`` mit Host, das Schema klein geschrieben, ohne Benutzerangabe.
@@ -422,6 +440,8 @@ class Settings:
     pi_bundle: Path | None = None
     # Herkunft des Images ohne Tag, für den Befehl des Updater-Containers (Abschnitt 10.7).
     image_ref: str | None = None
+    # Tag des veröffentlichten Images; None = die Version des Servers (Abschnitt 10.7).
+    image_tag: str | None = None
     # True: ``password`` ist der Rückfall des Entwicklungsmodus (DEV_PASSWORD). Er gilt wie STOWLY_PASSWORD,
     # wird aber nie als Hash gespeichert (docs/sync-protokoll.md, Abschnitt 5).
     password_fallback: bool = False
@@ -571,6 +591,7 @@ class Settings:
             https_port=_https_port(env, port),
             pi_bundle=_pi_bundle(env),
             image_ref=_image_ref(env),
+            image_tag=_image_tag(env),
             password_fallback=fallback,
         )
 

@@ -6,13 +6,17 @@ signiert eine Test-CA aus ``cryptography``. Für den Selbsttest laufen zwei klei
 ``server/tests/test_pi_pairing.py`` mit demselben Modul.
 """
 
+import contextlib
 import dataclasses
 import hashlib
 import hmac
+import http.client
 import http.server
 import ipaddress
 import json
 import os
+import signal
+import socket
 import ssl
 import subprocess
 import threading
@@ -45,6 +49,22 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID  # noqa: E402
 
 SERVER = "http://192.168.1.10:8010"
 CODE = "ABCD-EFGH"
+# Der echte Prüfdienst; in den Tests von ``pair`` ersetzt ihn ``responder_calls`` (kein Port 8080).
+REAL_RESPONDER = pairing.proof_responder
+
+
+@pytest.fixture(autouse=True)
+def responder_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Token und Antrag (SHA-256), mit denen ``pair`` die Rückprüfung beantworten wollte."""
+    calls: list[tuple[str, str]] = []
+
+    @contextlib.contextmanager
+    def fake(token: str, digest: str) -> Iterator[int | None]:
+        calls.append((token, digest))
+        yield 8080
+
+    monkeypatch.setattr(pairing, "proof_responder", fake)
+    return calls
 
 
 # --- Code ----------------------------------------------------------------------------------------
@@ -582,6 +602,195 @@ def test_without_an_address_in_the_home_network_there_is_no_pairing(paths):
     with pytest.raises(pairing.PairingError, match="keine Adresse im Heimnetz"):
         run_pair(stowly, paths, addresses=["127.0.0.1", "8.8.8.8"])
     assert stowly.requests == []
+
+
+# --- Rückprüfung ---------------------------------------------------------------------------------
+
+
+def health_of(port: int, path: str) -> tuple[int, Any]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read()
+        return response.status, json.loads(body) if response.status == 200 else None
+    finally:
+        connection.close()
+
+
+PI_TOKEN = "druck-token-0123456789abcdef"
+NONCE = "Nonce_aus-Stowly-0123"
+
+
+def test_while_pairing_the_pi_proves_this_one_request():
+    digest = pairing.csr_digest(
+        "-----BEGIN CERTIFICATE REQUEST-----\r\nabc\r\n-----END CERTIFICATE REQUEST-----\r\n"
+    )
+    with REAL_RESPONDER(PI_TOKEN, digest, host="127.0.0.1", port=0) as port:
+        assert port
+        status, body = health_of(port, f"/v1/pair-proof?nonce={NONCE}")
+        assert status == 200
+        message = f"stowly-pair:{NONCE}:{digest}".encode("ascii")
+        expected = hmac.new(PI_TOKEN.encode("utf-8"), message, hashlib.sha256).hexdigest()
+        assert body == {"app": "stowly-print", "version": __version__, "proof": expected}
+        assert pairing.pair_proof(PI_TOKEN, NONCE, digest) == expected
+        # Nicht derselbe Nachweis wie in /v1/health des Druckdienstes, und den gibt es hier gar nicht.
+        assert expected != pairing.proof_of(PI_TOKEN, NONCE)
+        assert health_of(port, f"/v1/health?nonce={NONCE}")[0] == 404
+        # Nur diese eine Frage, und nur mit einem brauchbaren nonce.
+        assert health_of(port, "/v1/pair-proof")[0] == 404
+        assert health_of(port, "/v1/pair-proof?nonce=kurz")[0] == 404
+        assert health_of(port, f"/v1/pair-proof?nonce={NONCE}&nonce={NONCE}")[0] == 404
+    with pytest.raises(OSError):
+        health_of(port, f"/v1/pair-proof?nonce={NONCE}")  # danach ist der Port wieder zu
+
+
+def test_the_digest_is_the_one_stowly_computes():
+    # Zeilenenden und Rand zählen nicht; sonst ist es die SHA-256 des PEM.
+    pem = "-----BEGIN CERTIFICATE REQUEST-----\nabc\n-----END CERTIFICATE REQUEST-----"
+    assert pairing.csr_digest(pem) == hashlib.sha256(pem.encode("utf-8")).hexdigest()
+    assert pairing.csr_digest("  " + pem.replace("\n", "\r\n") + "\r\n") == pairing.csr_digest(pem)
+
+
+def test_a_busy_port_means_no_check_back():
+    with socket.socket() as service:
+        service.bind(("127.0.0.1", 0))
+        service.listen()
+        with REAL_RESPONDER(PI_TOKEN, "0" * 64, host="127.0.0.1", port=service.getsockname()[1]) as port:
+            assert port is None
+
+
+class FakeService(pairing.ServiceControl):
+    """Ein Druckdienst, der nur mitschreibt."""
+
+    def __init__(self, order: list[str], *, running: bool = True) -> None:
+        super().__init__()
+        self.order = order
+        self.running = running
+
+    def pause(self) -> bool:
+        self.order.append("Dienst an" if not self.running else "Dienst hält")
+        return self.running
+
+    def resume(self) -> None:
+        self.order.append("Dienst läuft")
+
+
+def ordered_pair(paths: pairing.Paths, stowly: Any, order: list[str], **options: Any) -> pairing.Outcome:
+    @contextlib.contextmanager
+    def responder(token: str, digest: str) -> Iterator[int | None]:
+        order.append(f"auf:{token}:{digest}")
+        yield 8080
+        order.append("zu")
+
+    def post(url: str, payload: dict[str, Any]) -> pairing.Reply:
+        order.append(urlsplit(url).path)
+        return stowly(url, payload)
+
+    options.setdefault("service", FakeService(order))
+    return pairing.pair(
+        SERVER,
+        CODE,
+        paths=paths,
+        post=post,
+        hostname="stowly-drucker",
+        make_csr=key_and_csr,
+        addresses=["192.168.1.20"],
+        respond=responder,
+        **options,
+    )
+
+
+def test_pairing_pauses_the_service_and_answers_the_check_back_while_it_asks(paths):
+    stowly = FakeStowly()
+    order: list[str] = []
+    ordered_pair(paths, stowly, order)
+    sent = stowly.requests[-1][1]
+    assert order == [
+        "Dienst hält",
+        f"auf:{sent['token']}:{pairing.csr_digest(sent['csr'])}",
+        "/api/pi/pair",
+        "zu",
+        "Dienst läuft",
+    ]
+    assert paths.config.exists()
+
+
+def test_after_a_refusal_the_service_runs_again_and_nothing_is_written(paths):
+    stowly = FakeStowly()
+    stowly.answer = reply(422, error("Der Pi meldet Angaben, die nicht in sein Zertifikat dürfen."))
+    order: list[str] = []
+    with pytest.raises(pairing.PairingError):
+        ordered_pair(paths, stowly, order)
+    assert order[-1] == "Dienst läuft"
+    assert not paths.config.exists()
+
+
+def test_a_hangup_while_pairing_still_brings_the_service_back(paths):
+    # Reißt die SSH-Sitzung ab (SIGHUP) oder beendet jemand den Installer (SIGTERM), läuft ``finally``.
+    stowly = FakeStowly()
+    order: list[str] = []
+
+    def post(url: str, payload: dict[str, Any]) -> pairing.Reply:
+        signal.raise_signal(signal.SIGTERM)
+        return stowly(url, payload)
+
+    with pytest.raises(SystemExit):
+        pairing.pair(
+            SERVER,
+            CODE,
+            paths=paths,
+            post=post,
+            hostname="stowly-drucker",
+            make_csr=key_and_csr,
+            addresses=["192.168.1.20"],
+            service=FakeService(order),
+        )
+    assert order == ["Dienst hält", "Dienst läuft"]
+    assert not paths.config.exists()
+    # Danach gelten wieder die vorigen Signal-Behandlungen.
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
+def test_a_service_that_was_not_running_stays_off(paths):
+    order: list[str] = []
+    ordered_pair(paths, FakeStowly(), order, service=FakeService(order, running=False))
+    assert "Dienst läuft" not in order
+
+
+def test_the_service_is_paused_with_systemd_only_as_root(monkeypatch):
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str], **_options: Any) -> subprocess.CompletedProcess:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    control = pairing.ServiceControl(run=run)
+    monkeypatch.setattr(pairing.os, "geteuid", lambda: 1000, raising=False)
+    assert control.pause() is False and calls == []
+    monkeypatch.setattr(pairing.os, "geteuid", lambda: 0, raising=False)
+    assert control.pause() is True
+    control.resume()
+    unit = pairing.SERVICE_UNIT
+    assert calls == [
+        ["systemctl", "is-active", "--quiet", unit],
+        ["systemctl", "stop", unit],
+        ["systemctl", "start", unit],
+    ]
+    # Läuft er nicht, bleibt es dabei.
+    calls.clear()
+    idle = pairing.ServiceControl(
+        run=lambda arguments, **_o: calls.append(arguments) or subprocess.CompletedProcess(arguments, 3)
+    )
+    assert idle.pause() is False
+    assert calls == [["systemctl", "is-active", "--quiet", unit]]
+
+
+def test_the_default_check_back_gets_token_and_request_that_go_to_stowly(paths, responder_calls):
+    stowly = FakeStowly()
+    run_pair(stowly, paths)
+    sent = stowly.requests[-1][1]
+    assert responder_calls == [(sent["token"], pairing.csr_digest(sent["csr"]))]
 
 
 def test_editor_lite_and_a_missing_printer_are_reported(paths, tmp_path):

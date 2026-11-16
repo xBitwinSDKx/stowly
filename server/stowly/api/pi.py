@@ -137,15 +137,37 @@ def pi_pair(body: PiPairInput, request: Request, response: Response, con: Db) ->
     settings = get_settings(request)
     manager = _tls(request)
     host = request.headers.get("host")
-    # Die Adresse, von der die Anfrage kommt: Nur sie kommt ins Zertifikat (Proxy-Kopfzeilen sind aus).
+    # Die Adresse, von der die Anfrage kommt (Proxy-Kopfzeilen sind aus). Ist sie die erste gemeldete,
+    # kommt sie ins Zertifikat; sonst nur eine Adresse, unter der der Pi die Rückprüfung besteht.
     client = request.client.host if request.client is not None else None
+    state = request.app.state
     try:
-        result = pairing.guarded(
-            request.app.state,
-            lambda: pairing.pair(
+        # 1. Unter der Bremse und ohne Netz: Code und Angaben; braucht es eine Rückprüfung?
+        planned = pairing.guarded(
+            state,
+            lambda: pairing.prepare(
                 con, settings, manager, body, request_host=host, client_host=client, moment=pairing.now()
             ),
         )
+        if isinstance(planned, pairing.CheckBack):
+            # 2. Ohne die Bremse (ein Lock), mit fester Frist: den Pi zurückfragen.
+            proven = pairing.check_back(planned, body.token)
+            # 3. Wieder unter der Bremse: noch einmal prüfen, signieren, den Drucker schreiben.
+            result = pairing.guarded(
+                state,
+                lambda: pairing.pair(
+                    con,
+                    settings,
+                    manager,
+                    body,
+                    request_host=host,
+                    client_host=client,
+                    moment=pairing.now(),
+                    proven=proven,
+                ),
+            )
+        else:
+            result = planned  # derselbe Antrag noch einmal: die gespeicherte Antwort
     except pairing.Refused as exc:
         raise _api(exc) from None
     response.headers["Cache-Control"] = "no-store"

@@ -72,7 +72,7 @@ Läuft Stowly mit HTTPS durch Stowly selbst ([`../docs/betrieb.md`](../docs/betr
 
 Wer dem Befehl nicht blind trauen will, lädt das Skript erst und liest es: `curl -fsSL http://<NAS>:8010/api/pi/install.sh -o stowly-install.sh`, `less stowly-install.sh`, dann `sudo sh stowly-install.sh <CODE>`. Der Befehl läuft absichtlich über HTTP im Heimnetz: Vor dem Koppeln vertraut der Pi der CA von Stowly noch nicht.
 
-Der Pi muss Stowly dabei direkt erreichen, ohne Proxy oder NAT dazwischen: Stowly signiert nur die Adresse, von der er sich meldet. Wechselt die IP-Adresse des Pi später, neu koppeln.
+Stowly signiert nur eine Adresse, unter der es den Pi geprüft hat: Während des Koppelns fragt es ihn unter seiner gemeldeten Adresse auf Port 8080 nach einem Nachweis für genau diesen Antrag (seit 0.3.1, [`../docs/sync-protokoll.md`](../docs/sync-protokoll.md), 11.8). So klappt das Koppeln auch hinter Docker auf DSM, wo jede Anfrage scheinbar aus dem Netz von Docker kommt. Den Nachweis liefert der Pi selbst; sein Druckdienst ruht dafür einige Sekunden und startet danach wieder. Port 8080 des Pi muss für Stowly also erreichbar sein. Wechselt die IP-Adresse des Pi später, neu koppeln.
 
 Was `install.sh --pair` darüber hinaus tut: Es installiert nur fehlende Pakete (auch beim Weg von Hand), die Brother-Bibliothek nur, wenn die festgelegten Versionen fehlen, und wartet, falls beim ersten Start noch ein anderes apt läuft. Die Kopplung selbst erledigt `/opt/stowly-print/venv/bin/python -m stowly_print pair --server <Adresse> --code <CODE>`, die Probe danach `… -m stowly_print selftest` (HTTP, HTTPS gegen `ca.crt`, Testetikett; `--no-test-print` ohne Druck). Beide lassen sich auch von Hand aufrufen.
 
@@ -282,6 +282,7 @@ Unbrauchbare Angaben zu einem Drucker (unbekanntes Modell, falsche Adresse, fehl
 | Handy bekommt keine Adresse | `systemctl status dnsmasq`, `ip address show wlan0` muss `10.71.83.1/24` zeigen. dnsmasq startet erst nach `network-online.target`; kurz nach dem Einschalten etwas warten |
 | Overlay ist nach dem Neustart nicht an | `grep -o overlayroot=tmpfs /proc/cmdline` (fehlt: `overlay.sh on` wiederholen); `dpkg -s overlayroot` (fehlt: Aktualisieren, Schritt 5) |
 | Etikett blieb „unklar" | Der Druck wurde unterbrochen (Strom, Kabel). Nichts druckt von selbst nach; in der App beantworten |
+| Koppeln endet mit „… besteht er die Rückprüfung …" | Stowly erreicht den Pi unter seiner gemeldeten Adresse nicht auf Port 8080. Pi und Stowly im selben Netz (nicht im Gäste-WLAN)? Keine Firewall vor Port 8080? Belegt ein anderer Dienst den Port, meldet das Koppeln das vorher. Danach den Befehl mit neuem Code wiederholen |
 
 Ein Etikett, das beim Neustart des Pi noch nicht gedruckt war, kennt der Dienst danach nicht mehr (jeder Start hat eine neue `boot_id`); die App fragt dann nach, statt doppelt zu drucken.
 

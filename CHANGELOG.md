@@ -2,6 +2,11 @@
 
 Jede Version, die auf GitHub erscheint, steht hier. Der Abschnitt einer Version wird zum Text ihres Releases; die App zeigt ihn unter Einstellungen → Aktualisierung. Muss beim Umstieg etwas von Hand geschehen (`docker-compose.yml`, `.env`, der Updater), steht es unter „Von Hand".
 
+## 0.3.1
+
+- **Raspberry Pi koppeln hinter Docker auf DSM:** Das Koppeln scheiterte mit „Stowly sieht den Pi unter einer anderen Adresse (172.19.0.1) …", denn Docker auf DSM stellt jede Anfrage mit der Adresse seines eigenen Netzes zu. Jetzt prüft Stowly bei jeder Kopplung die gemeldete Adresse selbst nach: Der Pi weist sich dort während des Koppelns auf Port 8080 für genau diesen Antrag aus; sein Druckdienst ruht dafür einige Sekunden. Ein Zertifikat gibt es nur für eine Adresse, unter der wirklich dieser Pi antwortet. Ein Kopplungscode verlängert sich nur noch beim ersten Melden des Pi.
+- **Updater-Container bei Vorabversionen:** Der Befehl aus dem Assistenten nannte bei einer Vorabversion ein Image, das es noch nicht gab (`:0.3.0` statt `:0.3.0-rc.4`), und der Updater-Container startete nicht. Das Image kennt jetzt sein Tag (`STOWLY_IMAGE_TAG`).
+
 ## 0.3.0
 
 Der Einrichtungsassistent, Stufe A: Container per Mausklick anlegen, alles Weitere geführt in der App.

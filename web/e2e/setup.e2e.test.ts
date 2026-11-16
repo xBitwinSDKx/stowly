@@ -158,7 +158,8 @@ it("koppelt einen Pi: Code und Befehl, der Pi meldet sich, ein Pi ohne Heimnetz-
   expect((await pi.request("POST", ENDPOINTS.pi_pair_start.path, { code: code.toLowerCase(), hostname: "stowly-pi", version: "0.3.0" })).status).toBe(204);
   expect(await device.core.printers.pairing(created.id)).toMatchObject({ state: "installing", pi: { hostname: "stowly-pi" } });
 
-  // Der „Pi“ meldet 192.168.1.20, spricht aber von 127.0.0.1: kein Zertifikat, und der Code bleibt gültig.
+  // Der „Pi“ meldet 192.168.1.20, spricht aber von 127.0.0.1, und unter 192.168.1.20 besteht er die
+  // Rückprüfung nicht (dort antwortet kein Pi mit dem Nachweis für diesen Antrag): kein Zertifikat, der Code bleibt gültig.
   const request = { code, hostname: "stowly-pi", addresses: ["192.168.1.20"], csr: makeCsr(), token: "pi-token-0123456789abcdef", model: "QL-570", printer_found: true, version: "0.3.0" };
   const answer = await pi.request("POST", ENDPOINTS.pi_pair.path, request);
   expect(answer.status).toBe(422);

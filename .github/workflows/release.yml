@@ -15,9 +15,10 @@
 # beispiel/stowly. Ohne DOCKERHUB_TOKEN bleibt es bei ghcr.io. Die Kurzbeschreibung auf Docker Hub (sie
 # erscheint in der Suche von DSM) wird einmal von Hand gesetzt.
 #
-# Das Image bekommt per Build-Argument, woher es stammt (STOWLY_IMAGE_REF: Docker Hub, sonst ghcr.io;
-# daraus entsteht der Befehl für den Updater-Container) und das Repository für den Schalter
-# „Nach Updates suchen" (STOWLY_UPDATE_REPO_DEFAULT, dieses Repository).
+# Das Image bekommt per Build-Argument, woher es stammt (STOWLY_IMAGE_REF: Docker Hub, sonst ghcr.io),
+# sein Tag (STOWLY_IMAGE_TAG, bei einer Vorabversion etwa 0.3.1-rc.1; aus beidem entsteht der Befehl für
+# den Updater-Container) und das Repository für den Schalter „Nach Updates suchen"
+# (STOWLY_UPDATE_REPO_DEFAULT, dieses Repository).
 name: Release
 
 on:
@@ -113,6 +114,7 @@ jobs:
           build-args: |
             STOWLY_BROTHER=0
             STOWLY_IMAGE_REF=${{ steps.version.outputs.image_ref }}
+            STOWLY_IMAGE_TAG=${{ steps.version.outputs.version }}
             STOWLY_UPDATE_REPO_DEFAULT=${{ github.repository }}
           push: true
           tags: ${{ steps.version.outputs.tags }}

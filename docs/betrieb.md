@@ -441,7 +441,7 @@ Ein Tag mit Zusatz (`vX.Y.Z-rc.1`) durchläuft dasselbe als Vorabversion: Das Im
 
 Beim allerersten Image muss das Paket auf GitHub einmal öffentlich gestellt werden (Paket `stowly` → Package settings → Change visibility → Public). Sonst kann der Rechner es nicht ohne Anmeldung laden.
 
-**Docker Hub** (seit 0.3.0, damit DSM das Image über seine Suche findet): einmal ein kostenloses Konto anlegen und dort einen Zugangs-Token mit „Read & Write" erzeugen. Im Repository auf GitHub unter Settings → Secrets and variables → Actions die Secrets `DOCKERHUB_USERNAME` und `DOCKERHUB_TOKEN` sowie die Variable `DOCKERHUB_IMAGE` (`<konto>/stowly`) anlegen. Fehlt der Token, baut die Pipeline nur für ghcr.io. Die Kurzbeschreibung des Repositorys auf Docker Hub, die DSM in der Suche zeigt, einmal von Hand setzen. Im Image stehen dann `STOWLY_IMAGE_REF=docker.io/<konto>/stowly` (für den Befehl des Updater-Containers) und `STOWLY_UPDATE_REPO_DEFAULT` (für den Schalter in der App).
+**Docker Hub** (seit 0.3.0, damit DSM das Image über seine Suche findet): einmal ein kostenloses Konto anlegen und dort einen Zugangs-Token mit „Read & Write" erzeugen. Im Repository auf GitHub unter Settings → Secrets and variables → Actions die Secrets `DOCKERHUB_USERNAME` und `DOCKERHUB_TOKEN` sowie die Variable `DOCKERHUB_IMAGE` (`<konto>/stowly`) anlegen. Fehlt der Token, baut die Pipeline nur für ghcr.io. Die Kurzbeschreibung des Repositorys auf Docker Hub, die DSM in der Suche zeigt, einmal von Hand setzen. Im Image stehen dann `STOWLY_IMAGE_REF=docker.io/<konto>/stowly` und `STOWLY_IMAGE_TAG` mit dem Tag des Releases (beide für den Befehl des Updater-Containers) und `STOWLY_UPDATE_REPO_DEFAULT` (für den Schalter in der App).
 
 ## 10. Wo die Daten liegen
 

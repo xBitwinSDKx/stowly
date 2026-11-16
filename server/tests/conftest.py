@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from support import TEST_PASSWORD, Device, ServerClock
 
-from stowly import auth, db
+from stowly import auth, db, pairing
 from stowly.app import create_app
 from stowly.config import Settings
 
@@ -61,6 +61,9 @@ def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", refuse)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", refuse_async)
+    # Die Rückprüfung beim Koppeln fragt einen Pi im Heimnetz: in Tests nie wirklich. Der Ersatz tut, als
+    # antworte der Pi unter jeder gemeldeten Adresse; Tests der Rückprüfung setzen ihren eigenen.
+    monkeypatch.setattr(pairing, "proves", lambda _address, _token, _digest: True)
 
 
 @pytest.fixture(autouse=True)

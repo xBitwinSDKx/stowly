@@ -270,6 +270,6 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 - **M9:** Der Updater-Container entstand über den Aufgabenplaner, die App zeigt „Updater bereit"; DSM nimmt den Befehl an. Gefunden:
   - Bei einer Vorabversion nennt der Befehl das Image mit `:0.3.0` statt `:0.3.0-rc.4`. Von Hand korrigiert; die Korrektur kommt mit 0.3.1.
   - Die Aufgabe nicht „Stowly-Updater" nennen, wenn die Aufgabe des Host-Updaters (`betrieb.md` 9.2) schon so heißt.
-- **M8:** beim Umstieg (64).
+- **M8, 64:** Der Umstieg des NAS auf 0.3.0 gelang (Update per Knopf über den Host-Updater, neue CA aufs iPhone, Proxy-Regel gelöscht, Stowly selbst auf 8443; die App am iPhone und Home Assistant laufen weiter). Das neue Koppeln des Pi scheiterte: Docker auf DSM stellt jede Anfrage mit 172.19.0.1 zu. Abhilfe in 0.3.1: die Rückprüfung; dann erneut koppeln.
 - **M11:** mit 0.3.0 nicht prüfbar. Die Vorabversion meldet sich schon als 0.3.0 und bietet 0.3.0 deshalb nicht an; die Probe folgt mit 0.3.1.
 - Offen: M5 (Fingerabdruck mit dem Log vergleichen), M6, M10, M12, M13.

@@ -20,7 +20,7 @@ from cryptography.x509.verification import PolicyBuilder, Store
 from fastapi.testclient import TestClient
 from support import Device
 
-from stowly import tls
+from stowly import pairing, tls
 from stowly.app import create_app
 from stowly.config import Settings
 
@@ -177,7 +177,7 @@ def test_a_fresh_container_from_first_password_to_a_paired_pi(client: TestClient
     assert ready["https"] is False  # noch keine Anfrage über den HTTPS-Listener
 
 
-def test_the_pi_never_gets_an_address_of_the_app(client: TestClient) -> None:
+def test_the_pi_never_gets_an_address_of_the_app(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     headers = first_password(client)
     code = client.post("/api/pi/pairings", json={"origin": f"http://{NAS}:8010"}, headers=headers).json()[
         "code"
@@ -185,9 +185,11 @@ def test_the_pi_never_gets_an_address_of_the_app(client: TestClient) -> None:
     # Ein „Pi" auf dem NAS selbst bekäme sonst ein Zertifikat für die Adresse der App.
     refused = from_pi(client, NAS).post("/api/pi/pair", json=pair_body(code, addresses=[NAS]))
     assert refused.status_code == 422, refused.text
-    # Meldet er eine andere Adresse, als von der er kommt, ebenso.
+    # Besteht er die Rückprüfung unter seiner Adresse nicht, ebenso.
+    monkeypatch.setattr(pairing, "proves", lambda _address, _token, _digest: False)
     other = from_pi(client, "192.168.1.30").post("/api/pi/pair", json=pair_body(code))
     assert other.status_code == 422, other.text
+    monkeypatch.setattr(pairing, "proves", lambda _address, _token, _digest: True)
     # Der Code bleibt gültig: Ein Pi mit richtigen Angaben koppelt danach.
     assert from_pi(client).post("/api/pi/pair", json=pair_body(code)).status_code == 200
 

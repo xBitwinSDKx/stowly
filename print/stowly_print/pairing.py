@@ -14,7 +14,10 @@ dem python3 des Systems, ``pair`` nach der Installation und ``selftest`` nach de
 3. erzeugt Schlüssel (P-256) und Zertifikatsantrag mit openssl in einem eigenen Ordner; der Schlüssel
    verlässt den Pi nie,
 4. schickt Antrag, Token und Adressen an Stowly (``POST /api/pi/pair``) und bekommt Zertifikat, CA,
-   erlaubte Ursprünge und den Drucker in Stowly,
+   erlaubte Ursprünge und den Drucker in Stowly. Solange die Anfrage läuft, ruht der Druckdienst, und der
+   Pi beantwortet auf Port 8080 die Rückprüfung (``proof_responder``): Sieht Stowly ihn nicht unter
+   seiner ersten gemeldeten Adresse, etwa hinter Docker auf DSM, fragt es ihn dort nach dem Nachweis
+   für genau diesen Antrag,
 5. schreibt erst danach: die alten Dateien als ``.bak``, Schlüssel und Zertifikate, die Konfiguration
    (``config.dump_config``, vorher gegen das Lesen geprüft) und ``pairing.json`` ohne Token.
 
@@ -26,20 +29,24 @@ import contextlib
 import dataclasses
 import hashlib
 import hmac
+import http.server
 import ipaddress
 import json
 import os
 import re
 import secrets
+import signal
 import socket
 import ssl
 import subprocess
 import tempfile
+import threading
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -477,6 +484,155 @@ def expect(reply: Reply, status: int) -> Any:
     raise PairingError(message)
 
 
+# --- Rückprüfung ---------------------------------------------------------------------------------
+# Stowly signiert nur eine Adresse, unter der es den Pi selbst sieht. Hinter Docker auf DSM kommt jede
+# Anfrage scheinbar aus dem Netz von Docker (etwa 172.19.0.1). Dann fragt Stowly den Pi unter den
+# gemeldeten Adressen: GET http://<adresse>:8080/v1/pair-proof?nonce=… muss den Nachweis für genau diesen
+# Antrag liefern (``pair_proof``: Token, nonce und die SHA-256 des Antrags; docs/sync-protokoll.md, 11.8).
+# Den kennt nur der Pi, der den Antrag gestellt hat, und nur solange ``pair`` läuft. Der Druckdienst kennt
+# den Pfad nicht: Wer das Token eines anderen Pi kennt, bekommt über dessen Dienst keinen Nachweis.
+
+NONCE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+PROOF_PATH = "/v1/pair-proof"
+SERVICE_UNIT = "stowly-print.service"
+PORT_BUSY = (
+    "    Port {port} ist belegt; die Rückprüfung von Stowly geht dann nicht. Läuft dort ein anderer Dienst?"
+)
+
+
+def proof_of(token: str, nonce: str) -> str:
+    """Der Nachweis über das Token: HMAC-SHA256(Token, nonce) als Hex, wie in ``/v1/health`` des Dienstes."""
+    return hmac.new(token.encode("utf-8"), nonce.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def csr_digest(csr: str) -> str:
+    """Woran Stowly einen Antrag erkennt: SHA-256 des PEM ohne Zeilenende-Unterschiede, als Hex."""
+    return hashlib.sha256(csr.replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
+
+
+def pair_proof(token: str, nonce: str, digest: str) -> str:
+    """Der Nachweis der Rückprüfung: HMAC-SHA256(Token, ``stowly-pair:<nonce>:<digest>``) als Hex.
+
+    Er gilt nur für den Antrag mit der SHA-256 ``digest``; ``/v1/health`` liefert etwas anderes.
+    """
+    message = f"stowly-pair:{nonce}:{digest}".encode("ascii")
+    return hmac.new(token.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+class _ProofHandler(http.server.BaseHTTPRequestHandler):
+    """Beantwortet nur ``GET /v1/pair-proof?nonce=…`` mit dem Nachweis; alles andere ist 404."""
+
+    token = ""
+    digest = ""
+    server_version = "stowly-print"
+    sys_version = ""
+
+    def do_GET(self) -> None:
+        parts = urllib.parse.urlsplit(self.path)
+        nonces = urllib.parse.parse_qs(parts.query).get("nonce", [])
+        if parts.path != PROOF_PATH or len(nonces) != 1 or not NONCE.fullmatch(nonces[0]):
+            self.send_error(404)
+            return
+        body = json.dumps(
+            {
+                "app": "stowly-print",
+                "version": __version__,
+                "proof": pair_proof(self.token, nonces[0], self.digest),
+            }
+        ).encode("ascii")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - Name aus http.server
+        """Kein Log: Die Ausgabe gehört dem Installer."""
+
+
+class _ProofServer(http.server.ThreadingHTTPServer):
+    # Unter Linux erlaubt SO_REUSEADDR den Port trotz alter Verbindungen (TIME_WAIT), aber nie neben einem
+    # laufenden Dienst. Unter Windows hieße es: den Port einem laufenden Dienst wegnehmen.
+    allow_reuse_address = os.name != "nt"
+
+
+@contextlib.contextmanager
+def proof_responder(
+    token: str, digest: str, *, host: str = "0.0.0.0", port: int = DEFAULT_HTTP_PORT
+) -> Iterator[int | None]:
+    """Beantwortet die Rückprüfung für den Antrag ``digest``, solange der Block läuft: Port 8080 auf allen
+    Schnittstellen. Liefert den Port; ``None``, wenn er belegt ist (dann scheitert eine Rückprüfung)."""
+    handler = type("ProofHandler", (_ProofHandler,), {"token": token, "digest": digest})
+    try:
+        server = _ProofServer((host, port), handler)
+    except OSError:
+        yield None
+        return
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
+    thread.start()
+    try:
+        yield int(server.server_address[1])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+Respond = Callable[[str, str], contextlib.AbstractContextManager[int | None]]
+
+
+@dataclass
+class ServiceControl:
+    """Hält den Druckdienst an, solange ``pair`` die Rückprüfung beantwortet: Port 8080 ist dann frei,
+    und nur der Pi selbst antwortet dort. Nur als root mit systemd; sonst geschieht nichts."""
+
+    run: Run = subprocess.run
+
+    def pause(self) -> bool:
+        """Hält den Dienst an, wenn er läuft; liefert, ob er angehalten wurde."""
+        if not hasattr(os, "geteuid") or os.geteuid() != 0:
+            return False
+        try:
+            active = self.run(["systemctl", "is-active", "--quiet", SERVICE_UNIT], check=False, timeout=15)
+            if active.returncode != 0:
+                return False
+            return self.run(["systemctl", "stop", SERVICE_UNIT], check=False, timeout=60).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def resume(self) -> None:
+        """Startet den Dienst wieder, mit der Konfiguration, die dann gilt."""
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            self.run(["systemctl", "start", SERVICE_UNIT], check=False, timeout=60)
+
+
+@contextlib.contextmanager
+def signals_as_exit() -> Iterator[None]:
+    """SIGHUP und SIGTERM beenden den Block über ``SystemExit``, sodass jedes ``finally`` darin läuft.
+
+    Reißt die SSH-Sitzung ab, während der Druckdienst ruht, startet ``pair`` ihn so trotzdem wieder.
+    Außerhalb des Hauptthreads geht das nicht; dann bleibt alles, wie es ist.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def stop(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    previous: dict[int, Any] = {}
+    for name in ("SIGHUP", "SIGTERM"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            previous[number] = signal.signal(number, stop)
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 # --- Koppeln -------------------------------------------------------------------------------------
 
 
@@ -643,11 +799,14 @@ def pair(
     make_csr: Callable[[Path, str], tuple[bytes, str]] = make_key_and_csr,
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    respond: Respond | None = None,
+    service: ServiceControl | None = None,
 ) -> Outcome:
     """Koppelt den Pi (``POST /api/pi/pair``) und schreibt danach Schlüssel, Zertifikate und Konfiguration.
 
     ``addresses`` ersetzt die Erkennung der Adressen (für Tests); sonst die Quelladresse zum Server,
-    dann ``ip -j -4 addr``.
+    dann ``ip -j -4 addr``. Während der Anfrage beantwortet ``respond`` die Rückprüfung (Vorgabe:
+    ``proof_responder``); der Druckdienst ruht so lange (``service``) und startet danach wieder.
     """
     paths = paths or Paths()
     server = parse_server(server_text)
@@ -694,38 +853,53 @@ def pair(
             "printer_id": _previous_printer(paths.state),
             "version": __version__,
         }
-        result = expect(call(post, f"{server.url}/api/pi/pair", payload, sleep=sleep), 200)
-        if not isinstance(result, dict):
-            raise PairingError("Die Antwort von Stowly ist kein Ergebnis einer Kopplung.")
-        certificate = _pem(result.get("certificate"), "CERTIFICATE")
-        ca = _pem(result.get("ca"), "CERTIFICATE")
-        server_origins = _text_list(result.get("origins"))
-        urls = _text_list(result.get("urls"))
-        printer_id, printer_name, not_after = (result.get(key) for key in ("printer_id", "name", "not_after"))
-        if not all(isinstance(value, str) for value in (printer_id, printer_name, not_after)):
-            raise PairingError("Die Antwort von Stowly ist unvollständig (Drucker).")
-        check_key_pair(folder, key_pem, certificate)
-        if not any(".local:" in url for url in urls):
-            notes.append(LOCAL_NAME_HINT.format(hostname=name))
+        control = service if service is not None else ServiceControl()
+        with signals_as_exit():
+            paused = control.pause()
+            try:
+                with (respond or proof_responder)(token, csr_digest(csr)) as port:
+                    if port is None:
+                        print(PORT_BUSY.format(port=DEFAULT_HTTP_PORT), flush=True)
+                    result = expect(call(post, f"{server.url}/api/pi/pair", payload, sleep=sleep), 200)
+                if not isinstance(result, dict):
+                    raise PairingError("Die Antwort von Stowly ist kein Ergebnis einer Kopplung.")
+                certificate = _pem(result.get("certificate"), "CERTIFICATE")
+                ca = _pem(result.get("ca"), "CERTIFICATE")
+                server_origins = _text_list(result.get("origins"))
+                urls = _text_list(result.get("urls"))
+                printer_id, printer_name, not_after = (
+                    result.get(key) for key in ("printer_id", "name", "not_after")
+                )
+                if not all(isinstance(value, str) for value in (printer_id, printer_name, not_after)):
+                    raise PairingError("Die Antwort von Stowly ist unvollständig (Drucker).")
+                check_key_pair(folder, key_pem, certificate)
+                if not any(".local:" in url for url in urls):
+                    notes.append(LOCAL_NAME_HINT.format(hostname=name))
 
-        config = build_config(
-            previous=previous,
-            raw=raw,
-            token=token,
-            origins=[*server_origins, *origins],
-            tls=paths.tls,
-            detected_model=detected,
-            model=model,
-            address=address,
-        )
-        text = config_text(config, paths.config.parent)
-        state = {
-            "server": server.url,
-            "printer_id": printer_id,
-            "not_after": not_after,
-            "paired_at": now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        install_files(paths, key_pem=key_pem, certificate=certificate, ca=ca, config=text, state=state)
+                config = build_config(
+                    previous=previous,
+                    raw=raw,
+                    token=token,
+                    origins=[*server_origins, *origins],
+                    tls=paths.tls,
+                    detected_model=detected,
+                    model=model,
+                    address=address,
+                )
+                text = config_text(config, paths.config.parent)
+                state = {
+                    "server": server.url,
+                    "printer_id": printer_id,
+                    "not_after": not_after,
+                    "paired_at": now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                install_files(
+                    paths, key_pem=key_pem, certificate=certificate, ca=ca, config=text, state=state
+                )
+            finally:
+                # Auch wenn das Koppeln scheitert: Der Dienst läuft danach wieder, mit der Konfiguration, die gilt.
+                if paused:
+                    control.resume()
 
     return Outcome(
         server=server.url,
@@ -873,7 +1047,7 @@ def _wait_for_http(port: int, token: str, *, tries: int, sleep: Callable[[float]
             if attempt + 1 < tries:
                 sleep(1.0)
             continue
-        expected = hmac.new(token.encode("utf-8"), nonce.encode("ascii"), hashlib.sha256).hexdigest()
+        expected = proof_of(token, nonce)
         if not isinstance(health, dict) or health.get("app") != "stowly-print":
             raise OSError("Antwort ist nicht vom Druckdienst")
         if not hmac.compare_digest(str(health.get("proof", "")), expected):

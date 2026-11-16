@@ -5,15 +5,19 @@ Die CA ersetzt ``FakeTls``: Sie signiert echt, mit einer Test-CA aus ``cryptogra
 Der letzte Teil koppelt den echten Pi-Teil (``stowly_print.pairing``) gegen diesen Server.
 """
 
+import contextlib
 import hashlib
+import http.server
 import ipaddress
 import json
 import shutil
+import threading
+import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from cryptography import x509
@@ -454,6 +458,17 @@ def test_the_pi_reports_and_gets_another_thirty_minutes(client, device, pi_clock
     assert (
         client.get(f"/api/pi/pairings/{created['id']}", headers=device.headers).json()["state"]
         == "installing"
+    )
+    # Nur das erste Melden verlängert: Ein mitgelesener Code lebt so nicht beliebig lange.
+    again = client.post(
+        "/api/pi/pair/start", json={"code": created["code"], "hostname": "stowly-drucker", "version": "0.3.0"}
+    )
+    assert again.status_code == 204, again.text
+    later = client.get(f"/api/pi/pairings/{created['id']}", headers=device.headers).json()
+    assert later["expires_at"] == state["expires_at"]
+    pi_clock.advance(minutes=6)
+    assert (
+        client.get(f"/api/pi/pairings/{created['id']}", headers=device.headers).json()["state"] == "expired"
     )
 
 
@@ -979,34 +994,224 @@ def pair_from(client: TestClient, ip: str, body: dict[str, Any]) -> Any:
     )
 
 
-def test_a_pi_that_reports_another_address_than_it_comes_from_gets_nothing(client, device, fake_tls):
+def test_a_pi_that_fails_the_check_back_gets_nothing(client, device, fake_tls, monkeypatch):
+    monkeypatch.setattr(pairing, "proves", lambda _address, _token, _digest: False)
     code = code_of(create(client, device))
     body = pair_body(code, new_csr()[1], addresses=["192.168.1.20"])
-    response = pair_from(client, "192.168.1.30", body)
+    # Auch wenn die Anfrage von der gemeldeten Adresse kommt: Gesehen ist nicht geprüft.
+    response = pair(client, body)
     assert response.status_code == 422, response.text
     (problem,) = response.json()["error"]["details"]["errors"]
     assert problem["loc"] == ["body", "addresses"]
-    assert (
-        problem["msg"]
-        == "Stowly sieht den Pi unter einer anderen Adresse (192.168.1.30) als er meldet (192.168.1.20)."
+    assert problem["msg"] == (
+        "Unter keiner gemeldeten Adresse (192.168.1.20) besteht der Pi die Rückprüfung: Port 8080 des Pi muss "
+        "für Stowly erreichbar sein, solange er koppelt (die Anfrage kam von 192.168.1.20)."
     )
     # Ohne erkennbare IPv4-Adresse (etwa hinter einem Proxy mit Namen) ebenso.
     unknown = pair_from(client, "testclient", body)
     assert unknown.status_code == 422
-    assert unknown.json()["error"]["details"]["errors"][0]["msg"] == pairing.NO_SOURCE
+    assert "(die Anfrage kam von ?)" in unknown.json()["error"]["details"]["errors"][0]["msg"]
     assert fake_tls.calls == []
-    # IPv4 in IPv6 gilt als IPv4.
-    assert pair_from(client, "::ffff:192.168.1.20", body).status_code == 200
+    # Antwortet der Pi, gilt seine Adresse, woher die Anfrage auch kommt.
+    monkeypatch.setattr(pairing, "proves", lambda _address, _token, _digest: True)
+    assert pair_from(client, "testclient", body).status_code == 200
 
 
 def test_reported_addresses_other_than_the_source_are_never_signed(client, device, fake_tls):
     code = code_of(create(client, device))
-    body = pair_body(code, new_csr()[1], addresses=["192.168.1.1", "192.168.1.20", "10.0.0.1", "172.16.0.1"])
+    body = pair_body(code, new_csr()[1], addresses=["192.168.1.20", "192.168.1.1", "10.0.0.1", "172.16.0.1"])
     result = pair(client, body).json()
     sans = certificate_of(result).extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)] == ["192.168.1.20", "10.71.83.1"]
     assert result["urls"][0] == "https://192.168.1.20:8443"
     assert fake_tls.calls[0]["ips"] == ["192.168.1.20", "10.71.83.1"]
+
+
+# --- Rückprüfung (Docker auf DSM: jede Anfrage scheint aus dem Netz von Docker zu kommen) -------------
+
+REAL_PROVES = pairing.proves  # vor dem Ersatz aus conftest
+DOCKER_GATEWAY = "172.19.0.1"
+
+
+@pytest.fixture
+def proofs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Ersetzt die Rückprüfung: ``passes`` sind die Adressen, die sie bestehen; ``calls`` die Fragen."""
+    state: dict[str, Any] = {"passes": set(), "calls": []}
+
+    def prove(address: str, token: str, digest: str) -> bool:
+        state["calls"].append((address, token, digest))
+        return address in state["passes"]
+
+    monkeypatch.setattr(pairing, "proves", prove)
+    return state
+
+
+def test_behind_docker_the_pi_gets_its_certificate_after_the_check_back(client, device, fake_tls, proofs):
+    proofs["passes"] = {"192.168.1.20"}
+    code = code_of(create(client, device))
+    csr = new_csr()[1]
+    response = pair_from(client, DOCKER_GATEWAY, pair_body(code, csr, addresses=["192.168.1.20", "10.0.0.7"]))
+    assert response.status_code == 200, response.text
+    result = response.json()
+    sans = certificate_of(result).extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert [str(ip) for ip in sans.get_values_for_type(x509.IPAddress)] == ["192.168.1.20", "10.71.83.1"]
+    assert result["urls"][0] == "https://192.168.1.20:8443"
+    # Gefragt mit Token und Antrag, nur bis zur ersten bestandenen Adresse.
+    assert proofs["calls"] == [("192.168.1.20", TOKEN, pi_side.csr_digest(csr))]
+
+
+def test_the_first_reported_address_that_passes_goes_into_the_certificate(client, device, fake_tls, proofs):
+    proofs["passes"] = {"10.0.0.7"}
+    code = code_of(create(client, device))
+    result = pair_from(
+        client, DOCKER_GATEWAY, pair_body(code, new_csr()[1], addresses=["192.168.1.20", "10.0.0.7"])
+    )
+    assert result.status_code == 200, result.text
+    assert fake_tls.calls[0]["ips"] == ["10.0.0.7", "10.71.83.1"]
+    assert [call[0] for call in proofs["calls"]] == ["192.168.1.20", "10.0.0.7"]
+
+
+def test_without_a_passed_check_back_there_is_no_certificate(client, device, fake_tls, proofs):
+    code = code_of(create(client, device))
+    addresses = ["192.168.1.20", "10.0.0.7", "172.16.5.5", "192.168.1.21"]
+    response = pair_from(client, DOCKER_GATEWAY, pair_body(code, new_csr()[1], addresses=addresses))
+    assert response.status_code == 422, response.text
+    message = response.json()["error"]["details"]["errors"][0]["msg"]
+    assert message == pairing.NOT_PROVEN.format(source=DOCKER_GATEWAY, reported=", ".join(addresses))
+    assert fake_tls.calls == []
+    # Höchstens PROOF_TRIES Adressen, damit der Pi nicht lange wartet.
+    assert [call[0] for call in proofs["calls"]] == addresses[: pairing.PROOF_TRIES]
+
+
+def test_a_pi_seen_under_its_own_address_is_checked_back_too(client, device, fake_tls, proofs):
+    # Gesehen ist nicht geprüft: Hinter einem Proxy oder NAT ist die Adresse der Anfrage die eines anderen
+    # Geräts, und ein Code-Inhaber könnte sie zuerst melden.
+    code = code_of(create(client, device))
+    refused = pair(client, pair_body(code, new_csr()[1]))
+    assert refused.status_code == 422, refused.text
+    assert [call[0] for call in proofs["calls"]] == [PI_IP]
+    proofs["passes"] = {PI_IP}
+    assert pair(client, pair_body(code, new_csr()[1])).status_code == 200
+
+
+def test_the_first_passing_address_wins_wherever_the_request_comes_from(client, device, fake_tls, proofs):
+    # Etwa eine Docker-Brücke auf dem Pi, die zufällig wie das Netz von Docker auf dem NAS heißt.
+    proofs["passes"] = {PI_IP}
+    code = code_of(create(client, device))
+    result = pair(client, pair_body(code, new_csr()[1], addresses=["192.168.1.21", PI_IP]))
+    assert result.status_code == 200, result.text
+    assert fake_tls.calls[0]["ips"] == [PI_IP, "10.71.83.1"]
+    assert [call[0] for call in proofs["calls"]] == ["192.168.1.21", PI_IP]
+
+
+def test_the_check_back_never_asks_an_address_of_the_app(client, device, fake_tls, proofs, monkeypatch):
+    # Selbst wenn die Prüfung dort bestünde: Eine Adresse der App kommt gar nicht erst in Frage.
+    monkeypatch.setattr(wizard, "certificate_addresses", lambda _con: ["192.168.1.43"])
+    proofs["passes"] = {"192.168.1.43"}
+    code = code_of(create(client, device))
+    refused = pair_from(client, DOCKER_GATEWAY, pair_body(code, new_csr()[1], addresses=["192.168.1.43"]))
+    assert refused.status_code == 422
+    assert proofs["calls"] == []
+
+
+def test_a_code_allows_only_a_few_rounds_of_check_back(client, device, fake_tls, proofs):
+    code = code_of(create(client, device))
+    body = pair_body(code, new_csr()[1], addresses=["192.168.1.20"])
+    for _round in range(pairing.PROOF_ROUNDS):
+        assert pair_from(client, DOCKER_GATEWAY, body).status_code == 422
+    refused = pair_from(client, DOCKER_GATEWAY, body)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["message"] == pairing.TOO_MANY_ROUNDS
+    assert len(proofs["calls"]) == pairing.PROOF_ROUNDS
+
+
+def test_while_other_check_backs_run_the_pi_is_asked_to_wait(client, device, fake_tls, proofs):
+    code = code_of(create(client, device))
+    taken = [pairing._PROBE_SLOTS.acquire(blocking=False) for _slot in range(pairing.PROOF_PARALLEL)]
+    try:
+        assert all(taken)
+        busy = pair_from(client, DOCKER_GATEWAY, pair_body(code, new_csr()[1]))
+    finally:
+        for _slot in taken:
+            pairing._PROBE_SLOTS.release()
+    assert busy.status_code == 429, busy.text
+    assert busy.headers["retry-after"] == str(pairing.PROOF_RETRY_S)
+    assert proofs["calls"] == []
+    # Das Warten kostet keine Runde: Danach gehen noch alle.
+    for _round in range(pairing.PROOF_ROUNDS):
+        assert pair_from(client, DOCKER_GATEWAY, pair_body(code, new_csr()[1])).status_code == 422
+    assert len(proofs["calls"]) == pairing.PROOF_ROUNDS
+
+
+def test_the_check_back_talks_to_the_responder_of_the_pi():
+    # Beide Seiten zusammen: der Prüfdienst des Pi (stowly_print) und die Frage des Servers.
+    digest = pi_side.csr_digest(new_csr()[1])
+    with pi_side.proof_responder(TOKEN, digest, host="127.0.0.1", port=0) as port:
+        assert port
+        assert REAL_PROVES("127.0.0.1", TOKEN, digest, port=port) is True
+        # Ein anderes Token oder ein anderer Antrag besteht nicht.
+        assert REAL_PROVES("127.0.0.1", "ein-anderes-token-0123456789", digest, port=port) is False
+        assert REAL_PROVES("127.0.0.1", TOKEN, "0" * 64, port=port) is False
+    # Danach antwortet dort niemand mehr.
+    assert REAL_PROVES("127.0.0.1", TOKEN, digest, port=port, timeout=1.0) is False
+
+
+class _Answer(http.server.BaseHTTPRequestHandler):
+    """Antwortet je nach ``kind`` falsch; ``health`` so wie der Druckdienst (Nachweis nur über das Token)."""
+
+    def do_GET(self) -> None:
+        kind = self.server.kind  # type: ignore[attr-defined]
+        if kind == "redirect":
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/v1/pair-proof")
+            self.end_headers()
+            return
+        if kind == "slow":
+            time.sleep(2.0)
+        if kind == "trickle":
+            # Ein Byte nach dem anderen: Die Frist gilt für alles zusammen, nicht je Byte.
+            with contextlib.suppress(OSError):
+                for byte in b"HTTP/1.0 200 OK\r\n" * 50:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.05)
+            return
+        nonce = parse_qs(urlsplit(self.path).query).get("nonce", [""])[0]
+        body = {
+            "big": b"x" * (pairing.PROOF_MAX_BYTES + 10),
+            "text": b"kein json",
+            "missing": b"{}",
+            "unicode": json.dumps({"proof": "ä" * 64}).encode("ascii"),
+            "deep": b"[" * 6000 + b"]" * 6000,
+            "health": json.dumps({"proof": pi_side.proof_of(TOKEN, nonce)}).encode("ascii"),
+        }.get(kind, b"{}")
+        # Der Server hat womöglich schon aufgegeben (zu groß, zu langsam): dann ins Leere.
+        with contextlib.suppress(OSError):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - Name aus http.server
+        pass
+
+
+@pytest.mark.parametrize(
+    "kind", ["redirect", "big", "text", "missing", "unicode", "deep", "health", "slow", "trickle"]
+)
+def test_anything_but_the_right_proof_fails_the_check_back(kind):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Answer)
+    server.kind = kind  # type: ignore[attr-defined]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        started = time.monotonic()
+        assert REAL_PROVES("127.0.0.1", TOKEN, "0" * 64, port=server.server_address[1], timeout=1.0) is False
+        # Die Frist gilt für die ganze Abfrage.
+        assert time.monotonic() - started < 1.8
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_addresses_of_the_server_are_refused_even_without_https(client, device, fake_tls, monkeypatch):

@@ -13,10 +13,17 @@
 * **Koppeln** (``pair``): Code, dann Hostname und Adressen (nur private IPv4, nie eine Adresse der App),
   dann signiert die CA den Antrag (``tls.TlsManager.sign_csr``), dann schreibt der Server den Drucker.
   Derselbe Antrag noch einmal bekommt die gespeicherte Antwort.
-* **Zertifikat** nur für das, was der Server selbst sieht: als IP die Adresse, von der die Anfrage kommt
-  (sie muss unter den gemeldeten stehen), dazu ``10.71.83.1``; den Namen ``<hostname>.local`` nur für
+* **Zertifikat** nur für das, was der Server selbst geprüft hat: als IP die erste gemeldete Adresse, unter
+  der der Pi die Rückprüfung besteht, dazu ``10.71.83.1``; den Namen ``<hostname>.local`` nur für
   Hostnamen, die mit ``stowly`` beginnen. Weitere gemeldete Adressen stehen nur in der Auskunft. So taugt
   ein mitgelesener Code nicht für ein Zertifikat auf den Router, den NAS oder Home Assistant.
+* **Rückprüfung:** Der Server fragt den Pi unter den gemeldeten Adressen nach einem Nachweis für genau
+  diesen Antrag (``proves``, ``stowly_print.pairing.pair_proof``). Den liefert nur der Pi selbst, solange
+  er koppelt; der Druckdienst eines anderen Pi nicht, auch wenn man dessen Token kennt. Die Adresse, von
+  der die Anfrage kommt, zählt nicht: Hinter Docker auf DSM ist sie die von Docker (etwa 172.19.0.1),
+  hinter einem Proxy die des Proxys. Der Ablauf hat drei Schritte (``prepare`` unter der Bremse,
+  ``check_back`` ohne sie, dann ``pair``), mit fester Frist, je Code wenigen Runden und höchstens zwei
+  Rückprüfungen zugleich.
 * **Drucker** als Schreibvorgang des Servers, nach dem Muster von ``shopping.py`` und ``bring.py``: neuer
   ``rev``, Ereignis ohne Gerät und ohne Befehl, nie mit Token. Ein neuer Drucker entsteht ohne Feld-Uhr;
   beim Übernehmen ändert sich nur die Verbindung, und ihre Feld-Uhr geht auf die Serverzeit, damit eine
@@ -33,16 +40,19 @@ import json
 import logging
 import re
 import secrets
+import socket
 import sqlite3
 import threading
+import time
 import unicodedata
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from cryptography import x509
 
-from stowly import db, events, tls, wizard
+from stowly import __version__, db, events, tls, wizard
 from stowly.auth import LoginGuard
 from stowly.config import Settings
 from stowly.contract import ids
@@ -60,7 +70,15 @@ from stowly.contract.entities import DirectPrinterConfig
 from stowly.contract.ids import exact
 from stowly.contract.limits import LIMITS
 from stowly.contract.timeutil import format_timestamp, parse_timestamp
-from stowly_print.pairing import AP_ADDRESS, CODE_ALPHABET, format_code, normalise_code
+from stowly_print.pairing import (
+    AP_ADDRESS,
+    CODE_ALPHABET,
+    PROOF_PATH,
+    csr_digest,
+    format_code,
+    normalise_code,
+    pair_proof,
+)
 
 log = logging.getLogger("stowly.pi")
 
@@ -73,6 +91,14 @@ GUARD_LOCK_S = 60.0
 # Ports des Druckdienstes auf dem Pi (pi/stowly-print.example.toml).
 PI_HTTPS_PORT = 8443
 PI_HTTP_PORT = 8080
+# Rückprüfung (``check_back``): Gesamtfrist je Adresse, höchstens so viele Adressen, so viel Antwort,
+# so viele zugleich (sonst 429 nach so vielen Sekunden), so viele Runden je Code.
+PROOF_TIMEOUT_S = 2.0
+PROOF_TRIES = 3
+PROOF_MAX_BYTES = 16 * 1024
+PROOF_PARALLEL = 2
+PROOF_RETRY_S = 5
+PROOF_ROUNDS = 5
 
 _HOSTNAME = exact(PI_HOSTNAME_PATTERN)
 # Ein Ursprung der App: Schema, Name oder IP (IPv6 in Klammern), Port; ohne Pfad und Benutzerangabe.
@@ -101,7 +127,12 @@ USED = "Mit diesem Kopplungscode ist schon ein Pi gekoppelt; ein Code gilt nur e
 UNKNOWN_PAIRING = "Diese Kopplung gibt es nicht."
 NOT_FOR_CERTIFICATE = "Der Pi meldet Angaben, die nicht in sein Zertifikat dürfen."
 APP_ADDRESS = "Unter dieser Adresse läuft Stowly selbst; sie gehört nie ins Zertifikat eines Pi."
-NO_SOURCE = "Stowly sieht nicht, von welcher IPv4-Adresse der Pi kommt; ohne sie gibt es kein Zertifikat."
+NOT_PROVEN = (
+    "Unter keiner gemeldeten Adresse ({reported}) besteht der Pi die Rückprüfung: Port 8080 des Pi muss für "
+    "Stowly erreichbar sein, solange er koppelt (die Anfrage kam von {source})."
+)
+PROOF_BUSY = "Gerade läuft eine andere Rückprüfung. Bitte in ein paar Sekunden erneut versuchen."
+TOO_MANY_ROUNDS = "Mit diesem Kopplungscode lief die Rückprüfung schon zu oft."
 NO_CA = "Stowly hat keine nutzbare CA; ohne sie bekommt der Pi kein Zertifikat."
 
 
@@ -506,7 +537,8 @@ def cancel(con: sqlite3.Connection, pairing_id: str, *, device_id: str, moment: 
 
 
 def start(con: sqlite3.Connection, body: PiPairStartInput, moment: datetime) -> None:
-    """``POST /api/pi/pair/start``: Die Kopplung steht auf ``installing`` und gilt ab jetzt 30 Minuten."""
+    """``POST /api/pi/pair/start``: Die Kopplung steht auf ``installing``. Beim ersten Melden gilt sie ab
+    da noch einmal 30 Minuten, danach nicht wieder: Ein Code lebt so höchstens eine Stunde."""
     found = _by_code(con, body.code)
     stamp = format_timestamp(moment)
     with db.transaction(con):
@@ -522,7 +554,8 @@ def start(con: sqlite3.Connection, body: PiPairStartInput, moment: datetime) -> 
         }
         pi.update(hostname=body.hostname.lower(), version=body.version)
         con.execute(
-            "UPDATE pi_pairings SET started_at = coalesce(started_at, ?), expires_at = ?, pi = ? WHERE id = ?",
+            "UPDATE pi_pairings SET started_at = coalesce(started_at, ?),"
+            " expires_at = CASE WHEN started_at IS NULL THEN ? ELSE expires_at END, pi = ? WHERE id = ?",
             (stamp, format_timestamp(moment + TTL), json.dumps(pi, ensure_ascii=False), row["id"]),
         )
     log.info(
@@ -533,9 +566,8 @@ def start(con: sqlite3.Connection, body: PiPairStartInput, moment: datetime) -> 
     )
 
 
-def csr_digest(csr: str) -> str:
-    """Woran derselbe Antrag wiederzuerkennen ist: SHA-256 des PEM ohne Zeilenende-Unterschiede."""
-    return hashlib.sha256(csr.replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
+# ``csr_digest`` (woran derselbe Antrag wiederzuerkennen ist) kommt aus ``stowly_print.pairing``: Der Pi
+# rechnet mit derselben Regel, wenn er die Rückprüfung beantwortet.
 
 
 def _checked(body: PiPairInput, forbidden: set[str]) -> tuple[str, list[str]]:
@@ -568,24 +600,139 @@ def dns_name(hostname: str) -> str | None:
     return f"{name}.local" if _STOWLY_NAME.fullmatch(name) else None
 
 
-def _source(client_host: str | None, addresses: list[str], forbidden: set[str]) -> str:
-    """Die eine IP fürs Zertifikat: die Adresse der Anfrage. Sie muss privat sein, unter den gemeldeten
-    stehen und darf keine Adresse der App sein; sonst 422."""
-    source = source_address(client_host)
-    if source is None:
-        problem = NO_SOURCE
-    elif source not in addresses:
-        problem = f"Stowly sieht den Pi unter einer anderen Adresse ({source}) als er meldet ({', '.join(addresses)})."
-    elif source in forbidden:
-        problem = APP_ADDRESS
-    else:
-        problem = address_problem(source)
-    if problem is not None:
-        raise invalid(
-            [{"loc": ["body", "addresses"], "msg": problem, "type": "pi_pairing"}], NOT_FOR_CERTIFICATE
+# --- Rückprüfung ---------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CheckBack:
+    """Was ``prepare`` für ``check_back`` festlegt: die Adressen, unter denen der Server den Pi fragt (leer:
+    keine Rückprüfung, er sieht ihn selbst), und die SHA-256 des Antrags."""
+
+    pairing_id: str
+    candidates: tuple[str, ...]
+    digest: str
+
+
+Prove = Callable[[str, str, str], bool]
+
+_PROBE_SLOTS = threading.BoundedSemaphore(PROOF_PARALLEL)
+_ROUNDS_LOCK = threading.Lock()
+_ROUNDS: dict[str, tuple[int, float]] = {}  # Kopplung -> (Runden, zuletzt; monotonic)
+
+
+def _http_get(address: str, port: int, path: str, timeout: float) -> bytes | None:
+    """Ein GET über einen eigenen Socket, mit fester Gesamtfrist auch gegen Antworten, die tröpfeln.
+
+    Liefert den Rumpf einer Antwort 200, sonst ``None`` (auch bei Weiterleitung, Fehler, Frist oder mehr
+    als ``PROOF_MAX_BYTES``). Kein Proxy: Die Adresse ist eine IPv4 im Heimnetz.
+    """
+    deadline = time.monotonic() + timeout
+    received = bytearray()
+    try:
+        with socket.create_connection((address, port), timeout=timeout) as connection:
+            connection.sendall(
+                f"GET {path} HTTP/1.0\r\nHost: {address}:{port}\r\nAccept: application/json\r\n"
+                f"User-Agent: Stowly/{__version__}\r\nConnection: close\r\n\r\n".encode("ascii")
+            )
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                connection.settimeout(remaining)
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                received += chunk
+                if len(received) > PROOF_MAX_BYTES:
+                    return None
+    except OSError:
+        return None
+    head, separator, body = bytes(received).partition(b"\r\n\r\n")
+    status = head.split(b"\r\n", 1)[0].split(b" ")
+    if not separator or len(status) < 2 or not status[0].startswith(b"HTTP/1.") or status[1] != b"200":
+        return None
+    return body
+
+
+def proves(
+    address: str, token: str, digest: str, *, port: int = PI_HTTP_PORT, timeout: float = PROOF_TIMEOUT_S
+) -> bool:
+    """Die Rückprüfung: Antwortet unter ``address`` der Pi, der den Antrag ``digest`` gestellt hat?
+
+    ``GET http://<address>:8080/v1/pair-proof?nonce=…`` mit frischem ``nonce`` muss als ``proof``
+    ``stowly_print.pairing.pair_proof(token, nonce, digest)`` liefern. Das kann nur der Pi selbst, solange
+    ``pair`` läuft (``proof_responder``): Der Druckdienst kennt den Pfad nicht, und für einen anderen
+    Antrag passt der Nachweis nicht. Wer das Token eines anderen Pi kennt, bekommt so kein Zertifikat für
+    dessen Adresse. Jede andere Antwort und jeder Fehler heißt ``False``.
+    """
+    nonce = secrets.token_urlsafe(24)
+    body = _http_get(address, port, f"{PROOF_PATH}?nonce={nonce}", timeout)
+    if body is None:
+        return False
+    try:
+        answer = json.loads(body)
+        proof = answer.get("proof") if isinstance(answer, dict) else None
+        expected = pair_proof(token, nonce, digest).encode("ascii")
+        return isinstance(proof, str) and hmac.compare_digest(proof.encode("utf-8"), expected)
+    except Exception:  # noqa: BLE001 - jede kaputte Antwort (auch zu tief verschachtelt) heißt: nicht bestanden
+        return False
+
+
+def _count_round(pairing_id: str) -> None:
+    """Zählt eine Runde der Rückprüfung für diese Kopplung; nach ``PROOF_ROUNDS`` Runden 409.
+
+    So taugt ein Code nicht dafür, das Heimnetz Port für Port abzufragen. Der Stand liegt im Speicher.
+    Ein Code lebt höchstens zwei Fristen (``start`` verlängert nur einmal); so lange bleibt sein Eintrag.
+    """
+    moment = time.monotonic()
+    with _ROUNDS_LOCK:
+        for key, (_count, last) in list(_ROUNDS.items()):
+            if moment - last > 2 * PI_PAIRING_TTL_S:
+                del _ROUNDS[key]
+        count, _last = _ROUNDS.get(pairing_id, (0, moment))
+        if count >= PROOF_ROUNDS:
+            raise Refused(409, ErrorCode.CONFLICT, TOO_MANY_ROUNDS)
+        _ROUNDS[pairing_id] = (count + 1, moment)
+
+
+def check_back(plan: CheckBack, token: str, *, prove: Prove | None = None) -> str | None:
+    """Zweiter Schritt von ``POST /api/pi/pair``, ohne die Bremse (sie ist ein Lock): fragt den Pi unter den
+    Adressen aus ``prepare``, der Reihe nach; liefert die erste, die besteht, sonst ``None``.
+
+    Höchstens ``PROOF_PARALLEL`` zugleich, sonst 429 mit ``Retry-After`` (ohne eine Runde zu zählen); je
+    Code höchstens ``PROOF_ROUNDS`` Runden (409); je Adresse höchstens ``PROOF_TIMEOUT_S``.
+    """
+    if not plan.candidates:
+        return None
+    if not _PROBE_SLOTS.acquire(blocking=False):
+        raise Refused(
+            429,
+            ErrorCode.RATE_LIMITED,
+            PROOF_BUSY,
+            {"retry_after_s": PROOF_RETRY_S},
+            {"Retry-After": str(PROOF_RETRY_S)},
         )
-    assert source is not None
-    return source
+    try:
+        _count_round(plan.pairing_id)
+        for candidate in plan.candidates:
+            if (prove or proves)(candidate, token, plan.digest):
+                log.info("Pi: Rückprüfung unter %s bestanden.", candidate)
+                return candidate
+        log.info("Pi: Rückprüfung unter %s nicht bestanden.", ", ".join(plan.candidates))
+        return None
+    finally:
+        _PROBE_SLOTS.release()
+
+
+def _source(client_host: str | None, addresses: list[str], *, proven: str | None) -> str:
+    """Die eine IP fürs Zertifikat: die gemeldete Adresse, unter der der Pi die Rückprüfung bestanden hat
+    (``proven``); sonst 422. Die Adresse, von der die Anfrage kommt, zählt nicht: Hinter Docker, einem
+    Proxy oder NAT ist sie die eines anderen Geräts. ``addresses`` sind schon geprüft (``_checked``)."""
+    if proven is not None and proven in addresses:
+        return proven
+    source = source_address(client_host) or "?"
+    problem = NOT_PROVEN.format(source=source, reported=", ".join(addresses))
+    raise invalid([{"loc": ["body", "addresses"], "msg": problem, "type": "pi_pairing"}], NOT_FOR_CERTIFICATE)
 
 
 def _sign(manager: Any, csr: str, ips: list[str], dns: list[str]) -> tls.Issued:
@@ -658,22 +805,27 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def pair(
+@dataclass(frozen=True)
+class _Request:
+    """Ein geprüfter Antrag: die Zeile der Kopplung, SHA-256 des Antrags, Hostname, Adressen, Ursprünge."""
+
+    found: sqlite3.Row
+    digest: str
+    hostname: str
+    reported: list[str]
+    origins: list[str]
+
+
+def _validated(
     con: sqlite3.Connection,
     settings: Settings,
     manager: Any,
     body: PiPairInput,
     *,
     request_host: str | None,
-    client_host: str | None,
     moment: datetime,
-) -> dict[str, Any]:
-    """``POST /api/pi/pair``: Code, Angaben, Zertifikat, Drucker; liefert ``PiPairResult``.
-
-    ``manager`` ist ``app.state.tls`` (``None``: keine CA, 503), ``client_host`` die Adresse, von der die
-    Anfrage kommt. Derselbe Antrag innerhalb der Frist bekommt die gespeicherte Antwort (``Repeated``);
-    ein anderer mit einem benutzten Code 409.
-    """
+) -> _Request:
+    """Code, Zustand, Hostname und Adressen eines Antrags; ``Repeated`` für denselben Antrag noch einmal."""
     found = _by_code(con, body.code)
     digest = csr_digest(body.csr)
     state = state_of(found, moment)
@@ -687,11 +839,62 @@ def pair(
         raise _closed(state)
     if not _open(state):
         raise _closed(state)
-
     origins = list(dict.fromkeys([found["origin"], *wizard.app_origins(settings, con)]))
     forbidden = app_hosts(origins, request_host) | server_names(con, manager)
     hostname, reported = _checked(body, forbidden)
-    source = _source(client_host, reported, forbidden)
+    return _Request(found, digest, hostname, reported, origins)
+
+
+def prepare(
+    con: sqlite3.Connection,
+    settings: Settings,
+    manager: Any,
+    body: PiPairInput,
+    *,
+    request_host: str | None,
+    client_host: str | None,
+    moment: datetime,
+) -> CheckBack:
+    """Erster Schritt von ``POST /api/pi/pair``, unter der Bremse und ohne Netz: prüft den Antrag wie
+    ``pair`` und legt die Adressen für die Rückprüfung fest (``check_back``): die ersten ``PROOF_TRIES``
+    gemeldeten. ``client_host`` zählt dafür nicht (siehe ``_source``)."""
+    checked = _validated(con, settings, manager, body, request_host=request_host, moment=moment)
+    log.info(
+        "Pi: Antrag zur Kopplung %s von %s, gemeldet %s.",
+        checked.found["id"],
+        source_address(client_host) or "?",
+        ", ".join(checked.reported),
+    )
+    return CheckBack(checked.found["id"], tuple(checked.reported[:PROOF_TRIES]), checked.digest)
+
+
+def pair(
+    con: sqlite3.Connection,
+    settings: Settings,
+    manager: Any,
+    body: PiPairInput,
+    *,
+    request_host: str | None,
+    client_host: str | None,
+    moment: datetime,
+    proven: str | None = None,
+) -> dict[str, Any]:
+    """``POST /api/pi/pair``: Code, Angaben, Zertifikat, Drucker; liefert ``PiPairResult``.
+
+    ``manager`` ist ``app.state.tls`` (``None``: keine CA, 503), ``client_host`` die Adresse, von der die
+    Anfrage kommt, ``proven`` die Adresse, die die Rückprüfung bestanden hat (``check_back``). Derselbe
+    Antrag innerhalb der Frist bekommt die gespeicherte Antwort (``Repeated``); ein anderer mit einem
+    benutzten Code 409.
+    """
+    checked = _validated(con, settings, manager, body, request_host=request_host, moment=moment)
+    found, digest, hostname, reported, origins = (
+        checked.found,
+        checked.digest,
+        checked.hostname,
+        checked.reported,
+        checked.origins,
+    )
+    source = _source(client_host, reported, proven=proven)
     addresses = [source, *(address for address in reported if address != source)]
     ips = list(dict.fromkeys([source, AP_ADDRESS]))
     local_name = dns_name(hostname)

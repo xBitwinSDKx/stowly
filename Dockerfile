@@ -86,10 +86,12 @@ RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin stowl
     && chown stowly:stowly /data
 USER stowly
 
-# Woher das Image stammt (ohne Tag) und das Repository der Releases für den Schalter „Nach Updates
-# suchen" in der App. Das veröffentlichte Image setzt beides (.github/workflows/release.yml); bei einem
-# eigenen Bau bleiben sie leer, und leer heißt: nicht gesetzt.
+# Woher das Image stammt (ohne Tag), unter welchem Tag es erscheint (bei einer Vorabversion etwa
+# 0.3.1-rc.1, obwohl sich der Server als 0.3.1 meldet) und das Repository der Releases für den Schalter
+# „Nach Updates suchen" in der App. Das veröffentlichte Image setzt alle drei
+# (.github/workflows/release.yml); bei einem eigenen Bau bleiben sie leer, und leer heißt: nicht gesetzt.
 ARG STOWLY_IMAGE_REF=""
+ARG STOWLY_IMAGE_TAG=""
 ARG STOWLY_UPDATE_REPO_DEFAULT=""
 
 ENV STOWLY_HOST=0.0.0.0 \
@@ -99,6 +101,7 @@ ENV STOWLY_HOST=0.0.0.0 \
     STOWLY_WEB_DIR=/app/web \
     STOWLY_PI_BUNDLE=/app/pi-bundle.tar.gz \
     STOWLY_IMAGE_REF=${STOWLY_IMAGE_REF} \
+    STOWLY_IMAGE_TAG=${STOWLY_IMAGE_TAG} \
     STOWLY_UPDATE_REPO_DEFAULT=${STOWLY_UPDATE_REPO_DEFAULT}
 
 VOLUME ["/data"]

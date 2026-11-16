@@ -590,6 +590,7 @@ Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/
 | `STOWLY_HTTPS_PORT` | Zahl | im Image `8443` | 1 bis 65535, nicht `STOWLY_PORT` | kein HTTPS-Listener (11) |
 | `STOWLY_PI_BUNDLE` | absoluter Pfad | im Image `/app/pi-bundle.tar.gz` | absolut | im Quell-Checkout baut der Server das Paket selbst, sonst gibt es keines ([`sync-protokoll.md`](sync-protokoll.md), 11.8) |
 | `STOWLY_IMAGE_REF` | Image ohne Tag, etwa `docker.io/<konto>/stowly` | im veröffentlichten Image gesetzt | Form einer Docker-Referenz ohne Tag und Digest | kein fertiger Befehl für den Updater-Container (10.7) |
+| `STOWLY_IMAGE_TAG` | Tag des Images, etwa `0.3.1` oder `0.3.1-rc.1` | im veröffentlichten Image gesetzt (seit 0.3.1) | Docker-Tag: bis 128 Zeichen aus Buchstaben, Ziffern, `_`, `.`, `-`, nicht mit `.` oder `-` am Anfang | der Befehl für den Updater-Container nennt die Version des Servers (10.7) |
 
 Ist von Home Assistant nur `STOWLY_HA_CA` gesetzt, gilt das als halbe Einrichtung: `problem` nennt die drei fehlenden Variablen. `STOWLY_HA_SUMMARY_TOKEN` allein gehört nicht dazu: Der Sensor braucht den Abgleich nicht.
 
@@ -710,7 +711,7 @@ Der Austausch zwischen Server (uid 10001) und Updater (root) läuft über Dateie
 - **`available`:** `latest` ist gesetzt und neuer als `current`. Verglichen werden die drei Zahlen.
 - **`updater_seen_at`:** `seen_at` aus `updater`. **`updater_ready`:** höchstens `UPDATER_READY_S` (600) Sekunden alt.
 - **`updater_kind`:** `kind` aus `updater` (fehlt es, `script`); `null`, solange sich kein Updater gemeldet hat. **`updater_version`:** `version` aus `updater`, nur in der Form `X.Y.Z`.
-- **`updater_command`:** der Befehl, der den Updater-Container anlegt oder erneuert (10.7), mit `STOWLY_IMAGE_REF`, der Version dieses Servers und der eigenen Container-ID; `null` ohne `STOWLY_IMAGE_REF` oder ohne erkannte Container-ID.
+- **`updater_command`:** der Befehl, der den Updater-Container anlegt oder erneuert (10.7), mit `STOWLY_IMAGE_REF`, dem Tag aus `STOWLY_IMAGE_TAG` (ohne ihn der Version dieses Servers) und der eigenen Container-ID; `null` ohne `STOWLY_IMAGE_REF` oder ohne erkannte Container-ID.
 - **`state`:** Die erste passende Regel gilt.
   1. `request` liegt vor, und `state` meldet `installing` für dieselbe Version: `installing`, `state_at` aus `at`.
   2. `request` liegt vor: `requested`; `state_version` und `state_at` aus `request`.
@@ -766,10 +767,11 @@ Für einen Container, der per Mausklick in der Docker-Oberfläche entstand (ohne
 - **Anlegen:** einmal als root, auf DSM über den Aufgabenplaner (Benutzerdefiniertes Skript, „Ausführen", danach die Aufgabe löschen), weil die Oberfläche von DSM 6.2 `docker.sock` nicht einbinden kann. Den Befehl liefert der Server fertig in `UpdateStatus.updater_command`:
 
   ```
-  /usr/local/bin/docker rm -f stowly-updater; /usr/local/bin/docker run -d --name stowly-updater --restart unless-stopped --user 0:0 --network none --read-only --tmpfs /tmp --no-healthcheck -v /var/run/docker.sock:/var/run/docker.sock --volumes-from <Container-ID> <STOWLY_IMAGE_REF>:<Version> python -m stowly.updater
+  /usr/local/bin/docker rm -f stowly-updater; /usr/local/bin/docker run -d --name stowly-updater --restart unless-stopped --user 0:0 --network none --read-only --tmpfs /tmp --no-healthcheck -v /var/run/docker.sock:/var/run/docker.sock --volumes-from <Container-ID> <STOWLY_IMAGE_REF>:<Tag> python -m stowly.updater
   ```
 
   - Die Container-ID liest der Server aus `/proc/self/mountinfo` (`/containers/<64 hex>/`). Der Hostname taugt nicht dafür: DSM setzt ihn auf den Namen des Containers.
+  - Das Tag kommt aus `STOWLY_IMAGE_TAG`. Eine Vorabversion meldet sich mit der Nummer der fertigen Version (`0.3.0`), liegt aber unter `:0.3.0-rc.4`; ein Image `:0.3.0` gibt es zu der Zeit noch nicht. Bis 0.3.0 nannte der Befehl deshalb bei Vorabversionen ein Image, das Docker nicht fand.
   - `--user 0:0`, weil der Socket nur root offensteht; `--network none`, weil Docker selbst das Image lädt; `--no-healthcheck`, weil der Healthcheck des Images den Port 8010 fragt.
   - Keine Optionen zum Log: Es gilt der Log-Treiber des Rechners, auf DSM `db`, der Optionen wie `max-size` womöglich ablehnt. Der Updater schreibt nur bei Updates und Fehlern ins Log, nicht bei jedem Herzschlag. So erscheinen seine Meldungen in DSM unter Container → `stowly-updater` → Protokoll.
   - **Journal und Aufräumen:** Während eines Updates liegt `update/journal` mit der eigenen ID des Updaters; der alte Container heißt so lange `<name>-vorher`. Bleibt nach einem Absturz einer übrig, räumt der Updater ihn beim nächsten Lauf auf.
