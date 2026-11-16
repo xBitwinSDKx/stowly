@@ -74,22 +74,33 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      latest: ${{ steps.version.outputs.latest }}
     steps:
       - uses: actions/checkout@v5
 
+      # "latest" bekommt nur die höchste Version unter allen Tags vX.Y.Z: nie eine Vorabversion und
+      # nie eine ältere Nummer, die später nachgereicht wird. Docker und GitHub nehmen "latest" dabei
+      # von selbst der vorigen Version weg (ein Tag zeigt immer auf genau ein Image bzw. Release).
       - name: Version und Tags
         id: version
         run: |
           version="${GITHUB_REF_NAME#v}"
           base="${version%%-*}"
           python3 scripts/release.py --check "$base"
+          git fetch --force --tags --quiet
+          newest=$(git tag --list 'v*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -t . -k1,1n -k2,2n -k3,3n | tail -n 1)
+          if [ "$version" = "$base" ] && [ "$version" = "$newest" ]; then latest=true; else latest=false; fi
+          echo "Version $version, höchste Version $newest, latest: $latest"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/stowly"
           {
             echo "version=$version"
             echo "image=$image"
+            echo "latest=$latest"
             echo "tags<<EOF"
             echo "$image:$version"
-            if [ "$version" = "$base" ]; then echo "$image:latest"; fi
+            if [ "$latest" = true ]; then echo "$image:latest"; fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -132,10 +143,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           base="${version%%-*}"
           python3 scripts/release.py --notes "$base" > notes.md
-          if [ "$version" = "$base" ]; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Stowly $version" \
-              --notes-file notes.md --latest
+          if [ "$version" != "$base" ]; then
+            flags="--prerelease --latest=false"
+          elif [ "${{ needs.image.outputs.latest }}" = "true" ]; then
+            flags="--latest"
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Stowly $version" \
-              --notes-file notes.md --prerelease --latest=false
+            flags="--latest=false"
           fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Stowly $version" \
+            --notes-file notes.md $flags

@@ -427,7 +427,7 @@ Am Entwicklungsrechner, im Repository:
 
 1. In `CHANGELOG.md` einen Abschnitt `## X.Y.Z` schreiben. Muss beim Umstieg etwas von Hand geschehen, kommt es dort unter „Von Hand".
 2. `python scripts/release.py X.Y.Z` setzt die Nummer an allen Stellen. Danach alle Prüfungen laufen lassen, committen („Version X.Y.Z") und das Tag setzen: `git tag vX.Y.Z`.
-3. `git push` und `git push origin vX.Y.Z`. GitHub Actions (`.github/workflows/release.yml`) testet, baut das Image ohne die Brother-Bibliothek, lädt es hoch und veröffentlicht danach das Release als „latest". Erst dann sieht es der Server.
+3. `git push` und `git push origin vX.Y.Z`. GitHub Actions (`.github/workflows/release.yml`) testet, baut das Image ohne die Brother-Bibliothek, lädt es hoch und veröffentlicht danach das Release als „latest". Erst dann sieht es der Server. Als „latest" (Image `:latest` und Release) gilt nur die höchste Version unter allen Tags `vX.Y.Z`; die vorige verliert die Markierung dabei von selbst. Eine später nachgereichte ältere Nummer bekommt sie nicht.
 
 Ein Tag mit Zusatz (`vX.Y.Z-rc.1`) durchläuft dasselbe als Vorabversion: Das Image heißt `:X.Y.Z-rc.1`, es gibt kein `:latest`, und das Release ist als Vorabversion markiert. Der Server bietet es nicht an; so lässt sich die Pipeline gefahrlos ausprobieren.
 
