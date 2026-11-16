@@ -2,7 +2,7 @@
 
 Auf dem Entwicklungsrechner laufen Server, Druckdienst und App zusammen: automatische Tests auf allen Seiten, dazu ein Durchgang im Browser mit dem Bild-Treiber. Alles, was Docker, echte Handys, einen echten Drucker oder den Raspberry Pi braucht, ließ sich dort nicht prüfen. Diese Liste führt in der Reihenfolge hindurch, in der man es tut.
 
-Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis L in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
+Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis M in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
 
 ## A. Container
 
@@ -255,3 +255,21 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 - [ ] **59.** Suchen, Vorabversion und neue Version (L2–L4): Die Push-Nachricht kommt einmal je Version.
 - [ ] **60.** Ein Update per Knopf in der App (L5, L6): Daten und Anmeldungen bleiben, die Handys holen sich die neue App.
 - [ ] **61.** Gegenproben (L7, L8): Ein gescheiterter Download lässt die alte Version laufen; ohne Updater gibt es kein Installieren.
+
+## U. Einrichtung per Mausklick und HTTPS durch Stowly
+
+- [ ] **62.** Einen frischen Container per Mausklick in DSM anlegen und den Assistenten bis „Fertig" durchgehen ([`betrieb.md`](betrieb.md), Abschnitt 19; M1–M10).
+- [ ] **63.** Ein Update per Knopf über den Updater-Container, danach den Container in DSM neu starten (M11, M12).
+- [ ] **64.** Eine Installation mit Docker Compose und Reverse Proxy umstellen: neue CA, HTTPS durch Stowly, den Pi neu koppeln (M8, M13; [`plan-einrichtung.md`](plan-einrichtung.md), „Probe und Umstieg").
+
+**Stand 16.11.2026** (Synology DSM 6.2.4; ein Testcontainer mit `0.3.0-rc.4` von Docker Hub neben dem laufenden Stowly, Ports 8020 und 8444; iPhone mit iOS 27):
+- **M1:** Die Registrierung von DSM findet das Image auf Docker Hub; der Download läuft durch.
+- **M2:** Der Container läuft ohne Umgebungsvariablen. Stolperstein: Die Ports standen zuerst in der Spalte „Container-Port", dann antwortet niemand. `betrieb.md` 19.1 zeigt die Spalten jetzt als Tabelle, Abschnitt 11 nennt das Anzeichen.
+- **M3, M4:** „Willkommen bei Stowly", Passwort am PC vergeben, der Assistent öffnete sich; das iPhone sah danach die Anmeldung.
+- **M5, M7:** Am iPhone das Profil der neuen CA installiert und das Vertrauen eingeschaltet. Die Prüfung wurde grün, der Wechsel auf `https://<NAS>:8444` mit Anmeldung gelang: iOS nimmt die CA mit Name Constraints an. Das Zertifikat hat Stowly beim Setzen des Passworts für die IP des NAS neu ausgestellt. Weil auf dem NAS der Reverse Proxy 8443 belegt, stand unter „Erweitert" der Port 8444.
+- **M9:** Der Updater-Container entstand über den Aufgabenplaner, die App zeigt „Updater bereit"; DSM nimmt den Befehl an. Gefunden:
+  - Bei einer Vorabversion nennt der Befehl das Image mit `:0.3.0` statt `:0.3.0-rc.4`. Von Hand korrigiert; die Korrektur kommt mit 0.3.1.
+  - Die Aufgabe nicht „Stowly-Updater" nennen, wenn die Aufgabe des Host-Updaters (`betrieb.md` 9.2) schon so heißt.
+- **M8:** beim Umstieg (64).
+- **M11:** mit 0.3.0 nicht prüfbar. Die Vorabversion meldet sich schon als 0.3.0 und bietet 0.3.0 deshalb nicht an; die Probe folgt mit 0.3.1.
+- Offen: M5 (Fingerabdruck mit dem Log vergleichen), M6, M10, M12, M13.

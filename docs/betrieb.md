@@ -465,6 +465,7 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 |---|---|
 | `/api/health` zeigt `"configured": false`; die App zeigt „Willkommen bei Stowly" | Es gibt noch kein Passwort. In der App vergeben (Abschnitt 19.2) oder `STOWLY_PASSWORD` setzen und neu starten. |
 | Statt der App erscheint eine Seite „Stowly kann nicht in seinen Datenordner schreiben" | Der eingebundene Ordner gehört einem anderen Benutzer. Abhilfe steht auf der Seite (Abschnitt 19.1). |
+| `http://<NAS>:8010` lädt nicht, der Container läuft aber | In DSM steht die Zahl in der Spalte „Container-Port" statt „Lokaler Port"; links steht dann eine Zahl wie 49159. Container anhalten, bearbeiten, links 8010 und 8443 eintragen, rechts 8010 und 8443 (Abschnitt 19.1). |
 | Die App meldet „Noch keine sichere Verbindung", obwohl das Zertifikat installiert ist | iPhone: Schalter unter Zertifikatsvertrauenseinstellungen aus; Windows: Browser nicht neu gestartet; oder Port 8443 in DSM in der falschen Spalte („Container-Port" statt „Lokaler Port", Abschnitt 19.1). |
 | `docker compose up` bricht ab: „env file … not found" | `.env` fehlt: `cp .env.example .env` |
 | Die Startseite zeigt „die Web-App ist noch nicht gebaut" (Status 503) | Die Web-App fehlt im Image: Der Bau der ersten Stufe ist gescheitert oder `STOWLY_WEB_DIR` wurde verstellt. |
@@ -921,7 +922,14 @@ Der einfachste Weg auf einer Synology: den Container in der Docker-Oberfläche a
 3. **Starten:** Docker → **Image** → `<konto>/stowly` markieren → **Starten**. Containername `stowly`, dann **Erweiterte Einstellungen**:
    - Reiter **Erweiterte Einstellungen:** Haken bei „Automatischen Neustart aktivieren".
    - Reiter **Volume:** **Ordner hinzufügen** → im Ordner `docker` mit **Ordner erstellen** einen Ordner `stowly` anlegen und auswählen → Mount-Pfad `/data`.
-   - Reiter **Port-Einstellungen:** In der Spalte **Lokaler Port** bei den Zeilen 8010 und 8443 jeweils dieselbe Zahl eintragen statt „Automatisch". Die Spalte **Container-Port** bleibt, wie sie ist. Steht ein Port schon anderweitig in Gebrauch (etwa 8443 beim Reverse Proxy von DSM), einen anderen lokalen Port nehmen; der Assistent fragt dann danach.
+   - Reiter **Port-Einstellungen:** DSM zeigt zwei Zeilen; links „Lokaler Port" mit „Automatisch", rechts „Container-Port" mit 8010 bzw. 8443. **Nur links** etwas eintragen, rechts nichts ändern:
+
+     | Lokaler Port (links) | Container-Port (rechts) |
+     |---|---|
+     | 8010 | 8010 |
+     | 8443 | 8443 |
+
+     Stowly hört im Container immer auf 8010 und 8443. Steht rechts eine andere Zahl, antwortet niemand; das ist die häufigste Falle dieser Oberfläche (die Spalten sehen gleich aus). Steht ein Port auf dem NAS schon anderweitig in Gebrauch (etwa 8443 beim Reverse Proxy von DSM), links einen anderen nehmen, etwa 8444; der Assistent fragt dann unter „Erweitert" danach.
    - Umgebungsvariablen braucht es keine.
 4. **Übernehmen → Weiter → Übernehmen.** Nach etwa 30 Sekunden steht der Container unter **Container** auf „Wird ausgeführt".
 

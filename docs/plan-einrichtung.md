@@ -487,3 +487,7 @@ Wie bisher: Opus 5.5 mit maximalem Aufwand; die Agents committen nicht.
   - Beide Updater lehnen ältere Versionen ab. Der Host-Updater liest `request` nur nach dem Umbenennen in einen eigenen Ordner.
   - Die Bremse der Kopplung lässt sich nicht mehr durch Wiederholen zurücksetzen. Ein Pi übernimmt einen vorhandenen Drucker nur mit dessen Token.
   - `fritz.box` gilt nicht mehr für das erste Passwort, denn `.box` ist eine öffentliche Endung.
+- **Probe in Runde 3** (Testcontainer mit `0.3.0-rc.4`):
+  - iOS 27 nimmt die CA mit nicht kritischen Name Constraints an.
+  - Eine Vorabversion meldet sich mit der Nummer der fertigen Version. Deshalb nannte der Befehl für den Updater-Container das Image `:0.3.0` statt `:0.3.0-rc.4`, und der Testcontainer bietet 0.3.0 nicht als Update an.
+  - 0.3.0 entsteht deshalb aus genau dem geprüften Stand. Die Korrektur des Befehls und die Probe des Update-Knopfs (M11) kommen mit 0.3.1, nach dem Umstieg des NAS.
