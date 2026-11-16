@@ -11,7 +11,7 @@ cat "$log"
 grep -E '^(FAILED|ERROR) ' "$log" | head -20 | while IFS= read -r line; do
   printf '::error title=%s::%s\n' "$1" "$(printf '%s' "$line" | sed -e 's/%/%25/g')"
 done
-details=$(grep -E '^E  ' "$log" | head -40 | sed -e 's/%/%25/g' | awk '{ printf "%s%%0A", $0 }')
+details=$(grep -E '^(E  |[^ ]+.py:[0-9]+: )' "$log" | head -40 | sed -e 's/%/%25/g' | awk '{ printf "%s%%0A", $0 }')
 if [ -n "$details" ]; then
   printf '::error title=%s (Einzelheiten)::%s\n' "$1" "$details"
 fi

@@ -14,7 +14,7 @@
  * selben Verzeichnis (`hang`, `abort`, `fail:<code>`), ohne Neustart.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { inject } from "vitest";
@@ -54,7 +54,10 @@ export function simulateIn(directory: string, mode: Simulation): void {
     return;
   }
   mkdirSync(directory, { recursive: true });
-  writeFileSync(file, mode, "utf8");
+  // Über eine Zwischendatei: Läse der Treiber eine halb geschriebene Datei, sähe er keinen Schalter.
+  const temp = join(directory, "simulate.neu");
+  writeFileSync(temp, mode, "utf8");
+  renameSync(temp, file);
 }
 
 /** Das Bild-Verzeichnis der Drucker am Server (stowly/printing.py). */

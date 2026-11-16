@@ -39,6 +39,19 @@ def images_of(settings) -> Path:
     return settings.data_dir / "print" / "images"
 
 
+def switch_image_driver(settings, text: str) -> None:
+    """Legt den Schalter des Bild-Treibers um (``simulate.txt``), ohne dass er je eine halbe Datei sieht.
+
+    ``write_text`` leert die Datei erst und schreibt dann: Liest der Treiber dazwischen, sieht er
+    keinen Schalter und druckt weiter (so scheiterte der Lauf für v0.2.1 in CI).
+    """
+    folder = images_of(settings)
+    folder.mkdir(parents=True, exist_ok=True)
+    temp = folder / "simulate.neu"
+    temp.write_text(text, encoding="utf-8")
+    os.replace(temp, folder / "simulate.txt")
+
+
 def add_printer(device: Device, name: str = "Bild", config: dict | None = None) -> str:
     printer_id = ids.new_uuid()
     command = device.cmd(
@@ -249,7 +262,7 @@ def test_accepting_writes_queued_before_the_answer(client, make_device, settings
     device = make_device()
     printer_id = add_printer(device)
     job_id = request_label(device, printer_id)
-    (images_of(settings) / "simulate.txt").write_text("hang", encoding="utf-8")
+    switch_image_driver(settings, "hang")
     try:
         response = submit(device, job_id, job_body(device, printer_id), wait=0)
         assert response.status_code == 201
@@ -279,7 +292,7 @@ def test_accepting_writes_queued_before_the_answer(client, make_device, settings
         response = client.get(f"/print/v1/jobs/{job_id}", params={"wait": 0.2}, headers=device.headers)
         assert response.json()["state"] == "printing"
     finally:
-        (images_of(settings) / "simulate.txt").write_text("abort", encoding="utf-8")
+        switch_image_driver(settings, "abort")
     final = client.get(f"/print/v1/jobs/{job_id}", params={"wait": 10}, headers=device.headers).json()
     assert (final["state"], final["error"]["code"]) == ("unknown", "interrupted")
     device.sync()
@@ -345,7 +358,7 @@ def test_failures_end_as_failed_with_the_code_of_the_printer(client, make_device
     device = make_device()
     printer_id = add_printer(device)
     job_id = request_label(device, printer_id)
-    (images_of(settings) / "simulate.txt").write_text("fail:cover_open", encoding="utf-8")
+    switch_image_driver(settings, "fail:cover_open")
     job = submit(device, job_id, job_body(device, printer_id)).json()
     assert (job["state"], job["error"]["code"]) == ("failed", "cover_open")
     device.sync()
@@ -360,7 +373,7 @@ def test_cancelling_a_waiting_job_at_the_service(client, make_device, settings):
     printer_id = add_printer(device)
     first, second = request_label(device, printer_id, "Eins"), request_label(device, printer_id, "Zwei")
     simulate = images_of(settings) / "simulate.txt"
-    simulate.write_text("hang", encoding="utf-8")
+    switch_image_driver(settings, "hang")
     try:
         assert submit(device, first, job_body(device, printer_id, "Eins"), wait=0).status_code == 201
         assert (
@@ -496,7 +509,7 @@ def test_printer_status_is_written_and_throttled(client, make_device, settings, 
     service.printers(fresh=True)
     assert row()["rev"] == first["rev"]
     # Geändert: sofort.
-    (images_of(settings) / "simulate.txt").write_text("fail:no_media", encoding="utf-8")
+    switch_image_driver(settings, "fail:no_media")
     service.printers(fresh=True)
     changed = row()
     assert changed["rev"] > first["rev"]
@@ -531,7 +544,7 @@ def test_restart_keeps_boot_id_continues_waiting_jobs_and_never_reprints(setting
         printing_job = request_label(device, printer_id, "Eins")
         waiting_job = request_label(device, printer_id, "Zwei")
         boot_id = client.get("/print/v1/health", headers=device.headers).json()["boot_id"]
-        simulate.write_text("hang", encoding="utf-8")
+        switch_image_driver(settings, "hang")
         assert submit(device, printing_job, job_body(device, printer_id, "Eins"), wait=0).status_code == 201
         wait_until(
             lambda: (
@@ -545,7 +558,7 @@ def test_restart_keeps_boot_id_continues_waiting_jobs_and_never_reprints(setting
         )
         token = device.token
     # Der Server ist beendet, während der Druck hing. Der hängende Druck bricht danach ab.
-    simulate.write_text("abort", encoding="utf-8")
+    switch_image_driver(settings, "abort")
     wait_until(lambda: not any(t.name == f"stowly-print-{printer_id}" for t in threading.enumerate()))
     simulate.unlink()
 
