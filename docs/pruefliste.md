@@ -245,6 +245,13 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 ## T. Updates über GitHub
 
 - [ ] **58.** Einrichten nach [`betrieb.md`](betrieb.md), Abschnitt 9.2: fertiges Image, Updater im Aufgabenplaner bzw. als systemd-Timer (L1).
+
+**Stand 16.11.2026** (Synology DSM 6.2.4, Image von ghcr.io, Updater im DSM-Aufgabenplaner):
+- **58, L1:** Der NAS lädt das fertige Image statt zu bauen; der Updater meldet sich jede Minute. Stolperstein: Der Zeitplan von DSM lief erst nur in einer Stunde des Tages; richtig ist erste Ausführungszeit 00:00, alle 1 Minute, letzte 23:59 (`betrieb.md` 9.2).
+- **L3:** Die Vorabversion `v0.2.0-rc.3` hat kein `:latest` und kein „Latest"-Release; `releases/latest` blieb leer.
+- **59, L4:** Nach dem Veröffentlichen von 0.2.1 bot die App die neue Version an.
+- **60, L5, L6:** „Update installieren" in der App: Anforderung, Updater übernimmt, lädt 0.2.1, hält Stowly an, sichert die Datenbank (`before-0.2.0-…sqlite3`), stellt die `.env` um (Besitzer bleibt, `.env.bak` daneben), startet; nach gut einer Minute „healthy" und „Aktualisiert von 0.2.0 auf 0.2.1".
+- Offen: L2 (Bremse beim Suchen), L7, L8, die Push-Nachricht zur neuen Version auf dem iPhone bestätigen.
 - [ ] **59.** Suchen, Vorabversion und neue Version (L2–L4): Die Push-Nachricht kommt einmal je Version.
 - [ ] **60.** Ein Update per Knopf in der App (L5, L6): Daten und Anmeldungen bleiben, die Handys holen sich die neue App.
 - [ ] **61.** Gegenproben (L7, L8): Ein gescheiterter Download lässt die alte Version laufen; ohne Updater gibt es kein Installieren.

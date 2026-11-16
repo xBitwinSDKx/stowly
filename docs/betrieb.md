@@ -377,7 +377,7 @@ Stowly erscheint als fertiges Image auf GitHub: `ghcr.io/<konto>/stowly:X.Y.Z`. 
 3. Den Updater als **root** jede Minute starten lassen. Er tut nur etwas, wenn in der App jemand „Installieren" getippt hat; sonst meldet er sich nur beim Server.
    - **Synology DSM:** Systemsteuerung → Aufgabenplaner → Erstellen → Geplante Aufgabe → Benutzerdefiniertes Skript.
      - Reiter „Allgemein": Benutzer `root`.
-     - Reiter „Zeitplan": täglich, „Innerhalb desselben Tages fortsetzen", alle 1 Minute (gibt es das nicht, alle 5 Minuten), bis 23:59.
+     - Reiter „Zeitplan": täglich; erste Ausführungszeit **00:00**, Häufigkeit **alle 1 Minute(n)**, letzte Ausführungszeit **23:59**. Die letzte Ausführungszeit erscheint erst, wenn eine Häufigkeit gewählt ist. Prüfen lässt sich das Ergebnis in `/etc/crontab`: In der Zeile `synoschedtask --run id=…` der Aufgabe müssen bei den Stunden 0 bis 23 und bei den Minuten 0 bis 59 stehen. Steht dort nur eine Stunde, läuft der Updater nur in dieser Stunde, und die App meldet, dass er sich nicht meldet.
      - Reiter „Aufgabeneinstellungen": `sh /volume1/…/stowly/updater/stowly-update.sh`, mit dem Pfad des Projektordners.
    - **Debian:** ein systemd-Timer, jede Minute:
 
