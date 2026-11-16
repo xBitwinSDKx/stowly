@@ -38,6 +38,9 @@ EXPECTED_TABLES = {
     "push_notices",
     "ha_links",
     "job_runs",
+    # Schema-Version 4 (Einrichtung)
+    "server_config",
+    "pi_pairings",
 }
 
 
@@ -450,3 +453,55 @@ def test_shopping_items_keep_product_or_text_and_their_closing(con):
     ):
         with pytest.raises(sqlite3.IntegrityError):
             insert(**broken)
+
+
+def test_migration_4_counts_households_with_devices_as_set_up(tmp_path):
+    """Schema 4 (Einrichtung): ``server_config`` und ``pi_pairings``. Wer schon Geräte hat, gilt als
+    eingerichtet; der Assistent drängt sich dort nicht auf."""
+    with_devices = tmp_path / "alt" / "stowly.sqlite3"
+    con = database_at_version(with_devices, 3)
+    stamp = timeutil.now()
+    with db.transaction(con):
+        con.execute(
+            "INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, 'Handy', 'hash', ?)",
+            (ids.new_uuid(), stamp),
+        )
+    rev = db.current_rev(con)
+    con.close()
+    db.initialise(with_devices)
+    con = db.connect(with_devices)
+    try:
+        assert db.schema_version(con) == len(db.list_migrations()) >= 4
+        rows = con.execute("SELECT key, value, updated_by FROM server_config").fetchall()
+        assert [(row["key"], row["updated_by"]) for row in rows] == [("setup_finished_at", None)]
+        assert timeutil.is_timestamp(json.loads(rows[0]["value"]))
+        assert con.execute("SELECT COUNT(*) FROM pi_pairings").fetchone()[0] == 0
+        assert db.current_rev(con) == rev  # ändert nichts an der Änderungsfolge
+    finally:
+        con.close()
+
+    empty = tmp_path / "neu" / "stowly.sqlite3"
+    database_at_version(empty, 3).close()
+    db.initialise(empty)
+    con = db.connect(empty)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM server_config").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_a_server_started_on_a_stage_2_database_keeps_its_password(settings):
+    """Beim Umstieg auf 0.3.0 übernimmt der Server STOWLY_PASSWORD als Hash; danach gilt es auch ohne."""
+    database_at_version(settings.database_path, 3).close()
+    with TestClient(create_app(settings)) as client:
+        assert (
+            client.post(
+                "/api/auth/login", json={"password": TEST_PASSWORD, "device_name": "Handy"}
+            ).status_code
+            == 200
+        )
+    con = db.connect(settings.database_path)
+    try:
+        assert auth.verify_password(TEST_PASSWORD, db.get_meta(con, auth.PASSWORD_HASH) or "")
+    finally:
+        con.close()

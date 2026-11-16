@@ -28,7 +28,7 @@ function rowOf(label: string): HTMLElement | null | undefined {
 }
 
 describe("summarizeSync", () => {
-  const base: SyncStatus = { online: true, phase: "idle", pending: 0, last_synced_at: AT, last_error: null, server_version: "0.1.0", lookup_enabled: true };
+  const base: SyncStatus = { online: true, phase: "idle", pending: 0, last_synced_at: AT, last_error: null, server_version: "0.1.0", lookup_enabled: true, server_configured: true };
 
   it("beschreibt jeden Zustand", () => {
     expect(summarizeSync(undefined)).toMatchObject({ tone: "unknown", pending: 0 });

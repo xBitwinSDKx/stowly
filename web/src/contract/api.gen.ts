@@ -79,6 +79,10 @@ export const LIMITS = {
   shopping_quantity: 999,
   push_endpoint: 1024,
   push_origin: 200,
+  password_min: 8,
+  setup_address: 253,
+  setup_addresses: 10,
+  push_contact: 200,
 } as const;
 /** Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3). */
 export const SERVICE_ERROR_CODES = [
@@ -135,12 +139,19 @@ export const COMMAND_TYPES = [
 
 /** Alle Endpunkte des Servers. Platzhalter wie {device_id} ersetzt der Aufrufer. */
 export const ENDPOINTS = {
+  cancel_pi_pairing: { method: "DELETE", path: "/api/pi/pairings/{pairing_id}" },
+  change_password: { method: "POST", path: "/api/auth/password" },
   check_update: { method: "POST", path: "/api/update/check" },
+  create_pi_pairing: { method: "POST", path: "/api/pi/pairings" },
   delete_push_subscription: { method: "DELETE", path: "/api/push/subscription" },
   download_backup: { method: "GET", path: "/api/backup" },
+  download_ca: { method: "GET", path: "/api/setup/ca.crt" },
   get_image: { method: "GET", path: "/api/images/{image_id}" },
   get_integrations: { method: "GET", path: "/api/integrations" },
+  get_pi_pairing: { method: "GET", path: "/api/pi/pairings/{pairing_id}" },
   get_push_key: { method: "GET", path: "/api/push/key" },
+  get_server_config: { method: "GET", path: "/api/server-config" },
+  get_setup: { method: "GET", path: "/api/setup" },
   get_stats: { method: "GET", path: "/api/stats" },
   ha_stock: { method: "GET", path: "/api/ha/stock" },
   ha_summary: { method: "GET", path: "/api/ha/summary" },
@@ -151,12 +162,21 @@ export const ENDPOINTS = {
   login: { method: "POST", path: "/api/auth/login" },
   logout: { method: "POST", path: "/api/auth/logout" },
   lookup_barcode: { method: "GET", path: "/api/lookup/{barcode}" },
+  pi_bundle: { method: "GET", path: "/api/pi/bundle.tar.gz" },
+  pi_install_script: { method: "GET", path: "/api/pi/install.sh" },
+  pi_pair: { method: "POST", path: "/api/pi/pair" },
+  pi_pair_start: { method: "POST", path: "/api/pi/pair/start" },
   put_push_subscription: { method: "PUT", path: "/api/push/subscription" },
   revoke_device: { method: "DELETE", path: "/api/devices/{device_id}" },
   send_push_test: { method: "POST", path: "/api/push/test" },
+  setup_password: { method: "POST", path: "/api/setup/password" },
   sync: { method: "POST", path: "/api/sync" },
   update_device: { method: "PATCH", path: "/api/devices/{device_id}" },
+  update_server_config: { method: "PATCH", path: "/api/server-config" },
+  update_setup: { method: "PATCH", path: "/api/setup" },
 } as const;
+
+export type AddressSource = "learned" | "manual";
 
 /** Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext. */
 export interface BackupStatus {
@@ -181,6 +201,25 @@ export interface BackupStatus {
   next_at: string | null;
   /** Seit 48 Stunden keine gelungene Sicherung (Regel: docs/integrationen.md, 3.6). */
   warning: boolean;
+}
+
+/** Die Zertifizierungsstelle von Stowly. Nie ein Schlüssel. */
+export interface CaInfo {
+  name: string;
+  /** SHA-256 des Zertifikats, Großbuchstaben mit Doppelpunkten (AB:CD:…). */
+  fingerprint_sha256: string;
+  not_after: string;
+  /** false = von Hand nach /data/tls gelegt. */
+  created_by_stowly: boolean;
+  /** Die CA beglaubigt nur Adressen im Heimnetz. */
+  name_constraints: boolean;
+}
+
+/** Das Zertifikat des HTTPS-Listeners. */
+export interface CertificateInfo {
+  /** Adressen (SAN) des Zertifikats. */
+  addresses: string[];
+  not_after: string;
 }
 
 /** Alle seit `cursor` geänderten Datensätze, jeweils vollständig. */
@@ -485,6 +524,9 @@ export interface CommandResult {
 
 export type CommandStatus = "applied" | "displaced" | "rejected";
 
+/** Woher ein wirksamer Wert kommt (docs/integrationen.md, Abschnitt 12). */
+export type ConfigSource = "env" | "app" | "default";
+
 export interface Device {
   id: string;
   name: string;
@@ -725,6 +767,32 @@ export interface HouseholdSettings {
   updated_at: string;
 }
 
+/** HTTPS durch Stowly selbst (docs/integrationen.md, Abschnitt 11). */
+export interface HttpsStatus {
+  /** Stowly hat einen HTTPS-Listener (STOWLY_HTTPS_PORT ist gesetzt). */
+  enabled: boolean;
+  /** Der HTTPS-Listener läuft. */
+  listening: boolean;
+  /** Warum HTTPS nicht läuft oder kein brauchbares Zertifikat hat; sonst null. */
+  problem: string | null;
+  /** Port, unter dem HTTPS von außen erreichbar ist; null ohne HTTPS-Listener. */
+  port: number | null;
+  port_source: PortSource;
+  /** Port, unter dem HTTP von außen erreichbar ist, gelernt aus Anfragen über HTTP (für den Download der CA und den Befehl für den Pi); null = noch nicht gesehen. */
+  http_port: number | null;
+  /** Höchstens 10, gelernte zuerst. */
+  addresses: SetupAddress[];
+  /** HTTPS-Ursprünge der App, etwa https://192.168.1.10:8443. */
+  origins: string[];
+  /** Letzte angemeldete Anfrage über den HTTPS-Listener. */
+  seen_at: string | null;
+  /** Diese Anfrage kam über den HTTPS-Listener von Stowly. */
+  via_https: boolean;
+  /** null = keine nutzbare CA (problem sagt warum). */
+  ca: CaInfo | null;
+  certificate: CertificateInfo | null;
+}
+
 export interface IdPoolGrant {
   /** Neu für dieses Gerät reservierte Packungs-IDs. */
   grant: string[];
@@ -828,6 +896,106 @@ export interface PackageLabelData {
   /** Name der Zone; leer, wenn es nur eine gibt. */
   zone: string;
 }
+
+/** Ein Drucker an einem gekoppelten Pi, mit dem Ablauf von dessen Zertifikat. */
+export interface PairedPrinter {
+  printer_id: string;
+  /** Hostname des Pi bei der Kopplung. */
+  hostname: string;
+  /** Ablauf des Zertifikats; die App warnt PI_CERT_WARN_DAYS Tage vorher. */
+  not_after: string;
+}
+
+/** Neues Haushalts-Passwort (`POST /api/auth/password`). */
+export interface PasswordChangeInput {
+  current_password: string;
+  new_password: string;
+}
+
+/** Woher das Haushalts-Passwort kommt. */
+export type PasswordSource = "env" | "app";
+
+/** Was der Pi beim Koppeln gemeldet hat. */
+export interface PiInfo {
+  hostname: string;
+  /** Seine IPv4-Adressen im Heimnetz. */
+  addresses: string[];
+  /** Erkanntes Druckermodell, etwa QL-570; null = keins erkannt. */
+  model: string | null;
+  /** Beim Koppeln hing ein Brother-Drucker am USB. */
+  printer_found: boolean;
+  /** Version des Druckdienstes auf dem Pi. */
+  version: string | null;
+  /** Ablauf seines Zertifikats; null vor der Kopplung. */
+  not_after: string | null;
+}
+
+/** Die Kopplung selbst (`POST /api/pi/pair`), nach der Installation auf dem Pi. */
+export interface PiPairInput {
+  code: string;
+  hostname: string;
+  /** IPv4-Adressen des Pi im Heimnetz, die zum Server zuerst. */
+  addresses: string[];
+  /** Zertifikatsantrag (PEM), Schlüssel P-256 oder RSA ab 2048 Bit. Betreff und Erweiterungen zählen nicht: Die Adressen bestimmt der Server. */
+  csr: string;
+  /** Token des Druckdienstes; Stowly trägt es in die Konfiguration des Druckers ein. */
+  token: string;
+  model?: string | null;
+  printer_found: boolean;
+  /** Der Drucker einer früheren Kopplung (pairing.json); die Wahl in der App geht vor. */
+  printer_id?: string | null;
+  version?: string | null;
+}
+
+/** Antwort an den Pi. Enthält keine Geheimnisse. */
+export interface PiPairResult {
+  printer_id: string;
+  /** Name des Druckers in Stowly. */
+  name: string;
+  /** Das Zertifikat des Pi (PEM), von der CA von Stowly signiert. */
+  certificate: string;
+  /** Das Zertifikat der CA (PEM). */
+  ca: string;
+  /** Ursprünge der App, die direkt drucken dürfen. */
+  origins: string[];
+  /** Adressen, unter denen die App den Druckdienst anspricht. */
+  urls: string[];
+  not_after: string;
+}
+
+/** Der Pi meldet sich gleich nach dem Laden des Pakets (`POST /api/pi/pair/start`). */
+export interface PiPairStartInput {
+  code: string;
+  hostname: string;
+  version?: string | null;
+}
+
+/** Eine Kopplung (`POST /api/pi/pairings`, `GET /api/pi/pairings/{pairing_id}`). */
+export interface PiPairing {
+  id: string;
+  state: PiPairingState;
+  /** Der Code als XXXX-XXXX; nur in der Antwort auf POST, sonst null. */
+  code: string | null;
+  /** Der fertige Befehl für den Pi; nur in der Antwort auf POST, sonst null. */
+  command: string | null;
+  expires_at: string;
+  /** Der gewählte bzw. gekoppelte Drucker. */
+  printer_id: string | null;
+  /** Was der Pi gemeldet hat; null, solange er sich nicht gemeldet hat. */
+  pi: PiInfo | null;
+}
+
+/** Neuer Kopplungscode (`POST /api/pi/pairings`). */
+export interface PiPairingInput {
+  /** Ursprung der App (location.origin): Der Pi erlaubt ihn, und der Befehl baut darauf auf. */
+  origin: string;
+  /** Einen vorhandenen direkten Drucker übernehmen; null = neu anlegen. */
+  printer_id?: string | null;
+}
+
+export type PiPairingState = "waiting" | "installing" | "paired" | "expired" | "cancelled";
+
+export type PortSource = "default" | "learned" | "manual";
 
 /** Ein Etikett, das gedruckt werden soll oder wurde. Die Kennung ist zugleich die Auftragskennung beim Druckdienst. */
 export interface PrintJob {
@@ -954,6 +1122,12 @@ export interface ProductChanges {
   min_stock?: number | null;
 }
 
+export interface PushConfig {
+  /** Wirksamer Kontakt für die Push-Dienste (mailto: oder https); null = keiner, Push ist aus. */
+  contact: string | null;
+  source: ConfigSource;
+}
+
 export interface PushKey {
   /** Öffentlicher VAPID-Schlüssel des Servers: P-256, unkomprimiert (65 Byte), base64url ohne Füllzeichen. Für pushManager.subscribe als applicationServerKey. */
   public_key: string;
@@ -961,7 +1135,7 @@ export interface PushKey {
 
 /** Benachrichtigungen per Web-Push (docs/integrationen.md, Abschnitt 4). */
 export interface PushStatus {
-  /** STOWLY_PUSH_CONTACT ist gesetzt. */
+  /** Ein Kontakt für die Push-Dienste ist wirksam (STOWLY_PUSH_CONTACT oder in der App). */
   configured: boolean;
   /** Warum Push aus ist, obwohl etwas gesetzt ist; sonst null. */
   problem: string | null;
@@ -1008,6 +1182,19 @@ export type RejectCode = "invalid" | "not_found" | "id_conflict" | "last_zone" |
 /** Warum eine Packung entnommen wurde (Grundlage der Statistik in Stufe 2). */
 export type RemovalReason = "consumed" | "discarded" | "mistake";
 
+/** Einstellungen des Servers, die auch in der App gehen. Die Umgebung geht vor; nie ein Geheimnis. */
+export interface ServerConfig {
+  push: PushConfig;
+  update: UpdateConfig;
+}
+
+/** `PATCH /api/server-config`. Nur vorhandene Felder zählen; 409, wenn das Feld aus der Umgebung kommt. */
+export interface ServerConfigChanges {
+  /** mailto:<Adresse> oder eine https-Adresse; eine Adresse ohne mailto: bekommt es davor. null = entfernen (Push ist dann aus). */
+  push_contact?: string | null;
+  update_enabled?: boolean;
+}
+
 /** Antwort von `GET /api/health`. `app` ist der Marker, an dem die App den Server erkennt. */
 export interface ServerHealth {
   app: "stowly";
@@ -1015,7 +1202,7 @@ export interface ServerHealth {
   version: string;
   protocol: number;
   time: string;
-  /** false = STOWLY_PASSWORD ist nicht gesetzt, Anmelden ist nicht möglich. */
+  /** false = es gibt noch kein Haushalts-Passwort (weder STOWLY_PASSWORD noch in der App gesetzt). Die App zeigt dann die Einrichtung (POST /api/setup/password). */
   configured: boolean;
 }
 
@@ -1095,6 +1282,64 @@ export interface SettingsChanges {
   /** Seit Protokoll 2. */
   notify_time?: string;
 }
+
+export interface SetupAddress {
+  /** IP-Adresse oder Name, unter dem Stowly erreichbar ist, ohne Port. */
+  address: string;
+  source: AddressSource;
+  /** Das aktuelle Zertifikat des Servers gilt für diese Adresse. */
+  in_certificate: boolean;
+}
+
+/** Änderungen an der Einrichtung (`PATCH /api/setup`). Nur vorhandene Felder zählen. */
+export interface SetupChanges {
+  /** Einen Schritt markieren. */
+  step?: SetupStepChange;
+  /** true = abschließen, false = wieder öffnen. */
+  finished?: boolean;
+  /** Die von Hand eingetragenen Adressen (IP oder Name, ohne Port); ersetzt die bisherigen. Gelernte bleiben. Jede muss im Heimnetz liegen und von der CA gedeckt sein. */
+  addresses?: string[];
+  /** Port, unter dem HTTPS von außen erreichbar ist; null = wieder lernen. */
+  https_port?: number | null;
+}
+
+/** Das erste Haushalts-Passwort (`POST /api/setup/password`). */
+export interface SetupPasswordInput {
+  password: string;
+  device_name: string;
+}
+
+/** Stand der Einrichtung (`GET /api/setup`). Nie ein Schlüssel, nie ein Passwort. */
+export interface SetupStatus {
+  password_source: PasswordSource;
+  /** Alle Schritte, in der Reihenfolge des Assistenten. */
+  steps: SetupStep[];
+  /** Wann die Einrichtung abgeschlossen wurde; null = offen. */
+  finished_at: string | null;
+  /** Je nicht gelöschtem Drucker die jüngste Kopplung eines Pi, früheste Ablaufzeit zuerst. Daran warnt jedes Gerät vor dem Ablauf des Zertifikats. */
+  paired_printers: PairedPrinter[];
+  https: HttpsStatus;
+}
+
+export interface SetupStep {
+  id: SetupStepId;
+  /** Wie die App den Schritt markiert hat; ohne Markierung open. */
+  state: SetupStepState;
+  /** Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; printer = es gibt einen Drucker; updates = Updates sind an; notifications = ein Kontakt für die Push-Dienste ist wirksam. */
+  ready: boolean;
+  /** Wann state zuletzt gesetzt wurde. */
+  changed_at: string | null;
+}
+
+export interface SetupStepChange {
+  id: SetupStepId;
+  state: SetupStepState;
+}
+
+/** Die Schritte des Assistenten nach dem Passwort, in dieser Reihenfolge. */
+export type SetupStepId = "https" | "printer" | "updates" | "notifications";
+
+export type SetupStepState = "open" | "done" | "skipped";
 
 /** Ein Eintrag der Einkaufsliste: ein Produkt oder freier Text. Gelöschte bleiben als Grabstein. */
 export interface ShoppingItem {
@@ -1206,6 +1451,17 @@ export interface SyncResponse {
   lookup_enabled: boolean;
 }
 
+export interface UpdateConfig {
+  /** Der Server fragt GitHub nach neuen Versionen. */
+  enabled: boolean;
+  /** Das Repository der Releases; null = keines bekannt. */
+  repo: string | null;
+  /** env: STOWLY_UPDATE_REPO (immer an); app: Schalter in der App; default: noch nicht geschaltet, aus. */
+  source: ConfigSource;
+  /** Der Schalter wirkt: Das Image kennt ein Repository (STOWLY_UPDATE_REPO_DEFAULT) und die Umgebung legt nichts fest. */
+  available: boolean;
+}
+
 /** Anforderung eines Updates (POST /api/update/install). */
 export interface UpdateInstallInput {
   /** Die Version, die die App als neueste gezeigt hat; muss latest sein. */
@@ -1217,9 +1473,9 @@ export type UpdateState = "idle" | "requested" | "installing" | "done" | "failed
 
 /** Updates über GitHub (docs/integrationen.md, Abschnitt 10). Nie ein Token. */
 export interface UpdateStatus {
-  /** STOWLY_UPDATE_REPO ist gesetzt. */
+  /** Updates sind an: STOWLY_UPDATE_REPO ist gesetzt oder der Schalter in der App an. */
   configured: boolean;
-  /** Das Repository der Releases (STOWLY_UPDATE_REPO). */
+  /** Das Repository der Releases; null, solange Updates aus sind. */
   repo: string | null;
   /** Version dieses Servers. */
   current: string;
@@ -1243,6 +1499,12 @@ export interface UpdateStatus {
   updater_ready: boolean;
   /** Letzte Meldung des Updaters. */
   updater_seen_at: string | null;
+  /** Welcher Updater sich zuletzt gemeldet hat; null = noch keiner. */
+  updater_kind: UpdaterKind | null;
+  /** Version des Updaters, soweit er sie meldet. */
+  updater_version: string | null;
+  /** Befehl, der den Updater-Container anlegt oder erneuert (einmal als root, etwa im Aufgabenplaner von DSM); null, wenn das Image keine Referenz kennt (STOWLY_IMAGE_REF) oder Stowly seinen Container nicht erkennt. */
+  updater_command: string | null;
   state: UpdateState;
   /** Die Version, um die es in state geht. */
   state_version: string | null;
@@ -1251,6 +1513,9 @@ export interface UpdateStatus {
   /** Erklärung zu state, bei failed der Grund; sonst meist null. */
   state_message: string | null;
 }
+
+/** Welcher Updater sich meldet (docs/integrationen.md, 10.3 und 10.7). */
+export type UpdaterKind = "script" | "container";
 
 export interface Zone {
   id: string;

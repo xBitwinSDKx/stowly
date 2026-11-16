@@ -8,7 +8,8 @@
  * Den PushManager liefert die Registrierung des Service Workers. Meldet die App selbst keinen an
  * (Entwicklungsserver), gibt es keinen: Dann wird auch auf keinen gewartet.
  */
-import { isAppleMobile } from "../pwa/install";
+import { isAppleMobile } from "@/contract/platform";
+
 import type { PermissionValue, PushEnvironment, PushManagerLike } from "./device";
 
 export interface BrowserPushOptions {

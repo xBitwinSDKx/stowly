@@ -21,10 +21,15 @@ Das Format ist in ``pi/README.md`` beschrieben, ein Beispiel liegt in
 Ein Fehler in der Datei beendet den Start mit einer Meldung, die sagt, was nicht stimmt.
 Unbrauchbare Angaben zu einem einzelnen Drucker (unbekanntes Modell, falsche Adresse) sind kein
 solcher Fehler: Der Drucker steht dann in der Liste und meldet ``config``.
+
+``dump_config`` schreibt eine ``ServiceConfig`` wieder als TOML; ``parse_config`` liest daraus
+dieselbe Konfiguration. So schreibt das Koppeln mit Stowly (``stowly_print.pairing``) die Datei.
 """
 
+import json
 import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -225,3 +230,62 @@ def load_config(path: Path | str) -> ServiceConfig:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigurationError(f"Die Konfigurationsdatei {path} ist kein gültiges TOML: {exc}") from exc
     return parse_config(raw, path.resolve().parent)
+
+
+def _toml_text(value: str) -> str:
+    # Eine JSON-Zeichenkette nur aus ASCII ist auch eine gültige TOML-Zeichenkette.
+    return json.dumps(value, ensure_ascii=True)
+
+
+def _listener_lines(listener: Listener) -> list[str]:
+    lines = [f"host = {_toml_text(listener.host)}", f"port = {listener.port}"]
+    if listener.certificate is not None:
+        lines.append(f"certificate = {_toml_text(str(listener.certificate))}")
+    if listener.key is not None:
+        lines.append(f"key = {_toml_text(str(listener.key))}")
+    return lines
+
+
+def dump_config(config: ServiceConfig, *, header: Sequence[str] = ()) -> str:
+    """Die Konfiguration als TOML-Text. ``parse_config`` liest daraus wieder dieselbe ``ServiceConfig``.
+
+    ``header`` sind Kommentarzeilen am Anfang (ohne „#"). Pfade stehen so in der Datei, wie sie in
+    der Konfiguration stehen; ``extra`` eines Druckers gehört nicht zum Format und fehlt.
+    """
+    lines = [f"# {line}".rstrip() for line in header]
+    if lines:
+        lines.append("")
+    origins = ", ".join(_toml_text(origin) for origin in config.origins)
+    lines += [
+        "# Dasselbe Token trägt Stowly beim Drucker ein.",
+        f"token = {_toml_text(config.token)}",
+        "",
+        "# Ursprünge der App, die direkt drucken dürfen (ohne Pfad).",
+        f"origins = [{origins}]",
+        "",
+        f"log_level = {_toml_text(config.log_level)}",
+        "",
+        "[http]",
+    ]
+    lines += ["enabled = false"] if config.http is None else _listener_lines(config.http)
+    lines.append("")
+    if config.https is not None:
+        lines += ["[https]", *_listener_lines(config.https), ""]
+    lines.append("# Der erste Drucker ist der Standarddrucker.")
+    for printer in config.printers:
+        lines += [
+            "[[printers]]",
+            f"name = {_toml_text(printer.name)}",
+            f"driver = {_toml_text(printer.driver)}",
+        ]
+        for key, value in (
+            ("model", printer.model),
+            ("address", printer.address),
+            ("media", printer.media),
+            ("directory", None if printer.directory is None else str(printer.directory)),
+            ("simulate", printer.simulate),
+        ):
+            if value is not None:
+                lines.append(f"{key} = {_toml_text(value)}")
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"

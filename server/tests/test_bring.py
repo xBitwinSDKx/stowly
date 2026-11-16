@@ -846,6 +846,11 @@ def test_the_loop_runs_at_start_and_after_a_change(settings, monkeypatch):
             raise AssertionError(f"nur {len(ha.requests)} Aufrufe")
 
         wait_for(2)  # beim Start: Zustand und Liste
+        # Nach der Liste schreibt der Lauf noch zurück, bevor er „ok" meldet (wie in test_integrations).
+        for _ in range(400):
+            if app.state.bring.status()["state"] != "pending":
+                break
+            time.sleep(0.01)
         assert app.state.bring.status()["state"] == "ok"
         response = client.get("/api/integrations", headers=device.headers)
         IntegrationStatus.model_validate(response.json())

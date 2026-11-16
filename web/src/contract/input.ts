@@ -58,6 +58,52 @@ export function checkDeviceName(value: unknown): string {
   return name;
 }
 
+/**
+ * Ein neues Haushalts-Passwort (das erste oder ein geändertes): mindestens `LIMITS.password_min`,
+ * höchstens `LIMITS.password` Zeichen, gezählt wie im Server (Unicode-Zeichen). Nicht gekürzt.
+ */
+export function checkNewPassword(value: unknown): asserts value is string {
+  const length = typeof value === "string" ? Array.from(value).length : 0;
+  if (length < LIMITS.password_min) {
+    throw invalidInput(`Das Passwort braucht mindestens ${LIMITS.password_min} Zeichen.`);
+  }
+  if (length > LIMITS.password) {
+    throw invalidInput(`Das Passwort ist zu lang (höchstens ${LIMITS.password} Zeichen).`);
+  }
+}
+
+/** mailto mit einer Adresse ohne Leerraum und Klammern, wie im Server (server/stowly/config.py). */
+const MAILTO = /^mailto:[^\s@<>()[\],;:"]+@[^\s@<>()[\],;:"]+\.[^\s@<>()[\],;:"]+$/;
+const HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+
+/**
+ * Kontakt für die Push-Dienste (`ServerConfigChanges.push_contact`): eine E-Mail-Adresse, mit oder
+ * ohne `mailto:`, oder eine https-Adresse, nach den Regeln des Servers für STOWLY_PUSH_CONTACT.
+ * Liefert die Form, die der Server speichert: gekürzt, eine E-Mail-Adresse mit `mailto:` davor.
+ */
+export function checkPushContact(value: unknown): string {
+  const text = cleanText(value);
+  if (text === "") {
+    throw invalidInput("Bitte eine Kontakt-Adresse eingeben.");
+  }
+  const contact = /^(https:\/\/|mailto:)/.test(text) ? text : `mailto:${text}`;
+  let ok = /^[\x21-\x7e]+$/.test(contact) && contact.length <= LIMITS.push_contact;
+  if (ok && contact.startsWith("mailto:")) {
+    ok = MAILTO.test(contact);
+  } else if (ok) {
+    try {
+      const url = new URL(contact);
+      ok = url.username === "" && url.password === "" && HOSTNAME.test(url.hostname);
+    } catch {
+      ok = false;
+    }
+  }
+  if (!ok) {
+    throw invalidInput("Erwartet ist eine E-Mail-Adresse wie haushalt@example.org oder eine https-Adresse.");
+  }
+  return contact;
+}
+
 /** Vorlaufzeit der MHD-Warnung; null und undefined heißen „nicht gesetzt" und gehen durch. */
 export function checkWarnDays(value: unknown): void {
   if (value === null || value === undefined) {

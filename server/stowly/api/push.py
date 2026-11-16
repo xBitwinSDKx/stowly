@@ -1,12 +1,16 @@
 """Benachrichtigungen per Web-Push (docs/integrationen.md, Abschnitt 4).
 
 Alles mit Geräte-Token. Ein Gerät hat höchstens ein Abo; es gehört zum Gerät und endet mit
-dessen Abmeldung. Ohne ``STOWLY_PUSH_CONTACT`` antworten alle Aufrufe mit 503 ``not_configured``.
+dessen Abmeldung. Ohne wirksamen Kontakt (``STOWLY_PUSH_CONTACT`` oder aus der App) antworten alle
+Aufrufe mit 503 ``not_configured``.
 """
 
-from fastapi import APIRouter, Request, Response
+import sqlite3
 
-from stowly import push
+from fastapi import APIRouter, Request, Response
+from starlette.concurrency import run_in_threadpool
+
+from stowly import db, push, serverconfig
 from stowly.api.deps import CurrentDevice, Db, get_settings, unauthorized
 from stowly.config import Settings
 from stowly.contract import timeutil
@@ -21,14 +25,25 @@ from stowly.errors import ApiError
 
 router = APIRouter(prefix="/push", tags=["push"])
 
+PUSH_OFF = (
+    "Push ist auf diesem Server aus: Es fehlt der Kontakt für die Push-Dienste "
+    "(Einstellungen → Einrichtung und Zugang, oder STOWLY_PUSH_CONTACT)."
+)
 
-def _require_push(settings: Settings) -> None:
-    if not settings.push_configured:
-        raise ApiError(
-            503,
-            ErrorCode.NOT_CONFIGURED,
-            "Push ist auf diesem Server nicht eingerichtet (STOWLY_PUSH_CONTACT).",
-        )
+
+def _require_push(settings: Settings, con: sqlite3.Connection) -> None:
+    """503, solange es keinen wirksamen Kontakt gibt; gelesen bei jedem Aufruf (ohne Neustart)."""
+    if serverconfig.push_contact(settings, con) is None:
+        raise ApiError(503, ErrorCode.NOT_CONFIGURED, PUSH_OFF)
+
+
+def _require_push_fresh(settings: Settings) -> None:
+    """Wie ``_require_push``, mit eigener Verbindung (für Aufrufe in der Ereignisschleife)."""
+    con = db.connect(settings.database_path)
+    try:
+        _require_push(settings, con)
+    finally:
+        con.close()
 
 
 def _service(request: Request) -> push.PushService:
@@ -41,7 +56,7 @@ def _service(request: Request) -> push.PushService:
 @router.get("/key", operation_id="get_push_key", response_model=PushKey)
 def get_push_key(_device: CurrentDevice, request: Request, response: Response, con: Db) -> PushKey:
     """Der öffentliche VAPID-Schlüssel des Servers für pushManager.subscribe."""
-    _require_push(get_settings(request))
+    _require_push(get_settings(request), con)
     response.headers["Cache-Control"] = "no-store"
     return PushKey(public_key=push.public_key(con))
 
@@ -51,7 +66,7 @@ def put_push_subscription(
     body: PushSubscriptionInput, _device: CurrentDevice, request: Request, con: Db
 ) -> None:
     """Legt das Push-Abo dieses Geräts an oder ersetzt es. Unbekannter Push-Dienst: 422."""
-    _require_push(get_settings(request))
+    _require_push(get_settings(request), con)
     problems = push.check(body.endpoint, body.keys.p256dh, body.keys.auth, body.origin)
     if problems:
         raise ApiError(
@@ -74,7 +89,7 @@ def put_push_subscription(
 @router.delete("/subscription", operation_id="delete_push_subscription", status_code=204)
 def delete_push_subscription(_device: CurrentDevice, request: Request, con: Db) -> None:
     """Löscht das Push-Abo dieses Geräts. Wiederholbar, auch ohne Abo."""
-    _require_push(get_settings(request))
+    _require_push(get_settings(request), con)
     push.remove(con, _device["id"])
 
 
@@ -84,12 +99,14 @@ async def send_push_test(_device: CurrentDevice, request: Request, response: Res
 
     404 ohne Abo dieses Geräts, 429 bei mehr als einer Testnachricht in 10 Sekunden.
     """
-    _require_push(get_settings(request))
+    await run_in_threadpool(_require_push_fresh, get_settings(request))
     service = _service(request)
     try:
         delivery = await service.test(_device["id"])
     except push.NoSubscription:
         raise ApiError(404, ErrorCode.NOT_FOUND, "Dieses Gerät hat kein Push-Abo beim Server.") from None
+    except push.NoContact:
+        raise ApiError(503, ErrorCode.NOT_CONFIGURED, PUSH_OFF) from None
     except push.TooSoon as exc:
         wait = exc.retry_after_s
         raise ApiError(

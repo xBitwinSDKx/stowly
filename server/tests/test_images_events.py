@@ -86,6 +86,8 @@ def test_events_come_newest_first_with_all_fields(history, client, clock):
         *["package.created"] * 5,
         *["product.created"] * 2,
         "device.login",
+        # Beim Start übernommen: STOWLY_PASSWORD als Hash (docs/sync-protokoll.md, 12).
+        "server.password_set",
     ]
 
     newest = response.json()["events"][0]
@@ -117,12 +119,12 @@ def test_events_are_paged_with_before(history, client):
         if before is None:
             break
         assert before == page["events"][-1]["id"]
-    assert pages == 3  # 9 Einträge in Seiten zu 4
-    assert seen == sorted(seen, reverse=True) and len(seen) == len(set(seen)) == 9
+    assert pages == 3  # 10 Einträge (9 und server.password_set vom Start) in Seiten zu 4
+    assert seen == sorted(seen, reverse=True) and len(seen) == len(set(seen)) == 10
 
     # Eine Seite, die genau aufgeht, hat keine Fortsetzung.
-    exact = client.get("/api/events", params={"limit": 9}, headers=device.headers).json()
-    assert len(exact["events"]) == 9 and exact["next_before"] is None
+    exact = client.get("/api/events", params={"limit": 10}, headers=device.headers).json()
+    assert len(exact["events"]) == 10 and exact["next_before"] is None
     assert client.get("/api/events", params={"before": 1}, headers=device.headers).json() == {
         "events": [],
         "next_before": None,
@@ -177,7 +179,8 @@ def test_the_limit_goes_up_to_500(make_device, client):
     device.sync([device.cmd("zone.create", zone_id=ids.new_uuid(), name=f"Zone {n}") for n in range(120)])
     assert len(client.get("/api/events", headers=device.headers).json()["events"]) == 100
     full = client.get("/api/events", params={"limit": 500}, headers=device.headers).json()
-    assert len(full["events"]) == 121 and full["next_before"] is None
+    # 120 Zonen, die Anmeldung und server.password_set vom Start
+    assert len(full["events"]) == 122 and full["next_before"] is None
 
 
 def test_every_effect_of_a_command_leaves_a_trace(history, client, con):

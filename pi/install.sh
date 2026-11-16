@@ -4,17 +4,26 @@
 # Für Raspberry Pi OS Lite (Trixie, Python 3.13), auch auf dem Pi Zero W (32 Bit). Anleitung:
 # pi/README.md. In der Zielumgebung ungetestet; die Prüfliste steht in der Anleitung.
 #
-#   sudo bash pi/install.sh --origin https://stowly.home
+#   sudo bash pi/install.sh --pair http://192.168.1.10:8010 ABCD-EFGH   # koppeln (Befehl aus der App)
+#   sudo bash pi/install.sh --origin https://stowly.home                # von Hand
 #   sudo bash pi/install.sh --origin https://stowly.home --cert pi.crt --key pi.key
 #   sudo bash pi/install.sh --offline        # erneut, ohne Internet (Aktualisieren)
+#
+# --pair ruft das Startskript des Stowly-Servers auf (curl … /api/pi/install.sh | sudo sh -s -- CODE,
+# docs/sync-protokoll.md 11.8): Der Pi meldet sich gleich bei Stowly, installiert, was fehlt, koppelt
+# sich (Zertifikat, Token, Drucker in Stowly), startet den Dienst und prüft ihn samt Testetikett.
+# Ein zweiter Lauf mit neuem Code koppelt neu, ohne alles neu zu installieren.
 #
 # Was das Skript tut, sagt es vor jedem Schritt. Es ist wiederholbar: Ein zweiter Lauf bringt
 # Programm, Dienst und Regeln auf den Stand dieses Ordners und lässt eine vorhandene
 # Konfiguration samt Token stehen. Bei einem Fehler bricht es ab.
 #
-# Es braucht Internet (Pakete von Debian/Raspberry Pi, Brother-Bibliothek von PyPI), außer mit
-# --offline. Den Access Point richtet erst access-point.sh ein: erst installieren, dann umschalten.
+# Es braucht Internet für fehlende Pakete (Debian/Raspberry Pi) und die Brother-Bibliothek von PyPI,
+# außer mit --offline. Den Access Point richtet erst access-point.sh ein: erst installieren, dann
+# umschalten.
 set -euo pipefail
+# Python läuft überall mit -P: Der Arbeitsordner (etwa das Home des Benutzers) kommt so nicht in
+# sys.path, und keine Datei dort ersetzt ein Modul wie json oder ssl. (python3 --version braucht es nicht.)
 
 PREFIX=/opt/stowly-print
 CONFIG_DIR=/etc/stowly-print
@@ -26,6 +35,8 @@ UNIT=/etc/systemd/system/stowly-print.service
 UDEV_RULE=/etc/udev/rules.d/99-stowly-brother.rules
 JOURNALD_CONF=/etc/systemd/journald.conf.d/stowly.conf
 AP_MARKER=/etc/dnsmasq.d/stowly-ap.conf
+# So lange wartet apt auf eine Sperre: Gleich nach dem ersten Start lädt apt-daily im Hintergrund.
+APT_LOCK_TIMEOUT=300
 
 # Alle gibt es in Trixie für arm64 (Debian) und armhf (Raspbian, Zero W); geprüft am 14.11.2026
 # in den Paketlisten von Debian (qa.debian.org/madison.php), raspbian.raspberrypi.com und
@@ -42,19 +53,29 @@ PACKAGES=(
 
 ORIGINS=()
 MODEL="QL-800"
+MODEL_SET=0
 ADDRESS="usb://04f9"
+ADDRESS_SET=0
 CERT=""
 KEY=""
 WITH_BROTHER=1
 OFFLINE=0
+# Koppeln (--pair): Adresse des Stowly-Servers und Code. --address ist die Adresse des Druckers.
+PAIR_SERVER=""
+PAIR_CODE=""
 
 usage() {
   cat <<'EOF'
 Aufruf: sudo bash pi/install.sh [Angaben]
 
+  --pair SERVER CODE   mit Stowly koppeln, etwa --pair http://192.168.1.10:8010 ABCD-EFGH
+                       (so ruft es der Befehl aus der App auf; Zertifikat, Token und Ursprünge
+                       kommen dann von Stowly, --cert und --key entfallen)
   --origin URL         Ursprung der App, die direkt drucken darf, z. B. https://stowly.home
-                       (mehrfach möglich; nur beim ersten Lauf, danach in der Konfiguration)
-  --model NAME         Modell des Druckers (Vorgabe QL-800; auch QL-810W, QL-820NWB)
+                       (mehrfach möglich; von Hand nur beim ersten Lauf, danach in der
+                       Konfiguration; mit --pair zusätzlich zu denen von Stowly)
+  --model NAME         Modell des Druckers (Vorgabe QL-800; auch QL-810W, QL-820NWB; mit --pair
+                       nur, wenn am USB keiner erkannt wird)
   --address ADRESSE    Adresse des Druckers (Vorgabe usb://04f9 = erster Brother am USB;
                        genauer usb://04f9:209b, im Netz tcp://192.168.1.60:9100)
   --cert DATEI         Zertifikat für HTTPS (aus pi/make-cert.sh), zusammen mit --key
@@ -76,12 +97,18 @@ fail() {
 CALL="$0 $*"
 while [ $# -gt 0 ]; do
   case "$1" in
+    --pair)
+      [ $# -ge 3 ] || fail "--pair braucht Server und Code, etwa --pair http://192.168.1.10:8010 ABCD-EFGH"
+      PAIR_SERVER="$2"
+      PAIR_CODE="$3"
+      shift 3
+      ;;
     --origin | --model | --address | --cert | --key)
       [ $# -ge 2 ] || fail "$1 braucht einen Wert (Hilfe: --help)"
       case "$1" in
         --origin) ORIGINS+=("$2") ;;
-        --model) MODEL="$2" ;;
-        --address) ADDRESS="$2" ;;
+        --model) MODEL="$2"; MODEL_SET=1 ;;
+        --address) ADDRESS="$2"; ADDRESS_SET=1 ;;
         --cert) CERT="$2" ;;
         --key) KEY="$2" ;;
       esac
@@ -107,13 +134,22 @@ for origin in "${ORIGINS[@]}"; do
 done
 [[ "$MODEL" =~ ^[A-Za-z0-9-]{2,40}$ ]] || fail "--model $MODEL ist kein Modellname (etwa QL-800)."
 [[ "$ADDRESS" =~ ^(usb|tcp)://[A-Za-z0-9.:_/-]+$ ]] || fail "--address $ADDRESS: erwartet usb://04f9:209b oder tcp://Adresse:9100"
-if [ -n "$CERT$KEY" ]; then
+if [ -n "$PAIR_SERVER" ]; then
+  [[ "$PAIR_SERVER" =~ ^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$ ]] \
+    || fail "--pair $PAIR_SERVER: erwartet die Adresse von Stowly, etwa http://192.168.1.10:8010"
+  [[ "$PAIR_CODE" =~ ^[A-Za-z0-9\ -]{8,20}$ ]] || fail "--pair: '$PAIR_CODE' ist kein Kopplungscode (etwa ABCD-EFGH)."
+  [ -z "$CERT$KEY" ] || fail "--cert und --key passen nicht zu --pair: Das Zertifikat kommt beim Koppeln von Stowly."
+elif [ -n "$CERT$KEY" ]; then
   [ -n "$CERT" ] && [ -n "$KEY" ] || fail "--cert und --key gehören zusammen."
   [ -f "$CERT" ] || fail "Zertifikat $CERT gibt es nicht."
   [ -f "$KEY" ] || fail "Schlüssel $KEY gibt es nicht."
 fi
 note "Ordner: $REPO_DIR"
-note "Drucker: $MODEL an $ADDRESS"
+if [ -n "$PAIR_SERVER" ]; then
+  note "Koppeln mit Stowly unter $PAIR_SERVER"
+else
+  note "Drucker: $MODEL an $ADDRESS"
+fi
 if [ ${#ORIGINS[@]} -gt 0 ]; then
   note "Ursprünge der App: ${ORIGINS[*]}"
 fi
@@ -126,22 +162,47 @@ note "System: ${PRETTY_NAME:-unbekannt}, Architektur $(uname -m)"
 if [ "${VERSION_CODENAME:-}" != "trixie" ]; then
   note "Hinweis: gedacht für Raspberry Pi OS Trixie; hier ist es ${VERSION_CODENAME:-unbekannt}. Weiter auf eigene Gefahr."
 fi
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
+python3 -P -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
   || fail "Python 3.12 oder neuer wird gebraucht (gefunden: $(python3 --version 2>&1))."
 note "$(python3 --version)"
 
-if [ "$OFFLINE" -eq 0 ]; then
-  step "Pakete installieren: ${PACKAGES[*]}"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  apt-get install -y --no-install-recommends "${PACKAGES[@]}"
+# ---------------------------------------------------------------- Bei Stowly melden
+if [ -n "$PAIR_SERVER" ]; then
+  if [ -f "$AP_MARKER" ]; then
+    step "Hinweis: Der Pi ist als Access Point eingerichtet"
+    note "Als Access Point erreicht er den Stowly-Server meist nicht. Dann zuerst den Access Point"
+    note "entfernen (sudo bash access-point.sh --remove), neu starten und den Befehl aus der App wiederholen."
+  fi
+  step "Bei Stowly melden ($PAIR_SERVER)"
+  # Noch mit dem python3 des Systems und dem Druckdienst aus diesem Ordner: Installiert ist noch nichts.
+  PYTHONPATH="$REPO_DIR/print" PYTHONDONTWRITEBYTECODE=1 \
+    python3 -P -m stowly_print pair --start --server "$PAIR_SERVER" --code "$PAIR_CODE" \
+    || fail "Stowly nimmt den Code nicht an (Meldung oben)."
+fi
+
+# ---------------------------------------------------------------- Pakete
+missing=()
+for package in "${PACKAGES[@]}"; do
+  dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed" || missing+=("$package")
+done
+if [ ${#missing[@]} -eq 0 ]; then
+  step "Pakete: alle schon installiert"
+elif [ "$OFFLINE" -eq 1 ]; then
+  fail "Es fehlen Pakete: ${missing[*]}. Einmal mit Internet ohne --offline laufen lassen."
 else
-  step "Pakete: übersprungen (--offline)"
-  missing=()
-  for package in "${PACKAGES[@]}"; do
-    dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed" || missing+=("$package")
+  step "Fehlende Pakete installieren: ${missing[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  updated=0
+  for attempt in 1 2 3 4 5 6; do
+    if apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update; then
+      updated=1
+      break
+    fi
+    note "apt ist belegt oder das Netz fehlt; neuer Versuch in 20 Sekunden ($attempt von 6)."
+    sleep 20
   done
-  [ ${#missing[@]} -eq 0 ] || fail "Es fehlen Pakete: ${missing[*]}. Einmal mit Internet ohne --offline laufen lassen."
+  [ "$updated" -eq 1 ] || fail "apt-get update ging nicht (Meldungen oben). Hat der Pi Internet?"
+  apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y --no-install-recommends "${missing[@]}"
 fi
 
 if [ -f "$AP_MARKER" ]; then
@@ -168,7 +229,7 @@ usermod -a -G plugdev "$SERVICE_USER"
 step "Programm nach $PREFIX (venv mit den Systempaketen)"
 install -d -m 755 "$PREFIX"
 if [ ! -x "$PREFIX/venv/bin/python" ]; then
-  python3 -m venv --system-site-packages "$PREFIX/venv"
+  python3 -P -m venv --system-site-packages "$PREFIX/venv"
 fi
 build="$(mktemp -d)"
 trap 'rm -rf "$build"' EXIT
@@ -178,21 +239,40 @@ rm -rf "$build/print/build" "$build/print/"*.egg-info
 PIP_CONFIG_FILE=/dev/null "$PREFIX/venv/bin/pip" install --no-cache-dir --no-deps --no-build-isolation \
   --no-index --force-reinstall "$build/print"
 
-if [ "$WITH_BROTHER" -eq 1 ] && [ "$OFFLINE" -eq 0 ]; then
+# Sind genau die festgelegten Versionen der Brother-Bibliothek schon da? Dann braucht es kein Internet.
+brother_installed() {
+  "$PREFIX/venv/bin/python" -P - "$REPO_DIR/print/requirements-brother.txt" <<'PYEOF'
+import importlib.metadata as meta
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    wanted = dict(re.findall(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", handle.read(), re.MULTILINE))
+try:
+    present = all(meta.version(name) == version for name, version in wanted.items())
+except meta.PackageNotFoundError:
+    present = False
+sys.exit(0 if wanted and present else 1)
+PYEOF
+}
+
+if [ "$WITH_BROTHER" -eq 0 ]; then
+  step "Brother-Bibliothek: übersprungen (--without-brother)"
+elif brother_installed; then
+  step "Brother-Bibliothek: schon da, in den festgelegten Versionen"
+elif [ "$OFFLINE" -eq 1 ]; then
+  step "Brother-Bibliothek: übersprungen (--offline), die vorhandene bleibt"
+else
   step "Brother-Bibliothek von PyPI, auf Version und Prüfsumme festgelegt (print/requirements-brother.txt)"
   # Nur PyPI, nicht piwheels: Dessen Dateien haben andere Prüfsummen. packbits gibt es nur als
   # Quellpaket; --no-build-isolation baut es mit python3-setuptools, statt setuptools ungeprüft
   # in eine eigene Bau-Umgebung zu laden.
   PIP_CONFIG_FILE=/dev/null "$PREFIX/venv/bin/pip" install --no-cache-dir --no-deps --no-build-isolation \
     --require-hashes --index-url https://pypi.org/simple -r "$REPO_DIR/print/requirements-brother.txt"
-elif [ "$WITH_BROTHER" -eq 1 ]; then
-  step "Brother-Bibliothek: übersprungen (--offline), die vorhandene bleibt"
-else
-  step "Brother-Bibliothek: übersprungen (--without-brother)"
 fi
 
 step "Prüfen, was der Dienst importiert"
-"$PREFIX/venv/bin/python" - <<'PYEOF'
+"$PREFIX/venv/bin/python" -P - <<'PYEOF'
 import importlib.metadata as meta
 import sys
 
@@ -216,29 +296,38 @@ install -m 644 "$SCRIPT_DIR/99-stowly-brother.rules" "$UDEV_RULE"
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=usb --action=add || true
 
-# ---------------------------------------------------------------- Konfiguration
-step "Konfiguration $CONFIG"
+# ---------------------------------------------------------------- Skripte für später
+step "Skripte und Anleitung nach $PREFIX/pi (access-point.sh, overlay.sh, make-cert.sh)"
+install -d -m 755 "$PREFIX/pi"
+for file in "$SCRIPT_DIR"/*.sh; do
+  install -m 755 "$file" "$PREFIX/pi/$(basename "$file")"
+done
+install -m 644 "$SCRIPT_DIR/README.md" "$PREFIX/pi/README.md"
+
+# ---------------------------------------------------------------- Konfiguration (von Hand)
 install -d -m 755 "$CONFIG_DIR"
-if [ -n "$CERT" ]; then
-  install -d -m 750 -o root -g "$SERVICE_USER" "$TLS_DIR"
-  install -m 644 -o root -g root "$CERT" "$TLS_DIR/pi.crt"
-  # Den Schlüssel liest nur der Dienst.
-  install -m 600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$KEY" "$TLS_DIR/pi.key"
-  note "Zertifikat und Schlüssel liegen in $TLS_DIR"
-fi
 NEW_TOKEN=""
-if [ -f "$CONFIG" ]; then
-  note "gibt es schon; sie bleibt, wie sie ist (Token, Ursprünge, Drucker)."
-  if [ -f "$TLS_DIR/pi.crt" ] && ! grep -q '^\[https\]' "$CONFIG"; then
-    note "Hinweis: Ein Zertifikat liegt bereit, die Konfiguration nennt aber kein [https] (README, „Konfiguration\")."
+if [ -z "$PAIR_SERVER" ]; then
+  step "Konfiguration $CONFIG"
+  if [ -n "$CERT" ]; then
+    install -d -m 750 -o root -g "$SERVICE_USER" "$TLS_DIR"
+    install -m 644 -o root -g root "$CERT" "$TLS_DIR/pi.crt"
+    # Den Schlüssel liest nur der Dienst.
+    install -m 600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$KEY" "$TLS_DIR/pi.key"
+    note "Zertifikat und Schlüssel liegen in $TLS_DIR"
   fi
-else
-  NEW_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-  HTTPS=0
-  [ -f "$TLS_DIR/pi.crt" ] && [ -f "$TLS_DIR/pi.key" ] && HTTPS=1
-  umask 027
-  TOKEN="$NEW_TOKEN" MODEL="$MODEL" ADDRESS="$ADDRESS" HTTPS="$HTTPS" TLS_DIR="$TLS_DIR" \
-    python3 - "${ORIGINS[@]}" >"$CONFIG.neu" <<'PYEOF'
+  if [ -f "$CONFIG" ]; then
+    note "gibt es schon; sie bleibt, wie sie ist (Token, Ursprünge, Drucker)."
+    if [ -f "$TLS_DIR/pi.crt" ] && ! grep -q '^\[https\]' "$CONFIG"; then
+      note "Hinweis: Ein Zertifikat liegt bereit, die Konfiguration nennt aber kein [https] (README, „Konfiguration\")."
+    fi
+  else
+    NEW_TOKEN="$(python3 -P -c 'import secrets; print(secrets.token_urlsafe(24))')"
+    HTTPS=0
+    [ -f "$TLS_DIR/pi.crt" ] && [ -f "$TLS_DIR/pi.key" ] && HTTPS=1
+    umask 027
+    TOKEN="$NEW_TOKEN" MODEL="$MODEL" ADDRESS="$ADDRESS" HTTPS="$HTTPS" TLS_DIR="$TLS_DIR" \
+      python3 -P - "${ORIGINS[@]}" >"$CONFIG.neu" <<'PYEOF'
 import json
 import os
 import sys
@@ -297,17 +386,18 @@ lines += [
 ]
 print("\n".join(lines))
 PYEOF
-  umask 022
-  chown root:"$SERVICE_USER" "$CONFIG.neu"
-  chmod 640 "$CONFIG.neu"
-  mv "$CONFIG.neu" "$CONFIG"
-  note "angelegt; nur root und der Dienst können sie lesen."
-  if [ ${#ORIGINS[@]} -eq 0 ]; then
-    note "Hinweis: kein --origin angegeben. Ohne Ursprung kann die App nicht direkt drucken (nur über die Seite /p)."
+    umask 022
+    chown root:"$SERVICE_USER" "$CONFIG.neu"
+    chmod 640 "$CONFIG.neu"
+    mv "$CONFIG.neu" "$CONFIG"
+    note "angelegt; nur root und der Dienst können sie lesen."
+    if [ ${#ORIGINS[@]} -eq 0 ]; then
+      note "Hinweis: kein --origin angegeben. Ohne Ursprung kann die App nicht direkt drucken (nur über die Seite /p)."
+    fi
   fi
+  "$PREFIX/venv/bin/python" -P -c "from stowly_print.config import load_config; load_config('$CONFIG')" \
+    || fail "Die Konfiguration $CONFIG ist nicht brauchbar (Meldung oben)."
 fi
-"$PREFIX/venv/bin/python" -c "from stowly_print.config import load_config; load_config('$CONFIG')" \
-  || fail "Die Konfiguration $CONFIG ist nicht brauchbar (Meldung oben)."
 
 # ---------------------------------------------------------------- Journal, Dienst
 step "Journal begrenzen (nur im Arbeitsspeicher, höchstens 16 MB)"
@@ -319,6 +409,24 @@ step "Systemdienst stowly-print (startet immer wieder neu)"
 install -m 644 "$SCRIPT_DIR/stowly-print.service" "$UNIT"
 install -m 644 "$SCRIPT_DIR/README.md" "$PREFIX/README.md"
 systemctl daemon-reload
+
+# ---------------------------------------------------------------- Koppeln
+if [ -n "$PAIR_SERVER" ]; then
+  step "Mit Stowly koppeln (Schlüssel und Zertifikat, Token, Drucker in Stowly)"
+  pair_args=(--server "$PAIR_SERVER" --code "$PAIR_CODE")
+  for origin in "${ORIGINS[@]}"; do
+    pair_args+=(--origin "$origin")
+  done
+  if [ "$MODEL_SET" -eq 1 ]; then
+    pair_args+=(--model "$MODEL")
+  fi
+  if [ "$ADDRESS_SET" -eq 1 ]; then
+    pair_args+=(--address "$ADDRESS")
+  fi
+  "$PREFIX/venv/bin/python" -P -m stowly_print pair "${pair_args[@]}" \
+    || fail "Das Koppeln ging nicht (Meldung oben). Die bisherige Konfiguration ist unverändert."
+fi
+
 systemctl enable stowly-print.service
 systemctl restart stowly-print.service
 sleep 4
@@ -327,8 +435,13 @@ if ! systemctl is-active --quiet stowly-print.service; then
   fail "Der Dienst läuft nicht (Meldungen oben)."
 fi
 
-step "Probe: GET /v1/health"
-"$PREFIX/venv/bin/python" - "$CONFIG" <<'PYEOF'
+if [ -n "$PAIR_SERVER" ]; then
+  step "Selbsttest: HTTP, HTTPS mit dem Zertifikat von Stowly, Testetikett"
+  "$PREFIX/venv/bin/python" -P -m stowly_print selftest \
+    || fail "Der Selbsttest ging nicht durch (Meldungen oben; Journal: journalctl -u stowly-print -e)."
+else
+  step "Probe: GET /v1/health"
+  "$PREFIX/venv/bin/python" -P - "$CONFIG" <<'PYEOF'
 import json
 import sys
 import urllib.request
@@ -348,8 +461,17 @@ for printer in health["printers"]:
     print(f"    Drucker {printer['name']} ({printer['driver']}): erreichbar={status['reachable']}, "
           f"bereit={status['ready']}, Fehler={status['errors'] or 'keine'}")
 PYEOF
+fi
 
 # ---------------------------------------------------------------- Zusammenfassung
+if [ -n "$PAIR_SERVER" ]; then
+  step "Fertig: Der Pi ist mit Stowly gekoppelt"
+  note "Der Drucker steht in Stowly unter Einstellungen → Drucker; die App zeigt die Kopplung als fertig."
+  note "Neu koppeln (neue IP-Adresse, Zertifikat läuft ab): denselben Befehl mit einem neuen Code aus der App."
+  note "Später, wenn alles läuft (README): eigener Access Point mit sudo bash $PREFIX/pi/access-point.sh,"
+  note "zuletzt der Schreibschutz mit sudo bash $PREFIX/pi/overlay.sh on."
+  exit 0
+fi
 step "Fertig"
 if [ -n "$NEW_TOKEN" ]; then
   note "Token des Druckers (in Stowly beim Drucker eintragen, steht auch in $CONFIG):"

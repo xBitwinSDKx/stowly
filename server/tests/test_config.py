@@ -22,7 +22,7 @@ def test_defaults_point_into_the_checkout_not_the_working_directory():
     assert settings.web_dir == repo / "web" / "dist"
     assert settings.database_path == repo / "data" / "stowly.sqlite3"
     assert settings.password is None
-    assert settings.configured is False
+    assert settings.env_password is None and settings.password_fallback is False
     assert settings.off_enabled is True
     assert settings.off_contact is None
 
@@ -45,7 +45,7 @@ def test_environment_overrides_everything():
     assert settings.data_dir == Path("/data")
     assert settings.web_dir == Path("/app/web")
     assert settings.password == "geheim"
-    assert settings.configured is True
+    assert settings.env_password == "geheim"  # wird beim Start als Hash übernommen
     assert settings.dev is False
     assert settings.off_enabled is False
     assert settings.off_url == "http://127.0.0.1:1"
@@ -57,6 +57,11 @@ def test_dev_mode_supplies_a_password_only_if_none_is_set():
     assert Settings.from_env({"STOWLY_DEV": "1"}).password == DEV_PASSWORD
     assert Settings.from_env({"STOWLY_PASSWORD": "eigenes"}, dev=True).password == "eigenes"
     assert Settings.from_env({"STOWLY_PASSWORD": "   "}, dev=False).password is None
+    # Der Rückfall gilt wie ein Passwort aus der Umgebung, wird aber nie als Hash übernommen.
+    fallback = Settings.from_env({}, dev=True)
+    assert fallback.password_fallback is True and fallback.env_password is None
+    own = Settings.from_env({"STOWLY_PASSWORD": "eigenes"}, dev=True)
+    assert own.password_fallback is False and own.env_password == "eigenes"
 
 
 @pytest.mark.parametrize(

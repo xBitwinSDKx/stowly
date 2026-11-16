@@ -318,6 +318,9 @@ describe("Updates über GitHub (docs/integrationen.md, Abschnitt 10)", () => {
       check_error: null,
       updater_ready: false,
       updater_seen_at: null,
+      updater_kind: null,
+      updater_version: null,
+      updater_command: null,
       state: "idle",
       state_version: null,
       state_at: null,
@@ -330,7 +333,7 @@ describe("Updates über GitHub (docs/integrationen.md, Abschnitt 10)", () => {
     expect((await post(network, token, ENDPOINTS.install_update.path, { version: "0.2.0", extra: 1 })).status).toBe(422);
     expect((await post(network, token, ENDPOINTS.install_update.path, { version: `${"1".repeat(38)}.0.0` })).status).toBe(422);
     const off = await post(network, token, ENDPOINTS.install_update.path, { version: "0.2.0" });
-    expect([off.status, off.body.error.code, off.body.error.message]).toEqual([503, "not_configured", "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO)."]);
+    expect([off.status, off.body.error.code, off.body.error.message]).toEqual([503, "not_configured", "Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung."]);
 
     server.updateRepo = "beispiel/stowly";
     server.githubRelease = RELEASE;

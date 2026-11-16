@@ -1,6 +1,7 @@
 # Start:  docker compose up -d --build
-# Vorher: .env.example nach .env kopieren und STOWLY_PASSWORD setzen.
-# Anleitung und Prüfliste: docs/betrieb.md
+# Vorher: .env.example nach .env kopieren und anpassen. STOWLY_PASSWORD ist seit 0.3.0 freiwillig:
+# Leer legt es fest, wer die App zuerst öffnet (docs/betrieb.md, Abschnitt 19.2).
+# Anleitung und Prüfliste: docs/betrieb.md. Ohne Kommandozeile, per Mausklick in DSM: Abschnitt 19.
 # USB-Drucker direkt am Server (zuschaltbar): docker-compose.usb.yml
 #
 # Auf dem Entwicklungsrechner gibt es kein Docker. Gestartet ist Stowly so bisher auf einer Synology
@@ -23,6 +24,9 @@ services:
       # Läuft der Proxy auf einem anderen Rechner, in .env STOWLY_PUBLISH=8010 setzen und den
       # Port in der Firewall auf das Heimnetz beschränken. Läuft er als Container auf diesem
       # Rechner, erreicht er 127.0.0.1 nicht: dann ein gemeinsames Netz, siehe docs/betrieb.md.
+      # HTTPS durch Stowly selbst (Port 8443 im Container) steht hier absichtlich nicht: Auf 8443
+      # liegt oft schon ein Reverse Proxy. Wer es will, legt docker-compose.override.yml mit
+      # ports: ["8443:8443"] an und setzt STOWLY_PUBLISH=8010 (docs/betrieb.md, Abschnitt 20.2).
       - "${STOWLY_PUBLISH:-127.0.0.1:8010}:8010"
     volumes:
       # Alles, was Stowly speichert: die Datenbank (/data/stowly.sqlite3) samt Bildern, dazu der

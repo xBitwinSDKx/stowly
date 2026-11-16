@@ -1464,7 +1464,7 @@ describe("Updates über GitHub", () => {
 
     await expectCoreError(mock({ scenarios: ["offline"] }).update.check(), "offline");
     const off = await expectCoreError(mock({ scenarios: ["release-off"] }).update.check(), "not_configured");
-    expect(off.message).toBe("Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+    expect(off.message).toBe("Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung.");
   });
 
   it("fordert an, prüft dabei wie der Server, und die Anforderung bleibt ohne Wartezeit stehen", async () => {
@@ -1521,5 +1521,194 @@ describe("Updates über GitHub", () => {
     expect((await core.integrations.load()).update.state).toBe("requested");
     core.control.setIntegrations(null);
     expect((await core.integrations.load()).update).toEqual(before);
+  });
+});
+
+describe("Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8)", () => {
+  it("ist ohne Ausgangslage abgeschlossen; die Ausgangslagen zeigen die anderen Fälle", async () => {
+    const finished = await mock().setup.load();
+    expect(finished.finished_at).not.toBeNull();
+    expect(finished.password_source).toBe("app");
+    expect(finished.steps.map((step) => [step.id, step.state])).toEqual([
+      ["https", "done"],
+      ["printer", "done"],
+      ["updates", "done"],
+      ["notifications", "done"],
+    ]);
+    expect(finished.https).toMatchObject({ enabled: true, port: 8443, http_port: 8010, origins: ["https://192.168.1.10:8443"], ca: { name: "Stowly CA 3F2A1C" } });
+
+    const open = mock({ scenarios: ["setup-open"] });
+    const status = await open.setup.load();
+    expect(status.finished_at).toBeNull();
+    expect(status.steps.map((step) => [step.id, step.state, step.ready])).toEqual([
+      ["https", "open", false],
+      ["printer", "open", true],
+      ["updates", "open", false],
+      ["notifications", "open", false],
+    ]);
+    expect(value(open.push.state)).toBe("not_configured");
+    expect((await open.serverConfig.load()).update).toEqual({ enabled: false, repo: "beispiel/stowly", source: "default", available: true });
+    expect((await open.integrations.load()).update).toMatchObject({ configured: false, updater_ready: false, updater_command: expect.stringContaining("python -m stowly.updater") });
+
+    const env = mock({ scenarios: ["setup-env"] });
+    expect((await env.setup.load()).password_source).toBe("env");
+    expect(await env.serverConfig.load()).toEqual({
+      push: { contact: "mailto:haushalt@example.org", source: "env" },
+      update: { enabled: true, repo: "beispiel/stowly", source: "env", available: false },
+    });
+
+    expect((await mock({ scenarios: ["no-https"] }).setup.load()).https).toMatchObject({ enabled: false, listening: false, port: null, ca: null, origins: [] });
+  });
+
+  it("beginnt mit unconfigured ohne Passwort und legt das erste fest; ein zweites gibt conflict", async () => {
+    const core = mock({ scenarios: ["unconfigured"] });
+    expect(value(core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
+    expect(value(core.sync.status).server_configured).toBe(false);
+    expect(value(core.data.packages)).toEqual([]);
+    await expectCoreError(core.session.login(MOCK_PASSWORD, "Handy"), "not_configured");
+    await expectCoreError(core.session.createPassword("kurz", "Handy"), "invalid");
+
+    await core.session.createPassword("ein langes Passwort", "Rechner");
+    expect(value(core.session.state)).toMatchObject({ status: "signed_in", device: { name: "Rechner" } });
+    expect(value(core.sync.status).server_configured).toBe(true);
+    expect((await core.setup.load()).finished_at).toBeNull();
+
+    await core.session.logout({ discard_pending: true });
+    await expectCoreError(core.session.createPassword("noch ein Passwort", "Flur"), "conflict");
+    await expectCoreError(core.session.login(MOCK_PASSWORD, "Flur"), "invalid_password");
+    await core.session.login("ein langes Passwort", "Flur");
+  });
+
+  it("ändert das Passwort; ein falsches bisheriges meldet nicht ab, eines aus der Umgebung lässt sich nicht ändern", async () => {
+    const core = mock();
+    await expectCoreError(core.session.changePassword("falsch", "ein neues Passwort"), "invalid_password");
+    expect(value(core.session.state).status).toBe("signed_in");
+    await expectCoreError(core.session.changePassword(MOCK_PASSWORD, "kurz"), "invalid");
+    await core.session.changePassword(MOCK_PASSWORD, "ein neues Passwort");
+    await core.session.logout();
+    await expectCoreError(core.session.login(MOCK_PASSWORD, "Handy"), "invalid_password");
+    await core.session.login("ein neues Passwort", "Handy");
+
+    await expectCoreError(mock({ scenarios: ["setup-env"] }).session.changePassword(MOCK_PASSWORD, "ein neues Passwort"), "conflict");
+    await expectCoreError(mock({ scenarios: ["offline"] }).session.changePassword(MOCK_PASSWORD, "ein neues Passwort"), "offline");
+  });
+
+  it("markiert Schritte, schließt ab und trägt Port und Adressen ein", async () => {
+    const core = mock({ scenarios: ["setup-open"] });
+    expect((await core.setup.update({ step: { id: "https", state: "skipped" } })).steps[0]).toMatchObject({ id: "https", state: "skipped", changed_at: NOW.toISOString() });
+    expect((await core.setup.update({ finished: true })).finished_at).toBe(NOW.toISOString());
+    expect((await core.setup.update({ finished: false })).finished_at).toBeNull();
+    const moved = await core.setup.update({ https_port: 8444, addresses: ["nas.fritz.box"] });
+    expect(moved.https).toMatchObject({ port: 8444, port_source: "manual", origins: ["https://192.168.1.10:8444", "https://nas.fritz.box:8444"] });
+    const error = await expectCoreError(core.setup.update({ addresses: ["example.org"] }), "invalid");
+    expect(error.details.errors).toEqual([{ loc: ["body", "addresses", 0], msg: "Die Adresse liegt nicht im Heimnetz.", type: "value_error" }]);
+    expect((await core.setup.update({ https_port: null })).https).toMatchObject({ port: 8443, port_source: "default" });
+    await expectCoreError(mock({ scenarios: ["offline"] }).setup.load(), "offline");
+  });
+
+  it("prüft das Vertrauen nach setSecureTrusted", async () => {
+    const core = mock();
+    expect(await core.setup.reachesSecurely("https://192.168.1.10:8443")).toBe(false);
+    core.control.setSecureTrusted(true);
+    expect(await core.setup.reachesSecurely("https://192.168.1.10:8443")).toBe(true);
+    const off = mock({ scenarios: ["no-https"] });
+    off.control.setSecureTrusted(true);
+    expect(await off.setup.reachesSecurely("https://192.168.1.10:8443")).toBe(false);
+  });
+
+  it("setzt den Kontakt für Push: Push folgt ihm; die Umgebung geht vor", async () => {
+    const core = mock({ scenarios: ["setup-open"] });
+    expect(value(core.push.state)).toBe("not_configured");
+    await expectCoreError(core.serverConfig.update({ push_contact: "kein Kontakt" }), "invalid");
+    expect((await core.serverConfig.update({ push_contact: "haushalt@example.org" })).push).toEqual({ contact: "mailto:haushalt@example.org", source: "app" });
+    expect(value(core.push.state)).toBe("off");
+    expect((await core.integrations.load()).push.configured).toBe(true);
+    expect((await core.setup.load()).steps.find((step) => step.id === "notifications")?.ready).toBe(true);
+    await core.serverConfig.update({ push_contact: null });
+    expect(value(core.push.state)).toBe("not_configured");
+
+    const env = mock({ scenarios: ["setup-env"] });
+    await expectCoreError(env.serverConfig.update({ push_contact: "haushalt@example.org" }), "conflict");
+    await expectCoreError(env.serverConfig.update({ update_enabled: false }), "conflict");
+  });
+
+  it("schaltet Updates mit dem Schalter der App", async () => {
+    const core = mock({ scenarios: ["release-off"] });
+    expect((await core.serverConfig.load()).update).toEqual({ enabled: false, repo: "beispiel/stowly", source: "default", available: true });
+    await expectCoreError(core.update.check(), "not_configured");
+    expect((await core.serverConfig.update({ update_enabled: true })).update).toEqual({ enabled: true, repo: "beispiel/stowly", source: "app", available: true });
+    expect((await core.integrations.load()).update).toMatchObject({ configured: true, repo: "beispiel/stowly" });
+    expect((await core.update.check()).checked_at).toBe(NOW.toISOString());
+  });
+
+  it("koppelt einen Pi: Code und Befehl, Stand, Abschluss, Ablauf, Abbruch", async () => {
+    const core = mock({ scenarios: ["empty"] });
+    const created = await core.printers.pair({ origin: "http://192.168.1.10:8010" });
+    expect(created).toMatchObject({ state: "waiting", printer_id: null, pi: null });
+    expect(created.command).toBe(`curl -fsSL http://192.168.1.10:8010/api/pi/install.sh | sudo sh -s -- ${created.code ?? ""}`);
+    expect(await core.printers.pairing(created.id)).toMatchObject({ state: "waiting", code: null, command: null });
+
+    core.control.completePairing();
+    const paired = await core.printers.pairing(created.id);
+    expect(paired).toMatchObject({ state: "paired", pi: { hostname: "stowly-pi", addresses: ["192.168.1.20"], model: "QL-570", printer_found: true } });
+    const printer = value(core.data.printers).find((candidate) => candidate.id === paired.printer_id);
+    expect(printer).toMatchObject({ name: "QL-570", connection: "direct", direct: { urls: ["https://192.168.1.20:8443", "https://stowly-pi.local:8443", "http://192.168.1.20:8080"] } });
+    // Vom Server angelegt: kein ungesendeter Befehl dieses Geräts.
+    expect(value(core.sync.status).pending).toBe(0);
+    expect((await core.printers.probe(printer?.id ?? "")).reachable).toBe(true);
+
+    // Neu koppeln übernimmt den Drucker; ein neuer Code bricht den älteren ab.
+    const first = await core.printers.pair({ origin: "https://192.168.1.10:8443", printer_id: printer?.id });
+    expect(first.command).toContain("http://192.168.1.10:8010/api/pi/install.sh");
+    const second = await core.printers.pair({ origin: "https://192.168.1.10:8443", printer_id: printer?.id });
+    expect((await core.printers.pairing(first.id)).state).toBe("cancelled");
+    core.control.expirePairing(second.id);
+    expect((await core.printers.pairing(second.id)).state).toBe("expired");
+
+    const third = await core.printers.pair({ origin: "http://192.168.1.10:8010" });
+    await core.printers.cancelPairing(third.id);
+    expect((await core.printers.pairing(third.id)).state).toBe("cancelled");
+    await core.printers.cancelPairing("00000000-0000-4000-8000-000000000000");
+    await expectCoreError(core.printers.pairing("00000000-0000-4000-8000-000000000000"), "not_found");
+    await expectCoreError(core.printers.pair({ origin: "kein Ursprung" }), "invalid");
+    await expectCoreError(core.printers.pair({ origin: "http://192.168.1.10:8010", printer_id: sampleUuid(3, 99) }), "invalid");
+  });
+
+  it("meldet gekoppelte Pi mit dem Ablauf ihres Zertifikats (paired_printers)", async () => {
+    expect((await mock().setup.load()).paired_printers).toEqual([]);
+    const core = mock({ scenarios: ["pi-cert-expiring"] });
+    expect((await core.setup.load()).paired_printers).toEqual([
+      { printer_id: PRINTER_IDS.cellar, hostname: "stowly-pi", not_after: new Date(NOW.getTime() + 20.5 * 86_400_000).toISOString() },
+    ]);
+    // Neu gekoppelt: Das neue Zertifikat gilt 825 Tage.
+    const again = await core.printers.pair({ origin: "http://192.168.1.10:8010", printer_id: PRINTER_IDS.cellar });
+    core.control.completePairing(again.id);
+    expect((await core.setup.load()).paired_printers).toEqual([
+      { printer_id: PRINTER_IDS.cellar, hostname: "stowly-pi", not_after: new Date(NOW.getTime() + 825 * 86_400_000).toISOString() },
+    ]);
+    // Ein gelöschter Drucker fällt weg.
+    await core.printers.remove(PRINTER_IDS.cellar);
+    expect((await core.setup.load()).paired_printers).toEqual([]);
+  });
+
+  it("koppelt mit Wartezeit nach einer Weile von selbst", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const core = createMockCore({ latency: 10, now: () => NOW, scenarios: ["empty"] });
+      const pairing = core.printers.pair({ origin: "http://192.168.1.10:8010" });
+      await vi.advanceTimersByTimeAsync(5);
+      const created = await pairing;
+      await vi.advanceTimersByTimeAsync(100);
+      const installing = core.printers.pairing(created.id);
+      await vi.advanceTimersByTimeAsync(5);
+      expect((await installing).state).toBe("installing");
+      await vi.advanceTimersByTimeAsync(150);
+      const paired = core.printers.pairing(created.id);
+      await vi.advanceTimersByTimeAsync(5);
+      expect((await paired).state).toBe("paired");
+      expect(value(core.data.printers)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

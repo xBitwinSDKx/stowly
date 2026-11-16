@@ -31,6 +31,8 @@ export {
   HA_OFF,
   pushTestPayload,
   validateCommand,
+  type FakePairing,
+  type FakePi,
   type FakeRelease,
   type FakeServerOptions,
   type FakeUpdateRequest,

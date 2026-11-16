@@ -1,7 +1,7 @@
 import { useCallback, useMemo, type ComponentType } from "react";
 import { RouterProvider } from "react-router/dom";
 
-import { CoreProvider, ROUTES, type Core } from "@/contract";
+import { CoreProvider, ROUTES, setupPath, type Core } from "@/contract";
 import { LogoutProvider } from "@/features/auth/logout";
 import { ToastProvider } from "@/ui/base";
 
@@ -26,11 +26,14 @@ export function App({ core, scanPage }: AppProps) {
   // Nach einem bewussten Abmelden beginnt die nächste Anmeldung wieder beim Bestand
   // und nicht in der Ansicht, in der abgemeldet wurde.
   const backToStart = useCallback(() => void router.navigate(ROUTES.stock, { replace: true }), [router]);
+  // Nach dem ersten Passwort beginnt die Einrichtung; der Bestand blitzt davor nicht auf.
+  const toSetup = useCallback(() => void router.navigate(ROUTES.setup, { replace: true }), [router]);
+  const toSecureStep = useCallback(() => void router.navigate(setupPath("https"), { replace: true }), [router]);
   return (
     <ErrorBoundary>
       <CoreProvider core={core}>
         <ToastProvider>
-          <SessionGate onLogout={backToStart}>
+          <SessionGate onLogout={backToStart} onFirstRun={toSetup} onResumeSetup={toSecureStep}>
             <LogoutProvider>
               <RouterProvider router={router} />
             </LogoutProvider>

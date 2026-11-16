@@ -68,6 +68,15 @@
  *   `str.casefold()`. Die Sätze bei 400 sind die des Servers (Stand Runde 2).
  * - `GET /api/ha/summary` gibt es nicht: Der Kern ruft den Sensor nie. Die Nachbildung antwortet
  *   darauf wie auf jeden unbekannten Aufruf (ohne Geräte-Token 401, sonst 501).
+ * - Einrichtung (11.6 bis 11.8): Das erste Passwort prüft keine Kopfzeile `Host`, und gelernt wird
+ *   keine Adresse; HTTPS gibt der Test vor (`https`, Vorgabe: Listener läuft, eine Adresse im
+ *   Heimnetz, eine CA), `ready` von `https` heißt `https.seen_at` gesetzt. Die CA zum
+ *   Herunterladen sind ein paar Bytes, kein Zertifikat. Den Pi spielt der Test über
+ *   `startPairing`, `completePairing` und `expirePairing`; die Aufrufe des Pi selbst
+ *   (`/api/pi/pair…`, Startskript, Paket) gibt es nicht. Ein gekoppelter Pi wird ein direkter
+ *   Drucker wie beim Server, aber ohne Uhr je Feld.
+ * - Updates schaltet ohne `updateRepo` (STOWLY_UPDATE_REPO) der Schalter der App (`updateSwitch`)
+ *   mit `updateRepoDefault` ein; Push hängt am Kontakt (`pushContact`, Vorgabe aus der Umgebung).
  *
  * Ohne DOM und ohne Node: Die Datei läuft in den Tests (jsdom) und im Entwicklungsserver.
  */
@@ -84,20 +93,35 @@ import {
   type Changes,
   type Command,
   type CommandResult,
+  type ConfigSource,
   type Device,
   type ErrorBody,
   type ErrorCode,
   type HaStatus,
   type HouseholdSettings,
+  type HttpsStatus,
   type IntegrationStatus,
   type LabelTemplate,
+  type LoginResponse,
   type Package,
+  type PairedPrinter,
+  type PasswordSource,
+  type PiInfo,
+  type PiPairing,
+  type PiPairingState,
+  type Printer,
   type Product,
   type PushSubscriptionInput,
   type PushTestResult,
   type PushTestStatus,
   type RejectCode,
+  type ServerConfig,
+  type ServerConfigChanges,
   type ServerHealth,
+  type SetupChanges,
+  type SetupStatus,
+  type SetupStepId,
+  type SetupStepState,
   type ShoppingItem,
   type SyncResponse,
   type UpdateStatus,
@@ -586,6 +610,76 @@ const UPDATE_INSTALLING_STALE_MS = 15 * 60_000;
 /** Eine Version wie 1.2.3 (`VERSION_PATTERN` im Server). */
 const VERSION_RE = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/;
 
+// ------------------------------------------------------------------------------------------
+// Einrichtung (docs/sync-protokoll.md 11.6 bis 11.8, docs/integrationen.md 11 und 12)
+// ------------------------------------------------------------------------------------------
+
+/** Die Schritte des Assistenten nach dem Passwort, in ihrer Reihenfolge. */
+export const SETUP_STEP_IDS: readonly SetupStepId[] = ["https", "printer", "updates", "notifications"];
+
+/** Was der Server sagt, wenn Updates aus sind (docs/integrationen.md, 10.5). */
+const UPDATE_OFF = "Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung.";
+
+/** So lange gilt ein Kopplungscode (`PI_PAIRING_TTL_S` im Server). */
+const PI_PAIRING_TTL_MS = 1_800_000;
+/** So lange gilt das Zertifikat eines Pi (`PI_CERT_DAYS`). */
+const PI_CERT_DAYS = 825;
+/** Crockford-Base32 ohne I, L, O, U. */
+const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** Eine Adresse im Heimnetz (docs/integrationen.md, 11.3): private IPv4, ULA oder ein lokaler Name. */
+export function isHomeAddress(address: string): boolean {
+  const ip = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
+  if (ip) {
+    const [a, b] = [Number(ip[1]), Number(ip[2])];
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (/^f[cd][0-9a-f]{0,2}:/i.test(address)) {
+    return true;
+  }
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.(local|lan|home|home\.arpa|internal|localdomain|fritz\.box)$/i.test(address);
+}
+
+/** Kontakt für die Push-Dienste nach den Regeln des Servers (server/stowly/config.py); liefert die gespeicherte Form oder null. */
+function pushContactOf(value: string): string | null {
+  const contact = value.startsWith("https://") || value.startsWith("mailto:") ? value : `mailto:${value}`;
+  if (!/^[\x21-\x7e]+$/.test(contact)) {
+    return null;
+  }
+  if (contact.startsWith("mailto:")) {
+    return /^mailto:[^\s@<>()[\],;:"]+@[^\s@<>()[\],;:"]+\.[^\s@<>()[\],;:"]+$/.test(contact) ? contact : null;
+  }
+  try {
+    const url = new URL(contact);
+    return url.username === "" && url.password === "" && /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(url.hostname) ? contact : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Eine Kopplung, wie der Server sie führt (Tabelle `pi_pairings`). */
+export interface FakePairing {
+  id: string;
+  code: string;
+  state: PiPairingState;
+  expires_at: string;
+  printer_id: string | null;
+  pi: PiInfo | null;
+  origin: string;
+}
+
+/** Was der Test beim Abschluss einer Kopplung vorgeben kann: was der Pi meldet. */
+export interface FakePi {
+  hostname?: string;
+  address?: string;
+  /** Erkanntes Druckermodell; null = keins. Vorgabe "QL-570". */
+  model?: string | null;
+  /** Name eines neuen Druckers in Stowly; Vorgabe das Modell. */
+  name?: string;
+  /** Ablauf des Zertifikats, das der Server ausstellt; Vorgabe in `PI_CERT_DAYS` (825) Tagen. */
+  not_after?: string;
+}
+
 /** Ist `version` neuer als `than`? Verglichen werden die drei Zahlen; was keine Version wie 1.2.3 ist, ist nie neuer. */
 function isNewerVersion(version: string, than: string): boolean {
   const a = VERSION_RE.exec(version);
@@ -609,14 +703,21 @@ export class FakeServer {
   rev = 0;
   /** Protokollversion, die der Server verlangt. */
   protocol: number = PROTOCOL_VERSION;
-  /** false = STOWLY_PASSWORD ist nicht gesetzt. */
+  /**
+   * false = es gibt noch kein Haushalts-Passwort (weder STOWLY_PASSWORD noch aus der App): Die
+   * Anmeldung antwortet 503, `POST /api/setup/password` setzt es.
+   */
   configured = true;
+  /** Woher das Passwort kommt: "env" ist nur in der Umgebung änderbar (409), "app" auch in der App. */
+  passwordSource: PasswordSource = "app";
   /** Alle Sync-Anfragen in der Reihenfolge ihres Eintreffens. */
   readonly syncRequests: Record<string, unknown>[] = [];
   /** Der Druckdienst des Servers unter `/print` (src/core/testing/fake-print.ts). */
   readonly print: FakePrintService;
-  /** false = STOWLY_PUSH_CONTACT ist nicht gesetzt: Alles unter `/api/push` antwortet mit 503. */
-  pushConfigured = true;
+  /** Kontakt für die Push-Dienste; null = keiner: Alles unter `/api/push` antwortet mit 503. */
+  pushContact: string | null = "mailto:haushalt@example.org";
+  /** Woher der Kontakt kommt: "env" (STOWLY_PUSH_CONTACT, in der App nicht änderbar), "app" oder "default" (keiner). */
+  pushContactSource: ConfigSource = "env";
   /** Was der Push-Dienst auf die nächsten Testnachrichten antwortet. */
   pushTestStatus: PushTestStatus = "sent";
   /** Die Testnachrichten, die der Server verschickt hätte, in ihrer Reihenfolge. */
@@ -625,8 +726,23 @@ export class FakeServer {
   timezone = "Europe/Berlin";
   /** Zustand von Home Assistant in `GET /api/integrations` (docs/integrationen.md, 5.6 und 8). */
   haStatus: HaStatus = HA_OFF;
-  /** STOWLY_UPDATE_REPO; null (Vorgabe) = Updates sind nicht eingerichtet. */
+  /** STOWLY_UPDATE_REPO: gesetzt sind Updates immer an. null (Vorgabe) = es entscheidet `updateSwitch`. */
   updateRepo: string | null = null;
+  /** STOWLY_UPDATE_REPO_DEFAULT: das Repository, das der Schalter der App einschaltet; null = das Image kennt keins. */
+  updateRepoDefault: string | null = "beispiel/stowly";
+  /** Der Schalter „Nach Updates suchen" in der App; null = nie geschaltet (aus). */
+  updateSwitch: boolean | null = null;
+  /** Was der Updater zuletzt in `updater` geschrieben hat: Art und Version (10.3); null = nichts. */
+  updaterKind: "script" | "container" | null = null;
+  updaterVersion: string | null = null;
+  /** `UpdateStatus.updater_command` (10.7); null = das Image kennt keinen Befehl. */
+  updaterCommand: string | null = null;
+  /** Wann die Einrichtung abgeschlossen wurde; null = offen. */
+  setupFinishedAt: string | null = null;
+  /** HTTPS durch Stowly, wie `GET /api/setup` es meldet; Adressen und Port ändert auch `PATCH /api/setup`. */
+  https: HttpsStatus;
+  /** false: Es fehlen CA oder Paket für den Pi; `POST /api/pi/pairings` antwortet 503. */
+  piReady = true;
   /** Die Version dieses Servers (`UpdateStatus.current`); nach einem Update setzt der Test die neue. */
   updateCurrent = "0.1.0";
   /** Was GitHub bei der nächsten Abfrage als neuestes Release liefert; null = es gibt noch keins (404). */
@@ -659,9 +775,12 @@ export class FakeServer {
   private readonly lookups = new Map<string, number>();
   private failedLogins: number[] = [];
   private lockedUntil = 0;
+  /** Wie die App die Schritte des Assistenten markiert hat (11.6). */
+  private readonly setupSteps = new Map<SetupStepId, { state: SetupStepState; changed_at: string }>();
+  private readonly pairings = new Map<string, FakePairing>();
 
   private readonly now: () => Date;
-  private readonly password: string;
+  private password: string;
   private readonly maxChanges: number;
   private readonly lookupDelayMs: number | null;
   private readonly lookupEnabled: boolean;
@@ -698,9 +817,42 @@ export class FakeServer {
         },
       },
     });
+    const nowMs = this.now().getTime();
+    const later = (days: number) => new Date(nowMs + days * DAY_MS).toISOString();
+    this.https = {
+      enabled: true,
+      listening: true,
+      problem: null,
+      port: 8443,
+      port_source: "default",
+      http_port: null,
+      addresses: [{ address: "192.168.1.10", source: "learned", in_certificate: true }],
+      origins: ["https://192.168.1.10:8443"],
+      seen_at: null,
+      via_https: false,
+      ca: { name: "Stowly CA 3F2A1C", fingerprint_sha256: "3F:2A:1C:7B:00:9E:41:D2:5A:6C:88:0B:CE:13:47:F0:22:9D:B4:6E:01:73:AA:5F:C8:3E:90:1D:64:B7:2C:58", not_after: later(3650), created_by_stowly: true, name_constraints: true },
+      certificate: { addresses: ["192.168.1.10", "localhost", "127.0.0.1"], not_after: later(397) },
+    };
     this.seedDefaults();
     if (options.sample) {
       this.seedSample();
+      // Ein Haushalt mit Bestand ist eingerichtet.
+      this.setupFinishedAt = this.stamp();
+    }
+  }
+
+  /** Gibt es einen Kontakt für die Push-Dienste? false heißt: Alles unter `/api/push` antwortet mit 503. */
+  get pushConfigured(): boolean {
+    return this.pushContact !== null;
+  }
+
+  set pushConfigured(value: boolean) {
+    if (!value) {
+      this.pushContact = null;
+      this.pushContactSource = "default";
+    } else if (this.pushContact === null) {
+      this.pushContact = "mailto:haushalt@example.org";
+      this.pushContactSource = "env";
     }
   }
 
@@ -754,13 +906,19 @@ export class FakeServer {
   }
 
   /** `UpdateStatus` nach den Regeln aus docs/integrationen.md 10.4; bei `state` gilt die erste passende. */
+  /** Das wirksame Repository (docs/integrationen.md, 12): STOWLY_UPDATE_REPO, sonst der Schalter der App; null = aus. */
+  get effectiveUpdateRepo(): string | null {
+    return this.updateRepo ?? (this.updateSwitch === true ? this.updateRepoDefault : null);
+  }
+
   updateStatus(): UpdateStatus {
     const nowMs = this.now().getTime();
     const release = this.updateSeen.release;
     const ready = this.updaterSeenAt !== null && nowMs - Date.parse(this.updaterSeenAt) <= UPDATER_READY_MS;
+    const repo = this.effectiveUpdateRepo;
     const status: UpdateStatus = {
-      configured: this.updateRepo !== null,
-      repo: this.updateRepo,
+      configured: repo !== null,
+      repo,
       current: this.updateCurrent,
       latest: release?.version ?? null,
       latest_name: release?.name ?? null,
@@ -772,6 +930,9 @@ export class FakeServer {
       check_error: this.updateSeen.check_error,
       updater_ready: ready,
       updater_seen_at: this.updaterSeenAt,
+      updater_kind: this.updaterSeenAt === null ? null : (this.updaterKind ?? "script"),
+      updater_version: this.updaterVersion,
+      updater_command: this.updaterCommand,
       state: "idle",
       state_version: null,
       state_at: null,
@@ -810,6 +971,124 @@ export class FakeServer {
     }
     // Auch „done" für eine andere Version als die laufende, etwa nach einem Zurückspielen von Hand.
     return status;
+  }
+
+  /** `SetupStatus` (11.6): `ready` je Schritt aus Sicht des Servers, dazu was die App markiert hat. */
+  setupStatus(): SetupStatus {
+    const ready: Record<SetupStepId, boolean> = {
+      https: this.https.seen_at !== null,
+      printer: [...this.tables.printers.values()].some((printer) => printer.deleted_at === null),
+      updates: this.effectiveUpdateRepo !== null,
+      notifications: this.pushContact !== null,
+    };
+    return {
+      password_source: this.passwordSource,
+      steps: SETUP_STEP_IDS.map((id) => ({ id, state: this.setupSteps.get(id)?.state ?? "open", ready: ready[id], changed_at: this.setupSteps.get(id)?.changed_at ?? null })),
+      finished_at: this.setupFinishedAt,
+      paired_printers: this.pairedPrinters(),
+      https: { ...this.https, addresses: this.https.addresses.map((address) => ({ ...address })), origins: [...this.https.origins] },
+    };
+  }
+
+  /** `SetupStatus.paired_printers`: je nicht gelöschtem Drucker die jüngste Kopplung eines Pi, früheste Ablaufzeit zuerst. */
+  private pairedPrinters(): PairedPrinter[] {
+    const latest = new Map<string, PairedPrinter>();
+    // Die Kopplungen stehen in der Reihenfolge ihres Entstehens: Die spätere ersetzt die frühere.
+    for (const pairing of this.pairings.values()) {
+      const printer = pairing.printer_id === null ? undefined : this.tables.printers.get(pairing.printer_id);
+      if (pairing.state === "paired" && printer && printer.deleted_at === null && pairing.pi?.not_after) {
+        latest.set(printer.id, { printer_id: printer.id, hostname: pairing.pi.hostname, not_after: pairing.pi.not_after });
+      }
+    }
+    return [...latest.values()].sort((a, b) => a.not_after.localeCompare(b.not_after));
+  }
+
+  /** `ServerConfig` (11.7): die wirksamen Werte mit ihrer Quelle. */
+  serverConfig(): ServerConfig {
+    return {
+      push: { contact: this.pushContact, source: this.pushContactSource },
+      update: {
+        enabled: this.effectiveUpdateRepo !== null,
+        repo: this.updateRepo ?? this.updateRepoDefault,
+        source: this.updateRepo !== null ? "env" : this.updateSwitch === null ? "default" : "app",
+        available: this.updateRepo === null && this.updateRepoDefault !== null,
+      },
+    };
+  }
+
+  /** Alle Kopplungen, älteste zuerst. */
+  get pairingList(): FakePairing[] {
+    return [...this.pairings.values()].map((pairing) => this.expired(pairing));
+  }
+
+  private pairingOf(id: string): FakePairing {
+    const pairing = this.pairings.get(id);
+    if (!pairing) {
+      throw new Error(`Die Kopplung ${id} gibt es nicht.`);
+    }
+    return this.expired(pairing);
+  }
+
+  /** Läuft die Frist ab, ohne dass der Pi gekoppelt wurde, ist die Kopplung abgelaufen. */
+  private expired(pairing: FakePairing): FakePairing {
+    const waiting = pairing.state === "waiting" || pairing.state === "installing";
+    if (waiting && Date.parse(pairing.expires_at) <= this.now().getTime()) {
+      pairing.state = "expired";
+    }
+    return pairing;
+  }
+
+  /** Der Pi meldet sich gleich nach dem Laden des Pakets (`POST /api/pi/pair/start`): "installing", die Frist beginnt neu. */
+  startPairing(id: string, hostname = "stowly-pi"): void {
+    const pairing = this.pairingOf(id);
+    if (pairing.state !== "waiting" && pairing.state !== "installing") {
+      throw new Error(`Die Kopplung ${id} wartet nicht (${pairing.state}).`);
+    }
+    pairing.state = "installing";
+    pairing.expires_at = new Date(this.now().getTime() + PI_PAIRING_TTL_MS).toISOString();
+    pairing.pi = { hostname, addresses: [], model: null, printer_found: false, version: "0.3.0", not_after: null };
+  }
+
+  /**
+   * Der Pi ist fertig (`POST /api/pi/pair`): Der Server legt einen direkten Drucker an (oder
+   * übernimmt den gewählten, dann ändert sich nur die Verbindung) und meldet "paired". Der Drucker
+   * kommt wie jeder andere mit dem nächsten Abgleich. Liefert ihn.
+   */
+  completePairing(id: string, pi: FakePi = {}): Printer {
+    const pairing = this.pairingOf(id);
+    if (pairing.state !== "waiting" && pairing.state !== "installing") {
+      throw new Error(`Die Kopplung ${id} wartet nicht (${pairing.state}).`);
+    }
+    const hostname = pi.hostname ?? pairing.pi?.hostname ?? "stowly-pi";
+    const address = pi.address ?? "192.168.1.20";
+    const model = pi.model === undefined ? "QL-570" : pi.model;
+    const direct = {
+      urls: [`https://${address}:8443`, `https://${hostname}.local:8443`, `http://${address}:8080`],
+      token: `pi-token-${hostname}`,
+      printer: null,
+    };
+    const printerId = pairing.printer_id ?? newUuid();
+    if (pairing.printer_id === null) {
+      this.act({ type: "printer.create", printer_id: printerId, name: pi.name ?? model ?? "Raspberry Pi", connection: "direct", direct });
+    } else {
+      this.act({ type: "printer.update", printer_id: printerId, changes: { direct } });
+    }
+    const notAfter = pi.not_after ?? new Date(this.now().getTime() + PI_CERT_DAYS * DAY_MS).toISOString();
+    pairing.state = "paired";
+    pairing.printer_id = printerId;
+    pairing.pi = { hostname, addresses: [address], model, printer_found: model !== null, version: "0.3.0", not_after: notAfter };
+    const printer = this.tables.printers.get(printerId);
+    if (!printer) {
+      throw new Error("Der Drucker ließ sich nicht anlegen.");
+    }
+    return printer;
+  }
+
+  /** Die Frist eines Codes ist um, ohne dass der Pi gekoppelt wurde. */
+  expirePairing(id: string): void {
+    const pairing = this.pairingOf(id);
+    pairing.expires_at = new Date(this.now().getTime() - 1).toISOString();
+    this.expired(pairing);
   }
 
   /** Schreibt einen Datensatz direkt, als hätte ihn ein anderes Gerät geändert. */
@@ -1262,34 +1541,95 @@ export class FakeServer {
     };
   }
 
+  /** Die Sperre nach zu vielen Fehlversuchen (Abschnitt 5): die Antwort 429, oder null, wenn keine gilt. */
+  private lockout(): FakeResponseData | null {
+    const nowMs = this.now().getTime();
+    if (nowMs >= this.lockedUntil) {
+      return null;
+    }
+    const wait = Math.ceil((this.lockedUntil - nowMs) / 1000);
+    return failure(429, "rate_limited", "Zu viele Fehlversuche.", { retry_after_s: wait }, { "retry-after": String(wait) });
+  }
+
+  /** Ein Fehlversuch zählt; nach 5 in 5 Minuten gilt 60 Sekunden die Sperre für alle. */
+  private failedAttempt(): void {
+    const nowMs = this.now().getTime();
+    this.failedLogins = [...this.failedLogins.filter((at) => nowMs - at < 300_000), nowMs];
+    if (this.failedLogins.length >= 5) {
+      this.failedLogins = [];
+      this.lockedUntil = nowMs + 60_000;
+    }
+  }
+
+  /** Ein neues Gerät mit eigenem Token: die Antwort der Anmeldung und des ersten Passworts. */
+  private newDevice(name: string): LoginResponse {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const device: FakeDevice = { id: newUuid(), name, token, created_at: this.stamp(), last_seen_at: null, revoked_at: null, last_command_ms: 0 };
+    this.devices.set(device.id, device);
+    return { token, device: this.describe(device, device) };
+  }
+
   private login(body: unknown): FakeResponseData {
     if (!this.configured) {
-      return failure(503, "not_configured", "Auf dem Server ist kein Passwort gesetzt.");
+      return failure(503, "not_configured", "Auf dem Server ist noch kein Haushalts-Passwort gesetzt.");
     }
-    const nowMs = this.now().getTime();
-    if (nowMs < this.lockedUntil) {
-      const wait = Math.ceil((this.lockedUntil - nowMs) / 1000);
-      return failure(429, "rate_limited", "Zu viele Fehlversuche.", { retry_after_s: wait }, { "retry-after": String(wait) });
+    const locked = this.lockout();
+    if (locked) {
+      return locked;
     }
     if (!object({ password: req(text(1, 200)), device_name: req(text(1, 60)) })(body)) {
       return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
     }
     const { password, device_name: name } = body as { password: string; device_name: string };
     if (password !== this.password) {
-      // Nach 5 Fehlversuchen in 5 Minuten: 60 Sekunden Sperre für alle.
-      this.failedLogins = [...this.failedLogins.filter((at) => nowMs - at < 300_000), nowMs];
-      if (this.failedLogins.length >= 5) {
-        this.failedLogins = [];
-        this.lockedUntil = nowMs + 60_000;
-      }
+      this.failedAttempt();
       return failure(401, "invalid_password", "Das Passwort stimmt nicht.");
     }
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    const device: FakeDevice = { id: newUuid(), name, token, created_at: this.stamp(), last_seen_at: null, revoked_at: null, last_command_ms: 0 };
-    this.devices.set(device.id, device);
-    return json(200, { token, device: this.describe(device, device) });
+    return json(200, this.newDevice(name));
+  }
+
+  /** `POST /api/setup/password` (11.6): das erste Passwort, nur solange es keines gibt; die Antwort gleicht der Anmeldung. */
+  private setupPassword(body: unknown): FakeResponseData {
+    // Die Form prüft der Server vor allem anderen (422), wie bei jedem Rumpf.
+    if (!object({ password: req(text(LIMITS.password_min, LIMITS.password)), device_name: req(text(1, 60)) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    if (this.configured) {
+      return failure(409, "conflict", "Es gibt schon ein Haushalts-Passwort.");
+    }
+    const locked = this.lockout();
+    if (locked) {
+      return locked;
+    }
+    const { password, device_name: name } = body as { password: string; device_name: string };
+    this.password = password;
+    this.configured = true;
+    this.passwordSource = "app";
+    return json(200, this.newDevice(name));
+  }
+
+  /** `POST /api/auth/password` (Abschnitt 5): Ein falsches bisheriges Passwort zählt in der Bremse und meldet nie ab. */
+  private changePassword(body: unknown): FakeResponseData {
+    if (!object({ current_password: req(text(1, LIMITS.password)), new_password: req(text(LIMITS.password_min, LIMITS.password)) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const locked = this.lockout();
+    if (locked) {
+      return locked;
+    }
+    if (this.passwordSource === "env") {
+      return failure(409, "conflict", "Das Passwort kommt aus der Umgebung (STOWLY_PASSWORD) und lässt sich nur dort ändern.");
+    }
+    const { current_password: current, new_password: next } = body as { current_password: string; new_password: string };
+    if (current !== this.password) {
+      this.failedAttempt();
+      return failure(401, "invalid_password", "Das bisherige Passwort stimmt nicht.");
+    }
+    this.password = next;
+    this.failedLogins = [];
+    return { status: 204, headers: {}, body: null };
   }
 
   // ---------------------------------------------------------------- Push und Integrationen
@@ -1301,7 +1641,7 @@ export class FakeServer {
       return failure(404, "not_found", "Diesen Aufruf gibt es nicht.");
     }
     if (!this.pushConfigured) {
-      return failure(503, "not_configured", "Push ist auf dem Server nicht eingerichtet (STOWLY_PUSH_CONTACT).");
+      return failure(503, "not_configured", "Der Server hat keinen Kontakt für die Push-Dienste.");
     }
     if (path === "/api/push/key") {
       return json(200, { public_key: this.pushKey });
@@ -1355,8 +1695,8 @@ export class FakeServer {
       return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "POST" });
     }
     if (path === "/api/update/check") {
-      if (this.updateRepo === null) {
-        return failure(503, "not_configured", "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+      if (this.effectiveUpdateRepo === null) {
+        return failure(503, "not_configured", UPDATE_OFF);
       }
       const nowMs = this.now().getTime();
       const last = this.lastUpdateCheck;
@@ -1375,7 +1715,7 @@ export class FakeServer {
     const version = (body as { version: string }).version;
     const status = this.updateStatus();
     if (!status.configured) {
-      return failure(503, "not_configured", "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+      return failure(503, "not_configured", UPDATE_OFF);
     }
     if (!status.updater_ready) {
       return failure(503, "not_configured", "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9).");
@@ -1413,6 +1753,168 @@ export class FakeServer {
     };
   }
 
+  // ---------------------------------------------------------------- Einrichtung
+
+  /** `PATCH /api/setup` (11.6): nur vorhandene Felder zählen. */
+  private patchSetup(body: unknown): FakeResponseData {
+    const valid = object({
+      step: opt(object({ id: req(oneOf(...SETUP_STEP_IDS)), state: req(oneOf("open", "done", "skipped")) })),
+      finished: opt(bool),
+      addresses: opt(listOf(text(1, LIMITS.setup_address), 0, LIMITS.setup_addresses)),
+      https_port: opt(nullable(integer(1, 65535))),
+    });
+    if (!valid(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const changes = body as SetupChanges;
+    const addresses = changes.addresses;
+    const outside = addresses?.findIndex((address) => !isHomeAddress(address)) ?? -1;
+    if (addresses && outside !== -1) {
+      const msg = "Die Adresse liegt nicht im Heimnetz.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "addresses", outside], msg, type: "value_error" }] });
+    }
+    const at = this.stamp();
+    if (changes.step) {
+      this.setupSteps.set(changes.step.id, { state: changes.step.state, changed_at: at });
+    }
+    if (changes.finished !== undefined) {
+      this.setupFinishedAt = changes.finished ? at : null;
+    }
+    if (changes.https_port !== undefined) {
+      this.https.port = changes.https_port ?? 8443;
+      this.https.port_source = changes.https_port === null ? "default" : "manual";
+    }
+    if (addresses) {
+      const learned = this.https.addresses.filter((address) => address.source === "learned");
+      const manual = addresses.filter((address) => !learned.some((known) => known.address === address)).map((address) => ({ address, source: "manual" as const, in_certificate: true }));
+      this.https.addresses = [...learned, ...manual];
+    }
+    if (addresses || changes.https_port !== undefined) {
+      this.https.origins = this.https.addresses.map((address) => `https://${address.address}:${String(this.https.port)}`);
+    }
+    return json(200, this.setupStatus());
+  }
+
+  /** `GET /api/setup/ca.crt` (11.6): ein paar Bytes statt eines Zertifikats; 404 ohne CA. */
+  private caCertificate(query: string): FakeResponseData {
+    if (this.https.ca === null) {
+      return failure(404, "not_found", "Es gibt keine nutzbare CA.");
+    }
+    const download = new URLSearchParams(query).get("download") === "true";
+    const headers: Record<string, string> = download
+      ? { "content-type": "application/pkix-cert", "content-disposition": "attachment; filename=\"stowly-ca.crt\"", "cache-control": "no-store" }
+      : { "content-type": "application/x-x509-ca-cert", "cache-control": "no-store" };
+    return { status: 200, headers, body: new Uint8Array([0x30, 0x82, 0x01, 0x0a]) };
+  }
+
+  /** `PATCH /api/server-config` (11.7): Was aus der Umgebung kommt, ist nur zu sehen (409). */
+  private patchServerConfig(body: unknown): FakeResponseData {
+    if (!object({ push_contact: opt(nullable(text(1, LIMITS.push_contact))), update_enabled: opt(bool) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const changes = body as ServerConfigChanges;
+    let contact: string | null | undefined;
+    if (changes.push_contact !== undefined) {
+      if (this.pushContactSource === "env") {
+        return failure(409, "conflict", "Der Kontakt kommt aus der Umgebung (STOWLY_PUSH_CONTACT).");
+      }
+      contact = changes.push_contact === null ? null : pushContactOf(changes.push_contact);
+      if (contact === null && changes.push_contact !== null) {
+        const msg = "Erwartet ist mailto:<Adresse> oder eine https-Adresse.";
+        return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "push_contact"], msg, type: "value_error" }] });
+      }
+    }
+    if (changes.update_enabled !== undefined && this.updateRepo !== null) {
+      return failure(409, "conflict", "Updates sind über STOWLY_UPDATE_REPO fest eingeschaltet.");
+    }
+    if (changes.update_enabled !== undefined && this.updateRepoDefault === null) {
+      return failure(409, "conflict", "Dieses Image kennt kein Repository für Updates.");
+    }
+    if (contact !== undefined) {
+      this.pushContact = contact;
+      this.pushContactSource = contact === null ? "default" : "app";
+    }
+    if (changes.update_enabled !== undefined) {
+      this.updateSwitch = changes.update_enabled;
+    }
+    return json(200, this.serverConfig());
+  }
+
+  /** Eine Kopplung, wie `GET /api/pi/pairings/{id}` sie meldet: ohne Code und Befehl. */
+  private describePairing(pairing: FakePairing): PiPairing {
+    const { id, state, expires_at, printer_id, pi } = this.expired(pairing);
+    return { id, state, code: null, command: null, expires_at, printer_id, pi: pi ? { ...pi, addresses: [...pi.addresses] } : null };
+  }
+
+  /** `POST /api/pi/pairings` (11.8): Ein neuer Code bricht wartende ältere ab. */
+  private createPairing(body: unknown): FakeResponseData {
+    if (!object({ origin: req(text(1, LIMITS.push_origin)), printer_id: opt(nullable(uuid)) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const input = body as { origin: string; printer_id?: string | null };
+    let origin: URL | null = null;
+    try {
+      origin = new URL(input.origin);
+    } catch {
+      origin = null;
+    }
+    if (!origin || (origin.protocol !== "http:" && origin.protocol !== "https:") || origin.origin !== input.origin) {
+      const msg = "Kein gültiger Ursprung.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "origin"], msg, type: "value_error" }] });
+    }
+    const printerId = input.printer_id ?? null;
+    const chosen = printerId === null ? null : this.tables.printers.get(printerId);
+    if (printerId !== null && (!chosen || chosen.deleted_at !== null || chosen.connection !== "direct")) {
+      const msg = "Kein vorhandener direkter Drucker.";
+      return failure(422, "invalid_request", msg, { errors: [{ loc: ["body", "printer_id"], msg, type: "value_error" }] });
+    }
+    if (!this.piReady) {
+      return failure(503, "not_configured", "Für den Pi fehlen die CA oder das Paket.");
+    }
+    for (const older of this.pairings.values()) {
+      if (older.state === "waiting" || older.state === "installing") {
+        older.state = "cancelled";
+      }
+    }
+    const random = new Uint8Array(8);
+    crypto.getRandomValues(random);
+    const plain = Array.from(random, (byte) => CODE_ALPHABET[byte % CODE_ALPHABET.length]).join("");
+    const code = `${plain.slice(0, 4)}-${plain.slice(4)}`;
+    const pairing: FakePairing = {
+      id: newUuid(),
+      code,
+      state: "waiting",
+      expires_at: new Date(this.now().getTime() + PI_PAIRING_TTL_MS).toISOString(),
+      printer_id: printerId,
+      pi: null,
+      origin: input.origin,
+    };
+    this.pairings.set(pairing.id, pairing);
+    // Die HTTP-Adresse im Befehl: der Ursprung, wenn er http ist, sonst sein Host mit dem gelernten HTTP-Port.
+    const http = origin.protocol === "http:" ? input.origin : `http://${origin.hostname}:${String(this.https.http_port ?? 8010)}`;
+    const command = `curl -fsSL ${http}/api/pi/install.sh | sudo sh -s -- ${code}`;
+    return json(201, { ...this.describePairing(pairing), code, command });
+  }
+
+  /** `/api/pi/pairings/{id}`: Stand (GET) und Abbrechen (DELETE, wiederholbar). */
+  private pairingRequest(method: string, id: string): FakeResponseData {
+    const pairing = this.pairings.get(id);
+    if (!pairing) {
+      return failure(404, "not_found", "Die Kopplung gibt es nicht.");
+    }
+    if (method === "DELETE") {
+      const { state } = this.expired(pairing);
+      if (state === "waiting" || state === "installing") {
+        pairing.state = "cancelled";
+      }
+      return { status: 204, headers: {}, body: null };
+    }
+    if (method !== "GET") {
+      return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "GET, DELETE" });
+    }
+    return json(200, this.describePairing(pairing));
+  }
+
   // ---------------------------------------------------------------- Die Schnittstelle
 
   /**
@@ -1445,6 +1947,12 @@ export class FakeServer {
     if (method === "POST" && path === "/api/auth/login") {
       return this.login(body);
     }
+    if (method === "POST" && path === "/api/setup/password") {
+      return this.setupPassword(body);
+    }
+    if (method === "GET" && path === "/api/setup/ca.crt") {
+      return this.caCertificate(request.query ?? "");
+    }
     if (method === "GET" && path.startsWith("/api/images/")) {
       return failure(404, "not_found", "Das Bild gibt es nicht.");
     }
@@ -1461,6 +1969,26 @@ export class FakeServer {
       // Mit dem Token endet das Push-Abo des Geräts (docs/integrationen.md, 4.10).
       this.pushSubscriptions.delete(device.id);
       return { status: 204, headers: {}, body: null };
+    }
+    if (method === "POST" && path === "/api/auth/password") {
+      return this.changePassword(body);
+    }
+    if (path === "/api/setup" || path === "/api/server-config") {
+      const setup = path === "/api/setup";
+      if (method === "GET") {
+        return json(200, setup ? this.setupStatus() : this.serverConfig());
+      }
+      if (method === "PATCH") {
+        return setup ? this.patchSetup(body) : this.patchServerConfig(body);
+      }
+      return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "GET, PATCH" });
+    }
+    if (method === "POST" && path === "/api/pi/pairings") {
+      return this.createPairing(body);
+    }
+    const pairingMatch = /^\/api\/pi\/pairings\/([^/]+)$/.exec(path);
+    if (pairingMatch) {
+      return this.pairingRequest(method, decodeURIComponent(pairingMatch[1] ?? ""));
     }
     if (path.startsWith("/api/push/")) {
       return this.push(method, path, device, body);

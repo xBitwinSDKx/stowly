@@ -70,6 +70,11 @@ export class RawClient {
     readonly deviceId: string,
   ) {}
 
+  /** Ein Gerät ohne Anmeldung, das nur die offenen Aufrufe nutzt, etwa ein Pi beim Koppeln (nur mit Code). */
+  static anonymous(baseUrl: string): RawClient {
+    return new RawClient(baseUrl, "", "");
+  }
+
   /** Meldet ein weiteres Gerät an, das nur über die Schnittstelle spricht. */
   static async login(baseUrl: string, name = "Prüfer"): Promise<RawClient> {
     const response = await fetch(`${baseUrl}/api/auth/login`, {
@@ -85,7 +90,10 @@ export class RawClient {
   }
 
   request(method: string, path: string, body?: unknown): Promise<Response> {
-    const headers: Record<string, string> = { authorization: `Bearer ${this.token}`, accept: "application/json" };
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (this.token !== "") {
+      headers.authorization = `Bearer ${this.token}`;
+    }
     if (body !== undefined) {
       headers["content-type"] = "application/json";
     }

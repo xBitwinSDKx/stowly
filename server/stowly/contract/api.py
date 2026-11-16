@@ -1,5 +1,6 @@
 """Alle weiteren Endpunkte: Anmeldung, Geräte, Nachschlagen, Ereignisprotokoll, Fehlerformat,
-dazu seit Stufe 2 Statistik, Sensor für Home Assistant, Push und der Zustand der Integrationen
+dazu seit Stufe 2 Statistik, Sensor für Home Assistant, Push und der Zustand der Integrationen,
+seit der Einrichtung das erste Passwort, HTTPS, Einstellungen des Servers und das Koppeln eines Pi
 (docs/sync-protokoll.md, Abschnitt 11; docs/integrationen.md)."""
 
 from enum import StrEnum
@@ -86,11 +87,11 @@ class ErrorCode(StrEnum):
 
     INVALID_REQUEST = "invalid_request"  # 422: Anfrage verletzt den Vertrag
     UNAUTHORIZED = "unauthorized"  # 401: Token fehlt, ist unbekannt oder gesperrt
-    INVALID_PASSWORD = "invalid_password"  # 401: falsches Haushalts-Passwort
+    INVALID_PASSWORD = "invalid_password"  # 401: falsches Haushalts-Passwort (auch beim Ändern)
     RATE_LIMITED = "rate_limited"  # 429: zu viele Fehlversuche, Retry-After beachten
-    # 503: Auf dem Server ist kein Passwort gesetzt, oder eine Integration, die der Aufruf braucht,
-    # ist nicht eingerichtet (Push: STOWLY_PUSH_CONTACT, Sensor: STOWLY_HA_SUMMARY_TOKEN,
-    # Updates: STOWLY_UPDATE_REPO oder der Updater meldet sich nicht).
+    # 503: Auf dem Server gibt es noch kein Passwort, oder eine Integration, die der Aufruf braucht,
+    # ist nicht eingerichtet (Push: kein Kontakt, Sensor: STOWLY_HA_SUMMARY_TOKEN, Updates: aus
+    # oder der Updater meldet sich nicht, Pi koppeln: keine CA oder kein Paket für den Pi).
     NOT_CONFIGURED = "not_configured"
     NOT_FOUND = "not_found"  # 404
     CONFLICT = "conflict"  # 409
@@ -121,7 +122,10 @@ class ServerHealth(Model):
     protocol: int
     time: Timestamp
     configured: bool = Field(
-        description="false = STOWLY_PASSWORD ist nicht gesetzt, Anmelden ist nicht möglich."
+        description=(
+            "false = es gibt noch kein Haushalts-Passwort (weder STOWLY_PASSWORD noch in der App "
+            "gesetzt). Die App zeigt dann die Einrichtung (POST /api/setup/password)."
+        )
     )
 
 
@@ -424,7 +428,9 @@ class HaStatus(Model):
 class PushStatus(Model):
     """Benachrichtigungen per Web-Push (docs/integrationen.md, Abschnitt 4)."""
 
-    configured: bool = Field(description="STOWLY_PUSH_CONTACT ist gesetzt.")
+    configured: bool = Field(
+        description="Ein Kontakt für die Push-Dienste ist wirksam (STOWLY_PUSH_CONTACT oder in der App)."
+    )
     problem: str | None = Field(description="Warum Push aus ist, obwohl etwas gesetzt ist; sonst null.")
     subscriptions: int = Field(ge=0, description="Geräte des Haushalts mit Push-Abo.")
     this_device: bool = Field(description="Das fragende Gerät hat ein Abo beim Server.")
@@ -443,11 +449,20 @@ class UpdateState(StrEnum):
     FAILED = "failed"  # gescheitert; state_message sagt warum, die vorige Version läuft
 
 
+class UpdaterKind(StrEnum):
+    """Welcher Updater sich meldet (docs/integrationen.md, 10.3 und 10.7)."""
+
+    SCRIPT = "script"  # updater/stowly-update.sh auf dem Rechner (Compose und .env)
+    CONTAINER = "container"  # Updater-Container (python -m stowly.updater, Engine API)
+
+
 class UpdateStatus(Model):
     """Updates über GitHub (docs/integrationen.md, Abschnitt 10). Nie ein Token."""
 
-    configured: bool = Field(description="STOWLY_UPDATE_REPO ist gesetzt.")
-    repo: str | None = Field(description="Das Repository der Releases (STOWLY_UPDATE_REPO).")
+    configured: bool = Field(
+        description="Updates sind an: STOWLY_UPDATE_REPO ist gesetzt oder der Schalter in der App an."
+    )
+    repo: str | None = Field(description="Das Repository der Releases; null, solange Updates aus sind.")
     current: str = Field(description="Version dieses Servers.")
     latest: str | None = Field(
         description='Version des neuesten Releases ohne „v"; null = noch nicht gefragt oder keins.'
@@ -465,6 +480,17 @@ class UpdateStatus(Model):
         description="Der Updater auf dem Rechner hat sich vor höchstens 10 Minuten gemeldet."
     )
     updater_seen_at: Timestamp | None = Field(description="Letzte Meldung des Updaters.")
+    updater_kind: UpdaterKind | None = Field(
+        description="Welcher Updater sich zuletzt gemeldet hat; null = noch keiner."
+    )
+    updater_version: str | None = Field(description="Version des Updaters, soweit er sie meldet.")
+    updater_command: str | None = Field(
+        description=(
+            "Befehl, der den Updater-Container anlegt oder erneuert (einmal als root, etwa im "
+            "Aufgabenplaner von DSM); null, wenn das Image keine Referenz kennt "
+            "(STOWLY_IMAGE_REF) oder Stowly seinen Container nicht erkennt."
+        )
+    )
     state: UpdateState
     state_version: str | None = Field(description="Die Version, um die es in state geht.")
     state_at: Timestamp | None = Field(description="Seit wann state gilt.")
@@ -491,3 +517,355 @@ class IntegrationStatus(Model):
     ha: HaStatus
     push: PushStatus
     update: UpdateStatus
+
+
+# --- Einrichtung (docs/sync-protokoll.md, 11.6; docs/integrationen.md, Abschnitt 11) -----
+
+# Zertifikat des Servers: so viele Tage gültig; neu ausgestellt, sobald weniger als
+# SERVER_CERT_RENEW_DAYS übrig sind (Apple erlaubt höchstens 825 Tage, 397 halten auch strengere Regeln).
+SERVER_CERT_DAYS = 397
+SERVER_CERT_RENEW_DAYS = 60
+# Zertifikat eines gekoppelten Pi: so viele Tage; die App warnt PI_CERT_WARN_DAYS vor dem Ende.
+PI_CERT_DAYS = 825
+PI_CERT_WARN_DAYS = 60
+# Port, unter dem HTTPS von außen erreichbar ist, solange Stowly ihn nicht kennt.
+HTTPS_PORT_DEFAULT = 8443
+
+NewPassword = Annotated[str, Field(min_length=LIMITS["password_min"], max_length=LIMITS["password"])]
+SetupAddressText = Annotated[str, Field(min_length=1, max_length=LIMITS["setup_address"])]
+PortNumber = Annotated[int, Field(ge=1, le=65535)]
+
+
+class SetupPasswordInput(Model):
+    """Das erste Haushalts-Passwort (``POST /api/setup/password``)."""
+
+    password: NewPassword
+    device_name: DeviceName
+
+
+class PasswordChangeInput(Model):
+    """Neues Haushalts-Passwort (``POST /api/auth/password``)."""
+
+    current_password: str = Field(min_length=1, max_length=LIMITS["password"])
+    new_password: NewPassword
+
+
+class PasswordSource(StrEnum):
+    """Woher das Haushalts-Passwort kommt."""
+
+    ENV = "env"  # STOWLY_PASSWORD; in der App nicht änderbar
+    APP = "app"  # in der App gesetzt (nur sein Hash steht in der Datenbank)
+
+
+class ConfigSource(StrEnum):
+    """Woher ein wirksamer Wert kommt (docs/integrationen.md, Abschnitt 12)."""
+
+    ENV = "env"  # aus der Umgebung (.env, Einstellungen des Containers); in der App nicht änderbar
+    APP = "app"  # in der App gesetzt
+    DEFAULT = "default"  # Vorgabe von Stowly bzw. des Images
+
+
+class SetupStepId(StrEnum):
+    """Die Schritte des Assistenten nach dem Passwort, in dieser Reihenfolge."""
+
+    HTTPS = "https"  # sichere Verbindung
+    PRINTER = "printer"  # Drucker (Raspberry Pi)
+    UPDATES = "updates"  # Updates
+    NOTIFICATIONS = "notifications"  # Benachrichtigungen
+
+
+class SetupStepState(StrEnum):
+    OPEN = "open"
+    DONE = "done"
+    SKIPPED = "skipped"
+
+
+class SetupStep(Model):
+    id: SetupStepId
+    state: SetupStepState = Field(description="Wie die App den Schritt markiert hat; ohne Markierung open.")
+    ready: bool = Field(
+        description=(
+            "Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; "
+            "printer = es gibt einen Drucker; updates = Updates sind an; notifications = ein Kontakt "
+            "für die Push-Dienste ist wirksam."
+        )
+    )
+    changed_at: Timestamp | None = Field(description="Wann state zuletzt gesetzt wurde.")
+
+
+class AddressSource(StrEnum):
+    LEARNED = "learned"  # aus der Kopfzeile Host einer Anfrage gelernt
+    MANUAL = "manual"  # in der App eingetragen
+
+
+class SetupAddress(Model):
+    address: str = Field(description="IP-Adresse oder Name, unter dem Stowly erreichbar ist, ohne Port.")
+    source: AddressSource
+    in_certificate: bool = Field(description="Das aktuelle Zertifikat des Servers gilt für diese Adresse.")
+
+
+class CaInfo(Model):
+    """Die Zertifizierungsstelle von Stowly. Nie ein Schlüssel."""
+
+    name: str
+    fingerprint_sha256: str = Field(
+        description="SHA-256 des Zertifikats, Großbuchstaben mit Doppelpunkten (AB:CD:…)."
+    )
+    not_after: Timestamp
+    created_by_stowly: bool = Field(description="false = von Hand nach /data/tls gelegt.")
+    name_constraints: bool = Field(description="Die CA beglaubigt nur Adressen im Heimnetz.")
+
+
+class CertificateInfo(Model):
+    """Das Zertifikat des HTTPS-Listeners."""
+
+    addresses: list[str] = Field(description="Adressen (SAN) des Zertifikats.")
+    not_after: Timestamp
+
+
+class PortSource(StrEnum):
+    DEFAULT = "default"  # Vorgabe HTTPS_PORT_DEFAULT
+    LEARNED = "learned"  # aus einer Anfrage über den HTTPS-Listener gelernt
+    MANUAL = "manual"  # in der App eingetragen
+
+
+class HttpsStatus(Model):
+    """HTTPS durch Stowly selbst (docs/integrationen.md, Abschnitt 11)."""
+
+    enabled: bool = Field(description="Stowly hat einen HTTPS-Listener (STOWLY_HTTPS_PORT ist gesetzt).")
+    listening: bool = Field(description="Der HTTPS-Listener läuft.")
+    problem: str | None = Field(
+        description="Warum HTTPS nicht läuft oder kein brauchbares Zertifikat hat; sonst null."
+    )
+    port: PortNumber | None = Field(
+        description="Port, unter dem HTTPS von außen erreichbar ist; null ohne HTTPS-Listener."
+    )
+    port_source: PortSource
+    http_port: PortNumber | None = Field(
+        description=(
+            "Port, unter dem HTTP von außen erreichbar ist, gelernt aus Anfragen über HTTP (für den "
+            "Download der CA und den Befehl für den Pi); null = noch nicht gesehen."
+        )
+    )
+    addresses: list[SetupAddress] = Field(description="Höchstens 10, gelernte zuerst.")
+    origins: list[str] = Field(description="HTTPS-Ursprünge der App, etwa https://192.168.1.10:8443.")
+    seen_at: Timestamp | None = Field(description="Letzte angemeldete Anfrage über den HTTPS-Listener.")
+    via_https: bool = Field(description="Diese Anfrage kam über den HTTPS-Listener von Stowly.")
+    ca: CaInfo | None = Field(description="null = keine nutzbare CA (problem sagt warum).")
+    certificate: CertificateInfo | None
+
+
+class PairedPrinter(Model):
+    """Ein Drucker an einem gekoppelten Pi, mit dem Ablauf von dessen Zertifikat."""
+
+    printer_id: Uuid
+    hostname: str = Field(description="Hostname des Pi bei der Kopplung.")
+    not_after: Timestamp = Field(
+        description="Ablauf des Zertifikats; die App warnt PI_CERT_WARN_DAYS Tage vorher."
+    )
+
+
+class SetupStatus(Model):
+    """Stand der Einrichtung (``GET /api/setup``). Nie ein Schlüssel, nie ein Passwort."""
+
+    password_source: PasswordSource
+    steps: list[SetupStep] = Field(description="Alle Schritte, in der Reihenfolge des Assistenten.")
+    finished_at: Timestamp | None = Field(
+        description="Wann die Einrichtung abgeschlossen wurde; null = offen."
+    )
+    paired_printers: list[PairedPrinter] = Field(
+        description=(
+            "Je nicht gelöschtem Drucker die jüngste Kopplung eines Pi, früheste Ablaufzeit zuerst. "
+            "Daran warnt jedes Gerät vor dem Ablauf des Zertifikats."
+        )
+    )
+    https: HttpsStatus
+
+
+class SetupStepChange(Model):
+    id: SetupStepId
+    state: SetupStepState
+
+
+class SetupChanges(Model):
+    """Änderungen an der Einrichtung (``PATCH /api/setup``). Nur vorhandene Felder zählen."""
+
+    step: SetupStepChange = Field(default=None, description="Einen Schritt markieren.")
+    finished: bool = Field(default=None, description="true = abschließen, false = wieder öffnen.")
+    addresses: list[SetupAddressText] = Field(
+        default=None,
+        max_length=LIMITS["setup_addresses"],
+        description=(
+            "Die von Hand eingetragenen Adressen (IP oder Name, ohne Port); ersetzt die bisherigen. "
+            "Gelernte bleiben. Jede muss im Heimnetz liegen und von der CA gedeckt sein."
+        ),
+    )
+    https_port: PortNumber | None = Field(
+        default=None, description="Port, unter dem HTTPS von außen erreichbar ist; null = wieder lernen."
+    )
+
+
+# --- Einstellungen des Servers aus der App (docs/integrationen.md, Abschnitt 12) ---------
+
+PushContact = Annotated[str, Field(min_length=1, max_length=LIMITS["push_contact"])]
+
+
+class PushConfig(Model):
+    contact: str | None = Field(
+        description="Wirksamer Kontakt für die Push-Dienste (mailto: oder https); null = keiner, Push ist aus."
+    )
+    source: ConfigSource
+
+
+class UpdateConfig(Model):
+    enabled: bool = Field(description="Der Server fragt GitHub nach neuen Versionen.")
+    repo: str | None = Field(description="Das Repository der Releases; null = keines bekannt.")
+    source: ConfigSource = Field(
+        description=(
+            "env: STOWLY_UPDATE_REPO (immer an); app: Schalter in der App; default: noch nicht "
+            "geschaltet, aus."
+        )
+    )
+    available: bool = Field(
+        description=(
+            "Der Schalter wirkt: Das Image kennt ein Repository (STOWLY_UPDATE_REPO_DEFAULT) und die "
+            "Umgebung legt nichts fest."
+        )
+    )
+
+
+class ServerConfig(Model):
+    """Einstellungen des Servers, die auch in der App gehen. Die Umgebung geht vor; nie ein Geheimnis."""
+
+    push: PushConfig
+    update: UpdateConfig
+
+
+class ServerConfigChanges(Model):
+    """``PATCH /api/server-config``. Nur vorhandene Felder zählen; 409, wenn das Feld aus der Umgebung kommt."""
+
+    push_contact: PushContact | None = Field(
+        default=None,
+        description=(
+            "mailto:<Adresse> oder eine https-Adresse; eine Adresse ohne mailto: bekommt es davor. "
+            "null = entfernen (Push ist dann aus)."
+        ),
+    )
+    update_enabled: bool = Field(default=None)
+
+
+# --- Pi koppeln (docs/sync-protokoll.md, 11.8; docs/etiketten.md) ----------------------
+
+# Ein Kopplungscode gilt so viele Sekunden. Meldet sich der Pi (POST /api/pi/pair/start), gilt er ab
+# da noch einmal so lange: Die Installation auf einem frischen Pi braucht Zeit.
+PI_PAIRING_TTL_S = 1800
+# Der Code: 8 Zeichen aus Crockford-Base32 (Ziffern und Großbuchstaben ohne I, L, O, U), angezeigt
+# als XXXX-XXXX. Der Server liest ihn großzügig: Kleinschreibung, Bindestriche und Leerzeichen zählen
+# nicht, O gilt als 0, I und L als 1.
+PI_PAIRING_CODE_LENGTH = 8
+PI_HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+PI_TOKEN_PATTERN = r"^[A-Za-z0-9_-]+$"
+PI_CSR_MAX = 8192
+
+PairingCode = Annotated[str, Field(min_length=PI_PAIRING_CODE_LENGTH, max_length=20)]
+PiHostname = Annotated[str, Field(pattern=PI_HOSTNAME_PATTERN, max_length=63)]
+SoftwareVersion = Annotated[str, Field(min_length=1, max_length=40)]
+
+
+class PiPairingState(StrEnum):
+    WAITING = "waiting"  # Code erzeugt, der Pi hat sich noch nicht gemeldet
+    INSTALLING = "installing"  # der Pi hat sich gemeldet und richtet sich ein
+    PAIRED = "paired"  # gekoppelt: Zertifikat ausgestellt, Drucker angelegt oder übernommen
+    EXPIRED = "expired"  # die Frist lief ab, ohne dass der Pi gekoppelt wurde
+    CANCELLED = "cancelled"  # abgebrochen oder durch einen neueren Code ersetzt
+
+
+class PiPairingInput(Model):
+    """Neuer Kopplungscode (``POST /api/pi/pairings``)."""
+
+    origin: str = Field(
+        min_length=1,
+        max_length=LIMITS["push_origin"],
+        description="Ursprung der App (location.origin): Der Pi erlaubt ihn, und der Befehl baut darauf auf.",
+    )
+    printer_id: Uuid | None = Field(
+        default=None, description="Einen vorhandenen direkten Drucker übernehmen; null = neu anlegen."
+    )
+
+
+class PiInfo(Model):
+    """Was der Pi beim Koppeln gemeldet hat."""
+
+    hostname: str
+    addresses: list[str] = Field(description="Seine IPv4-Adressen im Heimnetz.")
+    model: str | None = Field(description="Erkanntes Druckermodell, etwa QL-570; null = keins erkannt.")
+    printer_found: bool = Field(description="Beim Koppeln hing ein Brother-Drucker am USB.")
+    version: str | None = Field(description="Version des Druckdienstes auf dem Pi.")
+    not_after: Timestamp | None = Field(description="Ablauf seines Zertifikats; null vor der Kopplung.")
+
+
+class PiPairing(Model):
+    """Eine Kopplung (``POST /api/pi/pairings``, ``GET /api/pi/pairings/{pairing_id}``)."""
+
+    id: Uuid
+    state: PiPairingState
+    code: str | None = Field(description="Der Code als XXXX-XXXX; nur in der Antwort auf POST, sonst null.")
+    command: str | None = Field(
+        description="Der fertige Befehl für den Pi; nur in der Antwort auf POST, sonst null."
+    )
+    expires_at: Timestamp
+    printer_id: Uuid | None = Field(description="Der gewählte bzw. gekoppelte Drucker.")
+    pi: PiInfo | None = Field(
+        description="Was der Pi gemeldet hat; null, solange er sich nicht gemeldet hat."
+    )
+
+
+class PiPairStartInput(Model):
+    """Der Pi meldet sich gleich nach dem Laden des Pakets (``POST /api/pi/pair/start``)."""
+
+    code: PairingCode
+    hostname: PiHostname
+    version: SoftwareVersion | None = None
+
+
+class PiPairInput(Model):
+    """Die Kopplung selbst (``POST /api/pi/pair``), nach der Installation auf dem Pi."""
+
+    code: PairingCode
+    hostname: PiHostname
+    addresses: list[Annotated[str, Field(min_length=7, max_length=15)]] = Field(
+        min_length=1, max_length=8, description="IPv4-Adressen des Pi im Heimnetz, die zum Server zuerst."
+    )
+    csr: str = Field(
+        min_length=1,
+        max_length=PI_CSR_MAX,
+        description=(
+            "Zertifikatsantrag (PEM), Schlüssel P-256 oder RSA ab 2048 Bit. Betreff und Erweiterungen "
+            "zählen nicht: Die Adressen bestimmt der Server."
+        ),
+    )
+    token: str = Field(
+        min_length=16,
+        max_length=LIMITS["printer_token"],
+        pattern=PI_TOKEN_PATTERN,
+        description="Token des Druckdienstes; Stowly trägt es in die Konfiguration des Druckers ein.",
+    )
+    model: str | None = Field(default=None, max_length=LIMITS["printer_model"])
+    printer_found: bool
+    printer_id: Uuid | None = Field(
+        default=None,
+        description="Der Drucker einer früheren Kopplung (pairing.json); die Wahl in der App geht vor.",
+    )
+    version: SoftwareVersion | None = None
+
+
+class PiPairResult(Model):
+    """Antwort an den Pi. Enthält keine Geheimnisse."""
+
+    printer_id: Uuid
+    name: str = Field(description="Name des Druckers in Stowly.")
+    certificate: str = Field(description="Das Zertifikat des Pi (PEM), von der CA von Stowly signiert.")
+    ca: str = Field(description="Das Zertifikat der CA (PEM).")
+    origins: list[str] = Field(description="Ursprünge der App, die direkt drucken dürfen.")
+    urls: list[str] = Field(description="Adressen, unter denen die App den Druckdienst anspricht.")
+    not_after: Timestamp

@@ -9,6 +9,8 @@
   selbst geschrieben auf ``cryptography`` und gegen das Beispiel aus RFC 8291, Anhang A, geprüft.
 * **Versand** (4.6, 4.7) über ``httpx2``: ohne Weiterleitungen, höchstens 10 Sekunden je Anfrage. Tests
   setzen einen Ersatz-Transport ein (``httpx2.MockTransport``) und gehen nie ins Netz.
+* **Absender** ist der wirksame Kontakt (``STOWLY_PUSH_CONTACT``, sonst aus der App; ``serverconfig``),
+  gelesen bei jeder Zustellung: Ein neuer Kontakt gilt ohne Neustart.
 
 Die Adresse eines Abos (``endpoint``) ist ein Schlüssel zu diesem Gerät: Ins Log kommt nur ihr Rechner.
 """
@@ -36,7 +38,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from stowly import db
+from stowly import db, serverconfig
 from stowly.config import Settings
 from stowly.contract.api import PUSH_PATHS, PUSH_TEST_INTERVAL_S, PushTestStatus
 from stowly.contract.limits import LIMITS
@@ -455,7 +457,7 @@ def classify(http_status: int) -> Delivery:
             "Push-Dienst überlastet (429)",
         )
     if 400 <= http_status < 500:
-        hint = " Stimmt STOWLY_PUSH_CONTACT?" if http_status in (400, 401, 403) else ""
+        hint = " Stimmt der Kontakt für die Push-Dienste?" if http_status in (400, 401, 403) else ""
         return Delivery(
             PushTestStatus.REJECTED,
             http_status,
@@ -489,6 +491,10 @@ class NoSubscription(Exception):
     """Dieses Gerät hat kein Abo beim Server."""
 
 
+class NoContact(Exception):
+    """Es gibt keinen wirksamen Kontakt für die Push-Dienste (mehr): Push ist aus."""
+
+
 class TooSoon(Exception):
     """Mehr als eine Testnachricht je Gerät in ``PUSH_TEST_INTERVAL_S``."""
 
@@ -498,8 +504,10 @@ class TooSoon(Exception):
 
 
 class PushService:
-    """Versand an die Push-Dienste. Ein Exemplar je laufender App (``lifespan``).
+    """Versand an die Push-Dienste. Ein Exemplar je laufender App (``lifespan``), auch ohne Kontakt.
 
+    Den wirksamen Kontakt (``serverconfig.push_contact``: Umgebung vor App) liest der Dienst bei jeder
+    Zustellung neu: Ein Kontakt aus der App gilt so ohne Neustart ab der nächsten Nachricht.
     ``transport`` und ``clock`` sind der Ersatz für Tests; im Betrieb bleiben sie ``None``.
     """
 
@@ -510,8 +518,8 @@ class PushService:
         transport: httpx2.AsyncBaseTransport | None = None,
         clock: Clock | None = None,
     ) -> None:
+        self._settings = settings
         self._path: Path = settings.database_path
-        self._contact = settings.push_contact
         self._clock = clock or Clock()
         self._client = httpx2.AsyncClient(
             transport=transport,
@@ -520,7 +528,8 @@ class PushService:
         )
         self._key: ec.EllipticCurvePrivateKey | None = None
         self._public: str | None = None
-        self._tokens: dict[str, tuple[str, datetime]] = {}  # aud -> (JWT, gültig bis)
+        # (aud, sub) -> (JWT, gültig bis): Ein neuer Kontakt bekommt ein neues JWT.
+        self._tokens: dict[tuple[str, str], tuple[str, datetime]] = {}
         self._tests: dict[str, float] = {}  # Gerät -> Zeitpunkt der letzten Testnachricht (monoton)
 
     async def aclose(self) -> None:
@@ -528,26 +537,30 @@ class PushService:
 
     # ------------------------------------------------------------------ Absender
 
-    def _load_key(self) -> None:
+    def _prepare(self) -> str | None:
+        """Lädt beim ersten Mal den Schlüssel und liefert den wirksamen Kontakt (aus derselben Verbindung)."""
         con = db.connect(self._path)
         try:
-            self._public = public_key(con)
-            stored = db.get_meta(con, VAPID_PRIVATE)
+            if self._key is None:
+                self._public = public_key(con)
+                stored = db.get_meta(con, VAPID_PRIVATE)
+                assert stored is not None
+                self._key = private_key_from(stored)
+            return serverconfig.push_contact(self._settings, con)
         finally:
             con.close()
-        assert stored is not None
-        self._key = private_key_from(stored)
 
-    def _authorization(self, endpoint: str) -> str:
-        """``vapid t=<JWT>, k=<öffentlicher Schlüssel>``; ein JWT je aud, solange es noch eine Stunde gilt."""
-        assert self._key is not None and self._public is not None and self._contact is not None
+    def _authorization(self, endpoint: str, contact: str) -> str:
+        """``vapid t=<JWT>, k=<öffentlicher Schlüssel>``; ein JWT je aud und Kontakt, solange es noch eine
+        Stunde gilt."""
+        assert self._key is not None and self._public is not None
         aud = audience(endpoint)
         now = self._clock.now()
-        cached = self._tokens.get(aud)
+        cached = self._tokens.get((aud, contact))
         if cached is None or cached[1] - now < JWT_REUSE_MARGIN:
             expires = now + JWT_LIFETIME
-            token = vapid_jwt(self._key, aud=aud, sub=self._contact, exp=math.floor(expires.timestamp()))
-            cached = self._tokens[aud] = (token, expires)
+            token = vapid_jwt(self._key, aud=aud, sub=contact, exp=math.floor(expires.timestamp()))
+            cached = self._tokens[(aud, contact)] = (token, expires)
         return f"vapid t={cached[0]}, k={self._public}"
 
     # ------------------------------------------------------------------ Versand
@@ -555,9 +568,13 @@ class PushService:
     async def deliver(
         self, subscription: Subscription, payload: bytes, *, ttl: int, topic: str, urgency: str
     ) -> Delivery:
-        """Schickt eine Nachricht an ein Abo und vermerkt die Antwort am Abo (4.7). Ohne Wiederholung."""
-        if self._key is None:
-            await asyncio.to_thread(self._load_key)
+        """Schickt eine Nachricht an ein Abo und vermerkt die Antwort am Abo (4.7). Ohne Wiederholung.
+
+        ``NoContact``, wenn es gerade keinen wirksamen Kontakt gibt; dann geht nichts hinaus.
+        """
+        contact = await asyncio.to_thread(self._prepare)
+        if contact is None:
+            raise NoContact
         body = encrypt(payload, b64url_decode(subscription.p256dh), b64url_decode(subscription.auth))
         headers = {
             "TTL": str(ttl),
@@ -565,7 +582,7 @@ class PushService:
             "Urgency": urgency,
             "Content-Encoding": "aes128gcm",
             "Content-Type": "application/octet-stream",
-            "Authorization": self._authorization(subscription.endpoint),
+            "Authorization": self._authorization(subscription.endpoint, contact),
         }
         try:
             response = await asyncio.wait_for(
@@ -640,7 +657,7 @@ class PushService:
         self._tests[device_id] = now
 
     async def test(self, device_id: str) -> Delivery:
-        """Schickt die Testnachricht an das Abo dieses Geräts; ``NoSubscription``, ``TooSoon``."""
+        """Schickt die Testnachricht an das Abo dieses Geräts; ``NoSubscription``, ``TooSoon``, ``NoContact``."""
         subscription = await asyncio.to_thread(self._subscription, device_id)
         if subscription is None:
             raise NoSubscription
@@ -648,4 +665,9 @@ class PushService:
         payload = notification(
             TEST_TITLE, TEST_BODY, origin=subscription.origin, path=PUSH_PATHS["test"], tag=TEST_TAG
         )
-        return await self.deliver(subscription, payload, ttl=300, topic=TEST_TAG, urgency="high")
+        try:
+            return await self.deliver(subscription, payload, ttl=300, topic=TEST_TAG, urgency="high")
+        except NoContact:
+            # Nichts ging hinaus: Diese Testnachricht zählt nicht.
+            self._tests.pop(device_id, None)
+            raise

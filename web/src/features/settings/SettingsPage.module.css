@@ -175,6 +175,36 @@
   vertical-align: -0.15em;
 }
 
+/* Formular in einem Dialog (Passwort ändern) */
+.form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+/* Kontakt für die Push-Dienste: Feld und „Speichern" nebeneinander, am Handy untereinander */
+.contact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-3);
+}
+
+.contactField {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+/* Die Beschriftung des Felds steht über ihm: „Speichern" auf die Höhe des Felds. */
+.contact > button {
+  margin-top: calc(var(--text-sm) * var(--leading-normal) + var(--space-1));
+}
+
+/* Ein Wert, der aus der Umgebung kommt: nur zu sehen */
+.fixed {
+  display: grid;
+  gap: var(--space-1);
+}
+
 @media (min-width: 48rem) {
   .switchRow {
     padding-right: var(--space-5);

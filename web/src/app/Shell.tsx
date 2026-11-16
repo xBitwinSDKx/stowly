@@ -1,14 +1,14 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, ScrollRestoration, useLocation, useNavigate } from "react-router";
 
-import { isOpenItem, ROUTES, useCore, useLive } from "@/contract";
+import { isOpenItem, ROUTES, setupPath, useCore, useLive } from "@/contract";
 import { useLogout } from "@/features/auth/logout";
 import { UnknownLabelsBanner } from "@/features/printers/UnknownLabels";
 import { useOpenLabels } from "@/features/printers/usePrinting";
 import { useStock } from "@/features/stock/useStock";
 import { summarizeSync, type SyncSummary } from "@/features/sync/status";
 import { DESKTOP_QUERY, Logo, Menu, Notice, plural, useMediaQuery } from "@/ui";
-import { Badge, Button, cx, IconButton, TextField } from "@/ui/base";
+import { Badge, Button, ButtonLink, cx, IconButton, TextField } from "@/ui/base";
 import {
   AlertCircleIcon,
   BellIcon,
@@ -37,6 +37,7 @@ import { MobileMenu } from "./MobileMenu";
 import { PageLoading } from "./Page";
 import { preloadPages } from "./pages";
 import { SearchProvider, useSearch } from "./search";
+import { useSetupAutoOpen } from "./setupAutoOpen";
 import styles from "./Shell.module.css";
 import { useNotificationNavigation } from "./notificationNavigation";
 
@@ -171,6 +172,7 @@ export function Shell() {
 
 function ShellFrame() {
   useNotificationNavigation();
+  useSetupAutoOpen();
   const core = useCore();
   const logout = useLogout();
   const desktop = useMediaQuery(DESKTOP_QUERY);
@@ -353,7 +355,17 @@ function ShellFrame() {
           </Notice>
         ) : null}
         {app?.secure_context === false ? (
-          <Notice banner tone="warn" icon={<LockOpenIcon />} title="Kein Scannen über diese Adresse">
+          <Notice
+            banner
+            tone="warn"
+            icon={<LockOpenIcon />}
+            title="Kein Scannen über diese Adresse"
+            action={
+              <ButtonLink size="sm" to={setupPath("https")}>
+                Sichere Verbindung einrichten
+              </ButtonLink>
+            }
+          >
             Scannen und Offline-Betrieb brauchen die HTTPS-Adresse von Stowly. Über eine http-Adresse läuft die App nur online und ohne Kamera.
           </Notice>
         ) : null}

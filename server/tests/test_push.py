@@ -626,7 +626,7 @@ def test_the_answers_of_a_push_service(
         assert rows[0]["last_error"] == note
         assert (rows[0]["last_error_at"] is None) is (note is None)
     if answer == 403:
-        assert result["message"] == "Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?"
+        assert result["message"] == "Der Push-Dienst lehnt ab (403). Stimmt der Kontakt für die Push-Dienste?"
 
 
 def test_a_slow_push_service_is_given_up_after_the_time_limit(push_settings, push_clock, monkeypatch):

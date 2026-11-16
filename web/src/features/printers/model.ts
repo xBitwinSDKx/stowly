@@ -5,8 +5,11 @@
  * - zu jedem Grund, aus dem ein Druckdienst nicht benutzbar ist, ein Satz mit dem nächsten Schritt
  * - Zustände und Fehler der Etiketten
  * - welcher Drucker am Ende druckt (dieselbe Regel wie im Kern: `printerIdForJob`)
+ * - wann das Zertifikat eines gekoppelten Pi bald abläuft
  */
 import {
+  formatDate,
+  PI_CERT_WARN_DAYS,
   printerIdForJob,
   productSubtitle,
   productTitle,
@@ -23,6 +26,7 @@ import {
   type PrintJobErrorCode,
   type PrintJobState,
   type Product,
+  toLocalDate,
   type Zone,
 } from "@/contract";
 import { plural } from "@/ui";
@@ -579,4 +583,32 @@ export function viewJob(job: PrintJob, data: PrintData, ownDeviceId: string | nu
     own: ownDeviceId !== null && job.device_id === ownDeviceId,
     hasImage: (job.state === "printed" || job.state === "sent") && printer?.server?.driver === "image",
   };
+}
+
+// --------------------------------------------------------------------------------------
+// Zertifikat eines gekoppelten Pi
+// --------------------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Die ganzen Tage bis zum Ablauf des Zertifikats eines Pi (`PairedPrinter.not_after`), wenn er
+ * näher ist als `PI_CERT_WARN_DAYS` (negativ: schon abgelaufen); sonst null, auch ohne lesbaren Ablauf.
+ */
+export function piCertificateWarning(notAfter: string | null, now: number): number | null {
+  const ms = notAfter === null ? Number.NaN : Date.parse(notAfter);
+  if (Number.isNaN(ms)) {
+    return null;
+  }
+  const days = Math.floor((ms - now) / DAY_MS);
+  return days < PI_CERT_WARN_DAYS ? days : null;
+}
+
+/** Die Überschrift der Warnung vor dem Ablauf des Zertifikats eines Pi. */
+export function certificateWarningTitle(name: string, days: number, notAfter: string): string {
+  if (days < 0) {
+    return `Das Zertifikat des Pi „${name}“ ist abgelaufen.`;
+  }
+  const day = formatDate(toLocalDate(new Date(Date.parse(notAfter))));
+  return days === 0 ? `Das Zertifikat des Pi „${name}“ läuft heute ab.` : `Das Zertifikat des Pi „${name}“ läuft in ${plural(days, "Tag", "Tagen")} ab (${day}).`;
 }

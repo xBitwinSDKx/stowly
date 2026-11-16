@@ -1,6 +1,6 @@
 # Raspberry Pi als Druckserver im Keller
 
-Der Pi steht im Keller beim Etikettendrucker, spannt dort ein eigenes WLAN ohne Internet auf und nimmt Etiketten direkt vom Handy an: über HTTPS (`https://10.71.83.1:8443`) und HTTP (`http://10.71.83.1:8080`). Er hat keine Verbindung zum Server und keine Uhr; den Zustand von Pi und Drucker bringt das Handy beim nächsten Abgleich mit. Protokoll: [`../docs/etiketten.md`](../docs/etiketten.md), Hintergrund: [`../docs/recherche.md`](../docs/recherche.md), Abschnitte 3 bis 8.
+Der Pi steht beim Etikettendrucker und nimmt Etiketten direkt vom Handy an, über HTTPS (Port 8443) und HTTP (Port 8080). Er bleibt im Heim-WLAN oder spannt im Keller ein eigenes WLAN ohne Internet auf (`https://10.71.83.1:8443`); dann hat er keine Verbindung zum Server und keine Uhr, und den Zustand von Pi und Drucker bringt das Handy beim nächsten Abgleich mit. Seit Stowly 0.3.0 koppelt man ihn mit einem Befehl (Abschnitt „Der einfache Weg"). Protokoll: [`../docs/etiketten.md`](../docs/etiketten.md), Hintergrund: [`../docs/recherche.md`](../docs/recherche.md), Abschnitte 3 bis 8.
 
 > **Stand: teilweise am Gerät geprüft (14.11.2026).** Auf einem Raspberry Pi 5 mit Raspberry Pi OS Lite (64-bit, Trixie) und einem Brother QL-570 am USB liefen:
 > - `install.sh` zweimal (Erstinstallation und Aktualisierung)
@@ -51,7 +51,36 @@ Die Skripte werden mit `sudo bash pi/…` aufgerufen; sie brauchen dafür kein A
 
 Führt ein Netzwerkkabel in den Keller, geht es einfacher: ein gewöhnlicher WLAN-Access-Point dort, und der Server druckt direkt auf einen Netzwerkdrucker ([`../docs/betrieb.md`](../docs/betrieb.md), Abschnitt 14).
 
-## Ablauf in Kürze
+## Der einfache Weg: koppeln (seit Stowly 0.3.0)
+
+Läuft Stowly mit HTTPS durch Stowly selbst ([`../docs/betrieb.md`](../docs/betrieb.md), Abschnitt 20), richtet sich der Pi mit einem einzigen Befehl ein. Zertifikat, Token und erlaubte Adressen bekommt er von Stowly, und der Drucker erscheint von selbst in der App.
+
+1. **SD-Karte** wie in Abschnitt 1 beschreiben: Hostname, der mit `stowly` beginnt (etwa `stowly-pi`; nur dann bekommt der Pi ein Zertifikat auch für `<hostname>.local`), Benutzer, **Heim-WLAN**, SSH an. Den Drucker per USB anschließen und den Pi einschalten.
+2. **Befehl holen:** In Stowly im Einrichtungsassistenten beim Schritt „Drucker" oder unter Drucker → „Raspberry Pi koppeln" einen Code erzeugen. Die App zeigt einen fertigen Befehl wie
+
+   ```
+   curl -fsSL http://192.168.1.10:8010/api/pi/install.sh | sudo sh -s -- ABCD-EFGH
+   ```
+
+   Der Code gilt 30 Minuten und nur einmal. Soll ein schon angelegter Drucker bleiben (etwa ein von Hand eingerichteter Pi), dort „vorhandenen Drucker übernehmen" wählen.
+3. **Auf dem Pi ausführen:** am PC mit `ssh <benutzer>@stowly-pi.local` anmelden, den Befehl einfügen, das Passwort für `sudo` eingeben.
+   - Der Pi meldet sich sofort bei Stowly; die App zeigt „Der Pi richtet sich ein …".
+   - Er installiert, was fehlt (beim ersten Mal einige Minuten), und erkennt das Modell des Druckers.
+   - Er erzeugt seinen Schlüssel selbst. Dieser verlässt den Pi nie; Stowly signiert nur den Antrag.
+   - Er druckt ein Testetikett.
+4. **In der App:** „Gekoppelt", der Drucker ist da und, falls es noch keinen gab, der Standarddrucker. „Verbindung prüfen" zeigt, dass das Handy ihn erreicht.
+
+Wer dem Befehl nicht blind trauen will, lädt das Skript erst und liest es: `curl -fsSL http://<NAS>:8010/api/pi/install.sh -o stowly-install.sh`, `less stowly-install.sh`, dann `sudo sh stowly-install.sh <CODE>`. Der Befehl läuft absichtlich über HTTP im Heimnetz: Vor dem Koppeln vertraut der Pi der CA von Stowly noch nicht.
+
+Der Pi muss Stowly dabei direkt erreichen, ohne Proxy oder NAT dazwischen: Stowly signiert nur die Adresse, von der er sich meldet. Wechselt die IP-Adresse des Pi später, neu koppeln.
+
+Was `install.sh --pair` darüber hinaus tut: Es installiert nur fehlende Pakete (auch beim Weg von Hand), die Brother-Bibliothek nur, wenn die festgelegten Versionen fehlen, und wartet, falls beim ersten Start noch ein anderes apt läuft. Die Kopplung selbst erledigt `/opt/stowly-print/venv/bin/python -m stowly_print pair --server <Adresse> --code <CODE>`, die Probe danach `… -m stowly_print selftest` (HTTP, HTTPS gegen `ca.crt`, Testetikett; `--no-test-print` ohne Druck). Beide lassen sich auch von Hand aufrufen.
+
+**Neu koppeln** mit demselben Befehl und einem neuen Code, etwa bei neuer IP-Adresse oder bevor das Zertifikat nach 825 Tagen abläuft; die App warnt 60 Tage vorher. Token und Drucker bleiben. Ist der Pi schon Access Point (Abschnitt 6), erreicht er Stowly nicht: vorher `sudo bash /opt/stowly-print/pi/access-point.sh --remove`.
+
+Der Access Point (Abschnitt 6), der WLAN-QR-Code (8) und der Schreibschutz (9) gehen nach dem Koppeln wie unten beschrieben; die Skripte liegen dann unter `/opt/stowly-print/pi/`. Die Abschnitte 2 bis 5 und 7 sind der Weg von Hand, für Stowly hinter einem eigenen Reverse Proxy oder zum Nachvollziehen.
+
+## Ablauf von Hand in Kürze
 
 Die Reihenfolge ist wichtig: Der Pi braucht Internet nur beim Installieren und verliert es, sobald er Access Point ist.
 
@@ -290,6 +319,7 @@ Für Tests lässt sich der Bild-Treiber stören: eine Datei `simulate.txt` im Ve
 | Skript | Dateien |
 |---|---|
 | `install.sh` | Benutzer `stowly-print`; `/opt/stowly-print/` (venv, README); `/etc/stowly-print/stowly-print.toml` und `tls/`; `/etc/systemd/system/stowly-print.service`; `/etc/udev/rules.d/99-stowly-brother.rules`; `/etc/systemd/journald.conf.d/stowly.conf` |
+| `install.sh --pair` (zusätzlich) | `/opt/stowly-print/pi/` (die Skripte für später: `access-point.sh`, `overlay.sh` …); `/etc/stowly-print/pairing.json` (Server, Drucker, Ablauf des Zertifikats, kein Token); `/etc/stowly-print/tls/ca.crt`; die vorige Konfiguration und die vorigen Zertifikate als `*.bak` |
 | `access-point.sh` | `/etc/hostapd/hostapd.conf` (enthält das WLAN-Passwort, nur für root); `/etc/dnsmasq.d/stowly-ap.conf`; `/etc/NetworkManager/conf.d/99-stowly-ap.conf`; `/etc/systemd/system/stowly-ap-address.service`; `/etc/sysctl.d/99-stowly-ap.conf`; über `raspi-config` das Land (`cfg80211.ieee80211_regdom=DE` in `/boot/firmware/cmdline.txt`) |
 | `overlay.sh` | Einstellungen von `raspi-config`: `overlayroot=tmpfs` in `/boot/firmware/cmdline.txt`, `ro` für die Boot-Partition in `/etc/fstab` |
 
@@ -308,7 +338,7 @@ Die Skripte sind gegen die Quellen geprüft (Paketlisten von Debian, Raspbian un
 | # | Schritt | Erwartet |
 |---|---|---|
 | P1 | Pi mit frischer Karte starten, `ssh` | Anmeldung klappt, `cat /etc/os-release` nennt Trixie |
-| P2 | `sudo bash pi/install.sh --origin … --cert pi.crt --key pi.key` | läuft durch; die Probe am Ende zeigt `stowly-print 0.1.0` und den Drucker; Token wird angezeigt. Bei der Brother-Bibliothek steht „Building wheel for packbits", aber kein „Installing build dependencies". Die Versionen aus Trixie: Starlette 0.46.1, uvicorn 0.32.0, Pillow 11.1.0, segno 1.6.6; bitte die Zeile notieren |
+| P2 | `sudo bash pi/install.sh --origin … --cert pi.crt --key pi.key` | läuft durch; die Probe am Ende zeigt `stowly-print` mit der Version des Releases und den Drucker; Token wird angezeigt. Bei der Brother-Bibliothek steht „Building wheel for packbits", aber kein „Installing build dependencies". Die Versionen aus Trixie: Starlette 0.46.1, uvicorn 0.32.0, Pillow 11.1.0, segno 1.6.6; bitte die Zeile notieren |
 | P3 | `install.sh` gleich noch einmal | läuft durch, „gibt es schon; sie bleibt, wie sie ist", Token unverändert |
 | P4 | `systemctl status stowly-print`, `journalctl -u stowly-print -e` | `active (running)`, Meldungen „Druckdienst … hört auf http://0.0.0.0:8080" und „https://0.0.0.0:8443"; kein Token im Journal |
 | P5 | `id stowly-print`, `ls -l /etc/stowly-print/tls/` | Gruppe `plugdev`; `pi.key` gehört `stowly-print`, Rechte `-rw-------` |

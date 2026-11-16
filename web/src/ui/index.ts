@@ -3,6 +3,10 @@
  *
  * Die Grundbausteine selbst (Button, Dialog, TextField, …) kommen aus "@/ui/base";
  * was hier liegt, baut darauf auf und gehört der Oberfläche.
+ *
+ * Bewusst nicht hier: `QrCode` ("@/ui/QrCode") und `CopyField` ("@/ui/CopyField"). Sie werden
+ * direkt importiert, damit sie (und die Bibliothek für QR-Codes) nur in den nachgeladenen Teilen
+ * landen, die sie brauchen, und das Hauptpaket klein bleibt.
  */
 export { BEST_BEFORE_EXAMPLES, BestBeforeField, describeBestBefore, readBestBefore, type BestBeforeFieldProps, type BestBeforeInput } from "./BestBeforeField";
 export { Checkbox, type CheckboxProps } from "./Checkbox";
@@ -35,6 +39,7 @@ export {
   useProgressiveCount,
   useToday,
   useUiFlag,
+  useVisibleInterval,
   WIDE_QUERY,
 } from "./hooks";
 export { List, ListLink, ListRow, Section, type ListLinkProps, type ListRowProps, type SectionProps } from "./List";

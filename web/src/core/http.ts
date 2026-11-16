@@ -18,10 +18,18 @@ import {
   type LoginResponse,
   type LookupResult,
   type LookupResultState,
+  type PasswordChangeInput,
+  type PiPairing,
+  type PiPairingInput,
   type PushSubscriptionInput,
   type PushTestResult,
   type PushTestStatus,
+  type ServerConfig,
+  type ServerConfigChanges,
   type ServerHealth,
+  type SetupChanges,
+  type SetupPasswordInput,
+  type SetupStatus,
   type Stats,
   type SyncRequest,
   type SyncResponse,
@@ -29,7 +37,7 @@ import {
   type UpdateState,
   type UpdateStatus,
 } from "@/contract/api.gen";
-import type { StatsRange } from "@/contract/core";
+import { SECURE_CHECK_TIMEOUT_MS, type StatsRange } from "@/contract/core";
 import { CoreError, type CoreErrorCode } from "@/contract/errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -147,6 +155,15 @@ export class ApiClient {
     return this.call(endpoint, path, options, (response) => response.json() as Promise<T>);
   }
 
+  /** Eine JSON-Antwort, deren Form `valid` prüft. Was nicht so aussieht, stammt nicht vom Stowly-Server: "offline". */
+  private async checked<T>(endpoint: Endpoint, path: string, options: CallOptions, valid: (value: unknown) => value is T): Promise<T> {
+    const answer = await this.json<unknown>(endpoint, path, options);
+    if (!valid(answer)) {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return answer;
+  }
+
   /** Ist der Server erreichbar? Liefert seine Antwort oder null. Wirft nicht. */
   async health(): Promise<ServerHealth | null> {
     try {
@@ -158,15 +175,77 @@ export class ApiClient {
     }
   }
 
-  async login(password: string, deviceName: string): Promise<LoginResponse> {
-    const response = await this.json<LoginResponse>(ENDPOINTS.login, ENDPOINTS.login.path, {
-      body: { password, device_name: deviceName },
-      timeoutMs: REQUEST_TIMEOUT_MS,
-    });
-    if (!isRecord(response) || typeof response.token !== "string" || !isRecord(response.device) || typeof response.device.id !== "string") {
-      throw new CoreError("offline", OFFLINE_MESSAGE);
+  login(password: string, deviceName: string): Promise<LoginResponse> {
+    return this.checked(ENDPOINTS.login, ENDPOINTS.login.path, { body: { password, device_name: deviceName }, timeoutMs: REQUEST_TIMEOUT_MS }, isLoginResponse);
+  }
+
+  // ---------------------------------------------------------------- Einrichtung (Protokoll 5, 11.6 bis 11.8)
+
+  /** Das erste Haushalts-Passwort (`POST /api/setup/password`, ohne Anmeldung); die Antwort gleicht der Anmeldung. */
+  createPassword(password: string, deviceName: string): Promise<LoginResponse> {
+    const body: SetupPasswordInput = { password, device_name: deviceName };
+    return this.checked(ENDPOINTS.setup_password, ENDPOINTS.setup_password.path, { body, timeoutMs: REQUEST_TIMEOUT_MS }, isLoginResponse);
+  }
+
+  /** Ein neues Haushalts-Passwort (`POST /api/auth/password`, 204). */
+  async changePassword(token: string, current: string, next: string): Promise<void> {
+    const body: PasswordChangeInput = { current_password: current, new_password: next };
+    await this.call(ENDPOINTS.change_password, ENDPOINTS.change_password.path, { token, body, timeoutMs: REQUEST_TIMEOUT_MS }, async () => undefined);
+  }
+
+  setupStatus(token: string): Promise<SetupStatus> {
+    return this.checked(ENDPOINTS.get_setup, ENDPOINTS.get_setup.path, { token, timeoutMs: REQUEST_TIMEOUT_MS }, isSetupStatus);
+  }
+
+  updateSetup(token: string, changes: SetupChanges): Promise<SetupStatus> {
+    return this.checked(ENDPOINTS.update_setup, ENDPOINTS.update_setup.path, { token, body: changes, timeoutMs: REQUEST_TIMEOUT_MS }, isSetupStatus);
+  }
+
+  serverConfig(token: string): Promise<ServerConfig> {
+    return this.checked(ENDPOINTS.get_server_config, ENDPOINTS.get_server_config.path, { token, timeoutMs: REQUEST_TIMEOUT_MS }, isServerConfig);
+  }
+
+  patchServerConfig(token: string, changes: ServerConfigChanges): Promise<ServerConfig> {
+    return this.checked(ENDPOINTS.update_server_config, ENDPOINTS.update_server_config.path, { token, body: changes, timeoutMs: REQUEST_TIMEOUT_MS }, isServerConfig);
+  }
+
+  createPairing(token: string, input: PiPairingInput): Promise<PiPairing> {
+    return this.checked(ENDPOINTS.create_pi_pairing, ENDPOINTS.create_pi_pairing.path, { token, body: input, timeoutMs: REQUEST_TIMEOUT_MS }, isPairing);
+  }
+
+  pairing(token: string, id: string): Promise<PiPairing> {
+    const path = ENDPOINTS.get_pi_pairing.path.replace("{pairing_id}", encodeURIComponent(id));
+    return this.checked(ENDPOINTS.get_pi_pairing, path, { token, timeoutMs: REQUEST_TIMEOUT_MS }, isPairing);
+  }
+
+  /** Bricht eine Kopplung ab; eine unbekannte (404) gilt als abgebrochen. */
+  async cancelPairing(token: string, id: string): Promise<void> {
+    const path = ENDPOINTS.cancel_pi_pairing.path.replace("{pairing_id}", encodeURIComponent(id));
+    try {
+      await this.call(ENDPOINTS.cancel_pi_pairing, path, { token, timeoutMs: REQUEST_TIMEOUT_MS }, async () => undefined);
+    } catch (error) {
+      if (!(error instanceof CoreError && error.code === "not_found")) {
+        throw error;
+      }
     }
-    return response;
+  }
+
+  /**
+   * Antwortet HTTPS unter `origin` mit einem Zertifikat, dem dieses Gerät vertraut? Ein Abruf ohne
+   * CORS auf `/api/health`: Er gelingt (undurchsichtig), sobald die Verbindung steht, und scheitert
+   * bei fremdem Zertifikat oder geschlossenem Port (docs/integrationen.md, 11.5). Wirft nicht.
+   */
+  async reachesSecurely(origin: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SECURE_CHECK_TIMEOUT_MS);
+    try {
+      await this.fetchFn(`${origin.replace(/\/+$/, "")}${ENDPOINTS.health.path}`, { mode: "no-cors", cache: "no-store", credentials: "omit", signal: controller.signal });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Sperrt das Token beim Server. Ein schon gesperrtes Token gilt als Erfolg. */
@@ -370,7 +449,71 @@ function isUpdateStatus(value: unknown): value is UpdateStatus {
     typeof value.updater_ready === "boolean" &&
     typeof value.state === "string" &&
     UPDATE_STATES.has(value.state) &&
-    UPDATE_TEXTS.every((key) => value[key] === null || typeof value[key] === "string")
+    UPDATE_TEXTS.every((key) => value[key] === null || typeof value[key] === "string") &&
+    // Seit 0.3.0 (docs/integrationen.md, 10.4); ein älterer Server lässt sie weg.
+    ["updater_kind", "updater_version", "updater_command"].every((key) => value[key] == null || typeof value[key] === "string")
+  );
+}
+
+const isText = (value: unknown): value is string => typeof value === "string";
+const isTextOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
+const isPortOrNull = (value: unknown): boolean => value === null || (typeof value === "number" && Number.isInteger(value));
+
+function isLoginResponse(value: unknown): value is LoginResponse {
+  return isRecord(value) && isText(value.token) && isRecord(value.device) && isText(value.device.id);
+}
+
+/** Prüfung der Form von `SetupStatus`, soweit die App sie liest. */
+function isSetupStatus(value: unknown): value is SetupStatus {
+  if (!isRecord(value) || !isRecord(value.https)) {
+    return false;
+  }
+  const https = value.https;
+  const ca = https.ca;
+  const paired = value.paired_printers;
+  return (
+    isText(value.password_source) &&
+    isTextOrNull(value.finished_at) &&
+    // Seit Runde 2 der Einrichtung; ein Server davor lässt es weg.
+    (paired === undefined || (Array.isArray(paired) && paired.every((entry) => isRecord(entry) && isText(entry.printer_id) && isText(entry.not_after)))) &&
+    Array.isArray(value.steps) &&
+    value.steps.every((step) => isRecord(step) && isText(step.id) && isText(step.state) && typeof step.ready === "boolean") &&
+    typeof https.enabled === "boolean" &&
+    typeof https.listening === "boolean" &&
+    isTextOrNull(https.problem) &&
+    isPortOrNull(https.port) &&
+    isPortOrNull(https.http_port) &&
+    Array.isArray(https.addresses) &&
+    https.addresses.every((address) => isRecord(address) && isText(address.address)) &&
+    Array.isArray(https.origins) &&
+    (ca === null || (isRecord(ca) && isText(ca.name) && isText(ca.fingerprint_sha256)))
+  );
+}
+
+function isServerConfig(value: unknown): value is ServerConfig {
+  return (
+    isRecord(value) &&
+    isRecord(value.push) &&
+    isTextOrNull(value.push.contact) &&
+    isText(value.push.source) &&
+    isRecord(value.update) &&
+    typeof value.update.enabled === "boolean" &&
+    typeof value.update.available === "boolean" &&
+    isText(value.update.source)
+  );
+}
+
+function isPairing(value: unknown): value is PiPairing {
+  const pi = isRecord(value) ? value.pi : undefined;
+  return (
+    isRecord(value) &&
+    isText(value.id) &&
+    isText(value.state) &&
+    isText(value.expires_at) &&
+    isTextOrNull(value.code) &&
+    isTextOrNull(value.command) &&
+    isTextOrNull(value.printer_id) &&
+    (pi === null || (isRecord(pi) && isText(pi.hostname) && Array.isArray(pi.addresses)))
   );
 }
 

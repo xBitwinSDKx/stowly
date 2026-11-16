@@ -1,8 +1,8 @@
 """Die Tagesnachricht „nur Neues" (docs/integrationen.md, Abschnitt 4.8).
 
 Die Aufgabe ``push_daily`` des Zeitplans: einmal am Tag ab ``notify_time`` in ihrem Fenster (1.4),
-nur mit ``STOWLY_PUSH_CONTACT``. Sie läuft auch ohne Abo und ohne Neues; der Lauf rückt das Fenster
-vor.
+nur mit wirksamem Kontakt für die Push-Dienste (``STOWLY_PUSH_CONTACT`` oder aus der App, gelesen bei
+jeder Prüfung). Sie läuft auch ohne Abo und ohne Neues; der Lauf rückt das Fenster vor.
 
 **Das Fenster** reicht vom vorigen Lauf ``P`` bis zu diesem ``R``. Neu ist eine Packung im Bestand,
 
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from stowly import db, localtime, push, records, scheduler, summary, texts
+from stowly import db, localtime, push, records, scheduler, serverconfig, summary, texts
 from stowly.config import Settings
 from stowly.contract.api import PUSH_PATHS, PushTestStatus
 from stowly.contract.mhd import expired_from, soon_from
@@ -166,19 +166,28 @@ class PushDailyJob:
         self._sender = sender
         self._clock = clock or Clock()
 
-    def notify_time(self) -> str:
+    def notify_time(self, con: sqlite3.Connection | None = None) -> str:
         """Die Uhrzeit aus den Einstellungen des Haushalts; ohne gültigen Wert die Vorgabe 17:00."""
-        con = db.connect(self.settings.database_path)
+        own = con is None
+        con = db.connect(self.settings.database_path) if con is None else con
         try:
             value = records.settings_values(con).get("notify_time")
         finally:
-            con.close()
+            if own:
+                con.close()
         return value if isinstance(value, str) and is_time_of_day(value) else DEFAULT_NOTIFY_TIME
 
     def due(self, run: scheduler.JobRun, now: datetime) -> bool:
-        if not self.settings.push_configured:
-            return False
-        return scheduler.push_daily_due(run, now, self.settings.tz, self.notify_time())
+        """Fällig nur mit wirksamem Kontakt (Umgebung oder App), gelesen bei jeder Prüfung: Ein Kontakt aus
+        der App gilt so ohne Neustart."""
+        con = db.connect(self.settings.database_path)
+        try:
+            if serverconfig.push_contact(self.settings, con) is None:
+                return False
+            notify = self.notify_time(con)
+        finally:
+            con.close()
+        return scheduler.push_daily_due(run, now, self.settings.tz, notify)
 
     async def run(self, now: datetime) -> None:
         plan = await asyncio.to_thread(self._plan, now)
@@ -207,6 +216,9 @@ class PushDailyJob:
         )
         try:
             return await self._sender.deliver(subscription, payload, ttl=TTL_S, topic=TOPIC, urgency=URGENCY)
+        except push.NoContact:
+            log.info("Tagesnachricht an %s: Push ist inzwischen aus.", subscription.host)
+            return None
         except Exception:
             # Etwa ein unbrauchbarer Schlüssel am Abo: Die anderen Abos bekommen ihre Nachricht trotzdem.
             log.exception("Tagesnachricht an %s ließ sich nicht schicken", subscription.host)

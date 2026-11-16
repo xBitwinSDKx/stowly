@@ -1,6 +1,13 @@
 {
   "components": {
     "schemas": {
+      "AddressSource": {
+        "enum": [
+          "learned",
+          "manual"
+        ],
+        "type": "string"
+      },
       "BackupStatus": {
         "additionalProperties": false,
         "description": "Automatische Sicherung (docs/integrationen.md, Abschnitt 3). Nie ein Schlüssel im Klartext.",
@@ -125,6 +132,61 @@
           "last_error_at",
           "next_at",
           "warning"
+        ],
+        "type": "object"
+      },
+      "CaInfo": {
+        "additionalProperties": false,
+        "description": "Die Zertifizierungsstelle von Stowly. Nie ein Schlüssel.",
+        "properties": {
+          "created_by_stowly": {
+            "description": "false = von Hand nach /data/tls gelegt.",
+            "type": "boolean"
+          },
+          "fingerprint_sha256": {
+            "description": "SHA-256 des Zertifikats, Großbuchstaben mit Doppelpunkten (AB:CD:…).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "name_constraints": {
+            "description": "Die CA beglaubigt nur Adressen im Heimnetz.",
+            "type": "boolean"
+          },
+          "not_after": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "fingerprint_sha256",
+          "not_after",
+          "created_by_stowly",
+          "name_constraints"
+        ],
+        "type": "object"
+      },
+      "CertificateInfo": {
+        "additionalProperties": false,
+        "description": "Das Zertifikat des HTTPS-Listeners.",
+        "properties": {
+          "addresses": {
+            "description": "Adressen (SAN) des Zertifikats.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "not_after": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "addresses",
+          "not_after"
         ],
         "type": "object"
       },
@@ -1343,6 +1405,15 @@
         ],
         "type": "string"
       },
+      "ConfigSource": {
+        "description": "Woher ein wirksamer Wert kommt (docs/integrationen.md, Abschnitt 12).",
+        "enum": [
+          "env",
+          "app",
+          "default"
+        ],
+        "type": "string"
+      },
       "Device": {
         "additionalProperties": false,
         "properties": {
@@ -2221,6 +2292,126 @@
         ],
         "type": "object"
       },
+      "HttpsStatus": {
+        "additionalProperties": false,
+        "description": "HTTPS durch Stowly selbst (docs/integrationen.md, Abschnitt 11).",
+        "properties": {
+          "addresses": {
+            "description": "Höchstens 10, gelernte zuerst.",
+            "items": {
+              "$ref": "#/components/schemas/SetupAddress"
+            },
+            "type": "array"
+          },
+          "ca": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null = keine nutzbare CA (problem sagt warum)."
+          },
+          "certificate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CertificateInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "description": "Stowly hat einen HTTPS-Listener (STOWLY_HTTPS_PORT ist gesetzt).",
+            "type": "boolean"
+          },
+          "http_port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Port, unter dem HTTP von außen erreichbar ist, gelernt aus Anfragen über HTTP (für den Download der CA und den Befehl für den Pi); null = noch nicht gesehen."
+          },
+          "listening": {
+            "description": "Der HTTPS-Listener läuft.",
+            "type": "boolean"
+          },
+          "origins": {
+            "description": "HTTPS-Ursprünge der App, etwa https://192.168.1.10:8443.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Port, unter dem HTTPS von außen erreichbar ist; null ohne HTTPS-Listener."
+          },
+          "port_source": {
+            "$ref": "#/components/schemas/PortSource"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Warum HTTPS nicht läuft oder kein brauchbares Zertifikat hat; sonst null."
+          },
+          "seen_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Letzte angemeldete Anfrage über den HTTPS-Listener."
+          },
+          "via_https": {
+            "description": "Diese Anfrage kam über den HTTPS-Listener von Stowly.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "listening",
+          "problem",
+          "port",
+          "port_source",
+          "http_port",
+          "addresses",
+          "origins",
+          "seen_at",
+          "via_https",
+          "ca",
+          "certificate"
+        ],
+        "type": "object"
+      },
       "IdPoolGrant": {
         "additionalProperties": false,
         "properties": {
@@ -2580,6 +2771,411 @@
           "zone"
         ],
         "type": "object"
+      },
+      "PairedPrinter": {
+        "additionalProperties": false,
+        "description": "Ein Drucker an einem gekoppelten Pi, mit dem Ablauf von dessen Zertifikat.",
+        "properties": {
+          "hostname": {
+            "description": "Hostname des Pi bei der Kopplung.",
+            "type": "string"
+          },
+          "not_after": {
+            "description": "Ablauf des Zertifikats; die App warnt PI_CERT_WARN_DAYS Tage vorher.",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "printer_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "printer_id",
+          "hostname",
+          "not_after"
+        ],
+        "type": "object"
+      },
+      "PasswordChangeInput": {
+        "additionalProperties": false,
+        "description": "Neues Haushalts-Passwort (``POST /api/auth/password``).",
+        "properties": {
+          "current_password": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "new_password": {
+            "maxLength": 200,
+            "minLength": 8,
+            "type": "string"
+          }
+        },
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "type": "object"
+      },
+      "PasswordSource": {
+        "description": "Woher das Haushalts-Passwort kommt.",
+        "enum": [
+          "env",
+          "app"
+        ],
+        "type": "string"
+      },
+      "PiInfo": {
+        "additionalProperties": false,
+        "description": "Was der Pi beim Koppeln gemeldet hat.",
+        "properties": {
+          "addresses": {
+            "description": "Seine IPv4-Adressen im Heimnetz.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Erkanntes Druckermodell, etwa QL-570; null = keins erkannt."
+          },
+          "not_after": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ablauf seines Zertifikats; null vor der Kopplung."
+          },
+          "printer_found": {
+            "description": "Beim Koppeln hing ein Brother-Drucker am USB.",
+            "type": "boolean"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Version des Druckdienstes auf dem Pi."
+          }
+        },
+        "required": [
+          "hostname",
+          "addresses",
+          "model",
+          "printer_found",
+          "version",
+          "not_after"
+        ],
+        "type": "object"
+      },
+      "PiPairInput": {
+        "additionalProperties": false,
+        "description": "Die Kopplung selbst (``POST /api/pi/pair``), nach der Installation auf dem Pi.",
+        "properties": {
+          "addresses": {
+            "description": "IPv4-Adressen des Pi im Heimnetz, die zum Server zuerst.",
+            "items": {
+              "maxLength": 15,
+              "minLength": 7,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "code": {
+            "maxLength": 20,
+            "minLength": 8,
+            "type": "string"
+          },
+          "csr": {
+            "description": "Zertifikatsantrag (PEM), Schlüssel P-256 oder RSA ab 2048 Bit. Betreff und Erweiterungen zählen nicht: Die Adressen bestimmt der Server.",
+            "maxLength": 8192,
+            "minLength": 1,
+            "type": "string"
+          },
+          "hostname": {
+            "maxLength": 63,
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "printer_found": {
+            "type": "boolean"
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Der Drucker einer früheren Kopplung (pairing.json); die Wahl in der App geht vor."
+          },
+          "token": {
+            "description": "Token des Druckdienstes; Stowly trägt es in die Konfiguration des Druckers ein.",
+            "maxLength": 200,
+            "minLength": 16,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "hostname",
+          "addresses",
+          "csr",
+          "token",
+          "printer_found"
+        ],
+        "type": "object"
+      },
+      "PiPairResult": {
+        "additionalProperties": false,
+        "description": "Antwort an den Pi. Enthält keine Geheimnisse.",
+        "properties": {
+          "ca": {
+            "description": "Das Zertifikat der CA (PEM).",
+            "type": "string"
+          },
+          "certificate": {
+            "description": "Das Zertifikat des Pi (PEM), von der CA von Stowly signiert.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Name des Druckers in Stowly.",
+            "type": "string"
+          },
+          "not_after": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "origins": {
+            "description": "Ursprünge der App, die direkt drucken dürfen.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "printer_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "urls": {
+            "description": "Adressen, unter denen die App den Druckdienst anspricht.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "printer_id",
+          "name",
+          "certificate",
+          "ca",
+          "origins",
+          "urls",
+          "not_after"
+        ],
+        "type": "object"
+      },
+      "PiPairStartInput": {
+        "additionalProperties": false,
+        "description": "Der Pi meldet sich gleich nach dem Laden des Pakets (``POST /api/pi/pair/start``).",
+        "properties": {
+          "code": {
+            "maxLength": 20,
+            "minLength": 8,
+            "type": "string"
+          },
+          "hostname": {
+            "maxLength": 63,
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "hostname"
+        ],
+        "type": "object"
+      },
+      "PiPairing": {
+        "additionalProperties": false,
+        "description": "Eine Kopplung (``POST /api/pi/pairings``, ``GET /api/pi/pairings/{pairing_id}``).",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Der Code als XXXX-XXXX; nur in der Antwort auf POST, sonst null."
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Der fertige Befehl für den Pi; nur in der Antwort auf POST, sonst null."
+          },
+          "expires_at": {
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "pi": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PiInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Was der Pi gemeldet hat; null, solange er sich nicht gemeldet hat."
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Der gewählte bzw. gekoppelte Drucker."
+          },
+          "state": {
+            "$ref": "#/components/schemas/PiPairingState"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "code",
+          "command",
+          "expires_at",
+          "printer_id",
+          "pi"
+        ],
+        "type": "object"
+      },
+      "PiPairingInput": {
+        "additionalProperties": false,
+        "description": "Neuer Kopplungscode (``POST /api/pi/pairings``).",
+        "properties": {
+          "origin": {
+            "description": "Ursprung der App (location.origin): Der Pi erlaubt ihn, und der Befehl baut darauf auf.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "printer_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Einen vorhandenen direkten Drucker übernehmen; null = neu anlegen."
+          }
+        },
+        "required": [
+          "origin"
+        ],
+        "type": "object"
+      },
+      "PiPairingState": {
+        "enum": [
+          "waiting",
+          "installing",
+          "paired",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "PortSource": {
+        "enum": [
+          "default",
+          "learned",
+          "manual"
+        ],
+        "type": "string"
       },
       "PrintJob": {
         "additionalProperties": false,
@@ -3092,6 +3688,30 @@
         },
         "type": "object"
       },
+      "PushConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "contact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wirksamer Kontakt für die Push-Dienste (mailto: oder https); null = keiner, Push ist aus."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConfigSource"
+          }
+        },
+        "required": [
+          "contact",
+          "source"
+        ],
+        "type": "object"
+      },
       "PushKey": {
         "additionalProperties": false,
         "properties": {
@@ -3110,7 +3730,7 @@
         "description": "Benachrichtigungen per Web-Push (docs/integrationen.md, Abschnitt 4).",
         "properties": {
           "configured": {
-            "description": "STOWLY_PUSH_CONTACT ist gesetzt.",
+            "description": "Ein Kontakt für die Push-Dienste ist wirksam (STOWLY_PUSH_CONTACT oder in der App).",
             "type": "boolean"
           },
           "last_error": {
@@ -3286,6 +3906,46 @@
         ],
         "type": "string"
       },
+      "ServerConfig": {
+        "additionalProperties": false,
+        "description": "Einstellungen des Servers, die auch in der App gehen. Die Umgebung geht vor; nie ein Geheimnis.",
+        "properties": {
+          "push": {
+            "$ref": "#/components/schemas/PushConfig"
+          },
+          "update": {
+            "$ref": "#/components/schemas/UpdateConfig"
+          }
+        },
+        "required": [
+          "push",
+          "update"
+        ],
+        "type": "object"
+      },
+      "ServerConfigChanges": {
+        "additionalProperties": false,
+        "description": "``PATCH /api/server-config``. Nur vorhandene Felder zählen; 409, wenn das Feld aus der Umgebung kommt.",
+        "properties": {
+          "push_contact": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "mailto:<Adresse> oder eine https-Adresse; eine Adresse ohne mailto: bekommt es davor. null = entfernen (Push ist dann aus)."
+          },
+          "update_enabled": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ServerHealth": {
         "additionalProperties": false,
         "description": "Antwort von ``GET /api/health``. ``app`` ist der Marker, an dem die App den Server erkennt.",
@@ -3295,7 +3955,7 @@
             "type": "string"
           },
           "configured": {
-            "description": "false = STOWLY_PASSWORD ist nicht gesetzt, Anmelden ist nicht möglich.",
+            "description": "false = es gibt noch kein Haushalts-Passwort (weder STOWLY_PASSWORD noch in der App gesetzt). Die App zeigt dann die Einrichtung (POST /api/setup/password).",
             "type": "boolean"
           },
           "protocol": {
@@ -3651,6 +4311,202 @@
           }
         },
         "type": "object"
+      },
+      "SetupAddress": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "description": "IP-Adresse oder Name, unter dem Stowly erreichbar ist, ohne Port.",
+            "type": "string"
+          },
+          "in_certificate": {
+            "description": "Das aktuelle Zertifikat des Servers gilt für diese Adresse.",
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AddressSource"
+          }
+        },
+        "required": [
+          "address",
+          "source",
+          "in_certificate"
+        ],
+        "type": "object"
+      },
+      "SetupChanges": {
+        "additionalProperties": false,
+        "description": "Änderungen an der Einrichtung (``PATCH /api/setup``). Nur vorhandene Felder zählen.",
+        "properties": {
+          "addresses": {
+            "description": "Die von Hand eingetragenen Adressen (IP oder Name, ohne Port); ersetzt die bisherigen. Gelernte bleiben. Jede muss im Heimnetz liegen und von der CA gedeckt sein.",
+            "items": {
+              "maxLength": 253,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "type": "array"
+          },
+          "finished": {
+            "description": "true = abschließen, false = wieder öffnen.",
+            "type": "boolean"
+          },
+          "https_port": {
+            "anyOf": [
+              {
+                "maximum": 65535.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Port, unter dem HTTPS von außen erreichbar ist; null = wieder lernen."
+          },
+          "step": {
+            "$ref": "#/components/schemas/SetupStepChange",
+            "description": "Einen Schritt markieren."
+          }
+        },
+        "type": "object"
+      },
+      "SetupPasswordInput": {
+        "additionalProperties": false,
+        "description": "Das erste Haushalts-Passwort (``POST /api/setup/password``).",
+        "properties": {
+          "device_name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 200,
+            "minLength": 8,
+            "type": "string"
+          }
+        },
+        "required": [
+          "password",
+          "device_name"
+        ],
+        "type": "object"
+      },
+      "SetupStatus": {
+        "additionalProperties": false,
+        "description": "Stand der Einrichtung (``GET /api/setup``). Nie ein Schlüssel, nie ein Passwort.",
+        "properties": {
+          "finished_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wann die Einrichtung abgeschlossen wurde; null = offen."
+          },
+          "https": {
+            "$ref": "#/components/schemas/HttpsStatus"
+          },
+          "paired_printers": {
+            "description": "Je nicht gelöschtem Drucker die jüngste Kopplung eines Pi, früheste Ablaufzeit zuerst. Daran warnt jedes Gerät vor dem Ablauf des Zertifikats.",
+            "items": {
+              "$ref": "#/components/schemas/PairedPrinter"
+            },
+            "type": "array"
+          },
+          "password_source": {
+            "$ref": "#/components/schemas/PasswordSource"
+          },
+          "steps": {
+            "description": "Alle Schritte, in der Reihenfolge des Assistenten.",
+            "items": {
+              "$ref": "#/components/schemas/SetupStep"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "password_source",
+          "steps",
+          "finished_at",
+          "paired_printers",
+          "https"
+        ],
+        "type": "object"
+      },
+      "SetupStep": {
+        "additionalProperties": false,
+        "properties": {
+          "changed_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wann state zuletzt gesetzt wurde."
+          },
+          "id": {
+            "$ref": "#/components/schemas/SetupStepId"
+          },
+          "ready": {
+            "description": "Aus Sicht des Servers erledigt: https = eine angemeldete Anfrage kam über den HTTPS-Listener; printer = es gibt einen Drucker; updates = Updates sind an; notifications = ein Kontakt für die Push-Dienste ist wirksam.",
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SetupStepState",
+            "description": "Wie die App den Schritt markiert hat; ohne Markierung open."
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "ready",
+          "changed_at"
+        ],
+        "type": "object"
+      },
+      "SetupStepChange": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/SetupStepId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SetupStepState"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "type": "object"
+      },
+      "SetupStepId": {
+        "description": "Die Schritte des Assistenten nach dem Passwort, in dieser Reihenfolge.",
+        "enum": [
+          "https",
+          "printer",
+          "updates",
+          "notifications"
+        ],
+        "type": "string"
+      },
+      "SetupStepState": {
+        "enum": [
+          "open",
+          "done",
+          "skipped"
+        ],
+        "type": "string"
       },
       "ShoppingItem": {
         "additionalProperties": false,
@@ -4064,6 +4920,41 @@
         ],
         "type": "object"
       },
+      "UpdateConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "description": "Der Schalter wirkt: Das Image kennt ein Repository (STOWLY_UPDATE_REPO_DEFAULT) und die Umgebung legt nichts fest.",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "Der Server fragt GitHub nach neuen Versionen.",
+            "type": "boolean"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Das Repository der Releases; null = keines bekannt."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConfigSource",
+            "description": "env: STOWLY_UPDATE_REPO (immer an); app: Schalter in der App; default: noch nicht geschaltet, aus."
+          }
+        },
+        "required": [
+          "enabled",
+          "repo",
+          "source",
+          "available"
+        ],
+        "type": "object"
+      },
       "UpdateInstallInput": {
         "additionalProperties": false,
         "description": "Anforderung eines Updates (POST /api/update/install).",
@@ -4123,7 +5014,7 @@
             "description": "Letzte gelungene Abfrage bei GitHub."
           },
           "configured": {
-            "description": "STOWLY_UPDATE_REPO ist gesetzt.",
+            "description": "Updates sind an: STOWLY_UPDATE_REPO ist gesetzt oder der Schalter in der App an.",
             "type": "boolean"
           },
           "current": {
@@ -4184,7 +5075,7 @@
                 "type": "null"
               }
             ],
-            "description": "Das Repository der Releases (STOWLY_UPDATE_REPO)."
+            "description": "Das Repository der Releases; null, solange Updates aus sind."
           },
           "state": {
             "$ref": "#/components/schemas/UpdateState"
@@ -4223,6 +5114,28 @@
             ],
             "description": "Die Version, um die es in state geht."
           },
+          "updater_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Befehl, der den Updater-Container anlegt oder erneuert (einmal als root, etwa im Aufgabenplaner von DSM); null, wenn das Image keine Referenz kennt (STOWLY_IMAGE_REF) oder Stowly seinen Container nicht erkennt."
+          },
+          "updater_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UpdaterKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Welcher Updater sich zuletzt gemeldet hat; null = noch keiner."
+          },
           "updater_ready": {
             "description": "Der Updater auf dem Rechner hat sich vor höchstens 10 Minuten gemeldet.",
             "type": "boolean"
@@ -4238,6 +5151,17 @@
               }
             ],
             "description": "Letzte Meldung des Updaters."
+          },
+          "updater_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Version des Updaters, soweit er sie meldet."
           },
           "url": {
             "anyOf": [
@@ -4265,12 +5189,23 @@
           "check_error",
           "updater_ready",
           "updater_seen_at",
+          "updater_kind",
+          "updater_version",
+          "updater_command",
           "state",
           "state_version",
           "state_at",
           "state_message"
         ],
         "type": "object"
+      },
+      "UpdaterKind": {
+        "description": "Welcher Updater sich meldet (docs/integrationen.md, 10.3 und 10.7).",
+        "enum": [
+          "script",
+          "container"
+        ],
+        "type": "string"
       },
       "Zone": {
         "additionalProperties": false,
@@ -4489,6 +5424,31 @@
           }
         },
         "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/password": {
+      "post": {
+        "description": "Ändert das Haushalts-Passwort; andere Geräte bleiben angemeldet.\n\n401 ``invalid_password``, wenn ``current_password`` nicht stimmt (zählt in der Bremse der\nAnmeldung; das Gerät bleibt angemeldet); 429 ``rate_limited`` mit ``Retry-After``; 409\n``conflict``, wenn das Passwort aus STOWLY_PASSWORD kommt; 422 bei zu kurzem neuen Passwort.",
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChangeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Change Password",
         "tags": [
           "auth"
         ]
@@ -4856,6 +5816,190 @@
         ]
       }
     },
+    "/api/pi/bundle.tar.gz": {
+      "get": {
+        "description": "Ohne Anmeldung: das Paket für den Pi (``pi/`` und der Druckdienst aus ``print/``) als tar.gz.\n503 ``not_configured`` ohne Paket.",
+        "operationId": "pi_bundle",
+        "responses": {
+          "200": {
+            "content": {
+              "application/gzip": {}
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pi Bundle",
+        "tags": [
+          "pi"
+        ]
+      }
+    },
+    "/api/pi/install.sh": {
+      "get": {
+        "description": "Ohne Anmeldung: das Startskript für ``curl -fsSL …/api/pi/install.sh | sudo sh -s -- CODE``,\n``Cache-Control: no-store``. Es kennt die Adresse dieses Servers (aus Host) und die SHA-256 des\nPakets. 400 ``invalid_request`` bei einer Kopfzeile Host, die kein Name oder keine IP mit Port\nist; 503 ``not_configured`` ohne Paket.",
+        "operationId": "pi_install_script",
+        "responses": {
+          "200": {
+            "content": {
+              "text/x-shellscript": {}
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pi Install Script",
+        "tags": [
+          "pi"
+        ]
+      }
+    },
+    "/api/pi/pair": {
+      "post": {
+        "description": "Ohne Anmeldung, nur mit Code: signiert den Antrag des Pi mit der CA von Stowly, legt den\nDrucker an oder übernimmt den gewählten und liefert Zertifikat, CA, Ursprünge und Adressen,\n``Cache-Control: no-store``. Dieselbe CSR noch einmal (Netzaussetzer) bekommt dieselbe Antwort.\n\n404 ``not_found`` bei unbekanntem Code; 409 ``conflict``, wenn er abgelaufen, abgebrochen oder\nmit einer anderen CSR benutzt ist; 422 ``invalid_request`` bei unbrauchbarem Antrag, Hostnamen\noder Adressen (nur private IPv4, keine Adresse der App); 429 ``rate_limited``; 503\n``not_configured`` ohne nutzbare CA.",
+        "operationId": "pi_pair",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PiPairInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PiPairResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pi Pair",
+        "tags": [
+          "pi"
+        ]
+      }
+    },
+    "/api/pi/pair/start": {
+      "post": {
+        "description": "Ohne Anmeldung, nur mit Code: Der Pi meldet sich gleich nach dem Laden des Pakets. Die\nKopplung steht dann auf ``installing`` und gilt ab jetzt noch einmal 30 Minuten.\n\n404 ``not_found`` bei unbekanntem Code; 409 ``conflict``, wenn er abgelaufen, abgebrochen oder\nschon benutzt ist; 429 ``rate_limited`` mit ``Retry-After`` nach zu vielen Fehlversuchen.",
+        "operationId": "pi_pair_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PiPairStartInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pi Pair Start",
+        "tags": [
+          "pi"
+        ]
+      }
+    },
+    "/api/pi/pairings": {
+      "post": {
+        "description": "Erzeugt einen Kopplungscode (30 Minuten, einmalig) und macht ältere ungültig; 201 mit Code und\nfertigem Befehl, ``Cache-Control: no-store``. Code und Befehl gibt es nur in dieser Antwort.\n\n422 ``invalid_request``, wenn ``origin`` kein Ursprung ist oder ``printer_id`` kein vorhandener,\nnicht gelöschter direkter Drucker; 503 ``not_configured`` ohne nutzbare CA oder ohne Paket für den Pi.",
+        "operationId": "create_pi_pairing",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PiPairingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PiPairing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Create Pi Pairing",
+        "tags": [
+          "pi"
+        ]
+      }
+    },
+    "/api/pi/pairings/{pairing_id}": {
+      "delete": {
+        "description": "Bricht eine wartende Kopplung ab; wiederholbar. Eine fertige bleibt, wie sie ist. 404 ``not_found``.",
+        "operationId": "cancel_pi_pairing",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pairing_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Pairing Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Cancel Pi Pairing",
+        "tags": [
+          "pi"
+        ]
+      },
+      "get": {
+        "description": "Stand einer Kopplung, ``Cache-Control: no-store``; ``code`` und ``command`` sind hier null.\n404 ``not_found``.",
+        "operationId": "get_pi_pairing",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pairing_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Pairing Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PiPairing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Pi Pairing",
+        "tags": [
+          "pi"
+        ]
+      }
+    },
     "/api/push/key": {
       "get": {
         "description": "Der öffentliche VAPID-Schlüssel des Servers für pushManager.subscribe.",
@@ -4938,6 +6082,173 @@
         ]
       }
     },
+    "/api/server-config": {
+      "get": {
+        "description": "Wirksame Werte mit ihrer Quelle, ``Cache-Control: no-store``. Nie ein Geheimnis.",
+        "operationId": "get_server_config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Server Config",
+        "tags": [
+          "server-config"
+        ]
+      },
+      "patch": {
+        "description": "Ändert die vorhandenen Felder und liefert die wirksamen Werte; wirkt ohne Neustart.\n\n409 ``conflict``, wenn ein Feld aus der Umgebung kommt oder das Image kein Repository für den\nSchalter kennt; 422 ``invalid_request`` mit ``details.errors[].loc`` ``[\"body\", \"push_contact\"]``\nbei einem ungültigen Kontakt.",
+        "operationId": "update_server_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerConfigChanges"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Update Server Config",
+        "tags": [
+          "server-config"
+        ]
+      }
+    },
+    "/api/setup": {
+      "get": {
+        "description": "Stand der Einrichtung, ``Cache-Control: no-store``. Lernt die Adresse aus Host (und über den\nHTTPS-Listener den externen Port); eine neue Adresse stellt das Zertifikat neu aus.",
+        "operationId": "get_setup",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Setup",
+        "tags": [
+          "setup"
+        ]
+      },
+      "patch": {
+        "description": "Markiert einen Schritt, schließt ab oder öffnet wieder, trägt Adressen oder den externen\nHTTPS-Port ein; liefert den neuen Stand. 422 ``invalid_request`` mit ``details.errors[].loc``\n``[\"body\", \"addresses\", i]``, wenn eine Adresse nicht im Heimnetz liegt oder die CA sie nicht deckt.",
+        "operationId": "update_setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupChanges"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Update Setup",
+        "tags": [
+          "setup"
+        ]
+      }
+    },
+    "/api/setup/ca.crt": {
+      "get": {
+        "description": "Ohne Anmeldung: das Zertifikat der CA als DER, ``Cache-Control: no-store``.\n\nOhne ``download`` als ``application/x-x509-ca-cert`` zum Öffnen (iPhone: Profil, Firefox: Dialog),\nmit ``download=true`` als ``application/pkix-cert``-Datei ``stowly-ca.crt`` (Android, Windows,\nMac). 404 ``not_found`` ohne nutzbare CA.",
+        "operationId": "download_ca",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pkix-cert": {},
+              "application/x-x509-ca-cert": {}
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Download Ca",
+        "tags": [
+          "setup"
+        ]
+      }
+    },
+    "/api/setup/password": {
+      "post": {
+        "description": "Ohne Anmeldung, nur solange es kein Passwort gibt: setzt das erste Haushalts-Passwort, legt\ndas Gerät an und liefert dessen Token genau einmal, wie die Anmeldung.\n\n409 ``conflict``, wenn es schon ein Passwort gibt (auch aus STOWLY_PASSWORD); 400\n``invalid_request``, wenn die Kopfzeile Host nicht ins Heimnetz zeigt (private IP, einteiliger\nName oder lokale Endung); 429 ``rate_limited`` wie bei der Anmeldung; 422 bei zu kurzem Passwort.\nLernt die Adresse aus Host fürs Zertifikat.",
+        "operationId": "setup_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupPasswordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Setup Password",
+        "tags": [
+          "setup"
+        ]
+      }
+    },
     "/api/stats": {
       "get": {
         "description": "Verbraucht und entsorgt je Monat, je Zone und die am häufigsten entsorgten Produkte.\n\nGerechnet aus allen Packungen über die ganze Zeit; „versehentlich\" zählt nicht.\nUngültiger Zeitraum: 400.",
@@ -5016,7 +6327,7 @@
     },
     "/api/update/check": {
       "post": {
-        "description": "Fragt GitHub sofort nach dem neuesten Release und liefert den neuen Zustand.\n\n503 ``not_configured`` ohne STOWLY_UPDATE_REPO; 429 ``rate_limited`` öfter als einmal je Minute\n(mit ``Retry-After``). Ein Fehler bei GitHub ist kein Fehler dieses Aufrufs: Er steht in\n``check_error``.",
+        "description": "Fragt GitHub sofort nach dem neuesten Release und liefert den neuen Zustand.\n\n503 ``not_configured``, wenn Updates aus sind (weder STOWLY_UPDATE_REPO noch der Schalter in der\nApp); 429 ``rate_limited`` öfter als einmal je Minute (mit ``Retry-After``). Ein Fehler bei GitHub\nist kein Fehler dieses Aufrufs: Er steht in ``check_error``.",
         "operationId": "check_update",
         "responses": {
           "200": {
@@ -5038,7 +6349,7 @@
     },
     "/api/update/install": {
       "post": {
-        "description": "Fordert das Update auf ``body.version`` beim Updater an (202) und liefert den neuen Zustand.\n\n503 ``not_configured`` ohne STOWLY_UPDATE_REPO oder wenn sich der Updater seit 10 Minuten nicht\ngemeldet hat; 409 ``conflict``, wenn ``version`` nicht das zuletzt gesehene neueste Release ist,\nnicht neuer als dieser Server oder schon angefordert bzw. in Arbeit.",
+        "description": "Fordert das Update auf ``body.version`` beim Updater an (202) und liefert den neuen Zustand.\n\n503 ``not_configured``, wenn Updates aus sind oder sich der Updater seit 10 Minuten nicht\ngemeldet hat; 409 ``conflict``, wenn ``version`` nicht das zuletzt gesehene neueste Release ist,\nnicht neuer als dieser Server oder schon angefordert bzw. in Arbeit.",
         "operationId": "install_update",
         "requestBody": {
           "content": {

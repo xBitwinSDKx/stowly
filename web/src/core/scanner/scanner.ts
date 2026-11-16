@@ -18,9 +18,9 @@
  * während des Wartens ein Stopp oder ein neuer Start, räumt der alte Lauf hinter sich auf.
  */
 import type { ScanResult } from "@/contract";
+import { isAppleMobile } from "@/contract/platform";
 
 import { Signal } from "../live";
-import { isAppleMobile } from "../pwa/install";
 import {
   CameraError,
   findBestBackCamera,

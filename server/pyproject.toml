@@ -37,7 +37,8 @@ stowly = "stowly.__main__:main"
 include = ["stowly*"]
 
 [tool.setuptools.package-data]
-stowly = ["migrations/*.sql"]
+# pi_install.sh: Vorlage des Startskripts für den Raspberry Pi (stowly/pi_bundle.py).
+stowly = ["migrations/*.sql", "pi_install.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

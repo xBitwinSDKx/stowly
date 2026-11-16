@@ -1,7 +1,7 @@
 /**
  * Kleine Hooks der Oberfläche: Medienabfragen, „heute", Ansichts-Vorlieben.
  */
-import { startTransition, useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { todayLocal } from "@/contract";
 
@@ -74,6 +74,35 @@ export function useNow(intervalMs = 30_000): number {
     return () => clearInterval(timer);
   }, [intervalMs]);
   return now;
+}
+
+/**
+ * Ruft `fn` alle `ms` Millisekunden, solange `active` gilt: für das Nachfragen beim Server (Pi
+ * koppeln, Updater). Ist die Seite verborgen, entfällt der Takt; wird sie wieder sichtbar, ruft
+ * der Hook sofort. Es gilt immer das jüngste `fn`.
+ */
+export function useVisibleInterval(fn: () => void, ms: number, active: boolean): void {
+  const latest = useRef(fn);
+  useEffect(() => {
+    latest.current = fn;
+  });
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    const visible = () => document.visibilityState !== "hidden";
+    const tick = () => {
+      if (visible()) {
+        latest.current();
+      }
+    };
+    const timer = setInterval(tick, ms);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [ms, active]);
 }
 
 const UI_PREF_PREFIX = "stowly.ui.";

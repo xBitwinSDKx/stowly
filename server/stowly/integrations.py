@@ -1,6 +1,7 @@
 """Zustand der Integrationen für die Einstellungen der App (docs/integrationen.md, Abschnitt 8).
 
-Nie darin: ein Token, ein privater Schlüssel, die Adresse von Home Assistant, ``STOWLY_PUSH_CONTACT``,
+Push und Updates zeigen die wirksamen Werte: aus der Umgebung oder aus der App (``serverconfig``).
+Nie darin: ein Token, ein privater Schlüssel, die Adresse von Home Assistant, der Push-Kontakt,
 Pfade des Rechners oder das Log des Updaters. Öffentliche age-Schlüssel nur gekürzt.
 """
 
@@ -9,7 +10,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from stowly import autobackup, daily, scheduler, updates
+from stowly import autobackup, daily, scheduler, serverconfig, updates
 from stowly.config import Settings
 
 PUSH_DAILY = daily.JOB
@@ -53,7 +54,8 @@ def push_status(settings: Settings, con: sqlite3.Connection, device_id: str) -> 
     this_device = con.execute("SELECT 1 FROM push_subscriptions WHERE device_id = ?", (device_id,)).fetchone()
     sent_at = run.state.get("sent_at")
     return {
-        "configured": settings.push_configured,
+        # Wirksam: STOWLY_PUSH_CONTACT oder der Kontakt aus der App (Abschnitt 12).
+        "configured": serverconfig.push_contact(settings, con) is not None,
         "problem": None,
         "subscriptions": int(subscriptions),
         "this_device": this_device is not None,

@@ -49,6 +49,8 @@ import type {
   LookupResultState,
   Package,
   PackageChanges,
+  PiPairing,
+  PiPairingInput,
   Printer,
   PrinterChanges,
   PrinterStatus,
@@ -58,9 +60,13 @@ import type {
   PushTestResult,
   RejectCode,
   RemovalReason,
+  ServerConfig,
+  ServerConfigChanges,
   ServerPrinterConfig,
   ServiceHealth,
   SettingsChanges,
+  SetupChanges,
+  SetupStatus,
   ShoppingItem,
   ShoppingItemChanges,
   Stats,
@@ -130,9 +136,32 @@ export interface SessionApi {
    * statt ein zweites Gerät anzulegen. "invalid" heißt: Der Gerätename ist leer oder länger
    * als 60 Zeichen, oder das Gerät ist schon angemeldet. "rate_limited" trägt die Wartezeit
    * in `details.retry_after_s`. "not_supported": Der Browser lässt keine lokale Datenbank zu.
+   * "not_configured": Der Server hat noch kein Haushalts-Passwort; `sync.status.server_configured`
+   * ist danach false, und die Oberfläche bietet `createPassword` an.
    * @throws CoreError invalid_password | rate_limited | not_configured | protocol_mismatch | offline | invalid | not_supported
    */
   login(password: string, deviceName: string): Promise<void>;
+
+  /**
+   * Setzt das erste Haushalts-Passwort (`POST /api/setup/password`) und meldet dieses Gerät damit
+   * an, genau wie `login`: Erfüllt sich erst nach dem ersten Abgleich. Braucht den Server und geht
+   * nur, solange er noch kein Passwort hat (`sync.status.server_configured === false`).
+   * "invalid": Das Passwort hat weniger als `LIMITS.password_min` oder mehr als `LIMITS.password`
+   * Zeichen (`checkNewPassword`, ohne Anfrage), der Gerätename passt nicht, oder das Gerät ist
+   * schon angemeldet. "conflict": Inzwischen gibt es ein Passwort; `server_configured` ist danach
+   * true, und es geht mit `login` weiter.
+   * @throws CoreError conflict | invalid | rate_limited | offline | protocol_mismatch | not_supported
+   */
+  createPassword(password: string, deviceName: string): Promise<void>;
+
+  /**
+   * Ändert das Haushalts-Passwort (`POST /api/auth/password`). Braucht den Server. Alle Geräte
+   * bleiben angemeldet, dieses auch dann, wenn das bisherige Passwort nicht stimmt.
+   * "invalid": Das neue Passwort passt nicht (`checkNewPassword`, ohne Anfrage).
+   * "conflict": Das Passwort kommt aus der Umgebung (STOWLY_PASSWORD) und ist nur dort änderbar.
+   * @throws CoreError invalid_password | conflict | invalid | rate_limited | offline | unauthorized
+   */
+  changePassword(current: string, next: string): Promise<void>;
 
   /**
    * Meldet ab und löscht die lokale Kopie samt ID-Vorrat, dazu die Sync-Probleme und die
@@ -175,6 +204,12 @@ export interface SyncStatus {
   last_error: { code: CoreErrorCode; message: string; at: string } | null;
   /** Version des Servers laut letzter Antwort oder null. */
   server_version: string | null;
+  /**
+   * Hat der Server ein Haushalts-Passwort? Aus `GET /api/health` (`configured`); die Prüfung läuft
+   * auch abgemeldet, schon beim Start. null = noch nicht gefragt. Eine Anmeldung mit
+   * "not_configured" setzt false, eine gelungene Anmeldung und "conflict" bei `createPassword` true.
+   */
+  server_configured: boolean | null;
   /**
    * Schlägt der Server unbekannte Barcodes bei Open Food Facts nach? So, wie es die letzte
    * Antwort eines Abgleichs gesagt hat; der Kern merkt es sich über Neustarts. null = noch
@@ -604,7 +639,7 @@ export interface UpdateApi {
   /**
    * `POST /api/update/check`: fragt GitHub sofort nach dem neuesten Release. Ein Fehler bei
    * GitHub ist kein Fehler dieses Aufrufs, er steht in `check_error`.
-   * @throws CoreError offline | not_configured (STOWLY_UPDATE_REPO fehlt) | rate_limited (`details.retry_after_s`, höchstens einmal je Minute)
+   * @throws CoreError offline | not_configured (Updates sind aus) | rate_limited (`details.retry_after_s`, höchstens einmal je Minute)
    */
   check(): Promise<UpdateStatus>;
   /**
@@ -614,6 +649,55 @@ export interface UpdateApi {
    * @throws CoreError offline | not_configured (Updates aus oder der Updater meldet sich nicht) | conflict (schon angefordert, nicht mehr die neueste, nicht neuer) | invalid (keine Version wie 1.2.3)
    */
   install(version: string): Promise<UpdateStatus>;
+}
+
+// --------------------------------------------------------------------------------------
+// Einrichtung und Einstellungen des Servers: braucht den Server
+// --------------------------------------------------------------------------------------
+
+/**
+ * Der Assistent (docs/sync-protokoll.md, 11.6): Stand der Schritte, HTTPS mit eigener CA. Der
+ * Stand liegt auf dem Server, damit er den Wechsel von http zu https und andere Geräte übersteht.
+ */
+export interface SetupApi {
+  /**
+   * `GET /api/setup`. Braucht den Server.
+   * @throws CoreError offline | unauthorized | not_supported (ein Server ohne Einrichtung)
+   */
+  load(): Promise<SetupStatus>;
+  /**
+   * `PATCH /api/setup`: einen Schritt markieren (`step`), abschließen oder wieder öffnen
+   * (`finished`), Adressen und HTTPS-Port eintragen. Nur vorhandene Felder zählen. Liefert den
+   * neuen Stand. Braucht den Server.
+   * @throws CoreError offline | unauthorized | invalid (Adresse außerhalb des Heimnetzes, `details.errors`) | not_supported
+   */
+  update(changes: SetupChanges): Promise<SetupStatus>;
+  /**
+   * Vertraut dieses Gerät der CA von Stowly, und ist HTTPS unter `origin` erreichbar? Ein Abruf
+   * ohne CORS auf `<origin>/api/health`, höchstens `SECURE_CHECK_TIMEOUT_MS`: Er scheitert genau
+   * dann, wenn Vertrauen oder Port fehlen (docs/integrationen.md, 11.5). Wirft nie.
+   */
+  reachesSecurely(origin: string): Promise<boolean>;
+}
+
+/** So lange wartet `setup.reachesSecurely` höchstens auf eine Antwort. */
+export const SECURE_CHECK_TIMEOUT_MS = 4_000;
+
+/**
+ * Einstellungen des Servers, die auch in der App gehen (docs/integrationen.md, Abschnitt 12):
+ * Kontakt für die Push-Dienste und der Schalter für Updates. Die Umgebung geht vor; was dort
+ * steht, ist hier nur zu sehen (`source: "env"`).
+ */
+export interface ServerConfigApi {
+  /** `GET /api/server-config`. @throws CoreError offline | unauthorized | not_supported */
+  load(): Promise<ServerConfig>;
+  /**
+   * `PATCH /api/server-config`. `push_contact` prüft der Kern vorher (`checkPushContact`, eine
+   * Adresse ohne `mailto:` bekommt es davor); null entfernt den Kontakt. Ein geänderter Kontakt
+   * gilt sofort auch für `push.state`.
+   * @throws CoreError conflict (aus der Umgebung, oder das Image kennt kein Repository) | invalid | offline | unauthorized
+   */
+  update(changes: ServerConfigChanges): Promise<ServerConfig>;
 }
 
 // --------------------------------------------------------------------------------------
@@ -739,7 +823,32 @@ export interface PrintersApi {
    * @throws CoreError not_found
    */
   probe(id: string): Promise<PrinterProbe>;
+
+  /**
+   * Erzeugt einen Kopplungscode für einen Raspberry Pi (`POST /api/pi/pairings`,
+   * docs/sync-protokoll.md 11.8). `origin` ist `location.origin`; `printer_id` übernimmt einen
+   * vorhandenen direkten Drucker. Code und fertiger Befehl stehen nur in dieser Antwort. Ein neuer
+   * Code bricht wartende ältere ab. Braucht den Server.
+   * @throws CoreError offline | invalid (Ursprung, Drucker) | not_configured (keine CA, kein Paket) | unauthorized
+   */
+  pair(input: PiPairingInput): Promise<PiPairing>;
+  /**
+   * Stand einer Kopplung (`GET /api/pi/pairings/{id}`), ohne Code und Befehl. Meldet sie "paired",
+   * gleicht der Kern ab, sobald der Drucker hier noch fehlt (oder einmal je Kopplung): Er kommt wie
+   * jeder Drucker über den Sync. Braucht den Server.
+   * @throws CoreError offline | not_found | unauthorized
+   */
+  pairing(id: string): Promise<PiPairing>;
+  /** Bricht eine wartende Kopplung ab (`DELETE`); eine unbekannte gilt als abgebrochen. Braucht den Server. */
+  cancelPairing(id: string): Promise<void>;
 }
+
+/**
+ * So viele Tage vor dem Ablauf seines Zertifikats rät die App, einen Pi neu zu koppeln
+ * (`PI_CERT_WARN_DAYS` in server/stowly/contract/api.py; das Zertifikat gilt `PI_CERT_DAYS`, 825).
+ * Den Ablauf je Drucker nennt `SetupStatus.paired_printers`.
+ */
+export const PI_CERT_WARN_DAYS = 60;
 
 /** Was ein Zustellversuch gebracht hat. */
 export interface PrintFlushReport {
@@ -960,4 +1069,8 @@ export interface Core {
   readonly integrations: IntegrationsApi;
   /** Updates über GitHub suchen und anfordern. Braucht den Server. */
   readonly update: UpdateApi;
+  /** Stand der Einrichtung und HTTPS (Einrichtung, Stufe A). Braucht den Server. */
+  readonly setup: SetupApi;
+  /** Push-Kontakt und Schalter für Updates (Einrichtung, Stufe A). Braucht den Server. */
+  readonly serverConfig: ServerConfigApi;
 }

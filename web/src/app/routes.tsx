@@ -5,7 +5,7 @@ import { ROUTES } from "@/contract";
 
 import { NotFoundPage } from "./NotFoundPage";
 import { usePageTitle } from "./Page";
-import { HistoryPage, PrintersPage, SettingsPage, ShoppingPage, StatsPage, StockPage, SyncPage, WarningsPage, ZonesPage } from "./pages";
+import { HistoryPage, PrintersPage, SettingsPage, SetupPage, ShoppingPage, StatsPage, StockPage, SyncPage, WarningsPage, ZonesPage } from "./pages";
 import { RouteError } from "./RouteError";
 import { Shell } from "./Shell";
 
@@ -27,6 +27,8 @@ export function appRoutes(ScanPage: ComponentType): RouteObject[] {
   return [
     // Vollbild, ohne Rahmen
     { path: ROUTES.scan, element: <ScanRoute page={ScanPage} />, errorElement: <RouteError /> },
+    // Die Einrichtung mit dem Kürzel eines Schritts (/einrichtung/drucker); ohne Kürzel der erste offene.
+    { path: `${ROUTES.setup}/:step?`, element: <SetupPage />, errorElement: <RouteError /> },
     {
       element: <Shell />,
       errorElement: <RouteError />,

@@ -484,7 +484,7 @@ def test_the_app_runs_the_daily_message_in_its_schedule(settings, clock):
         assert client.get("/api/health").status_code == 200
 
 
-def test_without_a_contact_the_task_does_not_run(settings):
+def test_without_a_contact_the_task_does_not_run(settings, client):
     job = daily.PushDailyJob(settings, sender=None)  # type: ignore[arg-type]
     assert not job.due(scheduler.JobRun(daily.JOB), RUN)
 

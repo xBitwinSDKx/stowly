@@ -147,7 +147,12 @@ Seit Protokoll 2. Ein Eintrag hat ein Produkt oder freien Text, genau eines von 
 
 Es gibt ein Haushalts-Passwort und beliebig viele Geräte. Jedes Gerät bekommt bei der Anmeldung ein eigenes Token, das sich einzeln sperren lässt.
 
-- Das Passwort steht in der Umgebungsvariable `STOWLY_PASSWORD` des Servers. Es gibt keinen Endpunkt, der es ohne Anmeldung setzt oder ändert. Ist die Variable leer, meldet `GET /api/health` `configured: false`, und die Anmeldung antwortet mit 503 `not_configured`. Ein geändertes Passwort lässt bestehende Geräte angemeldet.
+- **Das Passwort** kommt aus der Umgebungsvariable `STOWLY_PASSWORD` oder wird beim ersten Aufruf in der App gesetzt (11.6). Die Variable geht vor: Ist sie gesetzt, übernimmt der Server sie beim Start als Hash in die Datenbank (`meta.password_hash`). Wird sie später entfernt, gilt das Passwort weiter; es entsteht nie wieder ein offenes Fenster für ein „erstes Passwort".
+  - Gibt es noch keines (weder Variable noch Hash), meldet `GET /api/health` `configured: false`. Die Anmeldung antwortet dann mit 503 `not_configured`, und die App zeigt die Einrichtung.
+  - Ohne Anmeldung setzt nur `POST /api/setup/password` ein Passwort, und das nur, solange es keines gibt (11.6).
+  - Ändern geht angemeldet mit `POST /api/auth/password` und dem bisherigen Passwort, außer es kommt aus der Umgebung (409). Ein geändertes Passwort lässt bestehende Geräte angemeldet.
+  - Gespeichert wird nur ein scrypt-Hash, nie das Passwort selbst. Der Rückfall `stowly` des Entwicklungsmodus (`--dev`) gilt wie `STOWLY_PASSWORD` (`configured`, 409 beim Setzen und Ändern, `password_source: env`), wird aber nie gespeichert.
+  - Ändern zwei Geräte das Passwort zugleich, gewinnt das erste; das zweite bekommt 409 `conflict` und versucht es mit dem neuen Passwort noch einmal.
 - **Token:** 32 zufällige Bytes, URL-sicheres Base64 ohne Füllzeichen. Der Server speichert nur den SHA-256-Hash (hex). Das Token läuft nicht ab.
 - **Senden:** bei jedem Aufruf außer den ausdrücklich offenen als `Authorization: Bearer <token>`. Fehlt es, ist es unbekannt oder gesperrt: 401 `unauthorized`. Die App wechselt dann nach `signed_out` mit Grund `revoked`, behält ihre Daten und ihre Outbox und sendet nach erneuter Anmeldung weiter.
 - Bearer-Token statt Cookie, weil es über HTTP und HTTPS, hinter jedem Proxy und im Entwicklungsserver gleich funktioniert, keinen CSRF-Schutz braucht und der Service Worker es aus IndexedDB lesen kann.
@@ -156,11 +161,13 @@ Es gibt ein Haushalts-Passwort und beliebig viele Geräte. Jedes Gerät bekommt 
 |---|---|---|---|
 | `POST /api/auth/login` | offen | `LoginRequest { password, device_name }` | 200 `LoginResponse { token, device }` |
 | `POST /api/auth/logout` | Token | – | 204; das eigene Token ist gesperrt |
+| `POST /api/setup/password` | offen, nur solange es kein Passwort gibt | `SetupPasswordInput { password, device_name }` | 200 `LoginResponse { token, device }`; 409 `conflict`, 400, 429 (11.6) |
+| `POST /api/auth/password` | Token | `PasswordChangeInput { current_password, new_password }` | 204; 401 `invalid_password` (das Gerät bleibt angemeldet), 409 `conflict` aus der Umgebung, 429 |
 | `GET /api/devices` | Token | – | 200 `DeviceList { devices }`, auch gesperrte, das eigene mit `current: true` |
 | `PATCH /api/devices/{device_id}` | Token | `DeviceUpdate { name }` | 200 `Device` |
 | `DELETE /api/devices/{device_id}` | Token | – | 204; sperrt das Token dieses Geräts. Wiederholbar. Unbekannt: 404. |
 
-Fehler der Anmeldung: 401 `invalid_password`; 429 `rate_limited` mit Kopfzeile `Retry-After` und `details.retry_after_s`; 503 `not_configured`. Der Passwortvergleich läuft in konstanter Zeit. Nach 5 Fehlversuchen innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab, auch eine mit dem richtigen Passwort. Die Sperre gilt für alle, nicht je Adresse: Hinter einem Reverse Proxy ist die Adresse des Aufrufers nicht verlässlich. Die Fehlversuche bleiben über die Sperre hinaus im Fenster von 5 Minuten stehen: Wer danach weiter falsch rät, löst mit jedem Versuch sofort die nächste Sperre aus. Eine gelungene Anmeldung setzt den Zähler zurück. Der Stand liegt im Arbeitsspeicher des Servers und beginnt mit seinem Start neu. Geräte, die schon angemeldet sind, berührt die Sperre nicht.
+Fehler der Anmeldung: 401 `invalid_password`; 429 `rate_limited` mit Kopfzeile `Retry-After` und `details.retry_after_s`; 503 `not_configured`. Dieselbe Bremse zählt auch das falsche bisherige Passwort beim Ändern und gilt für das Setzen des ersten Passworts. Der Passwortvergleich läuft in konstanter Zeit. Nach 5 Fehlversuchen innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab, auch eine mit dem richtigen Passwort. Die Sperre gilt für alle, nicht je Adresse: Hinter einem Reverse Proxy ist die Adresse des Aufrufers nicht verlässlich. Die Fehlversuche bleiben über die Sperre hinaus im Fenster von 5 Minuten stehen: Wer danach weiter falsch rät, löst mit jedem Versuch sofort die nächste Sperre aus. Eine gelungene Anmeldung setzt den Zähler zurück. Der Stand liegt im Arbeitsspeicher des Servers und beginnt mit seinem Start neu. Geräte, die schon angemeldet sind, berührt die Sperre nicht.
 
 Jedes angemeldete Gerät darf jedes Gerät umbenennen und sperren, auch sich selbst; die App meldet ein Gerät, das sich selbst sperrt, sofort ab (`signed_out` / `revoked`). `last_seen_at` ist nach der Anmeldung `null`; der Server schreibt es beim Sync fort, höchstens einmal je Minute.
 
@@ -606,8 +613,20 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `DELETE /api/push/subscription` | Token | 204, auch ohne Abo; 503 `not_configured` |
 | `POST /api/push/test` | Token | 200 `PushTestResult { status, http_status, message }`, `Cache-Control: no-store`; 404 ohne Abo dieses Geräts; 429 `rate_limited`; 503 `not_configured` |
 | `GET /api/integrations` | Token | 200 `IntegrationStatus { timezone, backup, ha, push, update }`, `Cache-Control: no-store` (11.4) |
-| `POST /api/update/check` | Token | 200 `UpdateStatus`, `Cache-Control: no-store`; 429 `rate_limited` öfter als einmal je Minute; 503 `not_configured` ohne `STOWLY_UPDATE_REPO` (11.5) |
+| `POST /api/update/check` | Token | 200 `UpdateStatus`, `Cache-Control: no-store`; 429 `rate_limited` öfter als einmal je Minute; 503 `not_configured`, wenn Updates aus sind (11.5) |
 | `POST /api/update/install` | Token | `UpdateInstallInput { version }`; 202 `UpdateStatus`; 409 `conflict`; 503 `not_configured` (11.5) |
+| `GET /api/setup` | Token | 200 `SetupStatus`, `Cache-Control: no-store` (11.6) |
+| `PATCH /api/setup` | Token | `SetupChanges`; 200 `SetupStatus`; 422 bei einer Adresse außerhalb des Heimnetzes (11.6) |
+| `GET /api/setup/ca.crt?download=` | offen | 200 Zertifikat der CA als DER, `Cache-Control: no-store`; 404 ohne nutzbare CA (11.6) |
+| `GET /api/server-config` | Token | 200 `ServerConfig`, `Cache-Control: no-store` (11.7) |
+| `PATCH /api/server-config` | Token | `ServerConfigChanges`; 200 `ServerConfig`; 409 `conflict` bei einem Wert aus der Umgebung; 422 (11.7) |
+| `POST /api/pi/pairings` | Token | `PiPairingInput { origin, printer_id }`; 201 `PiPairing` mit Code und Befehl; 422; 503 `not_configured` (11.8) |
+| `GET /api/pi/pairings/{pairing_id}` | Token | 200 `PiPairing`, `Cache-Control: no-store`; 404 (11.8) |
+| `DELETE /api/pi/pairings/{pairing_id}` | Token | 204, wiederholbar; 404 (11.8) |
+| `POST /api/pi/pair/start` | offen, nur mit Code | `PiPairStartInput`; 204; 404, 409, 429 (11.8) |
+| `POST /api/pi/pair` | offen, nur mit Code | `PiPairInput`; 200 `PiPairResult`; 404, 409, 422, 429, 503 (11.8) |
+| `GET /api/pi/install.sh` | offen | 200 Startskript (`text/x-shellscript`); 400; 503 ohne Paket (11.8) |
+| `GET /api/pi/bundle.tar.gz` | offen | 200 Paket für den Pi (`application/gzip`); 503 ohne Paket (11.8) |
 | `/print/v1/…` | Token | Druckdienst des Servers, siehe [`etiketten.md`](etiketten.md) |
 
 - **Bilder sind ohne Anmeldung abrufbar**, weil `<img>` keinen `Authorization`-Kopf senden kann. Die Kennung ist der Hash des Inhalts und nicht zu erraten; ausgeliefert werden nur Vorschaubilder aus Open Food Facts.
@@ -648,6 +667,99 @@ Alle vier Aufrufe mit Geräte-Token; das Abo gehört zum Gerät, höchstens eine
 
 `POST /api/update/check` und `POST /api/update/install` mit Geräte-Token. Der erste fragt GitHub sofort nach dem neuesten Release, der zweite legt eine Anforderung für den Updater auf dem Rechner ab. Beide liefern danach `UpdateStatus`. Abfrage, Dateien, Zustände und die Prüfungen beim Anfordern: [`integrationen.md`](integrationen.md), Abschnitt 10.
 
+### 11.6 Einrichtung
+
+Der Assistent der App führt nach dem ersten Passwort durch die Schritte `https`, `printer`, `updates` und `notifications`, jeder überspringbar. Der Stand liegt auf dem Server, damit er den Wechsel von http zu https und andere Geräte übersteht. HTTPS, CA und Zertifikat: [`integrationen.md`](integrationen.md), Abschnitt 11.
+
+**Erstes Passwort:** `POST /api/setup/password` ohne Anmeldung.
+- Nur solange es kein Passwort gibt, weder aus `STOWLY_PASSWORD` noch in der Datenbank. Sonst 409 `conflict`; die App wechselt dann zur Anmeldung.
+- Gleichzeitige Aufrufe: genau einer gewinnt, die anderen bekommen 409.
+- Die Kopfzeile `Host` muss ins Heimnetz zeigen: eine private IP-Adresse, Loopback, ein einteiliger Name oder eine lokale Endung (Liste in [`integrationen.md`](integrationen.md), 11.3). Sonst 400 `invalid_request`. Das hält Seiten im Internet ab, die per DNS-Rebinding als erste ein Passwort setzen wollen.
+- Die Bremse der Anmeldung gilt auch hier (Abschnitt 5).
+- Antwort wie die Anmeldung: `LoginResponse` mit dem Token des neuen Geräts, `Cache-Control: no-store`. Die Adresse aus `Host` lernt der Server fürs Zertifikat.
+
+**Stand:** `GET /api/setup` liefert `SetupStatus`.
+- `steps`: je Schritt `state` (`open`, `done`, `skipped`, wie die App ihn markiert hat), `ready` (aus Sicht des Servers erledigt) und `changed_at`.
+  - `ready` heißt bei `https`: Eine angemeldete Anfrage kam über den HTTPS-Listener. Bei `printer`: Es gibt einen nicht gelöschten Drucker. Bei `updates`: Updates sind an. Bei `notifications`: Ein Kontakt für die Push-Dienste ist wirksam.
+  - Die App zeigt einen Schritt als erledigt, wenn er `ready` oder als `done` markiert ist. Läuft die Seite hinter einem Reverse Proxy schon über HTTPS, markiert die App `https` selbst als `done`.
+- `finished_at`: wann die Einrichtung abgeschlossen wurde; `null` = offen. Haushalte, die beim Umstieg auf Schema 4 schon Geräte hatten, gelten als eingerichtet.
+- `password_source`: `env` oder `app` (auch, solange es noch keines gibt).
+- `https` (`HttpsStatus`): Listener, Port, Adressen, Ursprünge, CA und Zertifikat ([`integrationen.md`](integrationen.md), 11).
+- **Lernen:** Jeder Aufruf lernt die Adresse aus `Host`. Eine neue Adresse stellt das Zertifikat neu aus.
+  - Über den HTTPS-Listener lernt er außerdem den externen HTTPS-Port, solange keiner von Hand gesetzt ist; über HTTP den externen HTTP-Port. Steht in `Host` kein Port, gilt 443 bzw. 80.
+  - Eine Anfrage mit Proxy-Kopfzeilen (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`) lernt keinen Port: Hinter einem Reverse Proxy wäre er falsch.
+  - `https_seen_at` schreibt der Server höchstens einmal je Minute.
+  - Ursprünge der App lernt nur `PATCH /api/setup`, aus der Kopfzeile `Origin`.
+  - Höchstens 10 Adressen, gelernte und von Hand eingetragene zusammen.
+
+**Ändern:** `PATCH /api/setup` mit `SetupChanges`. Nur vorhandene Felder zählen.
+- `step { id, state }` markiert einen Schritt.
+- `finished`: `true` schließt ab, `false` öffnet wieder.
+- `addresses` ersetzt die von Hand eingetragenen Adressen; gelernte bleiben. Höchstens 10. Liegt eine nicht im Heimnetz oder deckt die CA sie nicht: 422 mit `details.errors[].loc = ["body", "addresses", i]`.
+- `https_port`: der Port, unter dem HTTPS von außen erreichbar ist; `null` = wieder lernen.
+
+**CA herunterladen:** `GET /api/setup/ca.crt` ohne Anmeldung, das Zertifikat der CA als DER, `Cache-Control: no-store`.
+- Ohne `download` als `application/x-x509-ca-cert` ohne Dateinamen: Das iPhone bietet dann ein Profil an, Firefox seinen Dialog.
+- Mit `?download=true` als `application/pkix-cert` mit `Content-Disposition: attachment; filename="stowly-ca.crt"`. Das ist der Weg für Android, Windows und den Mac: Chrome auf Android gäbe den ersten Typ an eine Installation weiter, die CA-Zertifikate ablehnt.
+- 404 `not_found` ohne nutzbare CA.
+
+### 11.7 Einstellungen des Servers
+
+`GET /api/server-config` und `PATCH /api/server-config` mit Geräte-Token: Einstellungen, die früher nur in der Umgebung standen und jetzt auch in der App gehen. Die Umgebung geht vor; was dort steht, ist in der App nur zu sehen. Regeln: [`integrationen.md`](integrationen.md), Abschnitt 12.
+
+- **`ServerConfig`:**
+  - `push { contact, source }`: der wirksame Kontakt für die Push-Dienste;
+  - `update { enabled, repo, source, available }`: der Schalter „Nach Updates suchen".
+  - `source` ist `env`, `app` oder `default`. Nie ein Geheimnis.
+- **`ServerConfigChanges`:** Nur vorhandene Felder zählen.
+  - `push_contact`: `mailto:<Adresse>` oder eine https-Adresse; eine Adresse ohne `mailto:` bekommt es davor. `null` entfernt den Kontakt, Push ist dann aus.
+  - `update_enabled`: an oder aus.
+- **Fehler:**
+  - 409 `conflict`, wenn das Feld aus der Umgebung kommt oder das Image kein Repository für den Schalter kennt (`available: false`).
+  - 422 mit `details.errors[].loc = ["body", "push_contact"]` bei einem ungültigen Kontakt.
+- **Wirkung:** ohne Neustart. Ein neuer Kontakt gilt ab der nächsten Nachricht, ein eingeschalteter Schalter weckt die Abfrage bei GitHub (erste Abfrage nach `UPDATE_CHECK_FIRST_S`).
+
+### 11.8 Pi koppeln
+
+Ein Raspberry Pi wird mit einem Befehl zum Druckdienst. Ablauf, Paket und Skripte auf dem Pi: [`etiketten.md`](etiketten.md) und [`../pi/README.md`](../pi/README.md).
+
+**Code erzeugen:** `POST /api/pi/pairings` mit Geräte-Token und `PiPairingInput`.
+- `origin`: der Ursprung der App (`location.origin`). Der Pi erlaubt ihn, und der Befehl baut darauf auf.
+- `printer_id`: einen vorhandenen, nicht gelöschten direkten Drucker übernehmen, sonst `null`.
+- Der Code hat 8 Zeichen Crockford-Base32 (`XXXX-XXXX`), gilt `PI_PAIRING_TTL_S` (30 Minuten) und nur einmal. Gespeichert wird nur der SHA-256 seiner Normalform. Ein neuer Code bricht wartende ältere ab.
+- Antwort 201 `PiPairing` mit `code` und `command`, etwa `curl -fsSL http://192.168.1.10:8010/api/pi/install.sh | sudo sh -s -- ABCD-EFGH`. Code und Befehl gibt es nur in dieser Antwort.
+- Die HTTP-Adresse im Befehl: der Ursprung der Anfrage, wenn er http ist; sonst der Host aus `origin` mit dem gelernten externen HTTP-Port (11.6).
+- 422 bei ungültigem `origin` oder `printer_id`; 503 `not_configured` ohne nutzbare CA oder ohne Paket.
+
+**Stand:** `GET /api/pi/pairings/{pairing_id}` liefert `PiPairing` ohne `code` und `command`, `DELETE` bricht eine wartende Kopplung ab (204, wiederholbar). Unbekannt: 404.
+- `state`: `waiting`, `installing` (der Pi hat sich gemeldet), `paired`, `expired`, `cancelled`.
+- `pi`: was der Pi gemeldet hat, ab `installing`.
+- `printer_id`: der gewählte bzw. gekoppelte Drucker. Ist er gekoppelt, kommt er wie jeder Drucker über den Sync.
+
+**Der Pi** (ohne Anmeldung, nur mit Code):
+1. `GET /api/pi/install.sh`: das Startskript. Es kennt die Adresse dieses Servers aus `Host` (nur Name oder IP mit Port, sonst 400) und die SHA-256 des Pakets.
+2. `GET /api/pi/bundle.tar.gz`: das Paket mit `pi/` und dem Druckdienst aus `print/`.
+3. `POST /api/pi/pair/start` mit `PiPairStartInput { code, hostname, version }`, gleich nach dem Laden. Die Kopplung steht dann auf `installing` und gilt ab jetzt noch einmal 30 Minuten. 204.
+4. Nach der Installation `POST /api/pi/pair` mit `PiPairInput`: Hostname, IPv4-Adressen (die zum Server zuerst), Zertifikatsantrag (PEM), Token des Druckdienstes, erkanntes Modell, `printer_found` und die Kennung einer früheren Kopplung.
+   - **Zertifikat:** Der Server signiert den Antrag mit seiner CA, `PI_CERT_DAYS` (825) Tage. Betreff und Erweiterungen des Antrags zählen nicht. Die Adressen bestimmt der Server; ein mitgelesener Code bringt so kein Zertifikat für fremde Geräte:
+     - **IP:** nur die Adresse, von der die Anfrage kommt (eine IPv4 in IPv6 gilt als IPv4). Sie muss privat sein und unter den gemeldeten `addresses` stehen, sonst 422 mit `loc ["body", "addresses"]` und „Stowly sieht den Pi unter einer anderen Adresse (…) als er meldet (…).". Der Pi muss Stowly deshalb direkt erreichen, ohne Proxy oder NAT dazwischen. Dazu kommt `10.71.83.1`, der Access Point des Pi. Weitere gemeldete Adressen werden nicht signiert; sie stehen nur in `pi.addresses`, die Adresse der Anfrage zuerst.
+     - **Name:** `<hostname>.local` nur, wenn der Hostname mit `stowly` beginnt (etwa `stowly-pi`), sonst gar keiner. So bekommt kein Pi ein Zertifikat für `homeassistant.local` oder ähnliche Namen anderer Geräte.
+     - **Nie:** eine Adresse, unter der die App selbst läuft, auch ohne HTTPS-Listener (422).
+   - **Drucker:**
+     - Gewählt oder bekannt: Der Server übernimmt den gewählten (`printer_id` der Kopplung) bzw. bekannten Drucker, sonst legt er einen neuen an. Die Wahl in der App geht vor; gelöschte Drucker kommen nicht wieder. Die `printer_id`, die der Pi selbst nennt (aus `pairing.json`), gilt nur, wenn sein Token zu diesem Drucker passt.
+     - Verbindung `direct` mit `urls` `https://<IP>:8443`, `https://<hostname>.local:8443` (nur mit Namen, siehe oben) und `http://<IP>:8080`, dazu dem Token.
+     - Beim Übernehmen ändert sich nur die Verbindung, der Name bleibt. Die Feld-Uhr der Verbindung geht auf die Serverzeit, damit eine ältere Änderung eines Geräts die Kopplung nicht überschreibt (7.1).
+     - Die Zeile bekommt einen neuen `rev`; die Geräte erfahren es beim nächsten Sync.
+   - **Antwort:** 200 `PiPairResult` mit Zertifikat, CA, Ursprüngen (der aus der Kopplung und die HTTPS-Ursprünge der App), Adressen und Ablauf, `Cache-Control: no-store`. Ein Geheimnis steht nicht darin.
+   - **Derselbe Antrag noch einmal**, etwa nach einem Netzaussetzer, bekommt dieselbe Antwort. Ein anderer Antrag mit einem benutzten Code: 409.
+- **Fehler:**
+  - 404, wenn der Code unbekannt ist, auch bei einem Text, der kein Code sein kann.
+  - 409 mit eigenem Satz: „Der Kopplungscode ist abgelaufen.", „Der Kopplungscode gilt nicht mehr: Er wurde in Stowly abgebrochen oder durch einen neueren ersetzt." bzw. „Mit diesem Kopplungscode ist schon ein Pi gekoppelt; ein Code gilt nur einmal."
+  - 422 bei unbrauchbarem Antrag, Hostnamen oder Adressen. Gesperrt sind dabei alle Adressen der App: die Hosts der HTTPS-Ursprünge, der Host aus `origin` und der `Host`, unter dem der Pi den Server erreicht. Ebenso ein Hostname, dessen `.local`-Name ein Name der App ist.
+  - 503 ohne nutzbare CA.
+- **Bremse:** eigene, für alle zusammen. Jeder Fehlversuch zählt; nach 10 Fehlversuchen in 10 Minuten 60 Sekunden Sperre, 429 mit `Retry-After`. Eine Wiederholung mit demselben Antrag gilt nicht als Erfolg und setzt die Fehlversuche nicht zurück.
+- **Code lesen:** Kleinschreibung, Bindestriche und Leerzeichen zählen nicht; O gilt als 0, I und L als 1.
+
 ## 12. Ereignisprotokoll
 
 Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `events`. Das Protokoll wird nie gekürzt und nicht an die Geräte synchronisiert; es ist über `GET /api/events` lesbar. Die Statistik (11.1) rechnet nicht daraus, sondern aus dem heutigen Stand der Packungen: So zählt ein Zusammenführen oder ein geänderter Grund richtig.
@@ -687,6 +799,17 @@ Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `
 | `shopping_item.store_done` | `shopping_item` | `product_id`, `package_id` |
 | `shopping_item.bring_done` | `shopping_item` | `name`, `how`: `completed` (abgehakt) oder `removed` (gelöscht) |
 | `product.shopping_lock` | `product` | `lock`: der Zeitpunkt der Sperre oder `null` (aufgehoben), `old` |
+| `printer.paired` | `printer` | `created` (neu angelegt oder übernommen), `name`, `direct` ohne Token, `token_changed`, `hostname`, `addresses` (gemeldet), `sans` (signiert), `serial`, `not_after`, `pairing_id` (11.8) |
+
+**Einrichtung und Kopplung** (11.6 bis 11.8) stehen mit dem Gerät, das sie ausgelöst hat, ohne `command_id`:
+
+| `type` | `entity` | `data` |
+|---|---|---|
+| `server.password_set` | `server` (`entity_id`: `password`) | `source`: `app` (erstes Passwort) oder `env` (aus `STOWLY_PASSWORD` übernommen, ohne Gerät) |
+| `server.password_changed` | `server` (`entity_id`: `password`) | – |
+| `server.config_changed` | `server` (`entity_id`: `config`) | `keys`: die geänderten Schlüssel, nie ihre Werte (aus `PATCH /api/server-config`: `push_contact`, `update_enabled`; aus `PATCH /api/setup`: `setup_steps`, `setup_finished_at`, `tls_addresses`, `https_port`) |
+| `pi_pairing.created` | `pi_pairing` | `printer_id` (gewählt oder `null`) |
+| `pi_pairing.cancelled` | `pi_pairing` | `reason`: `user` oder `replaced` (ein neuerer Code) |
 
 Das Zusammenführen vermerkt die mitgewanderten Einträge in `product.merged` (`shopping_items`: Anzahl).
 
@@ -712,7 +835,7 @@ Jede Fehlerantwort unter `/api` hat denselben Rumpf (`ErrorBody`):
 | 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung, zu viele Testnachrichten (11.3), zu häufiges Suchen nach Updates (11.5); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
 | 500 | `internal` | Fehler im Server; Einzelheiten nur im Log | `internal` |
 | 501 | `not_implemented` | Endpunkt ist noch nicht umgesetzt | `not_supported` |
-| 503 | `not_configured` | `STOWLY_PASSWORD` ist nicht gesetzt, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (`STOWLY_PUSH_CONTACT`), Sensor (`STOWLY_HA_SUMMARY_TOKEN`), Updates (`STOWLY_UPDATE_REPO` oder der Updater meldet sich nicht) | `not_configured` |
+| 503 | `not_configured` | Es gibt noch kein Passwort, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (kein Kontakt), Sensor (`STOWLY_HA_SUMMARY_TOKEN`), Updates (aus, oder der Updater meldet sich nicht), Pi koppeln (keine nutzbare CA oder kein Paket) | `not_configured` |
 
 `message` ist deutscher Klartext und als Rückfall anzeigbar. Die App unterscheidet nach `code` und zeigt dazu ihren eigenen Text; die letzte Spalte nennt, als welchen Fehler ihr Kern die Antwort an die Oberfläche weitergibt (`web/src/core/http.ts`). Eine Fehlerantwort ohne diesen Rumpf stammt nicht vom Stowly-Server und gilt in der App als `offline` (Abschnitt 9.2). Im Server: `raise ApiError(status, ErrorCode.X, "…")` aus `stowly/errors.py`. Unbekannte Pfade unter `/api` und `/print` antworten bei jeder Methode mit 404, ein bekannter Pfad mit falscher Methode mit 405 und der Kopfzeile `Allow`; 401 trägt `WWW-Authenticate: Bearer`.
 
@@ -761,10 +884,11 @@ Das Schema steht in `server/stowly/migrations/` und ist Teil dieses Vertrags: `0
 | `0001_initial.sql` | das Schema |
 | `0002_device_command_floor.sql` | `devices.last_command_at`: wirksamer Zeitpunkt des letzten gültigen Befehls je Gerät (Abschnitt 4). Bestehende Datenbanken bekommen den spätesten Zeitpunkt aus `commands`. |
 | `0003_shopping_push_jobs.sql` | Stufe 2: `products.min_stock` und `products.shopping_lock_at` (Sperre, 7.6), die Tabellen `shopping_items`, `push_subscriptions`, `push_notices`, `ha_links` und `job_runs`, die Einstellung `notify_time` (`"17:00"`) für Datenbanken, die schon Einstellungen haben. Ändert nichts an der Änderungsfolge. |
+| `0004_setup.sql` | Einrichtung: die Tabellen `server_config` (Einstellungen des Servers aus der App und was er über sich lernt) und `pi_pairings` (Kopplungen eines Pi). Datenbanken, die schon Geräte haben, gelten als eingerichtet (`setup_finished_at`). Ändert nichts an der Änderungsfolge. |
 
 | Tabelle | Inhalt |
 |---|---|
-| `meta` | Einzelwerte, vor allem `dataset_id` |
+| `meta` | Einzelwerte: `dataset_id`, die VAPID-Schlüssel, seit Schema 4 `password_hash` (scrypt) |
 | `counters` | `rev` (Änderungsfolge), `settings_rev` |
 | `devices` | Geräte mit Token-Hash, `last_seen_at`, `revoked_at`, `last_command_at` |
 | `zones`, `products`, `product_barcodes`, `packages` | der Bestand |
@@ -779,6 +903,8 @@ Das Schema steht in `server/stowly/migrations/` und ist Teil dieses Vertrags: `0
 | `push_subscriptions`, `push_notices` | Push: Abo je Gerät; welche Packung schon in einer Tagesnachricht stand ([`integrationen.md`](integrationen.md), 4) |
 | `ha_links` | Home Assistant und Bring!: was Stowly je Artikel zuletzt geschrieben und gesehen hat ([`integrationen.md`](integrationen.md), 5.3) |
 | `job_runs` | Zeitplan: je Aufgabe der letzte Lauf ([`integrationen.md`](integrationen.md), 1) |
+| `server_config` | Einstellungen des Servers aus der App und Gelerntes (Adressen, Ports, Fortschritt des Assistenten), je Schlüssel ein JSON-Wert; nie ein Geheimnis (11.6, 11.7) |
+| `pi_pairings` | Kopplungen eines Pi: Hash des Codes, Fristen, was der Pi gemeldet hat, die Antwort an ihn (11.8) |
 
 Regeln für jeden Zugriff (`stowly/db.py`):
 

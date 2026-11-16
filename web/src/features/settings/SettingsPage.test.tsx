@@ -522,7 +522,8 @@ describe("Benachrichtigungen (Push)", () => {
     const cases: [Parameters<typeof renderApp>[0], string, string][] = [
       [{ scenarios: ["push-unsupported"] }, "nicht möglich", "Dieser Browser kann hier keine Benachrichtigungen empfangen."],
       [{ scenarios: ["insecure"] }, "nicht möglich", "Über eine http-Adresse lässt der Browser keine Benachrichtigungen zu."],
-      [{ scenarios: ["push-not-configured"] }, "nicht eingerichtet", "Wer ihn betreibt, setzt dafür STOWLY_PUSH_CONTACT"],
+      // Ohne Kontakt für die Push-Dienste führt die Zeile zur Einrichtung (ein Verweis, kein Knopf).
+      [{ scenarios: ["push-not-configured"] }, "Einrichten", "Es fehlt die Kontakt-Adresse für die Push-Dienste."],
       [{ scenarios: ["push-denied"] }, "blockiert", "Die Erlaubnis für Benachrichtigungen ist in diesem Browser verweigert."],
     ];
     for (const [options, short, hint] of cases) {
@@ -816,7 +817,10 @@ describe("Uhrzeit der Tagesnachricht", () => {
     expect(notifyTimeHint("17:00", null, null, "America/New_York")).toMatch(/^Täglich um 17:00 an/);
     expect(notifyTimeHint("21:00", null, null, "Europe/Berlin")).toContain("kommt sie höchstens eine Stunde später und nicht nach Mitternacht.");
     expect(notifyTimeHint("20:59", null, null, "Europe/Berlin")).toContain("aber nur bis 21 Uhr.");
-    expect(notifyTimeHint("17:00", null, false, "Europe/Berlin")).toContain("Der Server ist noch nicht für Benachrichtigungen eingerichtet (STOWLY_PUSH_CONTACT): Bis dahin kommt keine.");
+    // Ohne Kontakt für die Push-Dienste: der Weg in der App, nicht nur die Umgebung.
+    expect(notifyTimeHint("17:00", null, false, "Europe/Berlin")).toContain(
+      "Der Server hat noch keine Kontakt-Adresse für die Push-Dienste: Bis dahin kommt keine. Eintragen lässt sie sich unter „Einrichtung und Zugang“ oder im Schritt „Benachrichtigungen“ der Einrichtung.",
+    );
   });
 
   it("zeigt die Vorgabe 17:00 und ändert sie beim Verlassen des Felds", async () => {
@@ -877,7 +881,7 @@ describe("Uhrzeit der Tagesnachricht", () => {
   it("sagt, solange der Server nicht für Benachrichtigungen eingerichtet ist", async () => {
     renderApp({ scenarios: ["push-not-configured"] }, ROUTES.settings);
     await ready();
-    expect(await within(section("Haushalt")).findByText(/Der Server ist noch nicht für Benachrichtigungen eingerichtet \(STOWLY_PUSH_CONTACT\)/)).toBeInTheDocument();
+    expect(await within(section("Haushalt")).findByText(/Der Server hat noch keine Kontakt-Adresse für die Push-Dienste: Bis dahin kommt keine\. Eintragen lässt sie sich unter „Einrichtung und Zugang“/)).toBeInTheDocument();
   });
 
   it("folgt einer Änderung von einem anderen Gerät", async () => {
@@ -907,6 +911,9 @@ function updateStatus(changes: Partial<UpdateStatus> = {}): UpdateStatus {
     check_error: null,
     updater_ready: true,
     updater_seen_at: new Date(now - 60_000).toISOString(),
+    updater_kind: null,
+    updater_version: null,
+    updater_command: null,
     state: "idle",
     state_version: null,
     state_at: null,
@@ -929,13 +936,15 @@ function announced(): string {
 }
 
 describe("Aktualisierung", () => {
-  it("nennt ohne STOWLY_UPDATE_REPO nur die installierte Version und warum", async () => {
+  it("nennt mit ausgeschalteten Updates nur die installierte Version und bietet den Schalter an", async () => {
     renderApp({ scenarios: ["release-off"] }, ROUTES.settings);
     await ready();
     const update = section(UPDATE);
     expect(document.getElementById("aktualisierung")).toBe(update);
     expect(await within(update).findByText("Installierte Version")).toBeInTheDocument();
-    expect(update).toHaveTextContent("Installierte VersionUpdates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).0.1.0");
+    expect(update).toHaveTextContent("Installierte Version0.1.0");
+    expect(within(update).getByRole("switch", { name: "Nach neuen Versionen suchen" })).not.toBeChecked();
+    expect(update).toHaveTextContent("Aus: Der Server fragt GitHub nicht nach neuen Versionen.");
     expect(within(update).queryByText("Neueste Version")).not.toBeInTheDocument();
     expect(within(update).queryByRole("button")).not.toBeInTheDocument();
   });

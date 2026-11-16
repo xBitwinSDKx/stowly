@@ -3,7 +3,9 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { InstallPrompt, isAppleMobile } from "./install";
+import { isAppleMobile } from "@/contract/platform";
+
+import { InstallPrompt } from "./install";
 import {
   AppUpdates,
   isSkipWaitingMessage,

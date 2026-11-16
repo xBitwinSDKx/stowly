@@ -20,6 +20,8 @@ IMAGE = "ghcr.io/beispiel/stowly"
 VOLUME = "stowly_stowly-data"
 
 pytestmark = pytest.mark.skipif(SH is None, reason="kein sh gefunden")
+# Symlinks braucht ein Teil der Tests zur Härtung; unter Windows legt sie nur ein Konto mit Sonderrechten an.
+needs_symlinks = pytest.mark.skipif(os.name == "nt", reason="Symlinks brauchen unter Windows Sonderrechte")
 
 FAKE_DOCKER = r"""#!/bin/sh
 F="$FAKE_DIR"
@@ -182,7 +184,7 @@ def test_without_a_request_it_only_reports_itself(host):
     result = host.run()
     assert result.returncode == 0, result.stderr
     seen = dict(line.split("=", 1) for line in (host.update / "updater").read_text().splitlines())
-    assert seen["updater"] == "1" and seen["seen_at"].endswith("Z")
+    assert seen["updater"] == "2" and seen["kind"] == "script" and seen["seen_at"].endswith("Z")
     assert not (host.update / "state").exists()
     assert host.lines("pulled") == []
     assert "docker-compose" not in (host.fake / "calls").read_text()
@@ -371,3 +373,173 @@ def test_a_stale_lock_is_taken_over(host):
     assert host.run().returncode == 0
     assert host.state()["state"] == "done"
     assert not lock.exists()
+
+
+# --- Härtung: keinem Symlink folgen (docs/integrationen.md, 10.6) ------------------------------------
+
+
+def outside(tmp_path: Path, content: str = "gehoert root") -> Path:
+    path = tmp_path / "ausserhalb.txt"
+    path.write_text(content)
+    return path
+
+
+def test_the_heartbeat_replaces_the_file_instead_of_writing_into_it(host, tmp_path):
+    target = outside(tmp_path)
+    os.link(target, host.update / "updater")  # ein harter Link geht auch unter Windows
+    assert host.run().returncode == 0
+    assert target.read_text() == "gehoert root"
+    assert "kind=script" in (host.update / "updater").read_text()
+
+
+def test_the_log_of_the_last_run_is_replaced_not_truncated(host, tmp_path):
+    target = outside(tmp_path)
+    os.link(target, host.update / "log")
+    host.request("0.2.1")
+    assert host.run().returncode == 0
+    assert target.read_text() == "gehoert root"
+    assert "Aktualisiert von 0.2.0 auf 0.2.1." in (host.update / "log").read_text(encoding="utf-8")
+
+
+def test_no_temporary_file_is_left_behind(host):
+    host.request("0.2.1")
+    assert host.run().returncode == 0
+    assert sorted(path.name for path in host.update.iterdir() if path.name.startswith(".")) == []
+
+
+def test_a_directory_instead_of_the_state_is_refused(host):
+    (host.update / "state").mkdir()
+    host.request("0.2.1")
+    assert host.run().returncode == 1
+    state = host.state()
+    assert state["state"] == "failed" and "(state)" in state["message"]
+    assert host.lines("pulled") == [] and not (host.update / "request").exists()
+
+
+@needs_symlinks
+@pytest.mark.parametrize("name", ["request", "state", "log", "lock"])
+def test_a_symlink_in_update_is_refused_without_following_it(host, tmp_path, name):
+    target = outside(tmp_path)
+    host.request("0.2.1")
+    if name == "request":
+        (host.update / "request").unlink()
+        target.write_text("version=0.2.1\n")
+    os.symlink(target, host.update / name)
+    before = target.read_text()
+    assert host.run().returncode == 1
+    assert target.read_text() == before
+    state = host.state()
+    assert state["state"] == "failed" and "Symlink" in state["message"] and f"({name})" in state["message"]
+    assert not (host.update / name).is_symlink()
+    assert host.lines("pulled") == [] and host.lines("running") == ["0.2.0"]
+    assert not (host.update / "request").exists()
+
+
+@needs_symlinks
+def test_a_symlinked_update_folder_is_left_alone(host, tmp_path):
+    elsewhere = tmp_path / "anderswo"
+    elsewhere.mkdir()
+    os.rmdir(host.update)
+    os.symlink(elsewhere, host.update)
+    result = host.run()
+    assert result.returncode == 1 and "Symlink" in result.stderr
+    assert list(elsewhere.iterdir()) == []
+
+
+@needs_symlinks
+@pytest.mark.parametrize("name", ["stowly.sqlite3", "stowly.sqlite3-wal"])
+def test_a_symlinked_database_is_not_copied(host, tmp_path, name):
+    target = outside(tmp_path, "geheim")
+    path = host.data / name
+    path.unlink(missing_ok=True)
+    os.symlink(target, path)
+    host.request("0.2.1")
+    assert host.run().returncode == 1
+    assert host.state()["message"] == "Die Datenbank ließ sich nicht sichern. Stowly läuft weiter mit 0.2.0."
+    assert target.read_text() == "geheim"
+    assert not any(copy.read_text() == "geheim" for copy in host.update.glob("before-*"))
+    assert host.lines("running") == ["0.2.0"]
+    assert host.env_value("STOWLY_VERSION") == "0.2.0"
+
+
+@needs_symlinks
+def test_a_symlink_at_the_name_of_the_copy_is_refused(host, tmp_path):
+    target = outside(tmp_path)
+    start = time.time()
+    for offset in range(-2, 30):
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(start + offset))
+        os.symlink(target, host.update / f"before-0.2.0-{stamp}.sqlite3")
+    host.request("0.2.1")
+    assert host.run().returncode == 1
+    assert target.read_text() == "gehoert root"
+    assert host.state()["message"] == "Die Datenbank ließ sich nicht sichern. Stowly läuft weiter mit 0.2.0."
+
+
+# --- Prüfung der Sicherheit, Runde 2: Anforderung, mv -T, nie zurück -------------------------------
+
+FAKE_MV = r"""#!/bin/sh
+# Nachgebildetes mv: schreibt jeden Aufruf auf; mit FAKE_NO_MV_T kennt es -T nicht (wie ein altes BusyBox).
+echo "mv $*" >> "$FAKE_DIR/mv-calls"
+if [ -n "${FAKE_NO_MV_T:-}" ]; then
+  for arg; do
+    if [ "$arg" = "-T" ] || [ "$arg" = "-fT" ]; then echo "mv: invalid option -- 'T'" >&2; exit 1; fi
+  done
+fi
+if [ -x /usr/bin/mv ]; then exec /usr/bin/mv "$@"; fi
+exec /bin/mv "$@"
+"""
+
+
+def with_fake_mv(host: Host) -> None:
+    path = host.bin / "mv"
+    path.write_bytes(FAKE_MV.encode())
+    path.chmod(0o755)
+
+
+def test_an_older_version_than_the_running_one_is_refused(host):
+    host.request("0.1.9")
+    assert host.run().returncode == 1
+    state = host.state()
+    assert state["state"] == "failed"
+    assert (
+        state["message"]
+        == "Die angeforderte Version 0.1.9 ist älter als 0.2.0; der Updater geht nur vorwärts."
+    )
+    assert host.lines("pulled") == [] and host.lines("running") == ["0.2.0"]
+    assert host.env_file.read_text() == ENV
+
+
+def test_versions_are_compared_as_numbers(host):
+    (host.update / "request").write_text("version=0.10.0\n")
+    host.run()
+    assert host.state()["state"] == "done"
+    assert host.env_value("STOWLY_VERSION") == "0.10.0"
+
+
+def test_the_request_is_taken_away_first_and_read_only_in_part(host):
+    # Erst umbenannt, dann gelesen: höchstens 4096 Bytes, die Version steht hier dahinter.
+    (host.update / "request").write_text("x" * 5000 + "\nversion=0.2.1\n")
+    assert host.run().returncode == 1
+    assert host.state()["message"] == "Die Anforderung nennt keine gültige Version."
+    assert not (host.update / "request").exists()
+    assert [path.name for path in host.update.iterdir() if path.name.startswith(".")] == []
+
+
+def test_files_are_moved_into_place_with_mv_T(host):
+    with_fake_mv(host)
+    host.request("0.2.1")
+    assert host.run().returncode == 0, host.state()
+    calls = (host.fake / "mv-calls").read_text().splitlines()
+    assert any(call.startswith("mv -f -T ") and call.endswith(" updater") for call in calls)
+    assert any(call.startswith("mv -f -T ") and call.endswith(" state") for call in calls)
+    assert any(call.startswith("mv -f -T ") and call.endswith(" log") for call in calls)
+
+
+def test_without_mv_T_the_updater_still_works(host):
+    with_fake_mv(host)
+    host.request("0.2.1")
+    result = host.run(FAKE_NO_MV_T="1")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert host.state()["state"] == "done"
+    calls = (host.fake / "mv-calls").read_text().splitlines()
+    assert not any(" -T " in call for call in calls if not call.startswith("mv -T "))

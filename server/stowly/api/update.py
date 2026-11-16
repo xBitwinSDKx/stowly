@@ -2,13 +2,14 @@
 
 Der Server fragt GitHub nach dem neuesten Release und legt auf Wunsch eine Anforderung für den
 Updater auf dem Rechner ab. Docker bekommt er dabei nie in die Hand: Ausgeführt wird das Update vom
-Updater (``updater/stowly-update.sh``), der die Anforderung in ``/data/update`` findet.
+Updater (``updater/stowly-update.sh`` oder der Updater-Container), der die Anforderung in
+``/data/update`` findet. Ob Updates an sind, entscheidet der wirksame Wert (``serverconfig.update_repo``).
 """
 
 from fastapi import APIRouter, Request, Response
 from starlette.concurrency import run_in_threadpool
 
-from stowly import updates
+from stowly import serverconfig, updates
 from stowly.api.deps import CurrentDevice, Db, get_settings
 from stowly.contract.api import UPDATE_CHECK_MIN_GAP_S, ErrorCode, UpdateInstallInput, UpdateStatus
 from stowly.errors import ApiError
@@ -35,12 +36,12 @@ def _checker(request: Request) -> updates.UpdateChecker:
 async def check_update(_device: CurrentDevice, request: Request, response: Response, con: Db) -> UpdateStatus:
     """Fragt GitHub sofort nach dem neuesten Release und liefert den neuen Zustand.
 
-    503 ``not_configured`` ohne STOWLY_UPDATE_REPO; 429 ``rate_limited`` öfter als einmal je Minute
-    (mit ``Retry-After``). Ein Fehler bei GitHub ist kein Fehler dieses Aufrufs: Er steht in
-    ``check_error``.
+    503 ``not_configured``, wenn Updates aus sind (weder STOWLY_UPDATE_REPO noch der Schalter in der
+    App); 429 ``rate_limited`` öfter als einmal je Minute (mit ``Retry-After``). Ein Fehler bei GitHub
+    ist kein Fehler dieses Aufrufs: Er steht in ``check_error``.
     """
     settings = get_settings(request)
-    if not settings.update_configured:
+    if await run_in_threadpool(serverconfig.update_repo, settings, con) is None:
         raise ApiError(503, ErrorCode.NOT_CONFIGURED, updates.NOT_CONFIGURED)
     checker = _checker(request)
     try:
@@ -66,7 +67,7 @@ def install_update(
 ) -> UpdateStatus:
     """Fordert das Update auf ``body.version`` beim Updater an (202) und liefert den neuen Zustand.
 
-    503 ``not_configured`` ohne STOWLY_UPDATE_REPO oder wenn sich der Updater seit 10 Minuten nicht
+    503 ``not_configured``, wenn Updates aus sind oder sich der Updater seit 10 Minuten nicht
     gemeldet hat; 409 ``conflict``, wenn ``version`` nicht das zuletzt gesehene neueste Release ist,
     nicht neuer als dieser Server oder schon angefordert bzw. in Arbeit.
     """

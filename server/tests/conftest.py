@@ -16,13 +16,33 @@ import pytest
 from fastapi.testclient import TestClient
 from support import TEST_PASSWORD, Device, ServerClock
 
-from stowly import db
+from stowly import auth, db
 from stowly.app import create_app
 from stowly.config import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 __all__ = ["REPO_ROOT", "TEST_PASSWORD"]
+
+# So rechnet scrypt in den Tests (N = 2^4 statt 2^15): Jeder Start übernimmt STOWLY_PASSWORD als Hash, und
+# mit voller Stärke kostete das je Test rund 60 Millisekunden.
+QUICK_SCRYPT_LN = 4
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "full_scrypt: der Test rechnet scrypt mit der Stärke des Betriebs (N = 2^15)"
+    )
+
+
+@pytest.fixture(autouse=True)
+def quick_scrypt(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Schneller Hash des Passworts, außer der Test prüft die echte Stärke (``full_scrypt``).
+
+    Geprüft wird ein Hash immer mit den Werten, die in ihm stehen: Beides passt so zusammen.
+    """
+    if request.node.get_closest_marker("full_scrypt") is None:
+        monkeypatch.setattr(auth, "SCRYPT_LN", QUICK_SCRYPT_LN)
 
 
 @pytest.fixture(autouse=True)

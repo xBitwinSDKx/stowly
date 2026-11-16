@@ -71,7 +71,7 @@ export interface PushControllerOptions {
   signedIn(): boolean;
 }
 
-const NOT_CONFIGURED = "Der Server ist nicht für Push eingerichtet (STOWLY_PUSH_CONTACT).";
+const NOT_CONFIGURED = "Der Server hat keinen Kontakt für die Push-Dienste.";
 
 /** Die Bytes eines base64url-Texts (Füllzeichen erlaubt). */
 export function base64urlToBytes(text: string): Uint8Array<ArrayBuffer> {
@@ -187,6 +187,15 @@ export class PushController implements PushApi {
       this.refreshing = null;
     });
     return this.refreshing;
+  }
+
+  /**
+   * Der Kontakt für die Push-Dienste hat sich geändert (`serverConfig.update`): Was der Server
+   * zuletzt über Push sagte („nicht eingerichtet"), gilt nicht mehr. Fragt neu nach.
+   */
+  serverChanged(): void {
+    this.server = "unknown";
+    void this.refresh();
   }
 
   /** Nach einem Kontakt zum Server: nachholen, was ohne ihn liegen blieb. */

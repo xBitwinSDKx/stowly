@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router";
 
-import { useCore, type Printer } from "@/contract";
+import { useCore, type PiPairing, type Printer } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
-import { ConfirmDialog, EmptyState, errorText, List, ListRow, Section, Select, useNow, ZoneLabel } from "@/ui";
-import { Button, useToast } from "@/ui/base";
-import { PlusIcon, PrinterIcon } from "@/ui/icons";
+import { ConfirmDialog, EmptyState, errorText, List, ListRow, Notice, Section, Select, useNow, ZoneLabel } from "@/ui";
+import { Button, Dialog, useToast } from "@/ui/base";
+import { CpuIcon, PlusIcon, PrinterIcon, WarningIcon } from "@/ui/icons";
 
 import { useLabelActions } from "./labelActions";
 import { Labels, pendingFor } from "./Labels";
-import { describeHealth, describeRemoval, printerDuties, printerForZone } from "./model";
+import { certificateWarningTitle, describeHealth, describeRemoval, piCertificateWarning, printerDuties, printerForZone } from "./model";
+import { PairPi } from "./PairPi";
+import { usePairedPrinters } from "./usePairedPrinters";
 import { PrinterCard, type ProbeState } from "./PrinterCard";
 import { PrinterDialog } from "./PrinterDialog";
 import styles from "./PrintersPage.module.css";
@@ -25,7 +27,67 @@ interface ProbeEntry {
 /** Wert der Auswahl für „kein eigener Drucker" bzw. „kein Standarddrucker". */
 const NONE = "";
 
-type DialogState = { kind: "create" } | { kind: "edit"; printer_id: string } | { kind: "delete"; printer_id: string } | null;
+type DialogState =
+  | { kind: "create" }
+  | { kind: "edit"; printer_id: string }
+  | { kind: "delete"; printer_id: string }
+  /** Einen Raspberry Pi koppeln; mit `printer_id` einen vorhandenen direkten Drucker übernehmen. */
+  | { kind: "pair"; printer_id: string | null }
+  | null;
+
+/**
+ * „Raspberry Pi koppeln" auf der Druckerseite: neu anlegen oder einen vorhandenen direkten Drucker
+ * übernehmen (neu koppeln, etwa vor Ablauf seines Zertifikats). Schließen bricht eine wartende Kopplung ab.
+ * `onPaired`: Der Pi ist gekoppelt (sein Zertifikat ist neu).
+ */
+function PairPiDialog({
+  printers,
+  initialPrinterId,
+  onClose,
+  onPaired,
+}: {
+  printers: readonly Printer[];
+  initialPrinterId: string | null;
+  onClose: () => void;
+  onPaired: () => void;
+}) {
+  const core = useCore();
+  const direct = printers.filter((printer) => printer.connection === "direct");
+  const [printerId, setPrinterId] = useState(initialPrinterId ?? NONE);
+  const [pairing, setPairing] = useState<PiPairing | null>(null);
+  const started = pairing !== null && pairing.state !== "expired" && pairing.state !== "cancelled";
+
+  function close() {
+    if (pairing && (pairing.state === "waiting" || pairing.state === "installing")) {
+      void core.printers.cancelPairing(pairing.id).catch(() => undefined);
+    }
+    onClose();
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={close}
+      title="Raspberry Pi koppeln"
+      size="md"
+      footer={<Button onClick={close}>{pairing?.state === "paired" ? "Fertig" : "Schließen"}</Button>}
+    >
+      <div className={styles.pairDialog}>
+        {direct.length > 0 ? (
+          <Select
+            label="Drucker"
+            value={printerId}
+            onChange={setPrinterId}
+            disabled={started}
+            hint="Ein übernommener Drucker behält Namen und Zuordnung; nur die Verbindung zum Pi ist neu."
+            options={[{ value: NONE, label: "Neuen Drucker anlegen" }, ...direct.map((printer) => ({ value: printer.id, label: `Vorhandenen Drucker übernehmen: ${printer.name}` }))]}
+          />
+        ) : null}
+        <PairPi pairing={pairing} onPairing={setPairing} printerId={printerId === NONE ? null : printerId} sdCard={printerId === NONE} onPaired={onPaired} />
+      </div>
+    </Dialog>
+  );
+}
 
 function scrollTo(id: string) {
   const element = document.getElementById(id);
@@ -45,6 +107,7 @@ export function PrintersPage() {
   const printing = usePrinting();
   const actions = useLabelActions();
   const now = useNow();
+  const paired = usePairedPrinters();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [serial, setSerial] = useState(0);
   const [probes, setProbes] = useState<ReadonlyMap<string, ProbeEntry>>(new Map());
@@ -101,6 +164,12 @@ export function PrintersPage() {
   }
 
   const { printers, zones, settings, data } = printing;
+  // Zertifikate gekoppelter Pi, die bald ablaufen: wie der Server sie kennt (`SetupStatus.paired_printers`).
+  const expiring = paired.paired.flatMap((entry) => {
+    const printer = printers.find((candidate) => candidate.id === entry.printer_id);
+    const days = piCertificateWarning(entry.not_after, now);
+    return printer && days !== null ? [{ printer, days, entry }] : [];
+  });
   const multiZone = zones.length > 1;
   const byId = (id: string) => printers.find((printer) => printer.id === id);
   const editing = dialog?.kind === "edit" ? byId(dialog.printer_id) : undefined;
@@ -156,20 +225,45 @@ export function PrintersPage() {
       description="Etikettendrucker des Haushalts: im Heimnetz am Server oder am Raspberry Pi im Keller."
       actions={
         printers.length > 0 ? (
-          <Button ref={addRef} variant="primary" icon={<PlusIcon />} onClick={() => open({ kind: "create" })}>
-            Drucker hinzufügen
-          </Button>
+          <>
+            <Button icon={<CpuIcon />} onClick={() => open({ kind: "pair", printer_id: null })}>
+              Raspberry Pi koppeln
+            </Button>
+            <Button ref={addRef} variant="primary" icon={<PlusIcon />} onClick={() => open({ kind: "create" })}>
+              Drucker hinzufügen
+            </Button>
+          </>
         ) : undefined
       }
     >
+      {expiring.map(({ printer, days, entry }) => (
+        <Notice
+          key={printer.id}
+          tone="warn"
+          icon={<WarningIcon />}
+          title={certificateWarningTitle(printer.name, days, entry.not_after)}
+          action={
+            <Button size="sm" onClick={() => open({ kind: "pair", printer_id: printer.id })}>
+              Neu koppeln
+            </Button>
+          }
+        >
+          Danach erreicht die App den Pi {entry.hostname} nicht mehr über HTTPS. Neu koppeln stellt ein neues Zertifikat aus; der Drucker bleibt, wie er ist.
+        </Notice>
+      ))}
       {printers.length === 0 ? (
         <EmptyState
           icon={<PrinterIcon size={26} />}
           title="Noch kein Drucker eingerichtet"
           actions={
-            <Button ref={addRef} variant="primary" icon={<PlusIcon />} onClick={() => open({ kind: "create" })}>
-              Drucker hinzufügen
-            </Button>
+            <>
+              <Button variant="primary" icon={<CpuIcon />} onClick={() => open({ kind: "pair", printer_id: null })}>
+                Raspberry Pi koppeln
+              </Button>
+              <Button ref={addRef} icon={<PlusIcon />} onClick={() => open({ kind: "create" })}>
+                Drucker hinzufügen
+              </Button>
+            </>
           }
         >
           Mit einem Etikettendrucker bekommt jede Packung beim Einlagern ein Etikett mit ihrer ID als Klartext und QR-Code; ein Scan bucht sie später wieder aus. Ohne Drucker fordert Stowly
@@ -265,6 +359,7 @@ export function PrintersPage() {
 
       {dialog?.kind === "create" ? <PrinterDialog key={serial} onClose={close} onCreated={(created) => setFresh(created.id)} /> : null}
       {editing ? <PrinterDialog key={serial} printer={editing} onClose={close} /> : null}
+      {dialog?.kind === "pair" ? <PairPiDialog key={serial} printers={printers} initialPrinterId={dialog.printer_id} onClose={close} onPaired={paired.reload} /> : null}
       <ConfirmDialog
         open={deleting !== undefined}
         onClose={close}

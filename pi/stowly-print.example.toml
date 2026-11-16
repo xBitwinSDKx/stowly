@@ -1,7 +1,9 @@
 # Stowly-Druckdienst auf dem Raspberry Pi: Beispiel-Konfiguration.
 #
-# Auf dem Pi liegt die Datei unter /etc/stowly-print/stowly-print.toml. Das Installationsskript
-# (install.sh) legt sie beim ersten Lauf aus seinen Angaben an; danach ändert es sie nicht mehr.
+# Auf dem Pi liegt die Datei unter /etc/stowly-print/stowly-print.toml. Beim Koppeln mit Stowly
+# (Befehl aus der App, install.sh --pair) schreibt der Pi sie neu: Token und Drucker bleiben, die alte
+# Datei liegt als stowly-print.toml.bak daneben. Von Hand legt install.sh sie beim ersten Lauf aus
+# seinen Angaben an und ändert sie danach nicht mehr.
 # Nach jeder Änderung: sudo systemctl restart stowly-print
 # Das Format ist in pi/README.md beschrieben (Abschnitt „Konfiguration").
 

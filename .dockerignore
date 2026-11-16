@@ -1,4 +1,5 @@
-# Was nicht ins Image gehört
+# Was nicht ins Image gehört. pi/ gehört hinein: Aus ihm und print/ entsteht das Paket für den
+# Raspberry Pi (Dockerfile, Stufe pi-bundle); seine Tests bleiben draußen (**/tests).
 .git
 .gitignore
 .gitattributes
@@ -20,7 +21,6 @@ backups
 backups-*
 *.age
 docs
-pi
 **/__pycache__
 **/*.pyc
 **/*.egg-info

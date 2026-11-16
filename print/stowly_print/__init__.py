@@ -28,7 +28,8 @@ from stowly_print.model import (
     to_dict,
 )
 
-__version__ = "0.1.0"
+# Setzt scripts/release.py zusammen mit den anderen Versionsnummern; der Pi schickt sie beim Koppeln mit.
+__version__ = "0.2.1"
 
 __all__ = [
     "APP_NAME",

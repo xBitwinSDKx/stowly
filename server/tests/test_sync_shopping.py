@@ -344,7 +344,7 @@ def test_what_the_server_writes_itself_has_its_own_events_without_device(make_de
     device.sync([restore, store_third])
 
     log = events_of(device.client, device)
-    own = [event for event in log if event["device_id"] is None]
+    own = [event for event in log if event["device_id"] is None and event["entity"] != "server"]
     assert [(event["type"], event["entity"]) for event in own] == [
         ("shopping_item.auto_created", "shopping_item"),  # product.create mit Mindestbestand
         ("shopping_item.store_done", "shopping_item"),  # erstes Einlagern: der eigene Eintrag ist erledigt

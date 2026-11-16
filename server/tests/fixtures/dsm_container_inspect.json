@@ -1,0 +1,285 @@
+[
+  {
+    "Id": "e58a07ebc720fe6a08078178e09a7fc1721d2375ed7475dfe69d7c235fd81d2a",
+    "Created": "2026-11-16T11:35:32.898430243Z",
+    "Path": "python",
+    "Args": [
+      "-m",
+      "stowly"
+    ],
+    "State": {
+      "Status": "running",
+      "Running": true,
+      "Paused": false,
+      "Restarting": false,
+      "OOMKilled": false,
+      "Dead": false,
+      "Pid": 14657,
+      "ExitCode": 0,
+      "Error": "",
+      "StartedAt": "2026-11-16T11:35:35.216219837Z",
+      "FinishedAt": "0001-01-01T00:00:00Z",
+      "Health": {
+        "Status": "healthy",
+        "FailingStreak": 0,
+        "Log": [
+          {
+            "Start": "2026-11-16T12:36:05.2172933+01:00",
+            "End": "2026-11-16T12:36:06.459292432+01:00",
+            "ExitCode": 0,
+            "Output": ""
+          }
+        ]
+      },
+      "StartedTs": 1794828935,
+      "FinishedTs": -62135596800
+    },
+    "Image": "sha256:52450dd989c58dfb1e8eff3096c36a98f25e0d0ef8dc8966255bbc33e33ce39e",
+    "ResolvConfPath": "/volume2/@docker/containers/e58a07ebc720fe6a08078178e09a7fc1721d2375ed7475dfe69d7c235fd81d2a/resolv.conf",
+    "HostnamePath": "/volume2/@docker/containers/e58a07ebc720fe6a08078178e09a7fc1721d2375ed7475dfe69d7c235fd81d2a/hostname",
+    "HostsPath": "/volume2/@docker/containers/e58a07ebc720fe6a08078178e09a7fc1721d2375ed7475dfe69d7c235fd81d2a/hosts",
+    "LogPath": "/volume2/@docker/containers/e58a07ebc720fe6a08078178e09a7fc1721d2375ed7475dfe69d7c235fd81d2a/log.db",
+    "Name": "/stowly",
+    "RestartCount": 0,
+    "Driver": "btrfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "docker-default",
+    "ExecIDs": null,
+    "HostConfig": {
+      "Binds": [
+        "/volume1/docker/stowly:/data:rw"
+      ],
+      "ContainerIDFile": "",
+      "LogConfig": {
+        "Type": "db",
+        "Config": {}
+      },
+      "NetworkMode": "bridge",
+      "PortBindings": {
+        "8010/tcp": [
+          {
+            "HostIp": "",
+            "HostPort": "8010"
+          }
+        ]
+      },
+      "RestartPolicy": {
+        "Name": "always",
+        "MaximumRetryCount": 0
+      },
+      "AutoRemove": false,
+      "VolumeDriver": "",
+      "VolumesFrom": null,
+      "CapAdd": null,
+      "CapDrop": null,
+      "CgroupnsMode": "host",
+      "Dns": null,
+      "DnsOptions": null,
+      "DnsSearch": null,
+      "ExtraHosts": null,
+      "GroupAdd": null,
+      "IpcMode": "private",
+      "Cgroup": "",
+      "Links": null,
+      "OomScoreAdj": 0,
+      "PidMode": "",
+      "Privileged": false,
+      "PublishAllPorts": false,
+      "ReadonlyRootfs": false,
+      "SecurityOpt": null,
+      "UTSMode": "",
+      "UsernsMode": "",
+      "ShmSize": 67108864,
+      "Runtime": "runc",
+      "Env": [
+        "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG=C.UTF-8",
+        "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+        "PYTHON_VERSION=3.12.16",
+        "PYTHON_SHA256=b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONUNBUFFERED=1",
+        "PIP_NO_CACHE_DIR=1",
+        "PIP_DISABLE_PIP_VERSION_CHECK=1",
+        "STOWLY_HOST=0.0.0.0",
+        "STOWLY_PORT=8010",
+        "STOWLY_DATA_DIR=/data",
+        "STOWLY_WEB_DIR=/app/web"
+      ],
+      "ConsoleSize": [
+        0,
+        0
+      ],
+      "Isolation": "",
+      "CpuShares": 50,
+      "Memory": 0,
+      "NanoCpus": 0,
+      "CgroupParent": "",
+      "BlkioWeight": 0,
+      "BlkioWeightDevice": null,
+      "BlkioDeviceReadBps": null,
+      "BlkioDeviceWriteBps": null,
+      "BlkioDeviceReadIOps": null,
+      "BlkioDeviceWriteIOps": null,
+      "CpuPeriod": 0,
+      "CpuQuota": 0,
+      "CpuRealtimePeriod": 0,
+      "CpuRealtimeRuntime": 0,
+      "CpusetCpus": "",
+      "CpusetMems": "",
+      "Devices": null,
+      "DeviceCgroupRules": null,
+      "DeviceRequests": null,
+      "KernelMemory": 0,
+      "KernelMemoryTCP": 0,
+      "MemoryReservation": 0,
+      "MemorySwap": 0,
+      "MemorySwappiness": null,
+      "OomKillDisable": false,
+      "PidsLimit": null,
+      "Ulimits": null,
+      "CpuCount": 0,
+      "CpuPercent": 0,
+      "IOMaximumIOps": 0,
+      "IOMaximumBandwidth": 0,
+      "MaskedPaths": [
+        "/proc/asound",
+        "/proc/acpi",
+        "/proc/kcore",
+        "/proc/keys",
+        "/proc/latency_stats",
+        "/proc/timer_list",
+        "/proc/timer_stats",
+        "/proc/sched_debug",
+        "/proc/scsi",
+        "/sys/firmware"
+      ],
+      "ReadonlyPaths": [
+        "/proc/bus",
+        "/proc/fs",
+        "/proc/irq",
+        "/proc/sys",
+        "/proc/sysrq-trigger"
+      ]
+    },
+    "GraphDriver": {
+      "Data": null,
+      "Name": "btrfs"
+    },
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Source": "/volume1/docker/stowly",
+        "Destination": "/data",
+        "Mode": "rw",
+        "RW": true,
+        "Propagation": "rprivate"
+      }
+    ],
+    "Config": {
+      "Hostname": "stowly",
+      "Domainname": "",
+      "User": "stowly",
+      "AttachStdin": false,
+      "AttachStdout": false,
+      "AttachStderr": false,
+      "ExposedPorts": {
+        "8010/tcp": {}
+      },
+      "Tty": true,
+      "OpenStdin": true,
+      "StdinOnce": false,
+      "Env": [
+        "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG=C.UTF-8",
+        "GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305",
+        "PYTHON_VERSION=3.12.16",
+        "PYTHON_SHA256=b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONUNBUFFERED=1",
+        "PIP_NO_CACHE_DIR=1",
+        "PIP_DISABLE_PIP_VERSION_CHECK=1",
+        "STOWLY_HOST=0.0.0.0",
+        "STOWLY_PORT=8010",
+        "STOWLY_DATA_DIR=/data",
+        "STOWLY_WEB_DIR=/app/web"
+      ],
+      "Cmd": [
+        "python",
+        "-m",
+        "stowly"
+      ],
+      "Healthcheck": {
+        "Test": [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('STOWLY_PORT', '8010'), timeout=3)"
+        ],
+        "Interval": 30000000000,
+        "Timeout": 5000000000,
+        "StartPeriod": 20000000000,
+        "Retries": 3
+      },
+      "Image": "ghcr.io/beispiel/stowly:0.2.1",
+      "Volumes": {
+        "/data": {}
+      },
+      "WorkingDir": "/app",
+      "Entrypoint": null,
+      "OnBuild": null,
+      "Labels": {
+        "org.opencontainers.image.revision": "ebc4faf5dbd4202138dd72a4499d07f809117918",
+        "org.opencontainers.image.source": "https://github.com/beispiel/stowly",
+        "org.opencontainers.image.title": "Stowly",
+        "org.opencontainers.image.version": "0.2.1"
+      },
+      "DDSM": false
+    },
+    "NetworkSettings": {
+      "Bridge": "",
+      "SandboxID": "d609a340ce0850035daaaa45b4182e22abcf09933ad44e948eba280043f4b629",
+      "HairpinMode": false,
+      "LinkLocalIPv6Address": "",
+      "LinkLocalIPv6PrefixLen": 0,
+      "Ports": {
+        "8010/tcp": [
+          {
+            "HostIp": "0.0.0.0",
+            "HostPort": "8010"
+          }
+        ]
+      },
+      "SandboxKey": "/var/run/docker/netns/d609a340ce08",
+      "SecondaryIPAddresses": null,
+      "SecondaryIPv6Addresses": null,
+      "EndpointID": "c666fec977cbfde00d60d21790bb52771e3b253e2bb07887308578af533f176d",
+      "Gateway": "172.17.0.1",
+      "GlobalIPv6Address": "",
+      "GlobalIPv6PrefixLen": 0,
+      "IPAddress": "172.17.0.2",
+      "IPPrefixLen": 16,
+      "IPv6Gateway": "",
+      "MacAddress": "02:42:ac:11:00:02",
+      "Networks": {
+        "bridge": {
+          "IPAMConfig": null,
+          "Links": null,
+          "Aliases": null,
+          "NetworkID": "0e23789b1d9a558c0e3742c9c4d50d5fb1a02f9e75881df91a70fd182febd358",
+          "EndpointID": "c666fec977cbfde00d60d21790bb52771e3b253e2bb07887308578af533f176d",
+          "Gateway": "172.17.0.1",
+          "IPAddress": "172.17.0.2",
+          "IPPrefixLen": 16,
+          "IPv6Gateway": "",
+          "GlobalIPv6Address": "",
+          "GlobalIPv6PrefixLen": 0,
+          "MacAddress": "02:42:ac:11:00:02",
+          "DriverOpts": null
+        }
+      }
+    }
+  }
+]

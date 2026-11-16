@@ -20,7 +20,22 @@ from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from stowly import __version__, autobackup, bring, daily, db, label_templates, off, push, scheduler, updates
+from stowly import (
+    __version__,
+    auth,
+    autobackup,
+    bring,
+    daily,
+    db,
+    label_templates,
+    off,
+    push,
+    scheduler,
+    serverconfig,
+    tls,
+    updates,
+    wizard,
+)
 from stowly.api import router as api_router
 from stowly.auth import LoginGuard
 from stowly.config import MAX_REQUEST_BYTES, Settings
@@ -60,7 +75,19 @@ class BodyLimit:
 
 
 def report_configuration(settings: Settings) -> None:
-    """Schreibt beim Start ins Log, was eingerichtet ist und was nur halb (nie einen Token)."""
+    """Schreibt beim Start ins Log, was eingerichtet ist und was nur halb (nie einen Token, nie das Passwort).
+
+    Passwort, Push und Updates nach ihren wirksamen Werten: aus der Umgebung oder aus der App.
+    """
+    con = db.connect(settings.database_path)
+    try:
+        has_password = auth.has_password(settings, con)
+        contact = serverconfig.push_contact(settings, con)
+        repo = serverconfig.update_repo(settings, con)
+    finally:
+        con.close()
+    if not has_password:
+        log.warning("Noch kein Passwort: Wer Stowly jetzt öffnet, vergibt es.")
     log.info("Zeitzone des Servers: %s", settings.timezone)
     if settings.backup_configured:
         assert settings.backup_dir is not None
@@ -80,10 +107,14 @@ def report_configuration(settings: Settings) -> None:
         log.warning("Kein Abgleich mit Home Assistant: %s", settings.ha_problem)
     if settings.ha_summary_token is not None:
         log.info("Sensor für Home Assistant unter /api/ha/summary eingerichtet.")
-    if not settings.push_configured:
-        log.info("Push ist aus (STOWLY_PUSH_CONTACT ist nicht gesetzt).")
-    if settings.update_configured:
-        log.info("Updates: Releases von %s auf GitHub.", settings.update_repo)
+    if contact is None:
+        log.info("Push ist aus: Es gibt keinen Kontakt für die Push-Dienste (App oder STOWLY_PUSH_CONTACT).")
+    if repo is not None:
+        log.info("Updates: Releases von %s auf GitHub.", repo)
+    if settings.https_port is not None:
+        log.info(
+            "HTTPS auf Port %d mit der eigenen CA (docs/integrationen.md, Abschnitt 11).", settings.https_port
+        )
 
 
 def build_app(
@@ -115,16 +146,24 @@ def build_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Läuft erst, wenn die App wirklich bedient wird; der Vertrags-Export kommt nie hierher.
-        report_configuration(settings)
+        await run_in_threadpool(report_configuration, settings)
+        # Push, Tagesnachricht und die Abfrage bei GitHub entstehen immer: Sie lesen den wirksamen Wert
+        # (Umgebung oder App) erst beim Einsatz, so wirkt eine Änderung in der App ohne Neustart.
         sender = push.PushService(settings, transport=push_transport, clock=push_clock)
         app.state.push = sender
-        # Aufgaben des Zeitplans (docs/integrationen.md, 1.1), in dieser Reihenfolge: die Sicherung und
-        # die Tagesnachricht, jeweils nur, wenn sie eingerichtet sind.
+        # Aufgaben des Zeitplans (docs/integrationen.md, 1.1), in dieser Reihenfolge: die Sicherung, nur
+        # wenn sie eingerichtet ist, die Tagesnachricht (sie prüft den Kontakt selbst) und mit HTTPS die
+        # Erneuerung des Zertifikats.
         tasks: list[scheduler.Job] = []
         if settings.backup_configured:
             tasks.append(autobackup.BackupJob(settings))
-        if settings.push_configured:
-            tasks.append(daily.PushDailyJob(settings, sender, clock=job_clock))
+        tasks.append(daily.PushDailyJob(settings, sender, clock=job_clock))
+        if settings.https_port is not None:
+            tasks.append(
+                tls.TlsRenewJob(
+                    settings, app.state.tls, lambda: wizard.stored_certificate_addresses(settings)
+                )
+            )
         jobs = scheduler.Scheduler(settings.database_path, tasks, clock=job_clock)
         app.state.scheduler = jobs
         schedule = asyncio.create_task(jobs.run(), name="stowly-scheduler")
@@ -136,13 +175,11 @@ def build_app(
             ha = bring.BringSync(settings, transport=ha_transport, clock=ha_clock)
             app.state.bring = ha
             ha_task = asyncio.create_task(ha.run(), name="stowly-ha")
-        # Die Abfrage bei GitHub hat ebenfalls ihre eigene Schleife (10.2), nur mit STOWLY_UPDATE_REPO.
-        checker: updates.UpdateChecker | None = None
-        checker_task: asyncio.Task[None] | None = None
-        if settings.update_configured:
-            checker = updates.UpdateChecker(settings, sender, transport=update_transport, clock=update_timer)
-            app.state.updates = checker
-            checker_task = asyncio.create_task(checker.run(), name="stowly-updates")
+        # Die Abfrage bei GitHub hat ebenfalls ihre eigene Schleife (10.2); sie schläft, solange Updates
+        # aus sind, und wacht auf, wenn der Schalter in der App sie einschaltet (reconfigure).
+        checker = updates.UpdateChecker(settings, sender, transport=update_transport, clock=update_timer)
+        app.state.updates = checker
+        checker_task = asyncio.create_task(checker.run(), name="stowly-updates")
         try:
             async with _serving(app):
                 yield
@@ -153,8 +190,7 @@ def build_app(
             jobs.stop()
             if ha is not None:
                 ha.stop()
-            if checker is not None:
-                checker.stop()
+            checker.stop()
             await asyncio.gather(schedule, return_exceptions=True)
             await asyncio.gather(
                 jobs.aclose(),
@@ -168,8 +204,7 @@ def build_app(
             await sender.aclose()
             if ha is not None:
                 await ha.aclose()
-            if checker is not None:
-                await checker.aclose()
+            await checker.aclose()
 
     @contextlib.asynccontextmanager
     async def _serving(app: FastAPI) -> AsyncIterator[None]:
@@ -227,6 +262,8 @@ def build_app(
     app.state.settings = settings
     # Bremse gegen das Durchprobieren des Passworts, gemeinsam für alle Aufrufer.
     app.state.login_guard = LoginGuard()
+    # CA und Zertifikat des HTTPS-Listeners (stowly/tls.py); Dateien fasst erst create_app an (prepare).
+    app.state.tls = tls.TlsManager(settings)
     # Hintergrund-Ablauf für Open Food Facts; läuft nur, solange die App bedient wird.
     app.state.off_worker = None
     # Druckdienst (stowly/printing.py); läuft ebenfalls nur, solange die App bedient wird.
@@ -315,12 +352,14 @@ def create_app(
     update_transport: httpx2.AsyncBaseTransport | None = None,
     update_clock: off.Clock | None = None,
 ) -> FastAPI:
-    """Anwendung für den Betrieb: legt die Datenbank an und migriert sie, dazu den Ordner für den
-    Austausch mit dem Updater (``/data/update``, docs/integrationen.md, 10.3)."""
+    """Anwendung für den Betrieb: legt die Datenbank an und migriert sie, übernimmt ``STOWLY_PASSWORD``
+    als Hash, legt den Ordner für den Austausch mit dem Updater an (``/data/update``,
+    docs/integrationen.md, 10.3) und lädt oder erzeugt die CA samt Zertifikat (Abschnitt 11)."""
     settings = settings or Settings.from_env()
     prepare_database(settings)
+    adopt_env_password(settings)
     updates.prepare_folder(settings)
-    return build_app(
+    app = build_app(
         settings,
         off_transport=off_transport,
         off_clock=off_clock,
@@ -332,3 +371,15 @@ def create_app(
         update_transport=update_transport,
         update_clock=update_clock,
     )
+    app.state.tls.prepare(wizard.stored_certificate_addresses(settings))
+    return app
+
+
+def adopt_env_password(settings: Settings) -> None:
+    """Übernimmt ``STOWLY_PASSWORD`` beim Start als Hash (``auth.adopt_env_password``); nie den Rückfall
+    des Entwicklungsmodus."""
+    con = db.connect(settings.database_path)
+    try:
+        auth.adopt_env_password(settings, con)
+    finally:
+        con.close()

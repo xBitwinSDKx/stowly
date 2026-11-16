@@ -2,12 +2,17 @@
 
     python -m stowly_print serve --config /etc/stowly-print/stowly-print.toml
     python -m stowly_print sample --out /tmp/etiketten
+    python -m stowly_print pair --server http://192.168.1.10:8010 --code ABCD-EFGH
+    python -m stowly_print selftest
 
 ``serve`` bedient HTTP und HTTPS im selben Prozess. Der Auftragsspeicher liegt im RAM: Jeder
 Start ist ein neuer Lauf mit neuer ``boot_id`` (docs/etiketten.md, 5.4).
 
 ``sample`` rendert die mitgelieferten Vorlagen mit Beispieldaten als PNG, mit den Schriften
 dieses Rechners. So lässt sich ansehen, wie die Etiketten hier aussehen, ohne zu drucken.
+
+``pair`` koppelt den Pi mit Stowly, ``selftest`` prüft danach HTTP, HTTPS und druckt ein Testetikett
+(``stowly_print.pairing``; beides ruft ``pi/install.sh --pair`` auf).
 """
 
 import argparse
@@ -18,7 +23,7 @@ import sys
 import threading
 from pathlib import Path
 
-from stowly_print import __version__
+from stowly_print import __version__, pairing
 from stowly_print.config import ConfigurationError, Listener, ServiceConfig, load_config
 
 log = logging.getLogger("stowly_print")
@@ -221,6 +226,54 @@ def sample(out: Path) -> int:
     return 0
 
 
+def _paths_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", type=Path, default=pairing.CONFIG, help="Konfigurationsdatei")
+    parser.add_argument(
+        "--tls-dir", type=Path, default=pairing.TLS_DIR, help="Ordner für Schlüssel und Zertifikate"
+    )
+
+
+def pair(arguments: argparse.Namespace) -> int:
+    """``pair``: mit Stowly koppeln (oder mit ``--start`` nur melden). Das Token erscheint nie."""
+    try:
+        if arguments.start:
+            hostname = pairing.announce(arguments.server, arguments.code)
+            print(f'    Stowly kennt den Code; der Pi „{hostname}" richtet sich jetzt ein.')
+            return 0
+        outcome = pairing.pair(
+            arguments.server,
+            arguments.code,
+            origins=arguments.origin,
+            model=arguments.model,
+            address=arguments.address,
+            paths=pairing.Paths(config=arguments.config, tls=arguments.tls_dir, state=arguments.state),
+        )
+    except pairing.PairingError as exc:
+        print(f"Koppeln: {exc}", file=sys.stderr)
+        return 1
+    print(f'    Gekoppelt mit {outcome.server}: Drucker „{outcome.printer_name}" in Stowly.')
+    if outcome.printer_found and outcome.model is not None:
+        print(f"    Am USB erkannt: Brother {outcome.model}.")
+    elif not outcome.printer_found:
+        print("    Am USB hängt noch kein Brother-Drucker; er kann auch später kommen.")
+    print(f"    Adressen für die App: {', '.join(outcome.urls)}")
+    print(f"    Erlaubte Ursprünge: {', '.join(outcome.origins)}")
+    print(f"    Zertifikat gültig bis {outcome.not_after[:10]}.")
+    if outcome.token_new:
+        print("    Neues Token für den Drucker; Stowly hat es schon eingetragen.")
+    for note in outcome.notes:
+        print(f"    Hinweis: {note}")
+    return 0
+
+
+def selftest(arguments: argparse.Namespace) -> int:
+    """``selftest``: HTTP, HTTPS gegen ``ca.crt`` und ein Testetikett. 1, wenn HTTP oder HTTPS scheitert."""
+    checks = pairing.selftest(arguments.config, tls=arguments.tls_dir, test_print=not arguments.no_test_print)
+    for check in checks:
+        print(f"    {check.name}: {'ok' if check.ok else 'FEHLER'}, {check.message}")
+    return 0 if all(check.ok for check in checks) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m stowly_print", description="Stowly-Druckdienst")
     parser.add_argument("--version", action="version", version=f"stowly-print {__version__}")
@@ -229,11 +282,37 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--config", required=True, type=Path, help="Konfigurationsdatei (TOML)")
     sample_parser = commands.add_parser("sample", help="Beispiel-Etiketten als PNG rendern, ohne zu drucken")
     sample_parser.add_argument("--out", required=True, type=Path, help="Verzeichnis für die PNG-Dateien")
+    pair_parser = commands.add_parser("pair", help="mit Stowly koppeln (Befehl aus der App, als root)")
+    pair_parser.add_argument(
+        "--server", required=True, help="Adresse von Stowly, etwa http://192.168.1.10:8010"
+    )
+    pair_parser.add_argument("--code", required=True, help="Kopplungscode aus der App (ABCD-EFGH)")
+    pair_parser.add_argument(
+        "--start",
+        action="store_true",
+        help="nur beim Server melden (der Pi richtet sich ein), nichts schreiben",
+    )
+    pair_parser.add_argument(
+        "--origin", action="append", default=[], help="weiterer Ursprung der App (mehrfach möglich)"
+    )
+    pair_parser.add_argument("--model", help="Modell, wenn keins erkannt wird (etwa QL-800)")
+    pair_parser.add_argument(
+        "--address", help="Adresse des Druckers für eine neue Konfiguration (usb://04f9)"
+    )
+    _paths_arguments(pair_parser)
+    pair_parser.add_argument("--state", type=Path, default=pairing.STATE, help="Stand der Kopplung (JSON)")
+    selftest_parser = commands.add_parser("selftest", help="HTTP, HTTPS und ein Testetikett prüfen")
+    _paths_arguments(selftest_parser)
+    selftest_parser.add_argument("--no-test-print", action="store_true", help="kein Testetikett drucken")
     arguments = parser.parse_args(argv)
 
     if arguments.command == "sample":
         configure_logging("info")
         return sample(arguments.out)
+    if arguments.command == "pair":
+        return pair(arguments)
+    if arguments.command == "selftest":
+        return selftest(arguments)
 
     try:
         config = load_config(arguments.config)

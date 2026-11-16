@@ -16,7 +16,10 @@ from stowly.api import (
     images,
     integrations,
     lookup,
+    pi,
     push,
+    serverconfig,
+    setup,
     stats,
     sync,
     system,
@@ -37,5 +40,9 @@ router.include_router(push.router)
 router.include_router(integrations.router)
 router.include_router(ha.router)
 router.include_router(update.router)
+# Einrichtung: erstes Passwort, HTTPS, Einstellungen des Servers, Pi koppeln
+router.include_router(setup.router)
+router.include_router(serverconfig.router)
+router.include_router(pi.router)
 
 __all__ = ["router"]

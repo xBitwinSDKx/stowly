@@ -13,11 +13,13 @@ import { ROUTES } from "@/contract";
 import { createMockCore, MockScanPage, type MockCore, type MockOptions } from "@/mock";
 
 import { App } from "./App";
-import { preloadPages } from "./pages";
+import { FirstRunPage, preloadPages, SetupPage } from "./pages";
 
 // Die Ansichten werden nachgeladen (pages.tsx). In den Tests stehen sie vorab bereit: So
 // zeichnet die App wie bisher sofort, ohne dass jeder Test auf das Nachladen warten muss.
 await preloadPages();
+// Die Einrichtung holt `preloadPages` bewusst nicht vorab; in den Tests steht auch sie bereit.
+await Promise.all([SetupPage.preload(), FirstRunPage.preload()]);
 
 export function renderApp(options: MockOptions = {}, path: string = ROUTES.stock): MockCore {
   window.history.replaceState(null, "", path);

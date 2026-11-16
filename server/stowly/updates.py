@@ -6,10 +6,12 @@ bekommt er dabei nie in die Hand; er läuft weiter ohne Rechte.
 
 * **Abfrage** (10.2): ``GET https://api.github.com/repos/{repo}/releases/latest`` ohne Token, höchstens
   10 Sekunden. Eine eigene Schleife nach dem Muster von ``bring.BringSync``: eine asyncio-Aufgabe im
-  ``lifespan`` der App, nur mit ``STOWLY_UPDATE_REPO``, mit eingereichter Uhr (``off.Clock``) und
-  Transport für Tests. Die erste Abfrage kommt eine Minute nach dem Start, jede weitere sechs Stunden
-  nach der letzten, ob gelungen oder nicht. Dazu auf Knopfdruck (``check_now``), höchstens einmal je
-  Minute für den ganzen Server; ein Knopfdruck beginnt den Takt neu.
+  ``lifespan`` der App, mit eingereichter Uhr (``off.Clock``) und Transport für Tests. Sie läuft immer
+  und schläft, solange Updates aus sind. Das wirksame Repository (``STOWLY_UPDATE_REPO``, sonst der
+  Schalter in der App, ``serverconfig.update_repo``) liest sie vor jeder Abfrage; ``reconfigure`` weckt
+  sie nach dem Umschalten. Die erste Abfrage kommt eine Minute nach dem Start bzw. dem Einschalten,
+  jede weitere sechs Stunden nach der letzten, ob gelungen oder nicht. Dazu auf Knopfdruck
+  (``check_now``), höchstens einmal je Minute für den ganzen Server; ein Knopfdruck beginnt den Takt neu.
 * **Gespeichert** in ``job_runs`` (Aufgabe ``update_check``): So übersteht das Ergebnis einen Neustart.
   Nach einem Fehler bleiben die bisherigen Angaben zum neuesten Release stehen.
 * **Push** einmal je Version, wenn das neueste Release neuer ist als dieser Server (``notified``), auch
@@ -39,7 +41,7 @@ from typing import Any
 
 import httpx2
 
-from stowly import __version__, db, localtime, push, scheduler, texts
+from stowly import __version__, db, localtime, push, scheduler, serverconfig, texts
 from stowly.config import Settings
 from stowly.contract.api import (
     PUSH_PATHS,
@@ -57,6 +59,7 @@ from stowly.contract.api import (
 from stowly.contract.ids import exact
 from stowly.contract.timeutil import format_timestamp, is_timestamp, parse_timestamp
 from stowly.off import Clock
+from stowly.updater.command import updater_command
 
 log = logging.getLogger("stowly.update")
 
@@ -127,7 +130,7 @@ UPDATER_QUIET = "Der Updater meldet sich seit 15 Minuten nicht. Bitte auf dem Re
 
 # --- Anfordern (10.5) --------------------------------------------------------------------------
 
-NOT_CONFIGURED = "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO)."
+NOT_CONFIGURED = "Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung."
 UPDATER_MISSING = "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9)."
 ALREADY_REQUESTED = "Ein Update ist schon angefordert."
 NOT_LATEST = "Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen."
@@ -445,9 +448,11 @@ def status(settings: Settings, con: sqlite3.Connection, now: datetime) -> dict[s
     seen = parse_time((files.updater or {}).get("seen_at"))
     ready = seen is not None and now - seen <= READY_WITHIN
     checked_at = run.last_at if run.last_at is not None and is_timestamp(run.last_at) else None
+    # Die wirksamen Werte: STOWLY_UPDATE_REPO, sonst der Schalter in der App (Abschnitt 12).
+    repo = serverconfig.update_repo(settings, con)
     return {
-        "configured": settings.update_configured,
-        "repo": settings.update_repo,
+        "configured": repo is not None,
+        "repo": repo,
         "current": __version__,
         "latest": release.latest,
         "latest_name": release.latest_name,
@@ -459,8 +464,23 @@ def status(settings: Settings, con: sqlite3.Connection, now: datetime) -> dict[s
         "check_error": run.last_error,
         "updater_ready": ready,
         "updater_seen_at": None if seen is None else format_timestamp(seen),
+        "updater_kind": None if seen is None else _updater_kind(files.updater),
+        "updater_version": _updater_version(files.updater),
+        "updater_command": updater_command(settings),
         **update_state(files, now, updater_ready=ready),
     }
+
+
+def _updater_kind(heartbeat: dict[str, str] | None) -> str:
+    """``kind`` aus der Datei ``updater``; der Host-Updater bis 0.2.x schreibt keines (``script``)."""
+    kind = (heartbeat or {}).get("kind")
+    return kind if kind in ("script", "container") else "script"
+
+
+def _updater_version(heartbeat: dict[str, str] | None) -> str | None:
+    """``version`` aus der Datei ``updater``, nur in der Form X.Y.Z."""
+    version = (heartbeat or {}).get("version")
+    return version if version is not None and _VERSION.fullmatch(version) else None
 
 
 # --- Anfordern (10.5) --------------------------------------------------------------------------
@@ -485,10 +505,10 @@ def install(
 ) -> dict[str, Any]:
     """Prüft in der Reihenfolge von 10.5 und legt ``request`` ab; liefert den neuen Zustand.
 
-    ``Refused`` mit 503 (nicht eingerichtet, Updater fehlt) oder 409 (schon angefordert, nicht die
-    neueste Version, nicht neuer als dieser Server).
+    ``Refused`` mit 503 (Updates aus, Updater fehlt) oder 409 (schon angefordert, nicht die neueste
+    Version, nicht neuer als dieser Server).
     """
-    if not settings.update_configured:
+    if serverconfig.update_repo(settings, con) is None:
         raise Refused(503, ErrorCode.NOT_CONFIGURED, NOT_CONFIGURED)
     with _INSTALL_LOCK:
         current = status(settings, con, now)
@@ -523,9 +543,10 @@ class TooSoon(Exception):
 
 
 class UpdateChecker:
-    """Fragt GitHub nach dem neuesten Release. Läuft als asyncio-Aufgabe im ``lifespan`` der App.
+    """Fragt GitHub nach dem neuesten Release. Läuft als asyncio-Aufgabe im ``lifespan`` der App, immer;
+    solange Updates aus sind, schläft sie, bis ``reconfigure`` oder ``stop`` sie weckt.
 
-    ``sender`` verschickt die Nachricht „Neue Version" (nur mit ``STOWLY_PUSH_CONTACT``).
+    ``sender`` verschickt die Nachricht „Neue Version" (nur mit wirksamem Kontakt für die Push-Dienste).
     ``transport`` und ``clock`` sind der Ersatz für Tests; im Betrieb bleiben sie ``None``. Die Uhr
     bestimmt auch den Takt: Gewartet wird mit ``clock.sleep``.
     """
@@ -538,11 +559,8 @@ class UpdateChecker:
         transport: httpx2.AsyncBaseTransport | None = None,
         clock: Clock | None = None,
     ) -> None:
-        if not settings.update_configured:
-            raise ValueError("Updates sind nicht eingerichtet.")
         self.settings = settings
         self._sender = sender
-        self._url = f"{API_BASE}/repos/{settings.update_repo}/releases/latest"
         self._clock = clock or Clock()
         self._client = httpx2.AsyncClient(
             transport=transport,
@@ -556,19 +574,29 @@ class UpdateChecker:
         )
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._stopping = False
-        self._next: float | None = None  # monoton: die nächste Abfrage im Takt
+        self._reconfigured = False  # der Schalter hat sich geändert: der Takt beginnt neu
+        self._next: float | None = None  # monoton: die nächste Abfrage im Takt; None = neu beginnen
         self._pressed: float | None = None  # monoton: der letzte Knopfdruck, der abgefragt hat
 
     # ------------------------------------------------------------------ Lebenslauf
 
     async def run(self) -> None:
-        """Läuft bis ``stop``: die erste Abfrage eine Minute nach dem Start, dann im Takt. Ein Fehler
-        beendet die Schleife nie."""
-        if self._next is None:
-            self._next = self._clock.monotonic() + UPDATE_CHECK_FIRST_S
+        """Läuft bis ``stop``: Mit Updates kommt die erste Abfrage eine Minute nach dem Start (oder dem
+        Einschalten), dann im Takt; ohne schläft die Schleife. Ein Fehler beendet sie nie."""
+        self._loop = asyncio.get_running_loop()
         while not self._stopping:
             try:
+                if self._reconfigured:
+                    self._reconfigured = False
+                    self._next = None
+                if await asyncio.to_thread(self.repo) is None:
+                    self._next = None
+                    await self._idle()
+                    continue
+                if self._next is None:
+                    self._next = self._clock.monotonic() + UPDATE_CHECK_FIRST_S
                 delay = self._next - self._clock.monotonic()
                 if delay > 0:
                     await self._sleep(delay)
@@ -588,8 +616,33 @@ class UpdateChecker:
         self._stopping = True
         self._wake.set()
 
+    def reconfigure(self) -> None:
+        """Der Schalter „Nach Updates suchen" hat sich geändert: Die Schleife liest ihn neu. Eingeschaltet
+        kommt die erste Abfrage nach ``UPDATE_CHECK_FIRST_S``, ausgeschaltet keine mehr. Darf aus jedem
+        Thread gerufen werden."""
+        self._reconfigured = True
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._wake.set)
+
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def repo(self) -> str | None:
+        """Das wirksame Repository (``serverconfig.update_repo``); ``None`` = Updates sind aus. Liest die
+        Datenbank, also in einem Thread aufrufen."""
+        if self.settings.update_repo is not None:
+            return self.settings.update_repo
+        con = db.connect(self.settings.database_path)
+        try:
+            return serverconfig.update_repo(self.settings, con)
+        finally:
+            con.close()
+
+    async def _idle(self) -> None:
+        """Updates sind aus: warten, bis ``reconfigure`` oder ``stop`` weckt."""
+        await self._wake.wait()
+        self._wake.clear()
 
     async def _sleep(self, delay: float) -> None:
         """Wartet ``delay`` Sekunden nach der Uhr, oder bis ``wake`` (Knopfdruck, Ende)."""
@@ -632,24 +685,30 @@ class UpdateChecker:
         self._wake.set()  # Die Schleife rechnet ihren Takt von dieser Abfrage aus neu.
 
     async def check(self) -> None:
-        """Eine Abfrage bei GitHub, gleich jetzt; die nächste im Takt sechs Stunden danach."""
+        """Eine Abfrage bei GitHub, gleich jetzt; die nächste im Takt sechs Stunden danach. Sind Updates
+        inzwischen aus, fragt sie nicht."""
         async with self._lock:
             await self._check()
 
     async def _check(self) -> None:
+        repo = await asyncio.to_thread(self.repo)
+        if repo is None:
+            self._next = None
+            return
         self._next = self._clock.monotonic() + UPDATE_CHECK_INTERVAL_S
         now = self._clock.now()
-        outcome = await self._fetch()
+        outcome = await self._fetch(repo)
         if isinstance(outcome, Failure):
             log.warning("Updates: %s (%s)", outcome.message, outcome.detail)
         announce = await asyncio.to_thread(self._record, outcome, now)
         if announce is not None:
             await self._announce(announce)
 
-    async def _fetch(self) -> Release | Failure:
+    async def _fetch(self, repo: str) -> Release | Failure:
+        url = f"{API_BASE}/repos/{repo}/releases/latest"
         try:
             # Höchstens 10 Sekunden, auch wenn die Antwort tröpfchenweise kommt.
-            response = await asyncio.wait_for(self._client.get(self._url), TIMEOUT_S)
+            response = await asyncio.wait_for(self._client.get(url), TIMEOUT_S)
         except (TimeoutError, httpx2.HTTPError) as exc:
             return Failure(UNREACHABLE, type(exc).__name__)
         return evaluate(response.status_code, response.content)
@@ -694,7 +753,7 @@ class UpdateChecker:
 
     async def _announce(self, version: str) -> None:
         """„Stowly X.Y.Z ist verfügbar." an alle Abos des Haushalts; ohne Push nur ins Log."""
-        if self._sender is None or not self.settings.push_configured:
+        if self._sender is None or await asyncio.to_thread(self._push_contact) is None:
             log.info("Updates: Stowly %s ist verfügbar.", version)
             return
         subscriptions = await asyncio.to_thread(self._subscriptions)
@@ -707,6 +766,13 @@ class UpdateChecker:
             reached,
             len(subscriptions),
         )
+
+    def _push_contact(self) -> str | None:
+        con = db.connect(self.settings.database_path)
+        try:
+            return serverconfig.push_contact(self.settings, con)
+        finally:
+            con.close()
 
     def _subscriptions(self) -> list[push.Subscription]:
         con = db.connect(self.settings.database_path)
@@ -728,6 +794,8 @@ class UpdateChecker:
             return await self._sender.deliver(
                 subscription, payload, ttl=PUSH_TTL_S, topic=PUSH_TOPIC, urgency=PUSH_URGENCY
             )
+        except push.NoContact:
+            return None
         except Exception:
             # Etwa ein unbrauchbarer Schlüssel an einem Abo: Die anderen bekommen ihre Nachricht trotzdem.
             log.exception("Updates: Nachricht an %s ließ sich nicht schicken", subscription.host)

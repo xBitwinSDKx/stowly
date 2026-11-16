@@ -21,7 +21,8 @@ import type { Tables } from "../tables";
 import { toCoreError, type CoreRuntime, type PrintRuntime } from "./runtime";
 import { activePrinter, activeZone, checkDirectConfig, checkServerConfig, existingPackages, invalid, LIMITS, notFound, requiredText, requirePrinter } from "./validate";
 
-export function createPrintersApi(runtime: CoreRuntime, print: PrintRuntime): PrintersApi {
+/** Die Drucker selbst; das Koppeln eines Pi braucht den Server und hängt in src/core/index.ts daran. */
+export function createPrintersApi(runtime: CoreRuntime, print: PrintRuntime): Omit<PrintersApi, "pair" | "pairing" | "cancelPairing"> {
   return {
     create(input: NewPrinter) {
       return runtime.change((mutation) => {

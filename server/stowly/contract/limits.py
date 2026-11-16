@@ -6,7 +6,8 @@ der Kern der Web-App und die Attrappe ihre Eingaben mit denselben Zahlen
 (``web/src/contract/input.ts``), bevor ein Befehl entsteht: Was die App annimmt, lehnt
 der Server nicht als ``invalid`` ab.
 
-Alle Werte sind Obergrenzen: Zeichen bei Texten, Anzahl bei Listen, Tage bei Fristen.
+Alle Werte sind Obergrenzen: Zeichen bei Texten, Anzahl bei Listen, Tage bei Fristen. Einzige
+Ausnahme ist ``password_min``, die Mindestlänge eines neuen Haushalts-Passworts.
 """
 
 from types import MappingProxyType
@@ -38,5 +39,10 @@ LIMITS: Final = MappingProxyType(
         "shopping_quantity": 999,  # Menge eines Eintrags der Einkaufsliste, 1 bis …
         "push_endpoint": 1024,  # Adresse eines Push-Abos beim Push-Dienst
         "push_origin": 200,  # Ursprung der App (location.origin) beim Anmelden für Push
+        # Seit der Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8):
+        "password_min": 8,  # Mindestlänge eines neuen Haushalts-Passworts (Untergrenze)
+        "setup_address": 253,  # eine Adresse fürs Zertifikat des Servers: IP oder Name
+        "setup_addresses": 10,  # Adressen im Zertifikat des Servers
+        "push_contact": 200,  # Kontakt für die Push-Dienste (mailto: oder https)
     }
 )

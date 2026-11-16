@@ -5,13 +5,15 @@ import dataclasses
 import hashlib
 import json
 import logging
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from support import TEST_PASSWORD, Device, events_of
 
-from stowly import auth
+from stowly import auth, db
 from stowly.app import create_app
+from stowly.config import Settings
 from stowly.contract import ids, timeutil
 
 ID = "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4a5b"
@@ -352,3 +354,207 @@ def test_an_oversized_request_is_refused_before_it_is_read(client):
     assert response.json()["error"]["details"] == {"max_bytes": 4 * 1024 * 1024}
     # Die Grenze gilt für alles, was der Server annimmt, und zählt nicht als Fehlversuch.
     assert login(client).status_code == 200
+
+
+# --- Passwort ändern (POST /api/auth/password) -------------------------------------------------
+
+APP_PASSWORD = "erstes-passwort"
+
+
+@pytest.fixture
+def household(settings):
+    """Ein Haushalt mit Passwort aus der App (ohne STOWLY_PASSWORD) und zwei Geräten."""
+    bare = dataclasses.replace(settings, password=None)
+    with TestClient(create_app(bare)) as client:
+        response = client.post("/api/setup/password", json={"password": APP_PASSWORD, "device_name": "Handy"})
+        assert response.status_code == 200, response.text
+        phone = SimpleNamespace(
+            id=response.json()["device"]["id"],
+            headers={"Authorization": f"Bearer {response.json()['token']}"},
+        )
+        tablet = Device(client, "Tablet", password=APP_PASSWORD)
+        yield client, phone, tablet
+
+
+def change(client: TestClient, device, current: str, new: str):
+    return client.post(
+        "/api/auth/password", json={"current_password": current, "new_password": new}, headers=device.headers
+    )
+
+
+def test_changing_the_password_keeps_every_device_signed_in(household):
+    client, phone, tablet = household
+    response = change(client, phone, APP_PASSWORD, "zweites-passwort")
+    assert response.status_code == 204
+    assert response.content == b""
+    for device in (phone, tablet):
+        assert client.get("/api/devices", headers=device.headers).status_code == 200
+    assert login(client, password=APP_PASSWORD).status_code == 401
+    assert login(client, password="zweites-passwort").status_code == 200
+    changed = [
+        e for e in events_of(client, tablet, entity="server") if e["type"] == "server.password_changed"
+    ]
+    assert [(e["entity_id"], e["device_id"], e["data"]) for e in changed] == [("password", phone.id, {})]
+
+
+def test_a_wrong_current_password_is_401_and_counts_in_the_brake(household):
+    client, phone, _tablet = household
+    clock = FakeTime()
+    client.app.state.login_guard.clock = clock
+    for _ in range(5):
+        response = change(client, phone, "falsch-geraten", "neues-passwort")
+        assert response.status_code == 401
+        # invalid_password, nie unauthorized: Die App meldet das Gerät deshalb nicht ab.
+        assert response.json()["error"]["code"] == "invalid_password"
+        assert "www-authenticate" not in response.headers
+        clock.value += 1
+    # Nach fünf Fehlversuchen: 429, auch mit dem richtigen Passwort, und auch beim Anmelden.
+    locked = change(client, phone, APP_PASSWORD, "neues-passwort")
+    assert locked.status_code == 429
+    assert locked.json()["error"]["code"] == "rate_limited"
+    assert int(locked.headers["retry-after"]) == locked.json()["error"]["details"]["retry_after_s"]
+    assert login(client, password=APP_PASSWORD).status_code == 429
+    # Das Gerät ist die ganze Zeit angemeldet geblieben.
+    assert client.get("/api/devices", headers=phone.headers).status_code == 200
+    clock.value += 60
+    assert change(client, phone, APP_PASSWORD, "neues-passwort").status_code == 204
+    assert login(client, password="neues-passwort").status_code == 200
+
+
+def test_a_password_from_the_environment_cannot_be_changed(client):
+    device = Device(client)
+    response = change(client, device, TEST_PASSWORD, "neues-passwort")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+    assert login(client).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("body", "loc"),
+    [
+        ({"current_password": APP_PASSWORD, "new_password": "kurz"}, ["body", "new_password"]),
+        ({"current_password": APP_PASSWORD, "new_password": "x" * 201}, ["body", "new_password"]),
+        ({"current_password": "", "new_password": "lang-genug"}, ["body", "current_password"]),
+    ],
+)
+def test_the_new_password_needs_8_to_200_characters(household, body, loc):
+    client, phone, _tablet = household
+    response = client.post("/api/auth/password", json=body, headers=phone.headers)
+    assert response.status_code == 422
+    assert response.json()["error"]["details"]["errors"][0]["loc"] == loc
+    assert login(client, password=APP_PASSWORD).status_code == 200
+
+
+def test_changing_needs_a_device_token(household):
+    client, _phone, _tablet = household
+    response = client.post(
+        "/api/auth/password", json={"current_password": APP_PASSWORD, "new_password": "neues-passwort"}
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_a_change_in_between_is_a_conflict(household, monkeypatch):
+    """Ändern zwei Geräte zugleich, gilt das erste; das zweite bekommt 409, statt es zu überschreiben."""
+    client, _phone, tablet = household
+    original = auth.verify_password
+
+    def meanwhile(password: str, stored: str) -> bool:
+        con = db.connect(client.app.state.settings.database_path)
+        try:
+            with db.transaction(con):
+                con.execute(
+                    "UPDATE meta SET value = ? WHERE key = ?",
+                    (auth.hash_password("von-einem-anderen"), auth.PASSWORD_HASH),
+                )
+        finally:
+            con.close()
+        return original(password, stored)
+
+    monkeypatch.setattr(auth, "verify_password", meanwhile)
+    response = change(client, tablet, APP_PASSWORD, "neues-passwort")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+    monkeypatch.setattr(auth, "verify_password", original)
+    assert login(client, password="von-einem-anderen").status_code == 200
+
+
+# --- Übernahme aus der Umgebung (adopt_env_password) -------------------------------------------
+
+
+def stored_hash(settings) -> str | None:
+    con = db.connect(settings.database_path)
+    try:
+        return auth.stored_hash(con)
+    finally:
+        con.close()
+
+
+def server_events(settings) -> list[tuple[str, str | None, dict]]:
+    con = db.connect(settings.database_path)
+    try:
+        return [
+            (row["type"], row["device_id"], json.loads(row["data"]))
+            for row in con.execute("SELECT * FROM events WHERE entity = 'server' ORDER BY id")
+        ]
+    finally:
+        con.close()
+
+
+def test_the_password_from_the_environment_holds_without_the_variable(settings):
+    with TestClient(create_app(settings)) as client:
+        Device(client)
+    value = stored_hash(settings)
+    assert value is not None and value.startswith("$scrypt$")
+    assert server_events(settings) == [("server.password_set", None, {"source": "env"})]
+
+    # Ohne die Variable gilt dasselbe Passwort weiter, und es entsteht kein offenes Fenster.
+    without = dataclasses.replace(settings, password=None)
+    with TestClient(create_app(without)) as client:
+        assert client.get("/api/health").json()["configured"] is True
+        assert login(client).status_code == 200
+        assert login(client, password="falsch").status_code == 401
+        setup = client.post("/api/setup/password", json={"password": "uebernahme!", "device_name": "X"})
+        assert setup.status_code == 409
+
+
+def test_the_environment_is_adopted_only_when_it_changes(settings):
+    with TestClient(create_app(settings)):
+        pass
+    first = stored_hash(settings)
+    with TestClient(create_app(settings)):
+        pass
+    assert stored_hash(settings) == first  # dasselbe Passwort: kein neuer Hash, kein Ereignis
+    assert len(server_events(settings)) == 1
+
+    changed = dataclasses.replace(settings, password="ein-anderes-passwort")
+    with TestClient(create_app(changed)):
+        pass
+    assert stored_hash(settings) != first
+    assert server_events(settings) == [("server.password_set", None, {"source": "env"})] * 2
+    without = dataclasses.replace(settings, password=None)
+    with TestClient(create_app(without)) as client:
+        assert login(client).status_code == 401
+        assert login(client, password="ein-anderes-passwort").status_code == 200
+
+
+def test_the_development_fallback_is_never_stored(tmp_path):
+    dev = Settings.from_env({"STOWLY_DATA_DIR": str(tmp_path / "data")}, dev=True)
+    assert dev.password_fallback is True
+    with TestClient(create_app(dev)) as client:
+        assert login(client, password="stowly").status_code == 200
+    assert stored_hash(dev) is None
+    assert server_events(dev) == []
+    # Ohne Entwicklungsmodus ist der Server danach offen für das erste Passwort.
+    plain = Settings.from_env({"STOWLY_DATA_DIR": str(tmp_path / "data")}, dev=False)
+    with TestClient(create_app(plain)) as client:
+        assert client.get("/api/health").json()["configured"] is False
+        assert login(client, password="stowly").status_code == 503
+
+
+def test_the_password_never_reaches_the_log_on_adoption(settings, caplog):
+    caplog.set_level(logging.DEBUG)
+    with TestClient(create_app(settings)):
+        pass
+    assert TEST_PASSWORD not in caplog.text
+    assert "Das Passwort aus STOWLY_PASSWORD ist übernommen" in caplog.text

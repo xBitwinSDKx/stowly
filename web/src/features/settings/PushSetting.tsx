@@ -1,9 +1,9 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
-import { formatTimestamp, isCoreError, PUSH_TEST_INTERVAL_S, ROUTES, useCore, useLive, type PushState, type PushTestResult } from "@/contract";
+import { formatTimestamp, isCoreError, PUSH_TEST_INTERVAL_S, ROUTES, setupPath, useCore, useLive, type PushState, type PushTestResult } from "@/contract";
 import { errorText, ListRow, Notice, timeAgo, useNow, type NoticeTone } from "@/ui";
 import { Button, ButtonLink, useToast } from "@/ui/base";
-import { BellOffIcon, BellRingIcon, SendIcon, ShareIcon } from "@/ui/icons";
+import { BellOffIcon, BellRingIcon, SendIcon, SettingsIcon, ShareIcon } from "@/ui/icons";
 
 import type { IntegrationsState } from "./integrations";
 import styles from "./SettingsPage.module.css";
@@ -41,7 +41,7 @@ export function describePush(state: PushState | undefined, secureContext: boolea
     case "not_configured":
       return {
         value: "nicht eingerichtet",
-        hint: "Der Server ist nicht für Benachrichtigungen eingerichtet. Wer ihn betreibt, setzt dafür STOWLY_PUSH_CONTACT (docs/betrieb.md).",
+        hint: "Der Server ist noch nicht für Benachrichtigungen eingerichtet: Es fehlt die Kontakt-Adresse für die Push-Dienste. Sie lässt sich in der Einrichtung unter „Benachrichtigungen“ eintragen.",
       };
     case "off":
       return { value: "aus", hint: DAILY };
@@ -108,7 +108,7 @@ export function useSecondsLeft(until: number): number {
  * den Server; Ausschalten gelingt auch ohne. Nach einer Testnachricht ruht der Knopf
  * `PUSH_TEST_INTERVAL_S` Sekunden, nach „zu viele" so lange, wie der Server sagt.
  */
-export function PushSetting({ integrations }: { integrations: IntegrationsState }) {
+export function PushSetting({ integrations, setupLink = true }: { integrations: IntegrationsState; /** Bei "not_configured" zur Einrichtung führen (nicht in ihr selbst). */ setupLink?: boolean }) {
   const core = useCore();
   const toast = useToast();
   const state = useLive(core.push.state);
@@ -236,6 +236,12 @@ export function PushSetting({ integrations }: { integrations: IntegrationsState 
     controls = (
       <ButtonLink to={{ pathname: ROUTES.settings, hash: "#app" }} icon={<ShareIcon />}>
         Anleitung unter „Diese App“
+      </ButtonLink>
+    );
+  } else if (state === "not_configured" && setupLink) {
+    controls = (
+      <ButtonLink to={setupPath("notifications")} icon={<SettingsIcon />}>
+        Einrichten
       </ButtonLink>
     );
   }

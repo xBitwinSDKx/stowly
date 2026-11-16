@@ -259,34 +259,110 @@ def _update_repo(env: Mapping[str, str]) -> str | None:
     return repo
 
 
+def _update_repo_default(env: Mapping[str, str]) -> str | None:
+    """``STOWLY_UPDATE_REPO_DEFAULT``: Vorgabe des Images für den Schalter in der App, kein Zwang.
+
+    Anders als ``STOWLY_UPDATE_REPO`` schaltet sie Updates nicht ein; sie nennt nur das Repository,
+    das der Schalter in der App einschaltet (docs/integrationen.md, Abschnitt 12).
+    """
+    repo = _text(env, "STOWLY_UPDATE_REPO_DEFAULT")
+    if repo is None:
+        return None
+    if not _UPDATE_REPO.fullmatch(repo) or repo.split("/", 1)[1] in {".", ".."}:
+        raise ValueError(
+            f"STOWLY_UPDATE_REPO_DEFAULT: '{repo}' ist kein GitHub-Repository (erwartet <konto>/<name>)."
+        )
+    return repo
+
+
+def _https_port(env: Mapping[str, str], http_port: int) -> int | None:
+    """``STOWLY_HTTPS_PORT``: Port des HTTPS-Listeners im Container; nicht gesetzt = kein HTTPS."""
+    raw = _text(env, "STOWLY_HTTPS_PORT")
+    if raw is None:
+        return None
+    try:
+        port = int(raw)
+    except ValueError:
+        raise ValueError(f"STOWLY_HTTPS_PORT: '{raw}' ist keine Zahl.") from None
+    if not 1 <= port <= 65535:
+        raise ValueError(f"STOWLY_HTTPS_PORT: {port} ist kein Port (1 bis 65535).")
+    if port == http_port:
+        raise ValueError(f"STOWLY_HTTPS_PORT: {port} ist schon der Port für HTTP (STOWLY_PORT).")
+    return port
+
+
+def _pi_bundle(env: Mapping[str, str]) -> Path | None:
+    """``STOWLY_PI_BUNDLE``: das Paket für den Pi im Image (pi-bundle.tar.gz).
+
+    Ohne Angabe baut ein Server aus dem Quell-Checkout das Paket selbst (server/stowly/pi_bundle.py),
+    einer aus site-packages hat keines (docs/sync-protokoll.md, 11.8).
+    """
+    raw = _text(env, "STOWLY_PI_BUNDLE")
+    if raw is None:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        raise ValueError(f"STOWLY_PI_BUNDLE: '{raw}' ist kein absoluter Pfad.")
+    return path
+
+
+# Ein Image ohne Tag und Digest: [registry[:port]/]pfad, alles klein (Docker-Referenz).
+_IMAGE_REF = re.compile(
+    r"(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/)?[a-z0-9]+(?:[._-][a-z0-9]+)*"
+    r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
+)
+
+
+def _image_ref(env: Mapping[str, str]) -> str | None:
+    """``STOWLY_IMAGE_REF``: woher das Image stammt, ohne Tag (etwa docker.io/beispiel/stowly).
+
+    Damit setzt der Server den Befehl für den Updater-Container zusammen (docs/integrationen.md, 10.7).
+    """
+    ref = _text(env, "STOWLY_IMAGE_REF")
+    if ref is None:
+        return None
+    if len(ref) > 200 or not _IMAGE_REF.fullmatch(ref):
+        raise ValueError(
+            f"STOWLY_IMAGE_REF: '{ref}' ist keine Image-Referenz ohne Tag (etwa docker.io/beispiel/stowly)."
+        )
+    return ref
+
+
+def push_contact_valid(contact: str) -> bool:
+    """Ein Kontakt für die Push-Dienste (VAPID ``sub``): ``mailto:`` mit einer Adresse samt Domäne oder
+    ``https://`` mit Host, das Schema klein geschrieben, ohne Benutzerangabe.
+
+    Dieselbe Prüfung gilt für ``STOWLY_PUSH_CONTACT`` und den Kontakt aus der App
+    (docs/integrationen.md, Abschnitte 7 und 12).
+    """
+    if not _plain_ascii(contact):
+        return False
+    if contact.startswith("mailto:"):
+        return _MAILTO.fullmatch(contact) is not None
+    try:
+        parts = urlsplit(contact)
+        parts.port  # noqa: B018 - prüft den Port
+    except ValueError:
+        return False
+    return (
+        contact.startswith("https://")
+        and bool(parts.hostname)
+        and _HOSTNAME.fullmatch(parts.hostname or "") is not None
+        and parts.username is None
+        and parts.password is None
+    )
+
+
 def _push_contact(env: Mapping[str, str]) -> str | None:
     """``STOWLY_PUSH_CONTACT``: ``mailto:<Adresse>`` oder eine ``https://``-Adresse (VAPID ``sub``)."""
     contact = _text(env, "STOWLY_PUSH_CONTACT")
     if contact is None:
         return None
-    problem = ValueError(
-        "STOWLY_PUSH_CONTACT: erwartet ist mailto:<Adresse> oder eine https-Adresse "
-        "(Apple lehnt Nachrichten ohne gültigen Absender ab)."
-    )
-    if not _plain_ascii(contact):
-        raise problem
-    if contact.startswith("mailto:"):
-        if not _MAILTO.fullmatch(contact):
-            raise problem
-        return contact
-    try:
-        parts = urlsplit(contact)
-        parts.port  # noqa: B018 - prüft den Port
-    except ValueError:
-        raise problem from None
-    if (
-        not contact.startswith("https://")
-        or not parts.hostname
-        or not _HOSTNAME.fullmatch(parts.hostname)
-        or parts.username is not None
-        or parts.password is not None
-    ):
-        raise problem
+    if not push_contact_valid(contact):
+        raise ValueError(
+            "STOWLY_PUSH_CONTACT: erwartet ist mailto:<Adresse> oder eine https-Adresse "
+            "(Apple lehnt Nachrichten ohne gültigen Absender ab)."
+        )
     return contact
 
 
@@ -312,7 +388,8 @@ class Settings:
     port: int
     data_dir: Path
     web_dir: Path | None  # gebaute Web-App; None = nur die API ausliefern
-    # Haushalts-Passwort; None = Anmelden nicht möglich. Nie in einer Ausgabe (repr).
+    # Haushalts-Passwort aus STOWLY_PASSWORD, im Entwicklungsmodus ohne Angabe der Rückfall „stowly";
+    # None = keins aus der Umgebung, dann gilt der Hash aus der App (auth.py). Nie in einer Ausgabe (repr).
     password: str | None = field(repr=False)
     dev: bool
     off_enabled: bool  # Open Food Facts abfragen
@@ -337,6 +414,17 @@ class Settings:
     push_contact: str | None = None
     # Updates über GitHub (Abschnitt 10): Repository „<konto>/<name>"; None = keine Prüfung.
     update_repo: str | None = None
+    # Vorgabe des Images für den Schalter „Nach Updates suchen" in der App (Abschnitt 12).
+    update_repo_default: str | None = None
+    # HTTPS durch Stowly selbst (Abschnitt 11): Port des Listeners im Container; None = kein HTTPS.
+    https_port: int | None = None
+    # Paket für den Pi (docs/sync-protokoll.md, 11.8); None = selbst bauen (Quell-Checkout) oder keins.
+    pi_bundle: Path | None = None
+    # Herkunft des Images ohne Tag, für den Befehl des Updater-Containers (Abschnitt 10.7).
+    image_ref: str | None = None
+    # True: ``password`` ist der Rückfall des Entwicklungsmodus (DEV_PASSWORD). Er gilt wie STOWLY_PASSWORD,
+    # wird aber nie als Hash gespeichert (docs/sync-protokoll.md, Abschnitt 5).
+    password_fallback: bool = False
 
     @property
     def database_path(self) -> Path:
@@ -348,12 +436,16 @@ class Settings:
         return self.data_dir / "update"
 
     @property
-    def update_configured(self) -> bool:
-        return self.update_repo is not None
+    def env_password(self) -> str | None:
+        """Das Passwort aus ``STOWLY_PASSWORD``, das der Server beim Start als Hash übernimmt; nie der
+        Rückfall des Entwicklungsmodus."""
+        return None if self.password_fallback else self.password
 
     @property
-    def configured(self) -> bool:
-        return self.password is not None
+    def update_configured(self) -> bool:
+        """Nur die Umgebung: ``STOWLY_UPDATE_REPO`` ist gesetzt. Wirksam ist ``serverconfig.update_repo``,
+        das auch den Schalter in der App kennt (Abschnitt 12)."""
+        return self.update_repo is not None
 
     @property
     def tz(self) -> zoneinfo.ZoneInfo:
@@ -407,6 +499,8 @@ class Settings:
 
     @property
     def push_configured(self) -> bool:
+        """Nur die Umgebung: ``STOWLY_PUSH_CONTACT`` ist gesetzt. Wirksam ist ``serverconfig.push_contact``,
+        das auch den Kontakt aus der App kennt (Abschnitt 12)."""
         return self.push_contact is not None
 
     @classmethod
@@ -434,7 +528,8 @@ class Settings:
             web_path = None
 
         password = _text(env, "STOWLY_PASSWORD")
-        if password is None and is_dev:
+        fallback = password is None and is_dev
+        if fallback:
             password = DEV_PASSWORD
 
         port_raw = _text(env, "STOWLY_PORT")
@@ -472,4 +567,14 @@ class Settings:
             ha_summary_token=_ha_summary_token(env),
             push_contact=_push_contact(env),
             update_repo=_update_repo(env),
+            update_repo_default=_update_repo_default(env),
+            https_port=_https_port(env, port),
+            pi_bundle=_pi_bundle(env),
+            image_ref=_image_ref(env),
+            password_fallback=fallback,
         )
+
+    @property
+    def tls_dir(self) -> Path:
+        """CA, Schlüssel und Zertifikat des HTTPS-Listeners (docs/integrationen.md, Abschnitt 11)."""
+        return self.data_dir / "tls"

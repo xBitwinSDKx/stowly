@@ -58,6 +58,17 @@
  * einen Verlauf über gut ein Jahr), in der Zeitzone aus `integrations.load` (Vorgabe
  * Europe/Berlin). "stats-empty" beginnt mit einer leeren Statistik: Dann zählt nur, was nach dem
  * Start der Attrappe entnommen wird.
+ *
+ * Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8): Ohne Ausgangslage ist sie abgeschlossen,
+ * Kontakt und Updates kommen aus der App. "unconfigured" beginnt ohne Haushalts-Passwort
+ * (`session.createPassword`), mit leerem Bestand; "setup-open" mit offener Einrichtung (kein
+ * Kontakt für Push, Updates aus, der Updater meldet sich nicht); "setup-env" mit Passwort, Kontakt
+ * und Updates aus der Umgebung; "no-https" ohne eigenes HTTPS. Ob dieses Gerät der CA vertraut
+ * (`setup.reachesSecurely`), sagt `stowlyMock.setSecureTrusted` (Vorgabe nein). Einen Pi koppelt
+ * `stowlyMock.completePairing`, `expirePairing` lässt den Code ablaufen; mit Wartezeit (im
+ * Browser) meldet sich der Pi nach einer Weile von selbst und koppelt. Den Ablauf der Zertifikate
+ * gekoppelter Pi meldet `setup.load` in `paired_printers`; mit "pi-cert-expiring" läuft das des Pi
+ * im Keller in gut 20 Tagen ab.
  */
 import {
   addDays,
@@ -69,7 +80,9 @@ import {
   checkDeviceName,
   checkDirectConfig,
   checkMinStock,
+  checkNewPassword,
   checkNotifyTime,
+  checkPushContact,
   checkRetentionDays,
   checkServerConfig,
   checkShoppingQuantity,
@@ -107,8 +120,10 @@ import {
   type Device,
   type DevicePrefs,
   type DisplacedChange,
+  type ConfigSource,
   type HaState,
   type HaStatus,
+  type HttpsStatus,
   type IntegrationStatus,
   type NewPrinter,
   type NewProduct,
@@ -116,6 +131,7 @@ import {
   type NewZone,
   type Package,
   type PackageChanges,
+  type PiPairing,
   type Printer,
   type PrinterChanges,
   type PrinterProbe,
@@ -131,9 +147,13 @@ import {
   type PushTestResult,
   type PushTestStatus,
   type RemovalReason,
+  type ServerConfig,
   type ServiceHealth,
   type SessionState,
   type SettingsChanges,
+  type SetupStatus,
+  type SetupStepId,
+  type SetupStepState,
   type ShoppingItem,
   type ShoppingItemChanges,
   type StatsRange,
@@ -185,7 +205,12 @@ import { computeStats } from "./stats";
  * - "release-new": auf GitHub gibt es eine neue Version des Servers mit Änderungen; der Updater
  *                  auf dem Rechner ist bereit (nicht zu verwechseln mit "update": neue App im Browser)
  * - "release-no-updater": ebenso, aber der Updater auf dem Rechner meldet sich nicht
- * - "release-off": Updates über GitHub sind nicht eingerichtet (STOWLY_UPDATE_REPO fehlt)
+ * - "release-off": Updates über GitHub sind aus (weder STOWLY_UPDATE_REPO noch der Schalter der App)
+ * - "unconfigured": der Server hat noch kein Haushalts-Passwort; leerer Bestand (erster Aufruf)
+ * - "setup-open":  die Einrichtung ist offen: kein Kontakt für Push, Updates aus, Updater nicht bereit
+ * - "setup-env":   Passwort, Kontakt für Push und Updates kommen aus der Umgebung
+ * - "no-https":    Stowly hat keinen eigenen HTTPS-Listener (STOWLY_HTTPS_PORT fehlt)
+ * - "pi-cert-expiring": Der Pi im Keller ist gekoppelt, sein Zertifikat läuft in gut 20 Tagen ab
  */
 export type MockScenario =
   | "empty"
@@ -219,7 +244,12 @@ export type MockScenario =
   | "stats-empty"
   | "release-new"
   | "release-no-updater"
-  | "release-off";
+  | "release-off"
+  | "unconfigured"
+  | "setup-open"
+  | "setup-env"
+  | "no-https"
+  | "pi-cert-expiring";
 
 export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "empty",
@@ -254,6 +284,11 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "release-new",
   "release-no-updater",
   "release-off",
+  "unconfigured",
+  "setup-open",
+  "setup-env",
+  "no-https",
+  "pi-cert-expiring",
 ];
 
 /** Wie ein nachgespielter Druck ausgeht. */
@@ -343,8 +378,12 @@ const NEW_RELEASE = {
 } as const;
 
 /** Was eine Anforderung ablehnt (docs/integrationen.md, 10.5), mit den Sätzen des Servers. */
-const UPDATE_NOT_CONFIGURED = "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).";
+const UPDATE_NOT_CONFIGURED = "Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung.";
 const UPDATER_SILENT = "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9).";
+
+/** Der Befehl, der den Updater-Container anlegt, wie ihn der Server zusammensetzt (docs/integrationen.md, 10.7). */
+export const MOCK_UPDATER_COMMAND =
+  "/usr/local/bin/docker rm -f stowly-updater; /usr/local/bin/docker run -d --name stowly-updater --restart unless-stopped --user 0:0 --network none --read-only --tmpfs /tmp --no-healthcheck -v /var/run/docker.sock:/var/run/docker.sock --volumes-from 9c1e5b7d2a4f6e8c0b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e docker.io/beispiel/stowly:0.1.0 python -m stowly.updater";
 
 /**
  * Der Zustand der Updates in einer Ausgangslage (docs/integrationen.md, 10.4). Die Zeitpunkte
@@ -366,6 +405,9 @@ function sampleUpdate(setup: ReleaseSetup, nowMs: number): UpdateStatus {
     check_error: null,
     updater_ready: false,
     updater_seen_at: null,
+    updater_kind: null,
+    updater_version: null,
+    updater_command: MOCK_UPDATER_COMMAND,
     state: "idle",
     state_version: null,
     state_at: null,
@@ -387,6 +429,8 @@ function sampleUpdate(setup: ReleaseSetup, nowMs: number): UpdateStatus {
     checked_at: at(2 * 3_600_000),
     updater_ready: true,
     updater_seen_at: at(60_000),
+    updater_kind: "container",
+    updater_version: MOCK_SERVER_VERSION,
   };
   if (setup === "current") {
     return current;
@@ -403,6 +447,39 @@ function sampleUpdate(setup: ReleaseSetup, nowMs: number): UpdateStatus {
   // Ohne Updater: Er meldete sich zuletzt vor drei Tagen.
   return setup === "new" ? next : { ...next, updater_ready: false, updater_seen_at: at(3 * 86_400_000) };
 }
+
+/** HTTPS durch Stowly in den Beispielen (docs/integrationen.md, 11): eine Adresse im Heimnetz, eine eigene CA. */
+function mockHttps(off: boolean, seenAt: string | null, nowMs: number): HttpsStatus {
+  const later = (days: number) => new Date(nowMs + days * 86_400_000).toISOString();
+  return {
+    enabled: !off,
+    listening: !off,
+    problem: null,
+    port: off ? null : 8443,
+    port_source: "default",
+    http_port: 8010,
+    addresses: [{ address: "192.168.1.10", source: "learned", in_certificate: !off }],
+    origins: off ? [] : ["https://192.168.1.10:8443"],
+    seen_at: off ? null : seenAt,
+    via_https: false,
+    ca: off
+      ? null
+      : {
+          name: "Stowly CA 3F2A1C",
+          fingerprint_sha256: "3F:2A:1C:7B:00:9E:41:D2:5A:6C:88:0B:CE:13:47:F0:22:9D:B4:6E:01:73:AA:5F:C8:3E:90:1D:64:B7:2C:58",
+          not_after: later(3650),
+          created_by_stowly: true,
+          name_constraints: true,
+        },
+    certificate: off ? null : { addresses: ["192.168.1.10", "localhost", "127.0.0.1"], not_after: later(397) },
+  };
+}
+
+/** Eine Adresse im Heimnetz (docs/integrationen.md, 11.3), vereinfacht: private IPv4 oder ein lokaler Name. */
+const HOME_ADDRESS = /^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|[a-z0-9.-]+\.(local|lan|home|home\.arpa|internal|localdomain|fritz\.box))$/i;
+
+/** Der nachgespielte Pi: Hostname, Adresse und Drucker, so wie er sich beim Koppeln meldet. */
+const MOCK_PI = { hostname: "stowly-pi", address: "192.168.1.20", model: "QL-570" } as const;
 
 /** Was der nachgespielte Push-Dienst auf eine Testnachricht antwortet (docs/integrationen.md, 4.7 und 4.9). */
 const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
@@ -480,6 +557,17 @@ export interface MockControl {
    * Zustand eingerichtet, mit Sensor. Ersetzt, was `setIntegrations` für `ha` vorgegeben hat.
    */
   setHaState(state: HaState): void;
+  /** Vertraut dieses Gerät der CA von Stowly? Das meldet dann `setup.reachesSecurely` (Vorgabe: nein). */
+  setSecureTrusted(trusted: boolean): void;
+  /** Hat der Server ein Haushalts-Passwort (`sync.status.server_configured`)? true etwa, wenn ein anderes Gerät es eben festgelegt hat. */
+  setServerConfigured(configured: boolean): void;
+  /**
+   * Der Pi ist fertig: Die Kopplung steht auf "paired", ein direkter Drucker kommt in den Bestand
+   * (oder der gewählte bekommt die neue Verbindung). Ohne Kennung die jüngste wartende Kopplung.
+   */
+  completePairing(id?: string): void;
+  /** Der Code einer Kopplung läuft ab, ohne dass der Pi gekoppelt wurde. Ohne Kennung die jüngste wartende. */
+  expirePairing(id?: string): void;
   /** Aktueller Datenbestand der Attrappe. */
   snapshot(): MockData;
 }
@@ -541,7 +629,8 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   const stamp = () => clock().toISOString();
   const today = () => toLocalDate(clock());
 
-  const chosen = scenarios.has("empty")
+  const unconfigured = scenarios.has("unconfigured");
+  const chosen = scenarios.has("empty") || unconfigured
     ? createEmptyData(clock())
     : scenarios.has("single-zone")
       ? createSingleZoneData(clock())
@@ -555,7 +644,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   const currentName = () => state.get().devices.find((device) => device.current)?.name ?? null;
 
   const session = new LiveValue<SessionState>(
-    scenarios.has("signed-out")
+    scenarios.has("signed-out") || unconfigured
       ? { status: "signed_out", reason: "never", last_device_name: null }
       : scenarios.has("revoked")
         ? { status: "signed_out", reason: "revoked", last_device_name: currentName() }
@@ -571,6 +660,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     last_error: offline ? { code: "offline", message: "Der Server ist nicht erreichbar.", at: stamp() } : null,
     server_version: MOCK_SERVER_VERSION,
     lookup_enabled: !scenarios.has("no-lookup"),
+    server_configured: !unconfigured,
   });
 
   /** Alle Sync-Probleme, wie sie eingetroffen sind; was die Oberfläche sieht, ist `visibleProblems`. */
@@ -587,9 +677,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     storage_persistent: null,
   });
 
-  // Push auf diesem Gerät (siehe Kopf der Datei).
+  // Push auf diesem Gerät (siehe Kopf der Datei). Bei offener Einrichtung fehlt der Kontakt.
+  const setupOpen = unconfigured || scenarios.has("setup-open");
   const pushScenario = PUSH_SCENARIOS.find(([scenario]) => scenarios.has(scenario))?.[1];
-  const pushState = new LiveValue<PushState>(pushScenario ?? (scenarios.has("ios") ? "ios_install" : scenarios.has("insecure") ? "unsupported" : "off"));
+  const pushState = new LiveValue<PushState>(
+    pushScenario ?? (scenarios.has("ios") ? "ios_install" : scenarios.has("insecure") ? "unsupported" : setupOpen ? "not_configured" : "off"),
+  );
   let pushPermission: MockPushPermission = "granted";
   let pushTestStatus: PushTestStatus = "sent";
   /** Zeitpunkt der letzten Testnachricht in Millisekunden (Uhr der Attrappe) oder null. */
@@ -603,10 +696,33 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   /** Mit "stats-empty" zählt die Statistik nur, was ab dem Start der Attrappe entnommen wird. */
   const statsSince = scenarios.has("stats-empty") ? stamp() : null;
   /** Updates über GitHub (siehe Kopf der Datei); `setIntegrations({ update })` ersetzt den Zustand. */
-  const initialUpdates = () => sampleUpdate(RELEASE_SCENARIOS.find(([scenario]) => scenarios.has(scenario))?.[1] ?? "current", clock().getTime());
+  const initialUpdates = () => sampleUpdate(RELEASE_SCENARIOS.find(([scenario]) => scenarios.has(scenario))?.[1] ?? (setupOpen ? "off" : "current"), clock().getTime());
   let updates: UpdateStatus = initialUpdates();
   /** Zeitpunkt der letzten Suche auf Knopfdruck in Millisekunden (Uhr der Attrappe) oder null. */
   let lastUpdateCheck: number | null = null;
+
+  // Einrichtung und Einstellungen des Servers (siehe Kopf der Datei).
+  const fromEnv = scenarios.has("setup-env");
+  let householdPassword = MOCK_PASSWORD;
+  let pushContact: string | null = pushState.get() === "not_configured" ? null : "mailto:haushalt@example.org";
+  let pushContactSource: ConfigSource = fromEnv ? "env" : pushContact === null ? "default" : "app";
+  /** Wie die Updates eingeschaltet sind: aus der Umgebung, mit dem Schalter der App, oder nie geschaltet. */
+  let updateSource: ConfigSource = fromEnv ? "env" : updates.configured ? "app" : "default";
+  const setupSince = new Date(clock().getTime() - 3 * 86_400_000).toISOString();
+  const setupSteps = new Map<SetupStepId, { state: SetupStepState; changed_at: string | null }>(
+    (["https", "printer", "updates", "notifications"] as const).map((id) => [id, setupOpen ? { state: "open", changed_at: null } : { state: "done", changed_at: setupSince }]),
+  );
+  let setupFinishedAt: string | null = setupOpen ? null : setupSince;
+  let https: HttpsStatus = mockHttps(scenarios.has("no-https"), setupOpen ? null : setupSince, clock().getTime());
+  /** Vertraut dieses Gerät der CA von Stowly (`setup.reachesSecurely`)? */
+  let secureTrusted = false;
+  /** Die Kopplungen eines Pi, älteste zuerst; die Codes stehen nur in der Antwort auf `printers.pair`. */
+  const pairings = new Map<string, PiPairing>();
+  /** Je Drucker die jüngste Kopplung eines Pi: Hostname und Ablauf des Zertifikats (`SetupStatus.paired_printers`). */
+  const piCertificates = new Map<string, { hostname: string; not_after: string }>();
+  if (scenarios.has("pi-cert-expiring")) {
+    piCertificates.set(PRINTER_IDS.cellar, { hostname: "stowly-pi", not_after: new Date(clock().getTime() + 20.5 * 86_400_000).toISOString() });
+  }
 
   // Einkaufsliste: was der Server selbst tut (siehe Kopf der Datei und `ServerEffect`).
   const serverEffects: ServerEffect[] = [];
@@ -1327,6 +1443,113 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     }, 40);
   }
 
+  // ---------------------------------------------------------------- Einrichtung
+
+  /** Meldet dieses Gerät an und gleicht ab, wie nach `session.login`. */
+  function signIn(name: string): void {
+    state.update((data) => ({
+      ...data,
+      devices: data.devices.map((device) => (device.current ? { ...device, name, last_seen_at: stamp() } : device)),
+    }));
+    session.set({ status: "signed_in", device: { id: DEVICE_IDS.current, name } });
+    finishSync();
+  }
+
+  /** Der Stand der Einrichtung (Protokoll 11.6): `ready` aus Sicht des Servers. */
+  function setupStatus(): SetupStatus {
+    const ready: Record<SetupStepId, boolean> = {
+      https: https.seen_at !== null,
+      printer: hasPrinter(),
+      updates: updates.configured,
+      notifications: pushContact !== null,
+    };
+    // Wie der Server: nur nicht gelöschte Drucker, früheste Ablaufzeit zuerst.
+    const printers = state.get().printers;
+    const paired = [...piCertificates]
+      .filter(([printerId]) => printers.some((printer) => printer.id === printerId && printer.deleted_at === null))
+      .map(([printerId, pi]) => ({ printer_id: printerId, hostname: pi.hostname, not_after: pi.not_after }))
+      .sort((a, b) => a.not_after.localeCompare(b.not_after));
+    return {
+      password_source: fromEnv ? "env" : "app",
+      steps: [...setupSteps].map(([id, step]) => ({ id, state: step.state, ready: ready[id], changed_at: step.changed_at })),
+      finished_at: setupFinishedAt,
+      paired_printers: paired,
+      https: { ...https, addresses: https.addresses.map((address) => ({ ...address })), origins: [...https.origins] },
+    };
+  }
+
+  /** Die Einstellungen des Servers (Protokoll 11.7) mit ihrer Quelle. */
+  function currentServerConfig(): ServerConfig {
+    return {
+      push: { contact: pushContact, source: pushContactSource },
+      update: { enabled: updates.configured, repo: UPDATE_REPO, source: updateSource, available: !fromEnv },
+    };
+  }
+
+  /** Eine Kopplung samt Ablauf der Frist; undefined, wenn es sie nicht gibt. */
+  function currentPairing(id: string): PiPairing | undefined {
+    const found = pairings.get(id);
+    if (found && (found.state === "waiting" || found.state === "installing") && Date.parse(found.expires_at) <= clock().getTime()) {
+      const expired: PiPairing = { ...found, state: "expired" };
+      pairings.set(id, expired);
+      return expired;
+    }
+    return found;
+  }
+
+  /** Die jüngste Kopplung, die noch auf den Pi wartet. */
+  function latestWaiting(): PiPairing | undefined {
+    return [...pairings.values()].reverse().find((pairing) => {
+      const current = currentPairing(pairing.id);
+      return current?.state === "waiting" || current?.state === "installing";
+    });
+  }
+
+  const inThirtyMinutes = () => new Date(clock().getTime() + 1_800_000).toISOString();
+
+  /** Der Pi meldet sich gleich nach dem Laden des Pakets: Er richtet sich ein. */
+  function startPi(id: string): void {
+    const pairing = currentPairing(id);
+    if (pairing?.state === "waiting") {
+      const pi = { hostname: MOCK_PI.hostname, addresses: [], model: null, printer_found: false, version: "0.3.0", not_after: null };
+      pairings.set(id, { ...pairing, state: "installing", expires_at: inThirtyMinutes(), pi });
+    }
+  }
+
+  /**
+   * Der Pi ist fertig: Der Server legt den direkten Drucker an oder gibt dem gewählten die neue
+   * Verbindung. Der Pi ist danach von hier aus erreichbar.
+   */
+  function completePi(id: string): void {
+    const pairing = currentPairing(id);
+    if (pairing?.state !== "waiting" && pairing?.state !== "installing") {
+      return;
+    }
+    const now = stamp();
+    const { hostname, address, model } = MOCK_PI;
+    const direct = { urls: [`https://${address}:8443`, `https://${hostname}.local:8443`, `http://${address}:8080`], token: `pi-token-${hostname}`, printer: null };
+    const printerId = pairing.printer_id ?? newUuid();
+    state.update((data) => {
+      const known = data.printers.some((printer) => printer.id === printerId);
+      const printers: Printer[] = known
+        ? data.printers.map((printer) => (printer.id === printerId ? { ...printer, direct, updated_at: now } : printer))
+        : [...data.printers, { id: printerId, name: model, connection: "direct", server: null, direct, created_at: now, updated_at: now, deleted_at: null }];
+      return { ...data, printers };
+    });
+    const notAfter = new Date(clock().getTime() + 825 * 86_400_000).toISOString();
+    pairings.set(id, { ...pairing, state: "paired", printer_id: printerId, pi: { hostname, addresses: [address], model, printer_found: true, version: "0.3.0", not_after: notAfter } });
+    piCertificates.set(printerId, { hostname, not_after: notAfter });
+    piReachable = true;
+  }
+
+  /** Mit Wartezeit (im Browser) meldet sich der Pi nach einer Weile von selbst und koppelt. */
+  function simulatePi(id: string): void {
+    if (latency > 0) {
+      later(() => startPi(id), 10);
+      later(() => completePi(id), 25);
+    }
+  }
+
   // ---------------------------------------------------------------- Die Schnittstelle
 
   const core: MockCore = {
@@ -1336,15 +1559,39 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         await wait();
         requireOnline();
         const name = checkDeviceName(deviceName);
-        if (password !== MOCK_PASSWORD) {
+        if (syncStatus.get().server_configured === false) {
+          throw new CoreError("not_configured", "Auf dem Server ist noch kein Haushalts-Passwort gesetzt.");
+        }
+        if (password !== householdPassword) {
           throw new CoreError("invalid_password", "Das Passwort stimmt nicht.");
         }
-        state.update((data) => ({
-          ...data,
-          devices: data.devices.map((device) => (device.current ? { ...device, name, last_seen_at: stamp() } : device)),
-        }));
-        session.set({ status: "signed_in", device: { id: DEVICE_IDS.current, name } });
-        finishSync();
+        signIn(name);
+      },
+      async createPassword(password, deviceName) {
+        // Wie im Kern: Gerätename und Länge ohne Anfrage.
+        const name = checkDeviceName(deviceName);
+        checkNewPassword(password);
+        await wait();
+        requireOnline();
+        if (syncStatus.get().server_configured !== false) {
+          syncStatus.update((status) => ({ ...status, server_configured: true }));
+          throw new CoreError("conflict", "Es gibt schon ein Haushalts-Passwort.");
+        }
+        householdPassword = password;
+        syncStatus.update((status) => ({ ...status, server_configured: true }));
+        signIn(name);
+      },
+      async changePassword(current, next) {
+        checkNewPassword(next);
+        await wait(0.5);
+        requireOnline();
+        if (fromEnv) {
+          throw new CoreError("conflict", "Das Passwort kommt aus der Umgebung (STOWLY_PASSWORD) und lässt sich nur dort ändern.");
+        }
+        if (current !== householdPassword) {
+          throw new CoreError("invalid_password", "Das bisherige Passwort stimmt nicht.");
+        }
+        householdPassword = next;
       },
       async logout(logoutOptions) {
         const pending = syncStatus.get().pending;
@@ -1984,6 +2231,55 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         deliverSoon();
         return { reachable: true, url: printer.direct?.urls[0] ?? null, health, problem: null, error: null };
       },
+      // Einen Pi koppeln (Protokoll 11.8), nachgespielt; siehe Kopf der Datei.
+      async pair(input) {
+        await wait(0.5);
+        requireOnline();
+        let origin: URL | null = null;
+        try {
+          origin = new URL(input.origin);
+        } catch {
+          origin = null;
+        }
+        if (!origin || (origin.protocol !== "http:" && origin.protocol !== "https:") || origin.origin !== input.origin) {
+          throw new CoreError("invalid", "Kein gültiger Ursprung.");
+        }
+        const printerId = input.printer_id ?? null;
+        const chosen = state.get().printers.find((printer) => printer.id === printerId && printer.deleted_at === null);
+        if (printerId !== null && chosen?.connection !== "direct") {
+          throw new CoreError("invalid", "Übernehmen lässt sich nur ein vorhandener direkter Drucker.");
+        }
+        for (const older of pairings.values()) {
+          if (older.state === "waiting" || older.state === "installing") {
+            pairings.set(older.id, { ...older, state: "cancelled" });
+          }
+        }
+        const letters = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        const plain = Array.from({ length: 8 }, () => letters[Math.floor(Math.random() * letters.length)]).join("");
+        const code = `${plain.slice(0, 4)}-${plain.slice(4)}`;
+        const pairing: PiPairing = { id: newUuid(), state: "waiting", code: null, command: null, expires_at: inThirtyMinutes(), printer_id: printerId, pi: null };
+        pairings.set(pairing.id, pairing);
+        simulatePi(pairing.id);
+        const http = origin.protocol === "http:" ? input.origin : `http://${origin.hostname}:${String(https.http_port ?? 8010)}`;
+        return { ...pairing, code, command: `curl -fsSL ${http}/api/pi/install.sh | sudo sh -s -- ${code}` };
+      },
+      async pairing(id) {
+        await wait(0.5);
+        requireOnline();
+        const found = currentPairing(id);
+        if (!found) {
+          throw new CoreError("not_found", "Die Kopplung gibt es nicht.");
+        }
+        return { ...found, pi: found.pi ? { ...found.pi, addresses: [...found.pi.addresses] } : null };
+      },
+      async cancelPairing(id) {
+        await wait(0.5);
+        requireOnline();
+        const found = currentPairing(id);
+        if (found && (found.state === "waiting" || found.state === "installing")) {
+          pairings.set(id, { ...found, state: "cancelled" });
+        }
+      },
     },
 
     print: {
@@ -2411,6 +2707,88 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
     },
 
+    // Einrichtung (docs/sync-protokoll.md, 11.6), nachgespielt: braucht den Server.
+    setup: {
+      async load() {
+        await wait(0.5);
+        requireOnline();
+        return setupStatus();
+      },
+      async update(changes) {
+        await wait(0.5);
+        requireOnline();
+        const addresses = changes.addresses;
+        const outside = addresses?.findIndex((address) => !HOME_ADDRESS.test(address)) ?? -1;
+        if (addresses && outside !== -1) {
+          const msg = "Die Adresse liegt nicht im Heimnetz.";
+          throw new CoreError("invalid", msg, { errors: [{ loc: ["body", "addresses", outside], msg, type: "value_error" }] });
+        }
+        const at = stamp();
+        if (changes.step) {
+          setupSteps.set(changes.step.id, { state: changes.step.state, changed_at: at });
+        }
+        if (changes.finished !== undefined) {
+          setupFinishedAt = changes.finished ? at : null;
+        }
+        if (changes.https_port !== undefined || addresses) {
+          const port = changes.https_port === undefined ? https.port : (changes.https_port ?? 8443);
+          const learned = https.addresses.filter((address) => address.source === "learned");
+          const all = addresses
+            ? [...learned, ...addresses.filter((address) => !learned.some((known) => known.address === address)).map((address) => ({ address, source: "manual" as const, in_certificate: true }))]
+            : https.addresses;
+          https = {
+            ...https,
+            port,
+            port_source: changes.https_port === undefined ? https.port_source : changes.https_port === null ? "default" : "manual",
+            addresses: all,
+            origins: https.enabled ? all.map((address) => `https://${address.address}:${String(port)}`) : [],
+          };
+        }
+        return setupStatus();
+      },
+      async reachesSecurely() {
+        await wait();
+        return secureTrusted && https.listening;
+      },
+    },
+
+    // Einstellungen des Servers (docs/integrationen.md, Abschnitt 12), nachgespielt: braucht den Server.
+    serverConfig: {
+      async load() {
+        await wait(0.5);
+        requireOnline();
+        return currentServerConfig();
+      },
+      async update(changes) {
+        // Wie im Kern: den Kontakt vorher prüfen; eine Adresse ohne mailto: bekommt es davor.
+        const contact = typeof changes.push_contact === "string" ? checkPushContact(changes.push_contact) : changes.push_contact;
+        await wait(0.5);
+        requireOnline();
+        if (contact !== undefined && pushContactSource === "env") {
+          throw new CoreError("conflict", "Der Kontakt kommt aus der Umgebung (STOWLY_PUSH_CONTACT).");
+        }
+        if (changes.update_enabled !== undefined && updateSource === "env") {
+          throw new CoreError("conflict", "Updates sind über STOWLY_UPDATE_REPO fest eingeschaltet.");
+        }
+        if (contact !== undefined) {
+          pushContact = contact;
+          pushContactSource = contact === null ? "default" : "app";
+          // Wie `push.serverChanged()` im Kern: Der Zustand folgt dem Kontakt.
+          const current = pushState.get();
+          if (contact === null && (current === "off" || current === "on" || current === "denied")) {
+            pushState.set("not_configured");
+          } else if (contact !== null && current === "not_configured") {
+            pushState.set("off");
+          }
+        }
+        if (changes.update_enabled !== undefined) {
+          updateSource = "app";
+          updates = { ...updates, configured: changes.update_enabled, repo: changes.update_enabled ? UPDATE_REPO : null };
+        }
+        return currentServerConfig();
+      },
+    },
+
     control: {
       setOnline(online: boolean) {
         syncStatus.update((status) => ({
@@ -2456,6 +2834,14 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
       setPushState(next: PushState) {
         pushState.set(next);
+        // Ohne Kontakt ist Push „nicht eingerichtet"; mit einem anderen Zustand gibt es einen.
+        if (next === "not_configured") {
+          pushContact = null;
+          pushContactSource = "default";
+        } else if (pushContact === null) {
+          pushContact = "mailto:haushalt@example.org";
+          pushContactSource = "app";
+        }
       },
       setPushPermission(permission: MockPushPermission) {
         pushPermission = permission;
@@ -2468,6 +2854,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           integrationChanges = {};
           haSetup = initialHa;
           updates = initialUpdates();
+          updateSource = fromEnv ? "env" : updates.configured ? "app" : "default";
           lastUpdateCheck = null;
           return;
         }
@@ -2482,6 +2869,24 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         haSetup = next;
         const { ha: _replaced, ...rest } = integrationChanges;
         integrationChanges = rest;
+      },
+      setSecureTrusted(trusted: boolean) {
+        secureTrusted = trusted;
+      },
+      setServerConfigured(configured: boolean) {
+        syncStatus.update((status) => ({ ...status, server_configured: configured }));
+      },
+      completePairing(id?: string) {
+        const target = id ?? latestWaiting()?.id;
+        if (target !== undefined) {
+          completePi(target);
+        }
+      },
+      expirePairing(id?: string) {
+        const target = currentPairing(id ?? latestWaiting()?.id ?? "");
+        if (target && (target.state === "waiting" || target.state === "installing")) {
+          pairings.set(target.id, { ...target, state: "expired", expires_at: new Date(clock().getTime() - 1).toISOString() });
+        }
       },
       snapshot() {
         return state.get();

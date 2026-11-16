@@ -59,6 +59,10 @@ describe("Nach Updates suchen", () => {
       check_error: null,
       updater_ready: true,
       updater_seen_at: clock.now().toISOString(),
+      // Ohne Angabe der Art gilt der Updater als Skript (docs/integrationen.md, 10.4).
+      updater_kind: "script",
+      updater_version: null,
+      updater_command: null,
       state: "idle",
       state_version: null,
       state_at: null,
@@ -99,7 +103,7 @@ describe("Nach Updates suchen", () => {
     const plain = await signedIn();
     expect((await plain.core.integrations.load()).update).toMatchObject({ configured: false, repo: null, current: "0.1.0", latest: null, available: false, state: "idle" });
     const error = await expectCoreError(plain.core.update.check(), "not_configured");
-    expect(error.message).toBe("Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+    expect(error.message).toBe("Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung.");
     expect(error.details.status).toBe(503);
     expect(value(plain.core.sync.status).online).toBe(true);
   });
@@ -159,7 +163,7 @@ describe("Update anfordern", () => {
   it("braucht eingerichtete Updates", async () => {
     const harness = await signedIn();
     const error = await expectCoreError(harness.core.update.install("0.2.0"), "not_configured");
-    expect(error.message).toBe("Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+    expect(error.message).toBe("Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung.");
   });
 });
 

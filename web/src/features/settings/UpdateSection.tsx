@@ -1,12 +1,25 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
-import { formatDate, formatTimestamp, isCoreError, toLocalDate, UPDATE_CHECK_INTERVAL_S, UPDATE_CHECK_MIN_GAP_S, useCore, type CoreError, type UpdateStatus } from "@/contract";
+import {
+  formatDate,
+  formatTimestamp,
+  isCoreError,
+  toLocalDate,
+  UPDATE_CHECK_INTERVAL_S,
+  UPDATE_CHECK_MIN_GAP_S,
+  useCore,
+  type CoreError,
+  type ServerConfig,
+  type UpdateConfig,
+  type UpdateStatus,
+} from "@/contract";
 import { ConfirmDialog, errorText, List, ListRow, Notice, Section, timeAgo, useNow, type NoticeTone } from "@/ui";
-import { Badge, Button, Spinner, useToast, type ToastTone } from "@/ui/base";
+import { Badge, Button, Spinner, Switch, useToast, type ToastTone } from "@/ui/base";
 import { ChevronDownIcon, ChevronUpIcon, CircleCheckIcon, CloudOffIcon, DownloadIcon, ExternalLinkIcon, HourglassIcon, InfoIcon, RefreshIcon, WarningIcon } from "@/ui/icons";
 
 import { durationText, everyText } from "./HomeAssistantSection";
 import type { IntegrationsState } from "./integrations";
+import type { LoadedResource } from "./loaded";
 import { useSecondsLeft } from "./PushSetting";
 import styles from "./SettingsPage.module.css";
 
@@ -17,8 +30,23 @@ export const UPDATE_POLL_MS = 10_000;
 export const INSTALL_WARNING =
   "Stowly ist etwa ein bis zwei Minuten nicht erreichbar. Vorher sichert der Rechner die Datenbank; startet die neue Version nicht, kehrt er zur alten zurück.";
 
-const NOT_CONFIGURED = "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).";
+/** Der Satz des Servers, wenn Updates aus sind (docs/integrationen.md, 10.5). */
+const NOT_CONFIGURED = "Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung.";
 const NO_UPDATER = "Der Updater auf dem Rechner meldet sich nicht. Anleitung: docs/betrieb.md, Abschnitt 9.";
+
+/**
+ * Was unter dem Schalter „Nach neuen Versionen suchen" steht (`ServerConfig.update`,
+ * docs/integrationen.md 12): ob er wirkt und woher der Wert kommt.
+ */
+export function updateSwitchHint(update: UpdateConfig): string {
+  if (update.source === "env") {
+    return "Fest eingeschaltet über STOWLY_UPDATE_REPO und nur dort änderbar.";
+  }
+  if (!update.available) {
+    return "Dieses Image kennt kein Repository für Updates.";
+  }
+  return update.enabled ? `An: Der Server fragt GitHub regelmäßig nach neuen Versionen${update.repo ? ` (${update.repo})` : ""}.` : "Aus: Der Server fragt GitHub nicht nach neuen Versionen.";
+}
 
 /** Wie oft der Server von selbst bei GitHub fragt (`UPDATE_CHECK_INTERVAL_S`): „alle 6 Stunden". */
 export function checkIntervalText(seconds: number = UPDATE_CHECK_INTERVAL_S): string {
@@ -160,8 +188,10 @@ interface CheckMessage {
  * `UPDATE_POLL_MS` neu, aber nur, solange er zu sehen ist. Antwortet der Server dabei nicht,
  * startet er gerade neu. Wechsel des Stands sagt eine Statuszeile für Screenreader an.
  */
-export function UpdateSection({ integrations, onReload }: { integrations: IntegrationsState; onReload: () => void }) {
+export function UpdateSection({ integrations, onReload, serverConfig }: { integrations: IntegrationsState; onReload: () => void; serverConfig: LoadedResource<ServerConfig> }) {
   const core = useCore();
+  const config = serverConfig.state.status === "ready" ? serverConfig.state.value : null;
+  const [toggling, setToggling] = useState(false);
   const toast = useToast();
   const now = useNow();
   const notesId = useId();
@@ -242,6 +272,19 @@ export function UpdateSection({ integrations, onReload }: { integrations: Integr
     }
   }
 
+  /** Der Schalter „Nach neuen Versionen suchen": wirkt ohne Neustart; danach gilt der neue Zustand der Updates. */
+  async function toggle(enabled: boolean) {
+    setToggling(true);
+    try {
+      serverConfig.set(await core.serverConfig.update({ update_enabled: enabled }));
+      onReload();
+    } catch (caught) {
+      toast.show({ message: errorText(caught, { offline: "Zum Umschalten braucht es den Server, und der ist gerade nicht erreichbar." }), tone: "danger" });
+    } finally {
+      setToggling(false);
+    }
+  }
+
   async function install() {
     const version = known?.latest ?? null;
     if (version === null) {
@@ -299,7 +342,7 @@ export function UpdateSection({ integrations, onReload }: { integrations: Integr
   } else if (!known.configured) {
     body = (
       <List>
-        <ListRow label="Installierte Version" hint={NOT_CONFIGURED} inline>
+        <ListRow label="Installierte Version" hint={config ? undefined : "Updates sind auf diesem Server aus."} inline>
           <span className={styles.value}>{known.current}</span>
         </ListRow>
       </List>
@@ -402,6 +445,19 @@ export function UpdateSection({ integrations, onReload }: { integrations: Integr
       <p className="sr-only" role="status">
         {announcement}
       </p>
+      {config ? (
+        <List>
+          <div className={styles.switchRow}>
+            <Switch
+              label="Nach neuen Versionen suchen"
+              hint={updateSwitchHint(config.update)}
+              checked={config.update.enabled}
+              disabled={toggling || config.update.source === "env" || !config.update.available}
+              onChange={(enabled) => void toggle(enabled)}
+            />
+          </div>
+        </List>
+      ) : null}
       {body}
       {message ? (
         <Notice tone={message.tone} title={message.title} role="status">

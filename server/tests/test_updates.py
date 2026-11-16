@@ -281,6 +281,9 @@ def test_the_query_asks_github_like_the_contract_says(bench):
         "check_error": None,
         "updater_ready": False,
         "updater_seen_at": None,
+        "updater_kind": None,
+        "updater_version": None,
+        "updater_command": None,
         "state": "idle",
         "state_version": None,
         "state_at": None,
@@ -789,14 +792,13 @@ def test_the_state_never_shows_paths_or_the_log(bench):
 
 def test_without_a_repo_check_and_install_are_503(client):
     device = Device(client, "Handy")
-    message = "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO)."
+    message = "Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung."
     for path, body in (("/api/update/check", None), ("/api/update/install", {"version": NEWER})):
         response = client.post(path, json=body, headers=device.headers)
         assert response.status_code == 503, path
         assert response.json() == {"error": {"code": "not_configured", "message": message, "details": None}}
         # Ohne Geräte-Token zuerst 401.
         assert client.post(path, json=body).status_code == 401
-    assert client.app.state.updates is None
 
 
 def test_without_a_token_401(bench):
@@ -971,13 +973,20 @@ def test_a_failure_at_github_is_no_failure_of_the_button(bench):
 # --- Die Schleife ------------------------------------------------------------------------------
 
 
-def test_the_loop_runs_only_with_a_repo(settings, configured):
-    app = create_app(settings)
+def test_the_loop_runs_always_and_asks_only_with_a_repo(settings, configured):
+    """Die Schleife läuft immer (der Schalter in der App weckt sie, docs/integrationen.md, 12); ohne
+    Repository fragt sie nie."""
+    github, clock = GitHub(), StepClock()
+    app = make_app(settings, github, clock)
     with TestClient(app):
-        assert app.state.updates is None
+        assert isinstance(app.state.updates, updates.UpdateChecker)
+        clock.advance(UPDATE_CHECK_FIRST_S + SIX_HOURS)
+        time.sleep(0.1)
+        assert clock.sleeps == 0  # sie wartet auf den Schalter, nicht auf die Uhr
+    assert app.state.updates is None
+    assert github.requests == []
     assert settings.update_dir.is_dir()  # angelegt auch ohne Repository: Der Updater findet ihn vor
 
-    github = GitHub()
     app = make_app(configured, github, FrozenClock())
     with TestClient(app):
         assert isinstance(app.state.updates, updates.UpdateChecker)

@@ -29,7 +29,7 @@ export function readTime(text: string): string {
  * Was unter der Uhrzeit steht: wann die Nachricht kommt, an wen und nur bei Neuem; wann sie
  * ausfällt (docs/integrationen.md, 1.4 und 4.8). Die Uhrzeit gilt in der Zeitzone des Servers;
  * weicht sie von der des Geräts ab, steht sie dabei.
- * @param pushConfigured ob der Server für Push eingerichtet ist; null = unbekannt
+ * @param pushConfigured ob der Server für Push eingerichtet ist (einen Kontakt für die Push-Dienste hat); null = unbekannt
  */
 export function notifyTimeHint(time: string, serverZone: string | null, pushConfigured: boolean | null, deviceZone: string = deviceTimeZone()): string {
   const zone = otherTimeZone(serverZone, deviceZone);
@@ -42,7 +42,10 @@ export function notifyTimeHint(time: string, serverZone: string | null, pushConf
       : "War der Server zu dieser Zeit aus, kommt sie höchstens eine Stunde später und nicht nach Mitternacht.",
   ];
   if (pushConfigured === false) {
-    parts.push("Der Server ist noch nicht für Benachrichtigungen eingerichtet (STOWLY_PUSH_CONTACT): Bis dahin kommt keine.");
+    // Der Kontakt geht auch in der App (docs/integrationen.md, 12), nicht nur über STOWLY_PUSH_CONTACT.
+    parts.push(
+      "Der Server hat noch keine Kontakt-Adresse für die Push-Dienste: Bis dahin kommt keine. Eintragen lässt sie sich unter „Einrichtung und Zugang“ oder im Schritt „Benachrichtigungen“ der Einrichtung.",
+    );
   }
   return parts.join(" ");
 }

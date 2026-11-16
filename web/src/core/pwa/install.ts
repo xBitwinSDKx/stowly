@@ -5,8 +5,9 @@
  * Installation anbieten würde. Die App hält das Ereignis fest und zeigt die Aufforderung erst,
  * wenn der Anwender es will (`promptInstall`).
  *
- * iPhone und iPad: Dort gibt es keine Aufforderung. Die App erkennt das Gerät und sagt der
- * Oberfläche, dass sie die Anleitung zeigen soll („Teilen", dann „Zum Home-Bildschirm").
+ * iPhone und iPad: Dort gibt es keine Aufforderung. Die App erkennt das Gerät (`isAppleMobile`,
+ * src/contract/platform.ts) und sagt der Oberfläche, dass sie die Anleitung zeigen soll
+ * („Teilen", dann „Zum Home-Bildschirm").
  */
 
 interface InstallPromptEvent extends Event {
@@ -71,19 +72,4 @@ export class InstallPrompt {
       cleanup();
     }
   }
-}
-
-/**
- * iPhone, iPad oder iPod. iPadOS gibt sich als Mac aus; verraten wird es durch den
- * Touchscreen, den ein Mac nicht hat.
- */
-export function isAppleMobile(nav: { userAgent?: string; platform?: string; maxTouchPoints?: number } | undefined): boolean {
-  if (!nav) {
-    return false;
-  }
-  const agent = nav.userAgent ?? "";
-  if (/iPhone|iPad|iPod/.test(agent)) {
-    return true;
-  }
-  return (nav.platform === "MacIntel" || /Macintosh/.test(agent)) && (nav.maxTouchPoints ?? 0) > 1;
 }

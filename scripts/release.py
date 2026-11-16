@@ -5,9 +5,10 @@
     python scripts/release.py --check 0.3.0   prüfen, dass überall 0.3.0 steht (für GitHub Actions)
     python scripts/release.py --notes 0.3.0   den Abschnitt "## 0.3.0" aus CHANGELOG.md ausgeben
 
-Die Nummer steht an fünf Stellen: server/stowly/__init__.py, server/pyproject.toml,
-print/pyproject.toml, web/package.json und web/package-lock.json (zweimal). Sie ist SemVer ohne
-Zusatz; ein Tag mit Zusatz (v0.3.0-rc.1) ist eine Vorabversion derselben Nummer. Nur Standardbibliothek.
+Die Nummer steht an sechs Stellen: server/stowly/__init__.py, print/stowly_print/__init__.py (der Pi
+schickt sie beim Koppeln mit), server/pyproject.toml, print/pyproject.toml, web/package.json und
+web/package-lock.json (zweimal). Sie ist SemVer ohne Zusatz; ein Tag mit Zusatz (v0.3.0-rc.1) ist eine
+Vorabversion derselben Nummer. Nur Standardbibliothek.
 """
 
 import argparse
@@ -21,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 CHANGELOG = ROOT / "CHANGELOG.md"
 INIT = ROOT / "server" / "stowly" / "__init__.py"
+PRINT_INIT = ROOT / "print" / "stowly_print" / "__init__.py"
+INITS = (INIT, PRINT_INIT)
 PYPROJECTS = (ROOT / "server" / "pyproject.toml", ROOT / "print" / "pyproject.toml")
 PACKAGE = ROOT / "web" / "package.json"
 LOCK = ROOT / "web" / "package-lock.json"
@@ -42,8 +45,9 @@ def _write(path: Path, text: str) -> None:
 def found() -> dict[str, str]:
     """Die Nummer an jeder Stelle, so wie sie dort steht."""
     numbers: dict[str, str] = {}
-    match = _INIT_LINE.search(_read(INIT))
-    numbers[str(INIT.relative_to(ROOT))] = match.group(1) if match else "?"
+    for path in INITS:
+        match = _INIT_LINE.search(_read(path))
+        numbers[str(path.relative_to(ROOT))] = match.group(1) if match else "?"
     for path in PYPROJECTS:
         match = _PYPROJECT_LINE.search(_read(path))
         numbers[str(path.relative_to(ROOT))] = match.group(1) if match else "?"
@@ -78,7 +82,8 @@ def set_version(version: str) -> None:
             raise SystemExit(f"{path.relative_to(ROOT)}: Versionszeile nicht gefunden.")
         return new
 
-    _write(INIT, replace_once(_INIT_LINE, _read(INIT), f'__version__ = "{version}"', INIT))
+    for path in INITS:
+        _write(path, replace_once(_INIT_LINE, _read(path), f'__version__ = "{version}"', path))
     for path in PYPROJECTS:
         _write(path, replace_once(_PYPROJECT_LINE, _read(path), f'version = "{version}"', path))
     _write(PACKAGE, replace_once(_JSON_LINE, _read(PACKAGE), rf"\g<1>{version}\g<3>", PACKAGE))

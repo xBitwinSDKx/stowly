@@ -1,19 +1,22 @@
 import { useEffect, useState } from "react";
 
-import { formatBuild, isTimeOfDay, ROUTES, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
+import { formatBuild, isTimeOfDay, ROUTES, setupPath, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
 import { useLogout } from "@/features/auth/logout";
 import { errorText, List, ListLink, ListRow, plural, Section } from "@/ui";
-import { Button, cx, SegmentedControl, Switch, TextField, useToast } from "@/ui/base";
-import { InstallIcon, LogOutIcon, PrinterIcon, ShareIcon, ZonesIcon } from "@/ui/icons";
+import { Button, ButtonLink, cx, SegmentedControl, Switch, TextField, useToast } from "@/ui/base";
+import { InstallIcon, LockOpenIcon, LogOutIcon, PrinterIcon, ZonesIcon } from "@/ui/icons";
 import { ACCENTS, setAccent, setTheme, useTheme, type AccentKey, type ThemeChoice } from "@/ui/theme";
 
 import { BackupSection } from "./BackupSection";
 import { DevicesSection } from "./DevicesSection";
 import { HomeAssistantSection } from "./HomeAssistantSection";
 import { useIntegrations } from "./integrations";
+import { IosInstallSteps } from "./IosInstallSteps";
+import { useLoaded } from "./loaded";
 import { DEFAULT_NOTIFY_TIME, NotifyTimeSetting } from "./NotifyTimeSetting";
 import { PushSetting } from "./PushSetting";
+import { SetupSection } from "./SetupSection";
 import styles from "./SettingsPage.module.css";
 import { UpdateSection } from "./UpdateSection";
 
@@ -106,6 +109,9 @@ function AccentPicker({ value }: { value: AccentKey }) {
   );
 }
 
+/** Der Wert der Zeile „Verbindung" über eine unverschlüsselte Adresse: Dort führt „Einrichten" zur sicheren Verbindung. */
+const HTTP_VALUE = "http (eingeschränkt)";
+
 /** Was eine Zeile der Einstellungen rechts zeigt und darunter erklärt. */
 export interface RowText {
   value: string;
@@ -136,7 +142,7 @@ export function describeConnection(location: Pick<Location, "protocol" | "hostna
     };
   }
   return {
-    value: "http (eingeschränkt)",
+    value: HTTP_VALUE,
     hint: secureContext === true ? "Unverschlüsselte Adresse. Für Handys im Haushalt braucht es die HTTPS-Adresse von Stowly." : `Unverschlüsselte Adresse. ${restricted} Die HTTPS-Adresse von Stowly hebt das auf.`,
   };
 }
@@ -158,9 +164,10 @@ export function describeLookup(enabled: boolean | null | undefined): RowText {
 /**
  * Einstellungen nach dem Entwurf: eine Liste aus Zeilen mit dem Bedienelement rechts,
  * gegliedert in Darstellung, dieses Gerät (samt Benachrichtigungen), Haushalt (samt der Uhrzeit
- * der Tagesnachricht), Geräte, Sicherung, Home Assistant und Bring!, Aktualisierung, diese App
- * und Über. Solange die Ansicht offen ist, lädt sie den Zustand der Integrationen vom Server
- * (Sicherung, Home Assistant, Push, Updates).
+ * der Tagesnachricht), Geräte, Einrichtung und Zugang, Sicherung, Home Assistant und Bring!,
+ * Aktualisierung, diese App und Über. Solange die Ansicht offen ist, lädt sie den Zustand der
+ * Integrationen (Sicherung, Home Assistant, Push, Updates) und die Einstellungen des Servers
+ * (Kontakt für Push, Schalter für Updates).
  */
 export function SettingsPage() {
   const core = useCore();
@@ -175,6 +182,7 @@ export function SettingsPage() {
   const session = useLive(core.session.state);
   const { theme, accent } = useTheme();
   const integrations = useIntegrations();
+  const serverConfig = useLoaded(() => core.serverConfig.load(), "Die Einstellungen des Servers kennt nur er, und er ist gerade nicht erreichbar.");
   const [installing, setInstalling] = useState(false);
   const [persisting, setPersisting] = useState(false);
 
@@ -329,11 +337,13 @@ export function SettingsPage() {
 
       <DevicesSection />
 
+      <SetupSection serverConfig={serverConfig} />
+
       <BackupSection integrations={integrations.state} onReload={integrations.reload} />
 
       <HomeAssistantSection integrations={integrations.state} onReload={integrations.reload} />
 
-      <UpdateSection integrations={integrations.state} onReload={integrations.reload} />
+      <UpdateSection integrations={integrations.state} onReload={integrations.reload} serverConfig={serverConfig} />
 
       <Section title="Diese App" id="app" description="Installation und Speicher auf diesem Gerät.">
         <List>
@@ -353,15 +363,7 @@ export function SettingsPage() {
               hint="Ohne Installation löscht Safari die lokalen Daten nach sieben Tagen ohne Nutzung. Installiert bleiben sie erhalten."
               stacked
             >
-              <ol className={styles.steps}>
-                <li>
-                  In Safari unten auf <ShareIcon size={16} aria-hidden="true" /> <strong>Teilen</strong> tippen.
-                </li>
-                <li>
-                  <strong>Zum Home-Bildschirm</strong> wählen und mit „Hinzufügen“ bestätigen.
-                </li>
-                <li>Stowly künftig über das neue Symbol starten und dort einmal anmelden.</li>
-              </ol>
+              <IosInstallSteps />
             </ListRow>
           ) : (
             <ListRow
@@ -407,6 +409,11 @@ export function SettingsPage() {
           </ListRow>
           <ListRow label="Verbindung" hint={connection.hint}>
             <span className={styles.value}>{connection.value}</span>
+            {connection.value === HTTP_VALUE ? (
+              <ButtonLink to={setupPath("https")} icon={<LockOpenIcon />}>
+                Einrichten
+              </ButtonLink>
+            ) : null}
           </ListRow>
           <ListRow label="Produktdaten" hint={lookup.hint}>
             <span className={styles.value}>{lookup.value}</span>

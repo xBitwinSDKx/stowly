@@ -73,6 +73,7 @@ describe("App", () => {
       [ROUTES.scan]: "Scannen",
       [ROUTES.shopping]: "Einkaufsliste",
       [ROUTES.stats]: "Statistik",
+      [ROUTES.setup]: "Einrichtung",
     };
     // Jede Adresse hat hier einen Titel: Eine neue Ansicht fehlt sonst in diesem Test.
     expect(Object.keys(titles).sort()).toEqual(Object.values(ROUTES).sort());

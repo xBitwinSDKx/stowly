@@ -25,8 +25,8 @@ it("lässt ohne STOWLY_PASSWORD niemanden herein und sagt es", async () => {
   expect(value(device.core.session.state)).toEqual({ status: "signed_out", reason: "never", last_device_name: null });
   // Der Server ist erreichbar, nur nicht eingerichtet.
   expect(device.status.online).toBe(true);
-  // Die Hinweise auf der Konsole nennen den Grund.
-  expect(server.output()).toContain("STOWLY_PASSWORD ist nicht gesetzt");
+  // Die Hinweise auf der Konsole nennen den Grund: Wer Stowly jetzt öffnet, vergibt das Passwort (setup.e2e.test.ts).
+  expect(server.output()).toContain("Noch kein Passwort");
 });
 
 it("meldet mit dem Passwort aus STOWLY_PASSWORD an; die API-Dokumentation gibt es nur beim Entwickeln", async () => {

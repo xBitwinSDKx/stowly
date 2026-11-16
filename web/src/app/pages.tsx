@@ -11,8 +11,8 @@ import { PageLoading } from "./Page";
  * kein Wechsel der Ansicht warten muss und auch ohne Service Worker (http-Adresse) nichts fehlt,
  * wenn der Server später nicht mehr erreichbar ist.
  */
-export interface LazyPage {
-  (): ReactNode;
+export interface LazyPage<P extends object = object> {
+  (props: P): ReactNode;
   /** Holt die Ansicht vorab. Danach zeichnet sie sofort, ohne Ladeanzeige. */
   preload(): Promise<void>;
 }
@@ -26,8 +26,8 @@ export interface LazyPage {
  * eintrifft, bis zu 300 Millisekunden zurück, damit nichts flackert. Beim Start der App hieße
  * das, der Bestand erschiene eine gute Viertelsekunde später, obwohl sein Teil längst da ist.
  */
-export function lazyPage(load: () => Promise<ComponentType>): LazyPage {
-  let Loaded: ComponentType | null = null;
+export function lazyPage<P extends object = object>(load: () => Promise<ComponentType<P>>): LazyPage<P> {
+  let Loaded: ComponentType<P> | null = null;
   let failure: { error: unknown } | null = null;
   let pending: Promise<void> | null = null;
   /** Gezeichnete Ansichten, die auf das Laden warten. */
@@ -58,7 +58,7 @@ export function lazyPage(load: () => Promise<ComponentType>): LazyPage {
     return pending;
   }
 
-  function Page() {
+  function Page(props: P) {
     const [, update] = useReducer((count: number) => count + 1, 0);
     // Ein Fehlschlag, den die Ansicht beim Aufruf schon vorfindet (etwa beim Vorabholen ohne
     // Netz), gilt ihr nicht: Sie versucht es noch einmal, statt gleich den alten Fehler zu zeigen.
@@ -81,7 +81,7 @@ export function lazyPage(load: () => Promise<ComponentType>): LazyPage {
     }, [settled, earlier]);
 
     if (Loaded) {
-      return <Loaded />;
+      return <Loaded {...props} />;
     }
     if (failure !== null && failure !== earlier) {
       throw failure.error;
@@ -101,6 +101,13 @@ export const SettingsPage = lazyPage(() => import("@/features/settings").then((m
 export const SyncPage = lazyPage(() => import("@/features/sync").then((module) => module.SyncPage));
 export const ShoppingPage = lazyPage(() => import("@/features/shopping").then((module) => module.ShoppingPage));
 export const StatsPage = lazyPage(() => import("@/features/stats").then((module) => module.StatsPage));
+/**
+ * Die Einrichtung: der Assistent und die Willkommensseite vor dem ersten Passwort, aus einem Modul
+ * und damit ein Teil der App. Er wird nicht vorab geholt (`preloadPages`): Die meisten Starts
+ * brauchen ihn nie, und er bringt die Bibliothek für QR-Codes mit.
+ */
+export const SetupPage = lazyPage(() => import("@/features/setup").then((module) => module.SetupPage));
+export const FirstRunPage = lazyPage<{ onFirstRun?: () => void }>(() => import("@/features/setup").then((module) => module.FirstRunPage));
 
 const BY_PATH: Readonly<Record<string, LazyPage>> = {
   [ROUTES.stock]: StockPage,
@@ -116,6 +123,9 @@ const BY_PATH: Readonly<Record<string, LazyPage>> = {
 
 const ALL: readonly LazyPage[] = Object.values(BY_PATH);
 
+/** Ansichten mit Unterseiten (/einrichtung/drucker): Sie gelten für jede Adresse unter ihrem Präfix. */
+const BY_PREFIX: readonly (readonly [string, LazyPage])[] = [[ROUTES.setup, SetupPage]];
+
 /** Holt alle Ansichten vorab. Scheitert eine (kein Netz), bleibt es beim Nachladen, wenn sie gebraucht wird. */
 export function preloadPages(): Promise<void> {
   return Promise.allSettled(ALL.map((page) => page.preload())).then(() => undefined);
@@ -127,7 +137,8 @@ export function preloadPages(): Promise<void> {
  * zwei Ladevorgänge hintereinander. Scheitert es, lädt React die Ansicht wie sonst auch nach.
  */
 export function preloadPage(pathname: string): void {
-  BY_PATH[pathname]?.preload().catch(() => undefined);
+  const page = BY_PATH[pathname] ?? BY_PREFIX.find(([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`))?.[1];
+  page?.preload().catch(() => undefined);
 }
 
 // Schon beim Laden dieses Moduls, also noch während das Hauptpaket ausgewertet wird.

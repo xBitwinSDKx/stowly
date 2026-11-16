@@ -66,6 +66,21 @@ def test_openapi_lists_every_endpoint_and_command():
         # Updates über GitHub
         ("POST", "/api/update/check"),
         ("POST", "/api/update/install"),
+        # Einrichtung
+        ("POST", "/api/auth/password"),
+        ("POST", "/api/setup/password"),
+        ("GET", "/api/setup"),
+        ("PATCH", "/api/setup"),
+        ("GET", "/api/setup/ca.crt"),
+        ("GET", "/api/server-config"),
+        ("PATCH", "/api/server-config"),
+        ("POST", "/api/pi/pairings"),
+        ("GET", "/api/pi/pairings/{pairing_id}"),
+        ("DELETE", "/api/pi/pairings/{pairing_id}"),
+        ("POST", "/api/pi/pair/start"),
+        ("POST", "/api/pi/pair"),
+        ("GET", "/api/pi/install.sh"),
+        ("GET", "/api/pi/bundle.tar.gz"),
     }
     mapping = document["components"]["schemas"]["Command"]["discriminator"]["mapping"]
     assert sorted(mapping) == sorted(COMMAND_TYPES)

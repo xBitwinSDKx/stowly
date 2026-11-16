@@ -6,8 +6,9 @@ Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar mach
 
 ## 1. Überblick
 
-- Stowly läuft als **ein Container mit einem Prozess**. Er liefert die Web-App und die Schnittstelle auf Port 8010 und spricht nur HTTP.
-- **HTTPS stellt ein Reverse Proxy davor bereit.** Beschrieben sind zwei Wege: Nginx Proxy Manager mit eigener Zertifizierungsstelle (Abschnitt 4) und Tailscale (Abschnitt 5). Auf einer Synology übernimmt das der Reverse Proxy von DSM (Abschnitt 4.4).
+- Stowly läuft als **ein Container mit einem Prozess**. Er liefert die Web-App und die Schnittstelle auf Port 8010 über HTTP und seit 0.3.0 dieselbe App auf Port 8443 über HTTPS, mit einer eigenen Zertifizierungsstelle (Abschnitt 20).
+- **Am einfachsten** legt man den Container per Mausklick in der Docker-Oberfläche des NAS an und richtet alles Weitere im Einrichtungsassistenten der App ein: Passwort, Zertifikat, Raspberry Pi, Updates, Benachrichtigungen (Abschnitt 19). Eine Kommandozeile braucht es dafür nicht.
+- **Alternativ stellt ein Reverse Proxy HTTPS davor bereit.** Beschrieben sind Nginx Proxy Manager mit eigener Zertifizierungsstelle (Abschnitt 4), der Reverse Proxy von Synology DSM (Abschnitt 4.4) und Tailscale (Abschnitt 5). Der Weg mit Docker Compose und `.env` (Abschnitt 3) bleibt für Rechner mit Kommandozeile.
 - **Offline-Betrieb, Kamera und die Installation als App gehen nur über die HTTPS-Adresse** (Abschnitt 6).
 - Alle Daten liegen in **einer SQLite-Datei** in einem Docker-Volume (Abschnitt 10).
 
@@ -19,7 +20,8 @@ Anleitung für den Betreiber einer Stowly-Installation: starten, erreichbar mach
 | Docker Engine mit Compose-Plugin (`docker compose version` zeigt Version 2 oder neuer) | Bau und Betrieb des Containers |
 | Internet beim Bauen | lädt die Basis-Images und die Pakete von npm und PyPI (von PyPI nur Dateien, die auf Version und Prüfsumme festgelegt sind, Abschnitt 9.1) |
 | etwa 1 GB Plattenplatz für den Bau, danach wenige hundert MB | Images; die Datenbank selbst bleibt klein |
-| ein Reverse Proxy mit HTTPS: Nginx Proxy Manager **oder** Tailscale **oder** der von Synology DSM | siehe Abschnitte 4, 4.4 und 5 |
+| HTTPS: Stowly selbst mit eigener Zertifizierungsstelle (Abschnitt 20) **oder** ein Reverse Proxy (Nginx Proxy Manager, Synology DSM, Tailscale) | siehe Abschnitte 4, 4.4, 5 und 20 |
+| eine feste IP-Adresse des NAS im Heimnetz (im Router einstellen) | Zertifikat und Adresse der App hängen daran (Abschnitt 6) |
 | im Betrieb optional Internet | für das Nachschlagen bei Open Food Facts und für Benachrichtigungen (die Push-Dienste von Apple, Google, Mozilla und Microsoft, Abschnitt 15) |
 | für die automatische Sicherung: `age` auf einem eigenen Rechner | Schlüssel erzeugen und Sicherungen öffnen (Abschnitt 8.1); auf dem Server nicht nötig |
 | optional Home Assistant mit der Integration Bring! | die Einkaufsliste in Bring! (Abschnitt 17) und der Sensor mit Ansage (Abschnitt 18) |
@@ -46,14 +48,16 @@ Die Einstellungen stehen in `.env` und sind dort beschrieben ([`.env.example`](.
 
 | Variable | Bedeutung |
 |---|---|
-| `STOWLY_PASSWORD` | Haushalts-Passwort. **Pflicht.** Ohne Passwort startet der Server, aber niemand kann sich anmelden (`"configured": false`). |
+| `STOWLY_PASSWORD` | Haushalts-Passwort. Ist es gesetzt, gilt es und lässt sich in der App nicht ändern. Leer: Das erste Passwort vergibt, wer die App zuerst öffnet (Abschnitt 19); bis dahin meldet der Server `"configured": false`. |
 | `STOWLY_OFF_ENABLED` | `1`: unbekannte Barcodes bei Open Food Facts nachschlagen (höchstens 10 Abfragen je Minute). `0`: nie. |
 | `STOWLY_OFF_CONTACT` | freiwilliger Kontakt im `User-Agent` gegenüber Open Food Facts |
 | `STOWLY_LOG_LEVEL` | `info` (Vorgabe), `debug`, `warning` … |
 | `STOWLY_CSP` | Content-Security-Policy der Web-App: leer = vorsichtige Vorgabe, `off` = keine, sonst der angegebene Wert (Abschnitt 13) |
 | `STOWLY_TIMEZONE` | Zeitzone für „heute" und alle Uhrzeiten, Vorgabe `Europe/Berlin` (Abschnitt 16) |
 | `STOWLY_BACKUP_DIR`, `STOWLY_BACKUP_RECIPIENTS`, `STOWLY_BACKUP_TIME` | automatische, verschlüsselte Sicherung: Ordner im Container (`/backups`), öffentliche age-Schlüssel, Uhrzeit (Vorgabe `03:30`) (Abschnitt 8.1) |
-| `STOWLY_PUSH_CONTACT` | Absender für Benachrichtigungen, `mailto:<Adresse>` oder eine `https://`-Adresse; leer = kein Push (Abschnitt 15) |
+| `STOWLY_PUSH_CONTACT` | Absender für Benachrichtigungen, `mailto:<Adresse>` oder eine `https://`-Adresse; leer = Kontakt aus der App, sonst kein Push (Abschnitt 15) |
+| `STOWLY_UPDATE_REPO` | Updates über GitHub immer an (Abschnitt 9.2); leer = Schalter in der App |
+| `STOWLY_HTTPS_PORT` | Port des HTTPS-Listeners im Container; im Image `8443`. Veröffentlicht wird er nur über `docker-compose.override.yml` (Abschnitt 20) |
 | `STOWLY_HA_URL`, `STOWLY_HA_TOKEN`, `STOWLY_HA_TODO_ENTITY`, `STOWLY_HA_CA` | Einkaufsliste nach Bring! über Home Assistant: Adresse, Token, To-do-Liste, eigene Zertifizierungsstelle; leer = kein Bring! (Abschnitt 17) |
 | `STOWLY_HA_SUMMARY_TOKEN` | Token des Sensors für Home Assistant, mindestens 32 Zeichen; leer = kein Sensor (Abschnitt 18) |
 | `STOWLY_PUBLISH` | unter welcher Adresse des Rechners der Container erreichbar ist; Vorgabe `127.0.0.1:8010` |
@@ -360,7 +364,9 @@ Wer eine Abhängigkeit ergänzt oder aktualisiert und die Sperrdatei vergisst, m
 
 ### 9.2 Über GitHub, per Knopf in der App
 
-Stowly erscheint als fertiges Image auf GitHub: `ghcr.io/<konto>/stowly:X.Y.Z`. Der Server merkt selbst, wenn eine neue Version als „latest" veröffentlicht ist. Die App zeigt sie unter Einstellungen → „Aktualisierung" samt Änderungen, und je Version kommt einmal eine Push-Nachricht. Ein Tipp auf „Update installieren" legt eine Anforderung ab. Ausgeführt wird sie vom **Updater** auf dem Rechner, denn der Server selbst darf Docker nicht bedienen. Regeln und Dateien: [`integrationen.md`](integrationen.md), Abschnitt 10.
+Stowly erscheint als fertiges Image auf GitHub (`ghcr.io/<konto>/stowly:X.Y.Z`) und seit 0.3.0 auch auf Docker Hub (`<konto>/stowly`). Ob der Server nach neuen Versionen fragt, entscheidet seit 0.3.0 der Schalter unter Einstellungen → „Aktualisierung"; `STOWLY_UPDATE_REPO` in der `.env` schaltet es fest ein. Der Server merkt selbst, wenn eine neue Version als „latest" veröffentlicht ist.
+
+Es gibt zwei Updater. Für einen Container aus der Docker-Oberfläche (Abschnitt 19) ist es der **Updater-Container** (19.3). Für Docker Compose ist es das Skript `updater/stowly-update.sh`, eingerichtet wie unten beschrieben. Die App zeigt sie unter Einstellungen → „Aktualisierung" samt Änderungen, und je Version kommt einmal eine Push-Nachricht. Ein Tipp auf „Update installieren" legt eine Anforderung ab. Ausgeführt wird sie vom **Updater** auf dem Rechner, denn der Server selbst darf Docker nicht bedienen. Regeln und Dateien: [`integrationen.md`](integrationen.md), Abschnitt 10.
 
 **Einmal einrichten:**
 
@@ -403,11 +409,13 @@ Stowly erscheint als fertiges Image auf GitHub: `ghcr.io/<konto>/stowly:X.Y.Z`. 
 - Er hält Stowly an und legt eine Kopie der Datenbank in `update/` im Datenvolume ab (`before-<alt>-<zeit>.sqlite3`; die drei neuesten bleiben).
 - Er stellt `STOWLY_VERSION` in der `.env` um (vorher `.env.bak`) und startet. Wird der Container binnen drei Minuten nicht „healthy", spielt er die Kopie zurück und startet die alte Version.
 - Das Ergebnis zeigt die App, die Einzelheiten stehen in `update/log` im Datenvolume. Die Web-App auf den Handys kommt danach wie immer über „Jetzt aktualisieren".
+- Eine ältere Version installiert keiner der beiden Updater: Zurück geht es nur mit der Sicherung (9.3).
 
 **Grenzen:**
 - Der Updater tauscht nur das Image. Ändert eine Version `docker-compose.yml`, die `.env` oder den Updater selbst, steht das im Changelog unter „Von Hand" und wird einmal von Hand nachgezogen.
 - Der Updater läuft als root aus dem Projektordner: Wer diesen Ordner ändern darf, kann darüber Befehle als root ausführen. Der Ordner gehört deshalb nur Administratoren.
-- Die Docker-Oberfläche von DSM nicht zum Ändern des Containers benutzen. Compose und der Updater sind dann nicht mehr im Bilde.
+- Die Docker-Oberfläche von DSM nicht zum Ändern eines Compose-Containers benutzen. Compose und der Updater sind dann nicht mehr im Bilde.
+- Seit 0.3.0 folgt der Updater in `update/` keinen symbolischen Links mehr. Wer von 0.2.x kommt, kopiert den Ordner `updater/` einmal neu (Changelog 0.3.0).
 
 ### 9.3 Von Hand, mit dem fertigen Image
 
@@ -433,6 +441,8 @@ Ein Tag mit Zusatz (`vX.Y.Z-rc.1`) durchläuft dasselbe als Vorabversion: Das Im
 
 Beim allerersten Image muss das Paket auf GitHub einmal öffentlich gestellt werden (Paket `stowly` → Package settings → Change visibility → Public). Sonst kann der Rechner es nicht ohne Anmeldung laden.
 
+**Docker Hub** (seit 0.3.0, damit DSM das Image über seine Suche findet): einmal ein kostenloses Konto anlegen und dort einen Zugangs-Token mit „Read & Write" erzeugen. Im Repository auf GitHub unter Settings → Secrets and variables → Actions die Secrets `DOCKERHUB_USERNAME` und `DOCKERHUB_TOKEN` sowie die Variable `DOCKERHUB_IMAGE` (`<konto>/stowly`) anlegen. Fehlt der Token, baut die Pipeline nur für ghcr.io. Die Kurzbeschreibung des Repositorys auf Docker Hub, die DSM in der Suche zeigt, einmal von Hand setzen. Im Image stehen dann `STOWLY_IMAGE_REF=docker.io/<konto>/stowly` (für den Befehl des Updater-Containers) und `STOWLY_UPDATE_REPO_DEFAULT` (für den Schalter in der App).
+
 ## 10. Wo die Daten liegen
 
 | Was | Wo |
@@ -440,7 +450,8 @@ Beim allerersten Image muss das Paket auf GitHub einmal öffentlich gestellt wer
 | Datenbank mit allem: Bestand, Einkaufsliste, Produktbilder, Geräte und ihre Abos für Benachrichtigungen, Ereignisprotokoll, der Schlüssel des Servers für Benachrichtigungen, was Stowly zuletzt nach Bring! geschrieben hat (ohne Token) | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
 | Druckdienst des Servers: Auftragsspeicher samt `boot_id`, Bilder des Bild-Treibers | im selben Volume unter `/data/print/` (`jobs.sqlite3`, `images/`). Nicht in den Sicherungen; geht er verloren, fragt die App bei offenen Etiketten nach, statt doppelt zu drucken |
 | automatische Sicherungen, verschlüsselt | Ordner `backups` im Ordner des Repositorys, im Container `/backups` (Abschnitt 8.1); die privaten Schlüssel dazu nur beim Betreiber |
-| Einstellungen des Servers samt Passwort und Tokens (auch die für Home Assistant und den Sensor) | `.env` im Ordner des Repositorys |
+| Einstellungen des Servers samt Passwort und Tokens (auch die für Home Assistant und den Sensor) | `.env` im Ordner des Repositorys; was in der App eingestellt wurde (Push-Kontakt, Updates, Stand der Einrichtung), in der Datenbank (`server_config`), das Passwort aus der App nur als Hash |
+| Zertifizierungsstelle und Zertifikat für HTTPS (Abschnitt 20) | im Volume unter `/data/tls/`; nicht in den Sicherungen, beim Umzug den ganzen Datenordner mitnehmen |
 | eigene Anpassung an den Proxy, die Zertifizierungsstelle für Home Assistant | `docker-compose.override.yml`, falls angelegt; die Zertifizierungsstelle etwa als `ha-ca.pem` im Ordner des Repositorys (Abschnitt 17.4) |
 | lokale Kopie je Gerät, ungesendete Änderungen, Token | im Browser-Speicher des Handys (IndexedDB) |
 
@@ -452,7 +463,9 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 
 | Beobachtung | Wahrscheinliche Ursache |
 |---|---|
-| `/api/health` zeigt `"configured": false`; die App meldet, dass kein Passwort gesetzt ist | `STOWLY_PASSWORD` in `.env` ist leer. Setzen, dann `docker compose up -d`. |
+| `/api/health` zeigt `"configured": false`; die App zeigt „Willkommen bei Stowly" | Es gibt noch kein Passwort. In der App vergeben (Abschnitt 19.2) oder `STOWLY_PASSWORD` setzen und neu starten. |
+| Statt der App erscheint eine Seite „Stowly kann nicht in seinen Datenordner schreiben" | Der eingebundene Ordner gehört einem anderen Benutzer. Abhilfe steht auf der Seite (Abschnitt 19.1). |
+| Die App meldet „Noch keine sichere Verbindung", obwohl das Zertifikat installiert ist | iPhone: Schalter unter Zertifikatsvertrauenseinstellungen aus; Windows: Browser nicht neu gestartet; oder Port 8443 in DSM in der falschen Spalte („Container-Port" statt „Lokaler Port", Abschnitt 19.1). |
 | `docker compose up` bricht ab: „env file … not found" | `.env` fehlt: `cp .env.example .env` |
 | Die Startseite zeigt „die Web-App ist noch nicht gebaut" (Status 503) | Die Web-App fehlt im Image: Der Bau der ersten Stufe ist gescheitert oder `STOWLY_WEB_DIR` wurde verstellt. |
 | Der Proxy meldet „502 Bad Gateway" | Er erreicht den Container nicht: Tabelle in Abschnitt 4.3 (gemeinsames Netz oder `STOWLY_PUBLISH`). |
@@ -609,7 +622,7 @@ Die Datei reicht `/dev/bus/usb` in den Container (`device_cgroup_rules: c 189:* 
 
 ### 14.4 Raspberry Pi im Keller
 
-Eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
+Seit 0.3.0 koppelt man den Pi mit einem Befehl, den die App zeigt: im Einrichtungsassistenten (Abschnitt 19.2) oder unter Drucker → „Raspberry Pi koppeln". Der Pi lädt alles von Stowly, bekommt ein Zertifikat der CA von Stowly (Abschnitt 20), und der Drucker erscheint von selbst in der App. Für den Befehl muss Port 8010 im Heimnetz erreichbar sein. Eigene Anleitung samt Prüfliste und dem Weg von Hand: [`../pi/README.md`](../pi/README.md).
 
 ### 14.5 Schriften und Brother-Bibliothek
 
@@ -897,6 +910,90 @@ content: |
 
 Je Zone eine Tabelle, darin nach MHD; abgelaufene Daten rot, bald fällige orange, ohne MHD ein Strich. Die Bindestriche in `{%-` sorgen dafür, dass die Zeilen einer Tabelle ohne Leerzeilen aufeinander folgen; sonst zerfällt die Tabelle. Wer statt nach Zonen lieber eine einzige Liste will, ändert nur die Vorlage: Die Daten enthalten alles.
 
+## 19. Per Mausklick in DSM, mit dem Einrichtungsassistenten
+
+Der einfachste Weg auf einer Synology: den Container in der Docker-Oberfläche anlegen, alles Weitere führt die App. Beschrieben für DSM 6.2 (Paket „Docker"); in DSM 7 heißt das Paket „Container Manager", die Schritte sind ähnlich.
+
+### 19.1 Container anlegen
+
+1. **Feste IP-Adresse:** Im Router dem NAS eine feste IP-Adresse geben, falls noch nicht geschehen. Zertifikat und Adresse der App hängen daran.
+2. **Image laden:** Docker → **Registrierung** → nach `stowly` suchen → `<konto>/stowly` markieren → **Download** → Tag `latest`.
+3. **Starten:** Docker → **Image** → `<konto>/stowly` markieren → **Starten**. Containername `stowly`, dann **Erweiterte Einstellungen**:
+   - Reiter **Erweiterte Einstellungen:** Haken bei „Automatischen Neustart aktivieren".
+   - Reiter **Volume:** **Ordner hinzufügen** → im Ordner `docker` mit **Ordner erstellen** einen Ordner `stowly` anlegen und auswählen → Mount-Pfad `/data`.
+   - Reiter **Port-Einstellungen:** In der Spalte **Lokaler Port** bei den Zeilen 8010 und 8443 jeweils dieselbe Zahl eintragen statt „Automatisch". Die Spalte **Container-Port** bleibt, wie sie ist. Steht ein Port schon anderweitig in Gebrauch (etwa 8443 beim Reverse Proxy von DSM), einen anderen lokalen Port nehmen; der Assistent fragt dann danach.
+   - Umgebungsvariablen braucht es keine.
+4. **Übernehmen → Weiter → Übernehmen.** Nach etwa 30 Sekunden steht der Container unter **Container** auf „Wird ausgeführt".
+
+Lässt sich der Ordner nicht beschreiben (etwa ein Ordner mit Windows-ACL), zeigt `http://<NAS>:8010` statt der App eine Hilfeseite mit Ursache und Abhilfe: in der File Station beim Ordner → Eigenschaften → Berechtigung → „Jeder" mit Lesen und Schreiben; bei Docker Compose `sudo chown -R 10001:10001 <Ordner>`. Die Hilfeseite prüft alle 10 Sekunden neu. Ist der Ordner beschreibbar, beendet sie sich, und Docker startet Stowly neu (automatischer Neustart muss dafür an sein). Im Log steht dann „Der Datenordner ist jetzt beschreibbar".
+
+Ohne Passwort steht im Log des Containers „Noch kein Passwort: Wer Stowly jetzt öffnet, vergibt es." Daran erkennt man, dass der Assistent wartet.
+
+### 19.2 Der Assistent
+
+`http://<IP des NAS>:8010` im Browser öffnen, am besten am PC.
+
+1. **Willkommen:** Passwort für den Haushalt zweimal eingeben, dazu den Namen des Geräts. Wer die Seite zuerst öffnet, vergibt das Passwort; deshalb gleich nach dem Anlegen des Containers erledigen.
+2. **Sichere Verbindung:** Stowly hat schon ein Zertifikat für die Adresse, unter der die Seite offen ist. Das Zertifikat der Zertifizierungsstelle auf jedes Gerät laden und ihm vertrauen; der Assistent zeigt die Schritte für iPhone/iPad, Android, Windows und Mac (Abschnitt 20.3) und prüft, ob es geklappt hat. Dann „Zur sicheren Adresse wechseln" und dort einmal anmelden.
+3. **Drucker:** SD-Karte für den Raspberry Pi vorbereiten (Raspberry Pi Imager: Raspberry Pi OS Lite, Hostname mit `stowly` am Anfang wie `stowly-pi`, Benutzer, Heim-WLAN, SSH), den Drucker per USB anschließen, dann den Befehl aus dem Assistenten per SSH auf dem Pi ausführen. Der Pi richtet sich ein, koppelt sich mit Stowly und druckt ein Testetikett ([`../pi/README.md`](../pi/README.md)).
+4. **Updates:** Den Schalter „Nach Updates suchen" einschalten. Für Updates per Knopf den Updater-Container einmal anlegen (19.3).
+5. **Benachrichtigungen:** eine Kontakt-Adresse für die Push-Dienste eintragen, dann auf dem Gerät einschalten. Auf dem iPhone geht das nur in der App auf dem Home-Bildschirm (Abschnitt 7).
+6. **Fertig:** Übersprungene Schritte lassen sich unter Einstellungen → „Einrichtung und Zugang" nachholen.
+
+Ein vergessenes Passwort: beim Container die Umgebungsvariable `STOWLY_PASSWORD` setzen (Container anhalten → Bearbeiten → Umgebung), neu starten, anmelden und dann in der App ein neues Passwort vergeben.
+
+### 19.3 Der Updater-Container
+
+DSM 6.2 kann in der Oberfläche den Socket von Docker nicht in einen Container einbinden. Den Updater-Container legt deshalb einmal der Aufgabenplaner an ([`integrationen.md`](integrationen.md), 10.7):
+
+1. Systemsteuerung → **Aufgabenplaner** → Erstellen → **Geplante Aufgabe** → **Benutzerdefiniertes Skript**.
+2. Reiter **Allgemein:** Name `Stowly-Updater anlegen`, Benutzer `root`. Reiter **Zeitplan:** beliebig, die Aufgabe wird nur einmal von Hand ausgeführt.
+3. Reiter **Aufgabeneinstellungen:** den Befehl aus dem Assistenten bzw. aus Einstellungen → Aktualisierung einfügen. OK.
+4. Die Aufgabe markieren → **Ausführen**. Nach wenigen Sekunden zeigt die App „Updater bereit".
+5. Die Aufgabe wieder löschen. Der Updater-Container `stowly-updater` läuft von selbst weiter, auch nach einem Neustart des NAS.
+
+Meldet die App, dass der Updater älter ist als Stowly, den Befehl auf dieselbe Weise noch einmal ausführen; er ersetzt den alten Updater.
+
+## 20. HTTPS durch Stowly selbst
+
+Seit 0.3.0 kann Stowly HTTPS ohne Reverse Proxy: Es hat eine eigene Zertifizierungsstelle (CA), stellt sich selbst ein Zertifikat aus und antwortet im Container auf Port 8443. Einzelheiten: [`integrationen.md`](integrationen.md), Abschnitt 11.
+
+### 20.1 Was Stowly dafür tut
+
+- **CA:** beim ersten Start eine neue, 10 Jahre gültig, in `/data/tls`. Sie beglaubigt nur Adressen im Heimnetz (private IP-Adressen, Namen wie `.local`, `.home.arpa`, `.fritz.box`). Liegen schon `ca.crt` und `ca.key` in `/data/tls`, nimmt Stowly diese.
+- **Zertifikat:** für die Adressen, unter denen die App aufgerufen wird; Stowly lernt sie beim Einrichten. Weitere lassen sich im Assistenten unter „Erweitert" eintragen. Es gilt 397 Tage und wird 60 Tage vor Ablauf ohne Neustart erneuert.
+- **Die Geräte vertrauen der CA einmal;** danach gilt jedes neue Zertifikat von selbst, auch das eines gekoppelten Pi.
+
+### 20.2 Freigeben
+
+- **Mausklick-Weg (19.1):** Port 8443 in der Spalte „Lokaler Port" eintragen. Ein anderer lokaler Port geht auch; der Assistent lernt ihn beim ersten Aufruf über HTTPS, vorher fragt er unter „Erweitert".
+- **Docker Compose:** `docker-compose.yml` veröffentlicht nur 8010. HTTPS kommt über eine Datei `docker-compose.override.yml` daneben, die Compose und der Updater von selbst lesen:
+
+  ```yaml
+  services:
+    stowly:
+      ports:
+        - "8443:8443"
+  ```
+
+  Dazu in `.env` `STOWLY_PUBLISH=8010`, damit HTTP für den Pi-Installer und das Zertifikat im Heimnetz erreichbar ist. Läuft auf 8443 schon ein Reverse Proxy, erst dessen Regel löschen.
+- Ein Reverse Proxy davor geht weiter wie in Abschnitt 4. Der HTTPS-Listener bleibt dann ungenutzt; der Assistent erkennt die sichere Adresse.
+
+### 20.3 Das Zertifikat auf den Geräten
+
+Jedes Gerät, das Stowly über HTTPS öffnet, braucht das Zertifikat der CA einmal. Der Assistent führt durch die Schritte; hier zum Nachschlagen. Das Zertifikat liegt unter `http://<NAS>:8010/api/setup/ca.crt`.
+
+- **iPhone und iPad** (nur Safari): Zertifikat laden → „Erlauben" → Einstellungen → oben „Profil geladen" (sonst Allgemein → VPN und Geräteverwaltung) → Installieren. Dann Allgemein → Info → Zertifikatsvertrauenseinstellungen → den Schalter bei „Stowly CA …" einschalten. Ohne diesen Schalter vertraut Safari dem Zertifikat nicht.
+- **Android:** Zertifikat laden, in den Einstellungen nach „Zertifikat installieren" suchen → „CA-Zertifikat" → die Datei wählen. Android verlangt dafür eine Displaysperre.
+- **Windows:** Datei öffnen → „Zertifikat installieren…" → Aktueller Benutzer → „Alle Zertifikate in folgendem Speicher speichern" → „Vertrauenswürdige Stammzertifizierungsstellen". Danach den Browser neu starten.
+- **Mac:** Datei doppelklicken, im Schlüsselbund „Anmeldung" hinzufügen, den Eintrag öffnen → Vertrauen → „Immer vertrauen".
+
+Den Fingerabdruck der CA zeigt die App unter Einstellungen → „Einrichtung und Zugang"; zum Vergleich steht er auch im Log des Containers.
+
+### 20.4 Sichern und umziehen
+
+`/data/tls` gehört zum Datenordner, aber nicht zu den Sicherungen der Datenbank (Abschnitt 8): Wer auf einen anderen Rechner umzieht, nimmt den ganzen Datenordner mit. Sonst entsteht dort eine neue CA, und jedes Gerät und jeder Pi muss neu vertrauen bzw. neu gekoppelt werden.
+
 ## Prüfliste für die Zielumgebung
 
 Alles hier ließ sich auf dem Entwicklungsrechner nicht prüfen. Bitte der Reihe nach; hinter jedem Schritt steht, was zu sehen sein muss.
@@ -1080,3 +1177,21 @@ Mit der Liste, die ihr wirklich nutzt (Abschnitt 17.2; ein späterer Wechsel hak
 | L6 | In `update/` und im Projektordner nachsehen | `before-<alt>-<zeit>.sqlite3`, `.env.bak`, in der `.env` die neue `STOWLY_VERSION`; die `.env` gehört weiter ihrem Besitzer |
 | L7 | Eine Anforderung für eine Version, die es nicht gibt (von Hand: `update/request` mit `version=9.9.9`) | Nach einer Minute „gescheitert“: Das Image ließ sich nicht laden; die alte Version läuft weiter |
 | L8 | Die Aufgabe des Updaters zehn Minuten lang anhalten | Die App sagt, dass sich der Updater nicht meldet, und bietet kein Installieren an |
+
+### M. Einrichtung per Mausklick und HTTPS durch Stowly (0.3.0)
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| M1 | In DSM: Image `<konto>/stowly` über die Registrierung suchen und laden (19.1) | Die Suche findet es; der Download läuft durch |
+| M2 | Container wie in 19.1 anlegen, ohne Umgebungsvariablen | Nach etwa 30 Sekunden „Wird ausgeführt“; im Ordner `docker/stowly` liegen `stowly.sqlite3`, `print/`, `tls/` |
+| M3 | `http://<NAS>:8010` öffnen | „Willkommen bei Stowly“ statt der Anmeldung |
+| M4 | Passwort vergeben (zweimal, mindestens 8 Zeichen) | Angemeldet, der Assistent öffnet sich; ein zweites Gerät, das jetzt die Seite öffnet, sieht die Anmeldung |
+| M5 | Sichere Verbindung: Zertifikat am iPhone laden, Profil installieren, Vertrauen einschalten | Die App meldet „Dieses Gerät vertraut Stowly“; der Fingerabdruck in der App stimmt mit dem im Log des Containers überein |
+| M6 | Name Constraints: in Safari eine Seite im Internet öffnen | Funktioniert wie vorher; die CA beglaubigt nur Adressen im Heimnetz (Einzelheiten [`integrationen.md`](integrationen.md), 11.2) |
+| M7 | „Zur sicheren Adresse wechseln“, dort anmelden | `https://<NAS>:8443/einrichtung` ohne Warnung; der Assistent macht beim Drucker weiter |
+| M8 | Drucker: Befehl am frischen Pi ausführen | Die App zeigt „Der Pi richtet sich ein …“, dann „Gekoppelt“; der Pi druckt ein Testetikett; „Verbindung prüfen“ gelingt am iPhone über HTTPS |
+| M9 | Updates: Schalter ein, Updater-Container über den Aufgabenplaner anlegen (19.3) | „Updater bereit“ nach wenigen Sekunden; in DSM ein Container `stowly-updater` |
+| M10 | Benachrichtigungen: Kontakt eintragen, in der installierten App einschalten, Testnachricht | Die Testnachricht kommt an |
+| M11 | Eine neue Version veröffentlichen, dann „Update installieren“ | Der Updater-Container tauscht den Container aus; „Aktualisiert auf X.Y.Z“; Daten, Ports, Ordner und Neustart-Regel bleiben; in DSM keine Reste wie `stowly-vorher` |
+| M12 | Container in DSM neu starten | Stowly kommt mit denselben Zertifikaten zurück; kein neues Profil nötig |
+| M13 | Compose-Installation mit Reverse Proxy auf 0.3.0 aktualisieren | Anmeldung mit dem Passwort aus der `.env` geht weiter; der Assistent öffnet sich nicht von selbst; unter Einstellungen → „Einrichtung und Zugang“ steht „Sichere Verbindung“ als erledigt, sobald die App über HTTPS läuft |

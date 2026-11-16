@@ -10,6 +10,7 @@
  *   fifo.ts      welche Packung als Nächstes dran ist (Stufe 2)
  *   input.ts     Eingabegrenzen und ihre Prüfung, gemeinsam für Kern und Attrappe
  *   routes.ts    Adressen der Ansichten
+ *   platform.ts  auf welchem Gerät die App läuft (iPhone, Android, Windows, Mac)
  *   react.tsx    Anbindung an React
  */
 export * from "./api.gen";
@@ -21,6 +22,7 @@ export * from "./ids";
 export * from "./input";
 export * from "./labels";
 export * from "./mhd";
+export * from "./platform";
 export * from "./qr";
 export * from "./react";
 export * from "./routes";

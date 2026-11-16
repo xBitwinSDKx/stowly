@@ -27,7 +27,10 @@
  */
 import {
   APP_VERSION,
+  checkNewPassword,
+  checkPushContact,
   CoreError,
+  isAppleMobile,
   isStoreInternalBarcode,
   isValidBarcode,
   PRODUCT_LOOKUP_WAIT_S,
@@ -36,6 +39,8 @@ import {
   type Core,
   type CoreErrorCode,
   type Device,
+  type LoginResponse,
+  type PiPairing,
   type ProductLookup,
   type SessionState,
   type SyncProblem,
@@ -60,7 +65,7 @@ import { DeliveryEngine, PRINT_LOCK_NAME } from "./print/engine";
 import { DeliveryScheduler } from "./print/scheduler";
 import { PushController, type PushEnvironment } from "./push/device";
 import { browserPushEnvironment, NO_PUSH, watchNotificationPermission } from "./push/environment";
-import { InstallPrompt, isAppleMobile } from "./pwa/install";
+import { InstallPrompt } from "./pwa/install";
 import { registerServiceWorker } from "./pwa/register";
 import { serverIsNewer, type AppUpdates } from "./pwa/updates";
 import { Store, type StoreState } from "./store";
@@ -244,6 +249,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     last_error: null,
     server_version: null,
     lookup_enabled: null,
+    server_configured: null,
   });
 
   function patchStatus(changes: Partial<SyncStatus>): void {
@@ -256,6 +262,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
         next.last_synced_at === current.last_synced_at &&
         next.server_version === current.server_version &&
         next.lookup_enabled === current.lookup_enabled &&
+        next.server_configured === current.server_configured &&
         sameError(next.last_error, current.last_error);
       return same ? current : next;
     });
@@ -274,7 +281,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     lockName: dbName === DEFAULT_DB_NAME ? SYNC_LOCK_NAME : `${SYNC_LOCK_NAME}:${dbName}`,
     appVersion: APP_VERSION,
     onHealth: (health) => {
-      patchStatus(health ? { online: true, server_version: health.version } : { online: false });
+      // Auch abgemeldet: Ohne Passwort beim Server zeigt die Anmeldeschranke die Einrichtung.
+      patchStatus(health ? { online: true, server_version: health.version, server_configured: health.configured !== false } : { online: false });
       if (health) {
         void flushRevocations();
       }
@@ -774,28 +782,36 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
   }
 
   let loginInFlight: Promise<void> | null = null;
+  /** Kopplungen, nach deren Abschluss schon abgeglichen wurde (`printers.pairing`). */
+  const syncedPairings = new Set<string>();
 
-  /** Meldet an und holt den Bestand; siehe `SessionApi.login`. */
-  async function signIn(password: string, deviceName: string): Promise<void> {
+  /**
+   * Meldet an und holt den Bestand; siehe `SessionApi.login` und `createPassword`. `obtain` holt
+   * das Token beim Server (Anmeldung oder erstes Passwort), `checkPassword` prüft vorher ohne Anfrage.
+   */
+  async function signInWith(obtain: (name: string) => Promise<LoginResponse>, deviceName: string, checkPassword: () => void): Promise<void> {
     await ready;
     if (!storageAvailable) {
       throw new CoreError("not_supported", blocked ? BLOCKED_MESSAGE : "Der Browser lässt keine lokale Datenbank zu (privates Fenster?). Ohne sie kann Stowly nicht arbeiten.");
     }
     const name = checkDeviceName(deviceName);
-    if (typeof password !== "string" || password === "" || password.length > LIMITS.password) {
-      throw new CoreError("invalid_password", "Das Passwort stimmt nicht.");
-    }
+    checkPassword();
     if (store.snapshot.session?.status === "signed_in") {
       throw invalid("Dieses Gerät ist schon angemeldet.");
     }
     let response;
     try {
-      response = await api.login(password, name);
+      response = await obtain(name);
     } catch (error) {
       const failure = toCoreError(error);
-      patchStatus({ online: failure.code !== "offline" });
+      const { code } = failure;
+      // Was der Server dabei über sein Passwort verrät, gilt auch für die Anmeldeschranke.
+      const configured = code === "not_configured" ? false : code === "conflict" || code === "invalid_password" ? true : undefined;
+      patchStatus(configured === undefined ? { online: code !== "offline" } : { online: true, server_configured: configured });
       throw failure;
     }
+    // Ein Token gibt es nur von einem Server mit Passwort.
+    patchStatus({ online: true, server_configured: true });
     // Erst wenn der erste Abgleich gelungen ist, gilt das Gerät als angemeldet:
     // Dann liegen Zonen und Einstellungen sicher vor.
     const outcome = await runSync({ login: { token: response.token, device: { id: response.device.id, name: response.device.name } } });
@@ -830,10 +846,32 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       login(password, deviceName) {
         // Ein zweiter Aufruf während einer laufenden Anmeldung (Doppeltipp) wartet auf die erste,
         // statt ein zweites Gerät beim Server anzulegen.
-        loginInFlight ??= signIn(password, deviceName).finally(() => {
+        loginInFlight ??= signInWith((name) => api.login(password, name), deviceName, () => {
+          if (typeof password !== "string" || password === "" || password.length > LIMITS.password) {
+            throw new CoreError("invalid_password", "Das Passwort stimmt nicht.");
+          }
+        }).finally(() => {
           loginInFlight = null;
         });
         return loginInFlight;
+      },
+
+      createPassword(password, deviceName) {
+        // Wie die Anmeldung: Ein Doppeltipp legt kein zweites Gerät an (und bekäme sonst "conflict").
+        loginInFlight ??= signInWith((name) => api.createPassword(password, name), deviceName, () => checkNewPassword(password)).finally(() => {
+          loginInFlight = null;
+        });
+        return loginInFlight;
+      },
+
+      async changePassword(current, next) {
+        checkNewPassword(next);
+        if (typeof current !== "string" || current === "" || current.length > LIMITS.password) {
+          throw new CoreError("invalid_password", "Das bisherige Passwort stimmt nicht.");
+        }
+        // Ein falsches bisheriges Passwort (401 invalid_password) meldet das Gerät nicht ab:
+        // `runtime.server` sperrt nur bei "unauthorized".
+        await runtime.server((token) => api.changePassword(token, current, next));
       },
 
       async logout(logoutOptions) {
@@ -901,7 +939,29 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       update: createPrefsUpdate(runtime),
     },
 
-    printers: createPrintersApi(runtime, printRuntime),
+    printers: {
+      ...createPrintersApi(runtime, printRuntime),
+      // Einen Pi koppeln (Protokoll 11.8): Code und Befehl kommen vom Server, der Drucker mit dem Sync.
+      pair(input) {
+        return runtime.server((token) => api.createPairing(token, { origin: input.origin, printer_id: input.printer_id ?? null }));
+      },
+      async pairing(id) {
+        const found: PiPairing = await runtime.server((token) => api.pairing(token, id));
+        const printerId = found.printer_id;
+        if (found.state === "paired" && printerId !== null) {
+          const local = store.snapshot.view.printers.get(printerId);
+          // Fehlt der Drucker hier noch, oder hat der Server ihn eben neu gekoppelt: jetzt abgleichen.
+          if (!local || local.deleted_at !== null || !syncedPairings.has(id)) {
+            syncedPairings.add(id);
+            void scheduler.request(true);
+          }
+        }
+        return found;
+      },
+      cancelPairing(id) {
+        return runtime.server((token) => api.cancelPairing(token, id));
+      },
+    },
     print: createPrintApi(runtime, printRuntime),
 
     devices: {
@@ -992,6 +1052,35 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       },
       install(version) {
         return runtime.server((token) => api.installUpdate(token, version));
+      },
+    },
+
+    // Einrichtung (Protokoll 11.6): Der Stand liegt beim Server, gespeichert wird hier nichts.
+    setup: {
+      load() {
+        return runtime.server((token) => api.setupStatus(token));
+      },
+      update(changes) {
+        return runtime.server((token) => api.updateSetup(token, changes));
+      },
+      reachesSecurely(origin) {
+        return api.reachesSecurely(origin);
+      },
+    },
+
+    // Einstellungen des Servers (Protokoll 11.7).
+    serverConfig: {
+      load() {
+        return runtime.server((token) => api.serverConfig(token));
+      },
+      async update(changes) {
+        const wanted = typeof changes.push_contact === "string" ? { ...changes, push_contact: checkPushContact(changes.push_contact) } : changes;
+        const config = await runtime.server((token) => api.patchServerConfig(token, wanted));
+        if (changes.push_contact !== undefined) {
+          // Ein neuer Kontakt (oder keiner mehr): Was der Server zuletzt über Push sagte, gilt nicht mehr.
+          push.serverChanged();
+        }
+        return config;
       },
     },
 

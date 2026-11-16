@@ -287,7 +287,7 @@ Beispiel: `Neu bald fällig: Joghurt (16.11.). Insgesamt 3 bald, 1 abgelaufen.`
 
 ### 4.9 Testnachricht
 
-`POST /api/push/test` (`sync-protokoll.md`, 11.3): Titel „Testnachricht", Rumpf „Benachrichtigungen kommen auf diesem Gerät an.", `tag` `stowly-test`, `navigate` `<origin>/einstellungen`, Kopfzeilen nach 4.6. Die Antwort (`PushTestResult`) nennt das Ergebnis nach 4.7, den Status des Push-Dienstes und einen deutschen Satz, etwa „Der Push-Dienst hat die Nachricht angenommen." oder „Der Push-Dienst lehnt ab (403). Stimmt STOWLY_PUSH_CONTACT?".
+`POST /api/push/test` (`sync-protokoll.md`, 11.3): Titel „Testnachricht", Rumpf „Benachrichtigungen kommen auf diesem Gerät an.", `tag` `stowly-test`, `navigate` `<origin>/einstellungen`, Kopfzeilen nach 4.6. Die Antwort (`PushTestResult`) nennt das Ergebnis nach 4.7, den Status des Push-Dienstes und einen deutschen Satz, etwa „Der Push-Dienst hat die Nachricht angenommen." oder „Der Push-Dienst lehnt ab (403). Stimmt der Kontakt für die Push-Dienste?". Ohne wirksamen Kontakt geht keine Testnachricht hinaus, und sie zählt nicht für die Bremse.
 
 ### 4.10 Ende eines Abos
 
@@ -564,7 +564,7 @@ Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/
 
 | Variable | Format | Vorgabe | Prüfung beim Start | Wenn nicht gesetzt |
 |---|---|---|---|---|
-| `STOWLY_PASSWORD` | Text | im Entwicklungsmodus `stowly` | – | Server startet, Anmelden geht nicht (503 `not_configured`) |
+| `STOWLY_PASSWORD` | Text | im Entwicklungsmodus `stowly` | – | Das Passwort aus der App gilt (`meta.password_hash`); gibt es keines, setzt es, wer die Seite zuerst öffnet ([`sync-protokoll.md`](sync-protokoll.md), 5 und 11.6) |
 | `STOWLY_DATA_DIR` | Pfad | `/data` im Container, `data/` im Repository | – | Vorgabe |
 | `STOWLY_WEB_DIR` | Pfad | `/app/web` im Container, `web/dist` im Repository | – | nur die Schnittstelle |
 | `STOWLY_HOST` | Adresse | `127.0.0.1` (im Container `0.0.0.0`) | – | Vorgabe |
@@ -584,12 +584,16 @@ Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/
 | `STOWLY_HA_TODO_ENTITY` | `todo.<name>` | – | Muster `^todo\.[a-z0-9_]+$` | kein Bring! (Hinweis wie oben) |
 | `STOWLY_HA_CA` | Pfad zu einer PEM-Datei | – | Datei lesbar und als PEM ladbar | Vertrauen des Systems |
 | `STOWLY_HA_SUMMARY_TOKEN` | Text, mindestens 32 Zeichen | – | Länge; nur druckbares ASCII ohne Leerraum | kein Sensor (503 `not_configured`) |
-| `STOWLY_PUSH_CONTACT` | `mailto:<Adresse>` oder `https://<Host>` | – | Form: `mailto:` mit einer Adresse samt Domäne oder `https://` mit Host, das Schema klein geschrieben, ohne Benutzerangabe | kein Push (503 `not_configured`) |
-| `STOWLY_UPDATE_REPO` | `<konto>/<name>` | – | Muster `^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`, Name nicht `.` oder `..` | keine Abfrage bei GitHub (10.1) |
+| `STOWLY_PUSH_CONTACT` | `mailto:<Adresse>` oder `https://<Host>` | – | Form: `mailto:` mit einer Adresse samt Domäne oder `https://` mit Host, das Schema klein geschrieben, ohne Benutzerangabe | Kontakt aus der App (12), sonst kein Push (503 `not_configured`) |
+| `STOWLY_UPDATE_REPO` | `<konto>/<name>` | – | Muster `^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`, Name nicht `.` oder `..` | Schalter in der App (12), sonst keine Abfrage bei GitHub (10.1) |
+| `STOWLY_UPDATE_REPO_DEFAULT` | `<konto>/<name>` | im veröffentlichten Image das eigene Repository | wie `STOWLY_UPDATE_REPO` | der Schalter in der App wirkt nicht (`available: false`) |
+| `STOWLY_HTTPS_PORT` | Zahl | im Image `8443` | 1 bis 65535, nicht `STOWLY_PORT` | kein HTTPS-Listener (11) |
+| `STOWLY_PI_BUNDLE` | absoluter Pfad | im Image `/app/pi-bundle.tar.gz` | absolut | im Quell-Checkout baut der Server das Paket selbst, sonst gibt es keines ([`sync-protokoll.md`](sync-protokoll.md), 11.8) |
+| `STOWLY_IMAGE_REF` | Image ohne Tag, etwa `docker.io/<konto>/stowly` | im veröffentlichten Image gesetzt | Form einer Docker-Referenz ohne Tag und Digest | kein fertiger Befehl für den Updater-Container (10.7) |
 
 Ist von Home Assistant nur `STOWLY_HA_CA` gesetzt, gilt das als halbe Einrichtung: `problem` nennt die drei fehlenden Variablen. `STOWLY_HA_SUMMARY_TOKEN` allein gehört nicht dazu: Der Sensor braucht den Abgleich nicht.
 
-Nur für Docker Compose und den Updater, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB_GID`, `FORWARDED_ALLOW_IPS`, `TZ` (die Zeitzone für Stowly ist `STOWLY_TIMEZONE`), `STOWLY_IMAGE` und `STOWLY_VERSION` (fertiges Image, 10.1), `STOWLY_VOLUME` (Name des Datenvolumes für den Updater, 10.6). `.env.example` nennt jede Variable mit einem kurzen Satz; Beispiele nur mit Platzhaltern (`stowly.example`, `ha.example`, Token als `…`).
+Nur für Docker Compose und den Updater, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB_GID`, `TZ` (die Zeitzone für Stowly ist `STOWLY_TIMEZONE`), `STOWLY_IMAGE` und `STOWLY_VERSION` (fertiges Image, 10.1), `STOWLY_VOLUME` (Name des Datenvolumes für den Updater, 10.6). `FORWARDED_ALLOW_IPS` wirkt seit 0.3.0 nicht mehr: Beide Listener werten keine Proxy-Kopfzeilen aus, damit Stowly sicher weiß, ob eine Anfrage über seinen HTTPS-Listener kam (11). `.env.example` nennt jede Variable mit einem kurzen Satz; Beispiele nur mit Platzhaltern (`stowly.example`, `ha.example`, Token als `…`).
 
 ## 8. Zustand der Integrationen
 
@@ -598,7 +602,7 @@ Nur für Docker Compose und den Updater, nicht vom Server gelesen: `STOWLY_PUBLI
 - **`timezone`:** `STOWLY_TIMEZONE`.
 - **`backup`** (`BackupStatus`): wie in 3.6. `configured` und `problem` nach 3.1, `time` aus `STOWLY_BACKUP_TIME`, auch wenn die Sicherung aus ist; `null` nur, wenn sie gar nicht eingerichtet ist.
 - **`ha`** (`HaStatus`): `configured` und `problem` nach 5.1; `entity` aus `STOWLY_HA_TODO_ENTITY`; `state`, `last_ok_at`, `last_error`, `last_error_at` nach 5.6; `linked` = offene Einträge mit `bring_key`; `sensor` = `STOWLY_HA_SUMMARY_TOKEN` gesetzt.
-- **`push`** (`PushStatus`): `configured` nach 4.1; `problem` ist derzeit immer `null` (ein ungültiger `STOWLY_PUSH_CONTACT` beendet schon den Start); `subscriptions` = Abos im Haushalt; `this_device` = das fragende Gerät hat eines; `last_run_at` = `job_runs.push_daily.last_at`; `last_sent_at` = `state.sent_at`; `last_error` = `job_runs.push_daily.last_error`.
+- **`push`** (`PushStatus`): `configured` = ein Kontakt ist wirksam (aus der Umgebung oder der App, 12); `problem` ist derzeit immer `null` (ein ungültiger `STOWLY_PUSH_CONTACT` beendet schon den Start, einen ungültigen in der App lehnt `PATCH /api/server-config` ab); `subscriptions` = Abos im Haushalt; `this_device` = das fragende Gerät hat eines; `last_run_at` = `job_runs.push_daily.last_at`; `last_sent_at` = `state.sent_at`; `last_error` = `job_runs.push_daily.last_error`.
 - **`update`** (`UpdateStatus`): nach 10.4.
 - **Nie** darin: ein Token, ein privater Schlüssel, die Adresse von HA, `STOWLY_PUSH_CONTACT`, Pfade des Rechners oder das Log des Updaters. Öffentliche age-Schlüssel nur gekürzt.
 
@@ -652,7 +656,7 @@ Der Server fragt GitHub nach dem neuesten Release, die App bietet es an, und ins
 
 ### 10.1 Einrichten
 
-- **`STOWLY_UPDATE_REPO=<konto>/<name>`:** das öffentliche Repository der Releases. Leer heißt keine Abfrage; `update.configured` ist dann `false`, und die App zeigt nur die Version.
+- **`STOWLY_UPDATE_REPO=<konto>/<name>`:** das öffentliche Repository der Releases; Updates sind dann immer an. Ohne die Variable entscheidet der Schalter „Nach Updates suchen" in der App über das Repository aus `STOWLY_UPDATE_REPO_DEFAULT`, das das veröffentlichte Image mitbringt (12). Ist beides aus, ist `update.configured` `false`, und die App zeigt nur die Version.
 - **Betrieb mit fertigem Image:** `STOWLY_IMAGE` (etwa `ghcr.io/<konto>/stowly`) und `STOWLY_VERSION` (etwa `0.2.0`) stehen in der `.env`. Sie liest nur Docker Compose und der Updater, nicht der Server.
 - **Neue Version:** Als neu gilt nur das Release, das GitHub als „latest" führt. Vorabversionen und Entwürfe liefert `releases/latest` nicht. Das Image dazu (`<STOWLY_IMAGE>:X.Y.Z`) entsteht in GitHub Actions, bevor das Release erscheint.
 
@@ -693,18 +697,20 @@ Der Austausch zwischen Server (uid 10001) und Updater (root) läuft über Dateie
 |---|---|---|
 | `request` | Server: zuerst `request.tmp`, dann umbenannt | `version=X.Y.Z`, `requested_at=<Zeitpunkt>`, `device=<Gerätename>` (höchstens 60 Zeichen, Steuerzeichen und `=` entfernt) |
 | `state` | Updater | `state=installing\|done\|failed`, `version=<Ziel>`, `from=<vorher>`, `at=<Zeitpunkt>`, `message=<Satz>` |
-| `updater` | Updater, bei jedem Lauf | `seen_at=<Zeitpunkt>`, `updater=<Version des Skripts>` |
+| `updater` | Updater, bei jedem Lauf | `seen_at=<Zeitpunkt>`, `updater=<Protokoll des Updaters>` (1 bis 0.2.x, 2 ab 0.3.0); seit 0.3.0 dazu `kind=script\|container` (fehlt: `script`), beim Updater-Container `version=<Version von Stowly, aus der er stammt>` und `target=<Name des Ziel-Containers>` |
 | `log` | Updater | Ausgabe des letzten Updates, nur zur Fehlersuche auf dem Rechner |
 | `before-<alt>-<zeit>.sqlite3` | Updater | Kopie der Datenbank vor dem Update; die drei neuesten bleiben |
 | `lock/` | Updater | Sperre während eines Laufs |
 
 ### 10.4 Zustand (`UpdateStatus`)
 
-- **`configured`, `repo`:** aus `STOWLY_UPDATE_REPO`.
+- **`configured`, `repo`:** die wirksamen Werte (12): `STOWLY_UPDATE_REPO`, sonst der Schalter in der App mit `STOWLY_UPDATE_REPO_DEFAULT`.
 - **`current`:** `stowly.__version__`.
 - **`latest` bis `url`, `checked_at`, `check_error`:** aus `job_runs` (10.2). `checked_at` ist die letzte gelungene Abfrage, auch eine mit 404.
 - **`available`:** `latest` ist gesetzt und neuer als `current`. Verglichen werden die drei Zahlen.
 - **`updater_seen_at`:** `seen_at` aus `updater`. **`updater_ready`:** höchstens `UPDATER_READY_S` (600) Sekunden alt.
+- **`updater_kind`:** `kind` aus `updater` (fehlt es, `script`); `null`, solange sich kein Updater gemeldet hat. **`updater_version`:** `version` aus `updater`, nur in der Form `X.Y.Z`.
+- **`updater_command`:** der Befehl, der den Updater-Container anlegt oder erneuert (10.7), mit `STOWLY_IMAGE_REF`, der Version dieses Servers und der eigenen Container-ID; `null` ohne `STOWLY_IMAGE_REF` oder ohne erkannte Container-ID.
 - **`state`:** Die erste passende Regel gilt.
   1. `request` liegt vor, und `state` meldet `installing` für dieselbe Version: `installing`, `state_at` aus `at`.
   2. `request` liegt vor: `requested`; `state_version` und `state_at` aus `request`.
@@ -722,7 +728,7 @@ Der Austausch zwischen Server (uid 10001) und Updater (root) läuft über Dateie
 
 `POST /api/update/install` mit `{"version": "X.Y.Z"}`. Geprüft wird in dieser Reihenfolge:
 
-1. **`STOWLY_UPDATE_REPO` fehlt:** 503 `not_configured` „Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO)."
+1. **Updates sind aus** (weder `STOWLY_UPDATE_REPO` noch der Schalter): 503 `not_configured` „Updates sind auf diesem Server aus. Einschalten unter Einstellungen → Aktualisierung."
 2. **`updater_ready` ist falsch:** 503 `not_configured` „Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9)."
 3. **`state` ist `requested` oder `installing`:** 409 `conflict` „Ein Update ist schon angefordert."
 4. **`version` ≠ `latest`:** 409 `conflict` „Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen."
@@ -746,3 +752,109 @@ In die Datei kommt nur die geprüfte Versionsnummer, dazu Zeitpunkt und Geräten
 9. **Sonst zurück:** anhalten, die Kopie zurückspielen (`-wal` und `-shm` des Fehlversuchs löschen), die alte `STOWLY_VERSION` setzen, `up -d`, warten. Dann `failed` mit „Die neue Version startete nicht, zurück auf <alt>." und dem Ende des Container-Logs in `log`. `request` löschen.
 
 Der Updater tauscht nur das Image. Ändert eine Version `docker-compose.yml`, die `.env` oder den Updater selbst, nennt der Changelog das, und es wird einmal von Hand nachgezogen.
+
+**Härtung (seit 0.3.0):** In `/data/update` schreibt der Server ohne Rechte, der Updater als root. Der Updater folgt dort deshalb keinem Symlink:
+- Er prüft `update/`, `log`, `state` und die Datenbank mit `[ -L ]` bzw. `lstat`, schreibt über eigene Zwischendateien (`mktemp` im Ordner) und kopiert nur echte Dateien. Liegt ein Link vor, bricht er mit `failed` ab, ohne ihm zu folgen.
+- `request` benennt er zuerst in einen eigenen Ordner um (das folgt keinem Link), prüft dort, dass es eine echte Datei ist, und liest höchstens 4 KiB. Während des Updates liegt deshalb keine `request` mehr in `update/`.
+- Ausgaben ersetzt er mit `mv -T`, wo das `mv` des Systems es kann. Ohne `-T` bleibt ein schmales Zeitfenster, in dem ein übernommener Server einen Namen gegen einen Link auf einen Ordner tauschen könnte; root legte dann eine Datei mit zufälligem Namen dort ab. Das ist bekannt und hingenommen.
+- Eine Version, die nicht neuer ist als `STOWLY_VERSION`, lehnt er ab (kein Downgrade).
+
+### 10.7 Der Updater-Container
+
+Für einen Container, der per Mausklick in der Docker-Oberfläche entstand (ohne Compose und `.env`), gibt es einen zweiten Weg: einen kleinen Container aus demselben Image, der über den Socket von Docker die Updates ausführt (`python -m stowly.updater`, Paket `server/stowly/updater/`). Dateien und Zustände sind dieselben wie beim Host-Updater (10.3 bis 10.5), ebenso die Sperre `lock/`; beide schließen sich gegenseitig aus.
+
+- **Anlegen:** einmal als root, auf DSM über den Aufgabenplaner (Benutzerdefiniertes Skript, „Ausführen", danach die Aufgabe löschen), weil die Oberfläche von DSM 6.2 `docker.sock` nicht einbinden kann. Den Befehl liefert der Server fertig in `UpdateStatus.updater_command`:
+
+  ```
+  /usr/local/bin/docker rm -f stowly-updater; /usr/local/bin/docker run -d --name stowly-updater --restart unless-stopped --user 0:0 --network none --read-only --tmpfs /tmp --no-healthcheck -v /var/run/docker.sock:/var/run/docker.sock --volumes-from <Container-ID> <STOWLY_IMAGE_REF>:<Version> python -m stowly.updater
+  ```
+
+  - Die Container-ID liest der Server aus `/proc/self/mountinfo` (`/containers/<64 hex>/`). Der Hostname taugt nicht dafür: DSM setzt ihn auf den Namen des Containers.
+  - `--user 0:0`, weil der Socket nur root offensteht; `--network none`, weil Docker selbst das Image lädt; `--no-healthcheck`, weil der Healthcheck des Images den Port 8010 fragt.
+  - Keine Optionen zum Log: Es gilt der Log-Treiber des Rechners, auf DSM `db`, der Optionen wie `max-size` womöglich ablehnt. Der Updater schreibt nur bei Updates und Fehlern ins Log, nicht bei jedem Herzschlag. So erscheinen seine Meldungen in DSM unter Container → `stowly-updater` → Protokoll.
+  - **Journal und Aufräumen:** Während eines Updates liegt `update/journal` mit der eigenen ID des Updaters; der alte Container heißt so lange `<name>-vorher`. Bleibt nach einem Absturz einer übrig, räumt der Updater ihn beim nächsten Lauf auf.
+  - **Grenzen:** Engine API 1.40 bis 1.44, nur öffentliche Images (der Updater meldet sich bei keiner Registry an).
+  - Erneut ausführen erneuert den Updater, etwa wenn die App meldet, dass er älter ist als der Server.
+- **Herzschlag:** alle 15 Sekunden `updater` mit `seen_at`, `updater=2`, `kind=container`, `version` und `target`.
+- **Ziel:** der andere Container mit derselben Quelle für `/data` wie der Updater selbst. So übersteht die Zuordnung neue Container-IDs. Trägt das Ziel Labels von Docker Compose (`com.docker.compose.project`), weigert sich der Updater (`failed`: „Dieser Container gehört zu Docker Compose; dafür gibt es updater/stowly-update.sh."). Sonst holte Compose beim nächsten `up` die Version aus der `.env` zurück.
+- **Update, Aufruf für Aufruf** (Engine API über `/var/run/docker.sock`, mindestens 1.40; auf DSM 6.2 ist es 1.41):
+  1. **Prüfen:** `GET /version`. Die Version aus `request` muss `VERSION_PATTERN` treffen. Aus der Anforderung zählt nur sie; das Repository stammt aus dem laufenden Ziel (`Config.Image` ohne Tag und Digest, sonst `STOWLY_IMAGE_REF`).
+  2. **Laden:** `state=installing`, dann `POST /images/create?fromImage=<repo>&tag=<version>`. Den Datenstrom bis zum Ende lesen: Ein `error` darin ist ein Fehlschlag, auch bei HTTP 200. Bis zu drei Versuche, danach `failed`; die alte Version läuft weiter.
+  3. **Anhalten:** `POST /containers/<id>/stop?t=15`, dann prüfen, dass er steht.
+  4. **Sichern:** die Datenbank samt `-wal` und `-shm` nach `before-<alt>-<zeit>.sqlite3` kopieren (wie 10.6, drei bleiben).
+  5. **Umbenennen:** `POST /containers/<id>/rename?name=<name>-vorher`, dazu ein Journal in `update/`, damit ein Absturz mittendrin aufgeräumt werden kann.
+  6. **Neu anlegen:** `POST /containers/create?name=<name>` mit dem Klon (unten), weitere Netze per `POST /networks/<n>/connect`.
+  7. **Starten und warten:** `POST /containers/<neu>/start`, dann bis zu 180 Sekunden auf `State.Health.Status` `healthy`. `exited`, `dead` oder `unhealthy` gelten als Fehlschlag.
+  8. **Erfolg:** den alten Container löschen (`DELETE /containers/<alt>`, nie mit `v=1`, das löschte anonyme Volumes); alte Images derselben Herkunft aufräumen, die neue und die vorige Version bleiben; `done`, `request` löschen.
+  9. **Sonst zurück:** das Ende des Logs des neuen Containers in `log`, ihn anhalten und löschen, die Kopie der Datenbank zurückspielen, den alten Container zurückbenennen, starten und warten. Dann `failed` wie beim Host-Updater.
+- **Klonregeln** (wie bei watchtower): Aus `Config` bleibt nur, was vom **alten Image** abweicht: `Env` je Variable, `Labels` je Schlüssel, `ExposedPorts`, `Volumes`, `Cmd`, `Entrypoint`, `Healthcheck`, `User`, `WorkingDir`, `StopSignal`. Die Oberfläche von DSM schreibt alle Umgebungsvariablen des Images in den Container; ohne diese Regel klebten sie am alten Image. `Hostname` bleibt, außer er ist die alte Kurz-ID. `HostConfig` wird unverändert übernommen (bei DSM auch der Log-Treiber `db` und `CpuShares`), Netze nur mit `IPAMConfig`, `Aliases`, `Links` und `DriverOpts`. Anonyme Volumes aus `Mounts` kommen als `<Name>:<Ziel>` in `Binds`, sonst startete der neue Container mit leerem `/data`.
+- **Sicherheit:** root mit Socket heißt root auf dem Rechner, wie beim Host-Updater. Der Updater hat kein Netz, liest aus `request` nur die Versionsnummer, spricht nur sein Ziel an und folgt in `/data/update` keinem Symlink (10.6).
+  - **Journal:** Er nimmt `update/journal` nur an, wenn root es geschrieben hat (Eigentümer 0, genau ein Link). Bevor er mit einem Wert daraus Docker anspricht, prüft er ihn: Jeder Container darin hat dieselbe Quelle für `/data` wie der Updater und ist nicht er selbst; das Repository ist das des Ziels bzw. `STOWLY_IMAGE_REF`; die Sicherung hat die Form `before-<version>-<zeit>.sqlite3`. Sonst `failed`, ohne Docker-Aufruf. Ein übernommener Server kann so keinen fremden Container anfassen.
+  - **Kein Downgrade:** Eine Version, die nicht neuer ist als die laufende (Label `org.opencontainers.image.version`, sonst der Tag), lehnt er ab. Das gilt auch für den Host-Updater.
+  - **Kopien** der Datenbank bekommen nur Lese- und Schreibrechte, nie setuid, setgid oder sticky.
+- **Kein Selbst-Update:** Der Updater bleibt auf der Version, mit der er angelegt wurde. Ist `updater_version` älter als der Server, rät die App, den Befehl erneut auszuführen.
+
+## 11. HTTPS mit eigener CA
+
+Stowly kann HTTPS selbst bereitstellen, ohne Reverse Proxy: mit einer eigenen Zertifizierungsstelle (CA), der jedes Gerät einmal vertraut, und einem zweiten Listener im selben Prozess. Ein Reverse Proxy davor geht weiter; dann bleibt der HTTPS-Listener ungenutzt.
+
+### 11.1 Dateien
+
+Alles liegt in `/data/tls` (Rechte 0700), nicht in der Datenbank: Die manuelle Sicherung (`GET /api/backup`) ist unverschlüsselt und für jedes Gerät abrufbar.
+
+| Datei | Rechte | Inhalt |
+|---|---|---|
+| `ca.crt` | 0644 | Zertifikat der CA (PEM) |
+| `ca.key` | 0600 | Schlüssel der CA (PEM, unverschlüsselt) |
+| `server.pem` | 0600 | Schlüssel und Zertifikat des HTTPS-Listeners in einer Datei, damit beides zusammen wechselt |
+
+- Geschrieben wird über eine Zwischendatei mit `fsync` und `os.replace`. Das Log nennt Fingerabdrücke, nie einen Schlüssel.
+- **Beim Start:** Liegen `ca.crt` und `ca.key` da, lädt Stowly sie, wenn sie taugen: selbst signiert, CA mit `keyCertSign`, Schlüssel passt und ist unverschlüsselt, P-256, P-384 oder RSA ab 2048 Bit, noch mindestens 30 Tage gültig. So lässt sich auch eine vorhandene CA von Hand hineinlegen. Fehlt nur eine der beiden Dateien oder taugt eine nicht, meldet Stowly das (`HttpsStatus.problem`, auch ohne HTTPS-Listener) und überschreibt nichts. Fehlen beide, erzeugt Stowly eine neue CA.
+- **Die CA entsteht immer**, auch ohne `STOWLY_HTTPS_PORT`: Das Koppeln eines Pi braucht sie auch hinter einem Reverse Proxy. Zertifikat des Servers und täglicher Job gibt es nur mit HTTPS-Listener.
+- `CaInfo.created_by_stowly` erkennt Stowly am Namen „Stowly CA <6 Hex>".
+- **Sicherungen** enthalten `/data/tls` nicht. Wer umzieht, nimmt das Volume mit; sonst entsteht eine neue CA, und jedes Gerät muss neu vertrauen.
+
+### 11.2 Zertifikate
+
+- **Neue CA:** P-256, 10 Jahre, Name „Stowly CA <6 Hex>", `basicConstraints` CA mit `pathlen` 0 (kritisch), `keyUsage` `keyCertSign` und `cRLSign` (kritisch), SKI.
+  - **Name Constraints** (nicht kritisch markiert, damit Geräte ohne Unterstützung nicht ablehnen): erlaubt sind nur die Netze und Namen aus 11.3 sowie Loopback und `localhost`. Ein gestohlener Schlüssel taugt so nicht für fremde Seiten. Chrome, Edge, Firefox und OpenSSL werten sie aus, iOS und macOS nach Prüfliste, Android wohl nicht (dort kein Schutz, aber auch kein Schaden).
+- **Zertifikat des Servers:** P-256, `SERVER_CERT_DAYS` (397) Tage, nie über das Ende der CA hinaus, `notBefore` eine Stunde zurück. CN „Stowly" (kein Name), SAN = die Adressen (11.3), EKU `serverAuth`, `keyUsage` `digitalSignature`, CA:false, SKI und AKI.
+  - Neu ausgestellt bei geänderten Adressen, gewechselter CA oder weniger als `SERVER_CERT_RENEW_DAYS` (60) Tagen Rest; das prüft auch der tägliche Job `tls_renew` (in `job_runs`, Zustand `renewed` und `not_after`). Ohne bekannte Adresse gilt es vorläufig für `localhost` und `127.0.0.1`, damit der Listener immer starten kann; sobald eine Adresse bekannt ist, fallen diese beiden weg.
+- **Zertifikat eines Pi:** `PI_CERT_DAYS` (825) Tage, CN „Stowly Drucker", bei einem RSA-Schlüssel zusätzlich `keyEncipherment`, sonst wie oben ([`sync-protokoll.md`](sync-protokoll.md), 11.8).
+
+### 11.3 Adressen
+
+- **Gelernt** aus der Kopfzeile `Host`: beim Setzen des ersten Passworts und bei jedem angemeldeten Aufruf unter `/api/setup`. Von Hand dazu: `PATCH /api/setup` mit `addresses`. Höchstens 10; gelernt wird nie etwas entfernt.
+- **Erlaubt:** private Netze `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (Tailscale), `fc00::/7`; Namen mit einer der Endungen `local`, `lan`, `home`, `home.arpa`, `internal`, `localdomain`, `fritz.box`. Für das erste Passwort zählen auch Loopback und einteilige Namen (`diskstation`); ins Zertifikat kommt nur, was die CA deckt.
+- **Port:** Der externe HTTPS-Port kommt aus `Host` der ersten angemeldeten Anfrage über den HTTPS-Listener (bis dahin `HTTPS_PORT_DEFAULT`, 8443), solange er nicht von Hand gesetzt ist. Ebenso lernt der Server aus Anfragen über HTTP den externen HTTP-Port, für den Download der CA und den Befehl für den Pi.
+- **Ursprünge der App** (`HttpsStatus.origins`): je Adresse `https://<adresse>:<port>`, dazu die gesehenen HTTPS-Ursprünge aus `Origin` angemeldeter Änderungen (geprüft wie bei Push, 4), höchstens 20. Daraus entstehen die erlaubten Ursprünge eines Pi.
+
+### 11.4 Der HTTPS-Listener
+
+- Zwei `uvicorn.Server` in einer Ereignisschleife, dieselbe App: HTTP auf `STOWLY_PORT` (8010), HTTPS auf `STOWLY_HTTPS_PORT` (im Image 8443; ohne die Variable kein HTTPS, auch in Tests und beim Entwickeln). Beide mit `lifespan` aus und ohne Proxy-Kopfzeilen; der Lebenszyklus der App umschließt beide, damit die Dienste stehen, bevor ein Port aufgeht, und erst nach beiden enden.
+- **Start:** erst HTTP; scheitert es, endet der Prozess mit Exit-Code 3. Dann HTTPS; scheitert es, läuft HTTP weiter, und `HttpsStatus.problem` sagt warum: „Der Port 8443 ist belegt oder nicht erlaubt (Einzelheiten im Log)." bzw. das Problem der CA. Die genaue Ursache eines belegten Ports schreibt uvicorn nur ins Log.
+- **Vorher** prüft Stowly, ob es in `/data` schreiben darf. Wenn nicht, startet statt der App eine Hilfeseite auf dem HTTP-Port ([`betrieb.md`](betrieb.md), 19.1).
+- **Signale:** Stowly fängt sie selbst und beendet beide Listener; `release_waiting` läuft vor dem Abbau (Nachschlagen mit Wartezeit).
+- **Neues Zertifikat ohne Neustart:** `load_cert_chain` auf demselben SSL-Kontext, nur in der Ereignisschleife und erst, nachdem ein Probe-Kontext die Datei geladen hat. Laufende Verbindungen behalten das alte Zertifikat.
+- **Kein HSTS:** Bei einer IP-Adresse wirkte es nicht, bei einem Namen träfe es auch Port 8010 und andere Dienste unter demselben Namen. Der Healthcheck des Containers bleibt auf HTTP.
+- **Über welchen Listener eine Anfrage kam:** `scope["scheme"] == "https"`; deshalb wertet kein Listener `X-Forwarded-Proto` aus.
+
+### 11.5 Vertrauen auf den Geräten
+
+Die App führt im Assistenten durch die Schritte je Plattform; die CA kommt über `GET /api/setup/ca.crt` ([`sync-protokoll.md`](sync-protokoll.md), 11.6). Ob ein Gerät vertraut, prüft die App über `http` mit einem Abruf `fetch(https://…/api/health, { mode: "no-cors" })`: Er scheitert genau dann, wenn Vertrauen oder Port fehlen. Wechselt ein Gerät danach auf die HTTPS-Adresse, meldet es sich dort einmal neu an; jede Adresse hat ihren eigenen Speicher im Browser ([`betrieb.md`](betrieb.md), 6).
+
+## 12. Einstellungen aus der App
+
+Was früher nur in der Umgebung stand, geht seit 0.3.0 auch in der App (`GET` und `PATCH /api/server-config`, [`sync-protokoll.md`](sync-protokoll.md), 11.7). Die Umgebung geht vor: Ein Wert aus `.env` oder aus den Einstellungen des Containers ist in der App nur zu sehen (`source: env`, `PATCH` antwortet 409).
+
+| Einstellung | Wirksam ist | Gelesen |
+|---|---|---|
+| Haushalts-Passwort | `STOWLY_PASSWORD` (beim Start als Hash übernommen), sonst der Hash aus der App | bei jeder Anmeldung |
+| Kontakt für die Push-Dienste | `STOWLY_PUSH_CONTACT`, sonst der Kontakt aus der App, sonst keiner | bei jeder Zustellung, in der Tagesnachricht und vor jedem Aufruf unter `/api/push` |
+| Updates | `STOWLY_UPDATE_REPO` (immer an), sonst der Schalter in der App mit `STOWLY_UPDATE_REPO_DEFAULT`, sonst aus | vor jeder Abfrage bei GitHub |
+| Port des HTTPS-Listeners | nur `STOWLY_HTTPS_PORT` | beim Start |
+| Adressen, externe Ports, Fortschritt des Assistenten | nur App oder gelernt | bei Gebrauch |
+
+- **Ohne Neustart:** Versand von Push, Tagesnachricht und Abfrage bei GitHub laufen immer und lesen den wirksamen Wert erst beim Einsatz. Wird der Schalter eingeschaltet, kommt die erste Abfrage nach `UPDATE_CHECK_FIRST_S` (60) Sekunden.
+- **Gespeichert** in `server_config`, je Schlüssel ein JSON-Wert mit Zeitpunkt und Gerät. Dort steht nie ein Geheimnis; die Tabelle ist in jeder Sicherung.
+- **Später (Stufe B):** Sicherung und Home Assistant folgen demselben Muster. Der Token von HA kommt dann nicht in `server_config`, sondern in einen Speicher, den beide Sicherungen auslassen.

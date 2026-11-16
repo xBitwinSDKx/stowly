@@ -14,8 +14,9 @@ export type CoreErrorCode =
   /** Zu viele Fehlversuche; `details.retry_after_s` nennt die Wartezeit. */
   | "rate_limited"
   /**
-   * Auf dem Server ist kein Passwort gesetzt (STOWLY_PASSWORD), oder eine Integration, die der
-   * Aufruf braucht, ist dort nicht eingerichtet (Push: STOWLY_PUSH_CONTACT).
+   * Der Server hat noch kein Haushalts-Passwort (`session.createPassword` setzt es), oder eine
+   * Integration, die der Aufruf braucht, ist dort nicht eingerichtet (Push: kein Kontakt; Updates:
+   * aus; Pi koppeln: keine CA oder kein Paket).
    */
   | "not_configured"
   /** App und Server sprechen verschiedene Protokollversionen. */
@@ -34,7 +35,8 @@ export type CoreErrorCode =
   | "not_supported"
   /**
    * Der Zustand des Servers passt nicht (mehr) zur Aktion (409), etwa: Ein Update ist schon
-   * angefordert, oder die Version ist nicht mehr die neueste. Die Meldung des Servers sagt es.
+   * angefordert, die Version ist nicht mehr die neueste, es gibt schon ein Passwort, oder ein Wert
+   * kommt aus der Umgebung. Die Meldung des Servers sagt es.
    */
   | "conflict"
   /** Unerwarteter Fehler. */
