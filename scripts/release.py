@@ -1,6 +1,7 @@
 """Versionsnummern und Release-Text von Stowly (docs/betrieb.md, Abschnitt 9.4).
 
-    python scripts/release.py 0.3.0           Nummer überall setzen (CHANGELOG.md braucht "## 0.3.0")
+    python scripts/release.py 0.3.0           Nummer überall setzen (CHANGELOG.md braucht "## 0.3.0"),
+                                              danach die Vertragsdateien neu erzeugen (docs/openapi.json)
     python scripts/release.py --check 0.3.0   prüfen, dass überall 0.3.0 steht (für GitHub Actions)
     python scripts/release.py --notes 0.3.0   den Abschnitt "## 0.3.0" aus CHANGELOG.md ausgeben
 
@@ -12,6 +13,7 @@ Zusatz; ein Tag mit Zusatz (v0.3.0-rc.1) ist eine Vorabversion derselben Nummer.
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -120,6 +122,16 @@ def main(argv: list[str] | None = None) -> int:
     set_version(version)
     for place, number in found().items():
         print(f"{place}: {number}")
+    # docs/openapi.json trägt die Version: Die Vertragsdateien neu erzeugen, mit der Umgebung, die
+    # dieses Skript startet (der Entwicklungsumgebung, in der stowly installiert ist).
+    exported = subprocess.run([sys.executable, "-m", "stowly.contract.export"], cwd=ROOT, check=False)
+    if exported.returncode != 0:
+        print(
+            "Die Vertragsdateien ließen sich nicht neu erzeugen. Bitte in der Entwicklungsumgebung "
+            "'python -m stowly.contract.export' aufrufen.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
