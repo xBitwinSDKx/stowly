@@ -1362,7 +1362,7 @@ def delete_previous(settings: Settings) -> bool:
     previous = folder_of(settings) / PREVIOUS_DB
     try:
         previous.unlink()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):  # Linux meldet einen fehlenden Ordner so, Windows anders
         return False
     log.info(
         "Zurückspielen: Die Datenbank von vor dem Zurückspielen ist gelöscht; Rückgängig geht nicht mehr."

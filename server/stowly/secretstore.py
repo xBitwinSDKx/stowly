@@ -176,7 +176,9 @@ class SecretStore:
                 try:
                     path.unlink()
                     break
-                except FileNotFoundError:
+                except (FileNotFoundError, NotADirectoryError):
+                    # Kein Ordner (Linux meldet dann NotADirectoryError, Windows FileNotFoundError): Dann gibt
+                    # es auch keine Datei darin, also nichts zu entfernen.
                     self._forget_warnings(name)
                     return False
                 except PermissionError:
