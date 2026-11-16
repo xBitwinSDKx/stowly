@@ -260,7 +260,7 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 
 - [ ] **62.** Einen frischen Container per Mausklick in DSM anlegen und den Assistenten bis „Fertig" durchgehen ([`betrieb.md`](betrieb.md), Abschnitt 19; M1–M10).
 - [ ] **63.** Ein Update per Knopf über den Updater-Container, danach den Container in DSM neu starten (M11, M12).
-- [ ] **64.** Eine Installation mit Docker Compose und Reverse Proxy umstellen: neue CA, HTTPS durch Stowly, den Pi neu koppeln (M8, M13; [`plan-einrichtung.md`](plan-einrichtung.md), „Probe und Umstieg").
+- [x] **64.** Eine Installation mit Docker Compose und Reverse Proxy umstellen: neue CA, HTTPS durch Stowly, den Pi neu koppeln (M8, M13; [`plan-einrichtung.md`](plan-einrichtung.md), „Probe und Umstieg"; 16.11.2026).
 
 **Stand 16.11.2026** (Synology DSM 6.2.4; ein Testcontainer mit `0.3.0-rc.4` von Docker Hub neben dem laufenden Stowly, Ports 8020 und 8444; iPhone mit iOS 27):
 - **M1:** Die Registrierung von DSM findet das Image auf Docker Hub; der Download läuft durch.
@@ -270,6 +270,18 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
 - **M9:** Der Updater-Container entstand über den Aufgabenplaner, die App zeigt „Updater bereit"; DSM nimmt den Befehl an. Gefunden:
   - Bei einer Vorabversion nennt der Befehl das Image mit `:0.3.0` statt `:0.3.0-rc.4`. Von Hand korrigiert; die Korrektur kommt mit 0.3.1.
   - Die Aufgabe nicht „Stowly-Updater" nennen, wenn die Aufgabe des Host-Updaters (`betrieb.md` 9.2) schon so heißt.
-- **M8, 64:** Der Umstieg des NAS auf 0.3.0 gelang (Update per Knopf über den Host-Updater, neue CA aufs iPhone, Proxy-Regel gelöscht, Stowly selbst auf 8443; die App am iPhone und Home Assistant laufen weiter). Das neue Koppeln des Pi scheiterte: Docker auf DSM stellt jede Anfrage mit 172.19.0.1 zu. Abhilfe in 0.3.1: die Rückprüfung; dann erneut koppeln.
-- **M11:** mit 0.3.0 nicht prüfbar. Die Vorabversion meldet sich schon als 0.3.0 und bietet 0.3.0 deshalb nicht an; die Probe folgt mit 0.3.1.
-- Offen: M5 (Fingerabdruck mit dem Log vergleichen), M6, M10, M12, M13.
+- **64:** Der Umstieg des NAS auf 0.3.0 gelang:
+  - Update per Knopf über den Host-Updater.
+  - Neue CA aufs iPhone.
+  - Proxy-Regel gelöscht, Stowly selbst auf 8443 (`docker-compose.override.yml`).
+  - Die App am iPhone und Home Assistant laufen weiter.
+- **M8:** Das neue Koppeln des Pi scheiterte mit 0.3.0, denn Docker auf DSM stellt jede Anfrage mit 172.19.0.1 zu. Mit 0.3.1 und der Rückprüfung gelang es („Vorhandenen Drucker übernehmen"):
+  - Zertifikat der neuen CA für die IP, `stowly-drucker.local` und `10.71.83.1`.
+  - Selbsttest und Testetikett durch.
+  - Direktdruck vom iPhone über HTTPS.
+- **M11:** Mit 0.3.0 war M11 nicht prüfbar, denn die Vorabversion meldet sich schon als 0.3.0. Mit 0.3.1 dann per Knopf:
+  - Der Updater-Container ersetzte den Testcontainer.
+  - Daten, Zertifikate und Ports blieben.
+  - Dein Stowly kam gleichzeitig über den Host-Updater auf 0.3.1.
+- **M13** zum Teil: Die Anmeldung mit dem Passwort aus der `.env` geht nach dem Umstieg weiter. Ob sich der Assistent von selbst öffnet, ist nicht eigens geprüft.
+- Offen: M5 (Fingerabdruck mit dem Log vergleichen), M6, M10, M12.
