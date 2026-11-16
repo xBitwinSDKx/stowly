@@ -594,7 +594,14 @@ def test_missing_font_files_fall_back_to_the_builtin_font_and_say_so_once(tmp_pa
     )
 
 
-def test_unreadable_font_file_falls_back_too(tmp_path, caplog):
+def test_unreadable_font_file_falls_back_too(tmp_path, caplog, monkeypatch):
+    # Pillow sucht nach einer unlesbaren Datei unter Linux in XDG_DATA_HOME/XDG_DATA_DIRS, unter
+    # Windows in WINDIR/fonts nach einer gleichnamigen Schrift. Liegt dort DejaVu (etwa auf einem
+    # Ubuntu-Runner), nähme sie Pillow stillschweigend. Für den Test sind diese Orte leer.
+    empty = tmp_path / "leer"
+    empty.mkdir()
+    for variable in ("XDG_DATA_HOME", "XDG_DATA_DIRS", "WINDIR"):
+        monkeypatch.setenv(variable, str(empty))
     for filename in FONT_FILES.values():
         (tmp_path / filename).write_bytes(b"keine Schrift")
     fonts = Fonts(directories=[tmp_path])

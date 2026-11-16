@@ -328,7 +328,10 @@ class Fonts:
         if path is not None:
             try:
                 # Immer die einfache Zeilensetzung: Mit libraqm fielen dieselben Etiketten je nach
-                # Rechner verschieden breit aus.
+                # Rechner verschieden breit aus. Ist die Datei unlesbar, sucht Pillow selbst noch
+                # eine gleichnamige Schrift des Systems (Linux: XDG_DATA_DIRS, meist /usr/share/fonts;
+                # Windows: WINDIR/fonts) und nimmt sie ohne Fehler. Erst wenn auch das scheitert,
+                # gilt die eingebaute.
                 return ImageFont.truetype(str(path), size_px, layout_engine=ImageFont.Layout.BASIC)
             except OSError as exc:
                 log.warning("Schrift %s ist nicht lesbar (%s): Es gilt die eingebaute Schrift.", path, exc)
