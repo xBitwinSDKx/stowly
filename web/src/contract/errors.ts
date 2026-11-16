@@ -32,6 +32,11 @@ export type CoreErrorCode =
   | "pending_changes"
   /** In dieser Umgebung oder in dieser Ausbaustufe nicht verfügbar. */
   | "not_supported"
+  /**
+   * Der Zustand des Servers passt nicht (mehr) zur Aktion (409), etwa: Ein Update ist schon
+   * angefordert, oder die Version ist nicht mehr die neueste. Die Meldung des Servers sagt es.
+   */
+  | "conflict"
   /** Unerwarteter Fehler. */
   | "internal";
 

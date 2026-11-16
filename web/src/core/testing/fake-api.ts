@@ -24,7 +24,19 @@ import type { FakePrintService } from "./fake-print";
 import { FakeServer, type FakeRequestData, type FakeResponseData } from "./fake-server";
 
 export { FAKE_PRINT_TOKEN, FakePrintService, type FakePrintOptions } from "./fake-print";
-export { checkPushSubscription, FAKE_PASSWORD, FakeServer, HA_OFF, pushTestPayload, validateCommand, type FakeServerOptions, type PushPayload } from "./fake-server";
+export {
+  checkPushSubscription,
+  FAKE_PASSWORD,
+  FakeServer,
+  HA_OFF,
+  pushTestPayload,
+  validateCommand,
+  type FakeRelease,
+  type FakeServerOptions,
+  type FakeUpdateRequest,
+  type FakeUpdaterState,
+  type PushPayload,
+} from "./fake-server";
 
 export interface FakeRequest {
   method?: string;

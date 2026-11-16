@@ -15,6 +15,7 @@ import { useIntegrations } from "./integrations";
 import { DEFAULT_NOTIFY_TIME, NotifyTimeSetting } from "./NotifyTimeSetting";
 import { PushSetting } from "./PushSetting";
 import styles from "./SettingsPage.module.css";
+import { UpdateSection } from "./UpdateSection";
 
 interface NumberSettingProps {
   label: string;
@@ -157,9 +158,9 @@ export function describeLookup(enabled: boolean | null | undefined): RowText {
 /**
  * Einstellungen nach dem Entwurf: eine Liste aus Zeilen mit dem Bedienelement rechts,
  * gegliedert in Darstellung, dieses Gerät (samt Benachrichtigungen), Haushalt (samt der Uhrzeit
- * der Tagesnachricht), Geräte, Sicherung, Home Assistant und Bring!, diese App und Über. Solange
- * die Ansicht offen ist, lädt sie den Zustand der Integrationen vom Server (Sicherung, Home
- * Assistant, Push).
+ * der Tagesnachricht), Geräte, Sicherung, Home Assistant und Bring!, Aktualisierung, diese App
+ * und Über. Solange die Ansicht offen ist, lädt sie den Zustand der Integrationen vom Server
+ * (Sicherung, Home Assistant, Push, Updates).
  */
 export function SettingsPage() {
   const core = useCore();
@@ -331,6 +332,8 @@ export function SettingsPage() {
       <BackupSection integrations={integrations.state} onReload={integrations.reload} />
 
       <HomeAssistantSection integrations={integrations.state} onReload={integrations.reload} />
+
+      <UpdateSection integrations={integrations.state} onReload={integrations.reload} />
 
       <Section title="Diese App" id="app" description="Installation und Speicher auf diesem Gerät.">
         <List>

@@ -23,6 +23,8 @@ from stowly.contract.api import (
     STATS_DEFAULT_MONTHS,
     STATS_MAX_MONTHS,
     STATS_TOP_PRODUCTS,
+    UPDATE_CHECK_INTERVAL_S,
+    UPDATE_CHECK_MIN_GAP_S,
 )
 from stowly.contract.commands import COMMAND_TYPES
 from stowly.contract.limits import LIMITS
@@ -215,6 +217,16 @@ def _constants() -> list[str]:
             "HA_SUMMARY_MESSAGE_MAX",
             HA_SUMMARY_MESSAGE_MAX,
             "Sensor für Home Assistant: höchstens so viele Zeichen im Satz `message`.",
+        ),
+        (
+            "UPDATE_CHECK_INTERVAL_S",
+            UPDATE_CHECK_INTERVAL_S,
+            "Updates über GitHub: Der Server fragt in diesem Abstand nach dem neuesten Release.",
+        ),
+        (
+            "UPDATE_CHECK_MIN_GAP_S",
+            UPDATE_CHECK_MIN_GAP_S,
+            "Updates über GitHub: „Nach Updates suchen“ höchstens einmal in so vielen Sekunden.",
         ),
         (
             "HA_STOCK_NAME_MAX",

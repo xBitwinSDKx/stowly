@@ -43,6 +43,16 @@
  * der Einkaufsliste, die nach der Regel des Servers in Bring! stünden: mit Namen und seit
  * mindestens zwei Minuten offen (5.2).
  *
+ * Updates über GitHub (docs/integrationen.md, Abschnitt 10): Ohne Ausgangslage sind sie
+ * eingerichtet, und der Server läuft schon mit der neuesten Version; "release-…" zeigen die
+ * anderen Fälle. `update.check` und `update.install` prüfen wie der Server (höchstens eine Suche
+ * je `UPDATE_CHECK_MIN_GAP_S` nach der Uhr der Attrappe, die Reihenfolge der Prüfungen beim
+ * Anfordern). GitHub kennt dabei nichts Neueres, als der Server schon gesehen hat. Mit
+ * Wartezeit (im Browser) spielt die Attrappe nach dem Anfordern den Updater nach: Er beginnt,
+ * der Server ist eine Weile nicht erreichbar, dann läuft die neue Version. Ohne Wartezeit
+ * (Tests) bleibt die Anforderung stehen. `stowlyMock.setIntegrations({ update })` setzt den
+ * Zustand, mit dem beide weiterarbeiten.
+ *
  * Statistik (Stufe 2, src/mock/stats.ts): `stats.load` rechnet wie der Server aus allen Packungen
  * der Attrappe, auch aus denen jenseits der Aufbewahrungsdauer (die Beispieldaten haben dafür
  * einen Verlauf über gut ein Jahr), in der Zeitzone aus `integrations.load` (Vorgabe
@@ -89,6 +99,7 @@ import {
   requiredText,
   stockCount,
   toLocalDate,
+  UPDATE_CHECK_MIN_GAP_S,
   willLookUp,
   type AppState,
   type BackupStatus,
@@ -130,6 +141,7 @@ import {
   type StoreResult,
   type SyncProblem,
   type SyncStatus,
+  type UpdateStatus,
   type Zone,
   type ZoneChanges,
 } from "@/contract";
@@ -170,6 +182,10 @@ import { computeStats } from "./stats";
  * - "ha-unreachable", "ha-unauthorized": eingerichtet, der letzte Abgleich scheiterte so
  * - "ha-problem":  Home Assistant ist nur halb eingerichtet (STOWLY_HA_TOKEN fehlt)
  * - "stats-empty": die Statistik ist leer (es zählt nur, was nach dem Start entnommen wird)
+ * - "release-new": auf GitHub gibt es eine neue Version des Servers mit Änderungen; der Updater
+ *                  auf dem Rechner ist bereit (nicht zu verwechseln mit "update": neue App im Browser)
+ * - "release-no-updater": ebenso, aber der Updater auf dem Rechner meldet sich nicht
+ * - "release-off": Updates über GitHub sind nicht eingerichtet (STOWLY_UPDATE_REPO fehlt)
  */
 export type MockScenario =
   | "empty"
@@ -200,7 +216,10 @@ export type MockScenario =
   | "ha-unreachable"
   | "ha-unauthorized"
   | "ha-problem"
-  | "stats-empty";
+  | "stats-empty"
+  | "release-new"
+  | "release-no-updater"
+  | "release-off";
 
 export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "empty",
@@ -232,6 +251,9 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "ha-unauthorized",
   "ha-problem",
   "stats-empty",
+  "release-new",
+  "release-no-updater",
+  "release-off",
 ];
 
 /** Wie ein nachgespielter Druck ausgeht. */
@@ -287,6 +309,100 @@ const HA_ERRORS: Record<Exclude<HaState, "off" | "pending" | "ok">, string> = {
 
 /** So lange ist ein Eintrag offen, bevor der Server ihn nach Bring! schreibt (docs/integrationen.md, 5.2). */
 const BRING_DELAY_MS = HA_MIRROR_DELAY_S * 1000;
+
+/** Die Version des Servers der Attrappe (`sync.status.server_version`, `UpdateStatus.current`). */
+const MOCK_SERVER_VERSION = "0.1.0";
+
+/** Das Repository der Releases in den Beispielen (STOWLY_UPDATE_REPO). */
+const UPDATE_REPO = "beispiel/stowly";
+
+/** Wie Updates eingerichtet sind: aktuell, eine neue Version (mit oder ohne Updater), oder gar nicht. */
+type ReleaseSetup = "current" | "new" | "no-updater" | "off";
+
+/** Ausgangslagen zu Updates; ohne eine davon sind sie eingerichtet, und der Server ist aktuell. */
+const RELEASE_SCENARIOS: readonly [MockScenario, ReleaseSetup][] = [
+  ["release-new", "new"],
+  ["release-no-updater", "no-updater"],
+  ["release-off", "off"],
+];
+
+/** Die neue Version in den Beispielen, mit ihren Änderungen als Markdown-Text wie von GitHub. */
+const NEW_RELEASE = {
+  version: "0.2.0",
+  name: "Updates aus den Einstellungen",
+  notes: [
+    "## Neu",
+    "",
+    "- Updates lassen sich in den Einstellungen suchen und installieren.",
+    "- Push meldet eine neue Version.",
+    "",
+    "## Behoben",
+    "",
+    "- Lange Produktnamen auf Etiketten werden nicht mehr abgeschnitten.",
+  ].join("\n"),
+} as const;
+
+/** Was eine Anforderung ablehnt (docs/integrationen.md, 10.5), mit den Sätzen des Servers. */
+const UPDATE_NOT_CONFIGURED = "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).";
+const UPDATER_SILENT = "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9).";
+
+/**
+ * Der Zustand der Updates in einer Ausgangslage (docs/integrationen.md, 10.4). Die Zeitpunkte
+ * richten sich nach der Uhr der Attrappe beim Start.
+ */
+function sampleUpdate(setup: ReleaseSetup, nowMs: number): UpdateStatus {
+  const at = (msAgo: number) => new Date(nowMs - msAgo).toISOString();
+  const off: UpdateStatus = {
+    configured: false,
+    repo: null,
+    current: MOCK_SERVER_VERSION,
+    latest: null,
+    latest_name: null,
+    notes: null,
+    published_at: null,
+    url: null,
+    available: false,
+    checked_at: null,
+    check_error: null,
+    updater_ready: false,
+    updater_seen_at: null,
+    state: "idle",
+    state_version: null,
+    state_at: null,
+    state_message: null,
+  };
+  if (setup === "off") {
+    return off;
+  }
+  // Der Server fragte vor zwei Stunden; der Updater meldet sich jede Minute.
+  const current: UpdateStatus = {
+    ...off,
+    configured: true,
+    repo: UPDATE_REPO,
+    latest: MOCK_SERVER_VERSION,
+    latest_name: "Die erste Version",
+    notes: "Bestand, Zonen, Etiketten und Einkaufsliste.",
+    published_at: at(12 * 86_400_000),
+    url: `https://github.com/${UPDATE_REPO}/releases/tag/v${MOCK_SERVER_VERSION}`,
+    checked_at: at(2 * 3_600_000),
+    updater_ready: true,
+    updater_seen_at: at(60_000),
+  };
+  if (setup === "current") {
+    return current;
+  }
+  const next: UpdateStatus = {
+    ...current,
+    latest: NEW_RELEASE.version,
+    latest_name: NEW_RELEASE.name,
+    notes: NEW_RELEASE.notes,
+    published_at: at(2 * 86_400_000),
+    url: `https://github.com/${UPDATE_REPO}/releases/tag/v${NEW_RELEASE.version}`,
+    available: true,
+  };
+  // Ohne Updater: Er meldete sich zuletzt vor drei Tagen.
+  return setup === "new" ? next : { ...next, updater_ready: false, updater_seen_at: at(3 * 86_400_000) };
+}
 
 /** Was der nachgespielte Push-Dienst auf eine Testnachricht antwortet (docs/integrationen.md, 4.7 und 4.9). */
 const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
@@ -352,9 +468,10 @@ export interface MockControl {
   /** Was der Push-Dienst auf die nächsten Testnachrichten antwortet (Vorgabe "sent"). */
   setPushTestResult(status: PushTestStatus): void;
   /**
-   * Ersetzt Teile des Zustands der Integrationen (`integrations.load`): `backup`, `ha`, `push` oder
-   * `timezone`, jeweils als Ganzes. null kehrt zu den Beispielen der Ausgangslage zurück, auch beim
-   * Zustand von Home Assistant. Die Zeitzone gilt auch für die Monate der Statistik.
+   * Ersetzt Teile des Zustands der Integrationen (`integrations.load`): `backup`, `ha`, `push`,
+   * `update` oder `timezone`, jeweils als Ganzes. null kehrt zu den Beispielen der Ausgangslage
+   * zurück, auch beim Zustand von Home Assistant und der Updates. Die Zeitzone gilt auch für die
+   * Monate der Statistik; mit `update` arbeiten `update.check` und `update.install` weiter.
    */
   setIntegrations(changes: Partial<IntegrationStatus> | null): void;
   /**
@@ -452,7 +569,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     pending: scenarios.has("revoked") ? 3 : offline ? 4 : 0,
     last_synced_at: offline ? new Date(clock().getTime() - 3 * 3_600_000).toISOString() : stamp(),
     last_error: offline ? { code: "offline", message: "Der Server ist nicht erreichbar.", at: stamp() } : null,
-    server_version: "0.1.0",
+    server_version: MOCK_SERVER_VERSION,
     lookup_enabled: !scenarios.has("no-lookup"),
   });
 
@@ -485,6 +602,11 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   let haSetup: HaSetup = initialHa;
   /** Mit "stats-empty" zählt die Statistik nur, was ab dem Start der Attrappe entnommen wird. */
   const statsSince = scenarios.has("stats-empty") ? stamp() : null;
+  /** Updates über GitHub (siehe Kopf der Datei); `setIntegrations({ update })` ersetzt den Zustand. */
+  const initialUpdates = () => sampleUpdate(RELEASE_SCENARIOS.find(([scenario]) => scenarios.has(scenario))?.[1] ?? "current", clock().getTime());
+  let updates: UpdateStatus = initialUpdates();
+  /** Zeitpunkt der letzten Suche auf Knopfdruck in Millisekunden (Uhr der Attrappe) oder null. */
+  let lastUpdateCheck: number | null = null;
 
   // Einkaufsliste: was der Server selbst tut (siehe Kopf der Datei und `ServerEffect`).
   const serverEffects: ServerEffect[] = [];
@@ -1171,8 +1293,38 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         last_sent_at: configured ? at(41) : null,
         last_error: null,
       },
+      update: { ...updates },
       ...integrationChanges,
     };
+  }
+
+  /**
+   * Der nachgespielte Updater nach einer Anforderung (siehe Kopf der Datei), nur mit Wartezeit:
+   * Er beginnt, Stowly startet neu (der Server ist eine Weile nicht erreichbar), dann läuft die
+   * neue Version. Hat sich der Zustand inzwischen anders entwickelt, tut er nichts mehr.
+   */
+  function simulateUpdater(version: string): void {
+    if (latency <= 0) {
+      return;
+    }
+    const still = (state: UpdateStatus["state"]) => updates.state === state && updates.state_version === version;
+    later(() => {
+      if (still("requested")) {
+        updates = { ...updates, state: "installing", state_at: stamp(), state_message: null };
+      }
+    }, 8);
+    later(() => {
+      if (still("installing")) {
+        core.control.setOnline(false);
+      }
+    }, 16);
+    later(() => {
+      if (still("installing")) {
+        updates = { ...updates, current: version, available: false, state: "done", state_at: stamp() };
+        syncStatus.update((status) => ({ ...status, server_version: version }));
+        core.control.setOnline(true);
+      }
+    }, 40);
   }
 
   // ---------------------------------------------------------------- Die Schnittstelle
@@ -2213,6 +2365,52 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
     },
 
+    // Updates über GitHub (docs/integrationen.md, 10.2 und 10.5), nachgespielt: braucht den Server.
+    update: {
+      async check() {
+        await wait(0.5);
+        requireOnline();
+        if (!updates.configured) {
+          throw new CoreError("not_configured", UPDATE_NOT_CONFIGURED);
+        }
+        const nowMs = clock().getTime();
+        if (lastUpdateCheck !== null && nowMs - lastUpdateCheck < UPDATE_CHECK_MIN_GAP_S * 1000) {
+          const retryAfter = Math.max(1, Math.ceil((lastUpdateCheck + UPDATE_CHECK_MIN_GAP_S * 1000 - nowMs) / 1000));
+          throw new CoreError("rate_limited", "Nach Updates suchen geht höchstens einmal je Minute.", { retry_after_s: retryAfter });
+        }
+        lastUpdateCheck = nowMs;
+        // GitHub kennt nichts Neueres, als der Server schon gesehen hat.
+        updates = { ...updates, checked_at: stamp(), check_error: null };
+        return { ...updates };
+      },
+      async install(version) {
+        await wait(0.5);
+        requireOnline();
+        // Wie der Server: zuerst die Form der Anfrage, dann die Prüfungen der Reihe nach.
+        if (typeof version !== "string" || version.length > 40 || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(version)) {
+          throw new CoreError("invalid", "Die Anfrage entspricht nicht dem Vertrag.");
+        }
+        if (!updates.configured) {
+          throw new CoreError("not_configured", UPDATE_NOT_CONFIGURED);
+        }
+        if (!updates.updater_ready) {
+          throw new CoreError("not_configured", UPDATER_SILENT);
+        }
+        if (updates.state === "requested" || updates.state === "installing") {
+          throw new CoreError("conflict", "Ein Update ist schon angefordert.");
+        }
+        if (version !== updates.latest) {
+          throw new CoreError("conflict", "Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen.");
+        }
+        if (!updates.available) {
+          throw new CoreError("conflict", "Diese Version ist schon installiert.");
+        }
+        updates = { ...updates, state: "requested", state_version: version, state_at: stamp(), state_message: null };
+        simulateUpdater(version);
+        return { ...updates };
+      },
+    },
+
     control: {
       setOnline(online: boolean) {
         syncStatus.update((status) => ({
@@ -2266,10 +2464,19 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         pushTestStatus = status;
       },
       setIntegrations(changes: Partial<IntegrationStatus> | null) {
-        integrationChanges = changes === null ? {} : { ...integrationChanges, ...changes };
         if (changes === null) {
+          integrationChanges = {};
           haSetup = initialHa;
+          updates = initialUpdates();
+          lastUpdateCheck = null;
+          return;
         }
+        // Updates sind ein Zustand, mit dem `update.check` und `update.install` weiterarbeiten.
+        const { update, ...rest } = changes;
+        if (update !== undefined) {
+          updates = { ...update };
+        }
+        integrationChanges = { ...integrationChanges, ...rest };
       },
       setHaState(next: HaState) {
         haSetup = next;

@@ -1,7 +1,7 @@
 """Zustand der Integrationen für die Einstellungen der App (docs/integrationen.md, Abschnitt 8).
 
-Nie darin: ein Token, ein privater Schlüssel, die Adresse von Home Assistant, ``STOWLY_PUSH_CONTACT``.
-Öffentliche age-Schlüssel nur gekürzt.
+Nie darin: ein Token, ein privater Schlüssel, die Adresse von Home Assistant, ``STOWLY_PUSH_CONTACT``,
+Pfade des Rechners oder das Log des Updaters. Öffentliche age-Schlüssel nur gekürzt.
 """
 
 import sqlite3
@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from stowly import autobackup, daily, scheduler
+from stowly import autobackup, daily, scheduler, updates
 from stowly.config import Settings
 
 PUSH_DAILY = daily.JOB
@@ -77,4 +77,12 @@ def status(
         "backup": autobackup.status(settings, scheduler.load_run(con, autobackup.JOB), now),
         "ha": ha_status(settings, con, ha_sync),
         "push": push_status(settings, con, device_id),
+        "update": update_status(settings, con, now),
     }
+
+
+def update_status(settings: Settings, con: sqlite3.Connection, now: datetime) -> dict[str, Any]:
+    """``UpdateStatus`` (docs/integrationen.md, 10.4): das neueste Release aus ``job_runs`` (Aufgabe
+    ``update_check``) und der Austausch mit dem Updater in ``/data/update``; ``now`` misst das Alter
+    der Anforderung und der Meldungen des Updaters."""
+    return updates.status(settings, con, now)

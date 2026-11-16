@@ -7,8 +7,11 @@
 # mit DSM 6.2.4 (docs/betrieb.md, Abschnitt 4.4).
 services:
   stowly:
+    # Ohne Angaben in .env: selbst bauen (docker compose up -d --build), das Image heißt stowly:local.
+    # Mit STOWLY_IMAGE und STOWLY_VERSION: das fertige Image von GitHub (docker compose pull, dann
+    # docker compose up -d); so arbeitet auch der Updater (docs/betrieb.md, Abschnitt 9).
     build: .
-    image: stowly:local
+    image: ${STOWLY_IMAGE:-stowly}:${STOWLY_VERSION:-local}
     container_name: stowly
     restart: unless-stopped
     # Alle Variablen aus .env kommen so in den Container, auch die von Stufe 2 (Zeitzone, Sicherung,

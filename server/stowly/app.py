@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from stowly import __version__, autobackup, bring, daily, db, label_templates, off, push, scheduler
+from stowly import __version__, autobackup, bring, daily, db, label_templates, off, push, scheduler, updates
 from stowly.api import router as api_router
 from stowly.auth import LoginGuard
 from stowly.config import MAX_REQUEST_BYTES, Settings
@@ -82,6 +82,8 @@ def report_configuration(settings: Settings) -> None:
         log.info("Sensor für Home Assistant unter /api/ha/summary eingerichtet.")
     if not settings.push_configured:
         log.info("Push ist aus (STOWLY_PUSH_CONTACT ist nicht gesetzt).")
+    if settings.update_configured:
+        log.info("Updates: Releases von %s auf GitHub.", settings.update_repo)
 
 
 def build_app(
@@ -94,16 +96,21 @@ def build_app(
     job_clock: off.Clock | None = None,
     ha_transport: httpx2.AsyncBaseTransport | None = None,
     ha_clock: off.Clock | None = None,
+    update_transport: httpx2.AsyncBaseTransport | None = None,
+    update_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Baut die Anwendung, ohne Dateien oder die Datenbank anzufassen.
 
     ``off_transport`` und ``off_clock`` ersetzen in Tests die Verbindung zu Open Food Facts
     und die Uhr des Hintergrund-Ablaufs, ``push_transport`` und ``push_clock`` die Verbindung zu
     den Push-Diensten und deren Uhr, ``job_clock`` die Uhr des Zeitplans, ``ha_transport`` und
-    ``ha_clock`` die Verbindung zu Home Assistant und die Uhr des Abgleichs mit Bring!.
+    ``ha_clock`` die Verbindung zu Home Assistant und die Uhr des Abgleichs mit Bring!,
+    ``update_transport`` und ``update_clock`` die Verbindung zu GitHub und die Uhr der Updates (Takt
+    der Abfragen, Bremse des Knopfs, Alter der Dateien des Updaters).
     """
 
     gateway = PrintGateway()
+    update_timer = update_clock or off.Clock()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -129,23 +136,40 @@ def build_app(
             ha = bring.BringSync(settings, transport=ha_transport, clock=ha_clock)
             app.state.bring = ha
             ha_task = asyncio.create_task(ha.run(), name="stowly-ha")
+        # Die Abfrage bei GitHub hat ebenfalls ihre eigene Schleife (10.2), nur mit STOWLY_UPDATE_REPO.
+        checker: updates.UpdateChecker | None = None
+        checker_task: asyncio.Task[None] | None = None
+        if settings.update_configured:
+            checker = updates.UpdateChecker(settings, sender, transport=update_transport, clock=update_timer)
+            app.state.updates = checker
+            checker_task = asyncio.create_task(checker.run(), name="stowly-updates")
         try:
             async with _serving(app):
                 yield
         finally:
             # Nicht abbrechen: Ein Takt, der gerade die Datenbank liest, wird fertig; ein laufender
-            # Lauf bekommt ein paar Sekunden (Scheduler.aclose), der Abgleich mit HA ebenso.
+            # Lauf bekommt ein paar Sekunden (Scheduler.aclose), der Abgleich mit HA und die Abfrage
+            # bei GitHub ebenso.
             jobs.stop()
             if ha is not None:
                 ha.stop()
+            if checker is not None:
+                checker.stop()
             await asyncio.gather(schedule, return_exceptions=True)
-            await asyncio.gather(jobs.aclose(), _stop(ha_task, bring.SHUTDOWN_WAIT_S))
+            await asyncio.gather(
+                jobs.aclose(),
+                _stop(ha_task, bring.SHUTDOWN_WAIT_S),
+                _stop(checker_task, updates.SHUTDOWN_WAIT_S),
+            )
             app.state.scheduler = None
             app.state.bring = None
+            app.state.updates = None
             app.state.push = None
             await sender.aclose()
             if ha is not None:
                 await ha.aclose()
+            if checker is not None:
+                await checker.aclose()
 
     @contextlib.asynccontextmanager
     async def _serving(app: FastAPI) -> AsyncIterator[None]:
@@ -207,11 +231,15 @@ def build_app(
     app.state.off_worker = None
     # Druckdienst (stowly/printing.py); läuft ebenfalls nur, solange die App bedient wird.
     app.state.printing = None
-    # Versand an die Push-Dienste, der Zeitplan (Sicherung, Tagesnachricht) und der Abgleich mit
-    # Home Assistant; ebenso nur, solange die App läuft.
+    # Versand an die Push-Dienste, der Zeitplan (Sicherung, Tagesnachricht), der Abgleich mit
+    # Home Assistant und die Abfrage bei GitHub; ebenso nur, solange die App läuft.
     app.state.push = None
     app.state.scheduler = None
     app.state.bring = None
+    app.state.updates = None
+    # Die Uhr der Updates gilt auch ohne laufende Schleife: Die Endpunkte messen damit das Alter der
+    # Dateien des Updaters.
+    app.state.update_clock = update_timer
 
     install_error_handlers(app)
     app.add_middleware(BodyLimit)
@@ -284,10 +312,14 @@ def create_app(
     job_clock: off.Clock | None = None,
     ha_transport: httpx2.AsyncBaseTransport | None = None,
     ha_clock: off.Clock | None = None,
+    update_transport: httpx2.AsyncBaseTransport | None = None,
+    update_clock: off.Clock | None = None,
 ) -> FastAPI:
-    """Anwendung für den Betrieb: legt die Datenbank an und migriert sie."""
+    """Anwendung für den Betrieb: legt die Datenbank an und migriert sie, dazu den Ordner für den
+    Austausch mit dem Updater (``/data/update``, docs/integrationen.md, 10.3)."""
     settings = settings or Settings.from_env()
     prepare_database(settings)
+    updates.prepare_folder(settings)
     return build_app(
         settings,
         off_transport=off_transport,
@@ -297,4 +329,6 @@ def create_app(
         job_clock=job_clock,
         ha_transport=ha_transport,
         ha_clock=ha_clock,
+        update_transport=update_transport,
+        update_clock=update_clock,
     )

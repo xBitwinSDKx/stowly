@@ -130,11 +130,17 @@ cp .env.example .env        # STOWLY_PASSWORD setzen
 docker compose up -d --build
 ```
 
-Der Container spricht nur HTTP auf Port 8010 und gehört hinter einen Reverse Proxy, der HTTPS bereitstellt (Nginx Proxy Manager mit eigener Zertifizierungsstelle oder Tailscale). **Offline-Betrieb, Installation als App und Kamera funktionieren nur über die HTTPS-Adresse**: Das verlangen die Browser. Über `http://<LAN-IP>:8010` läuft Stowly nur als Online-Webseite ohne Scan.
+Der Container spricht nur HTTP auf Port 8010 und gehört hinter einen Reverse Proxy, der HTTPS bereitstellt (Nginx Proxy Manager oder der von Synology DSM mit eigener Zertifizierungsstelle, oder Tailscale). **Offline-Betrieb, Installation als App und Kamera funktionieren nur über die HTTPS-Adresse**: Das verlangen die Browser. Über `http://<LAN-IP>:8010` läuft Stowly nur als Online-Webseite ohne Scan.
 
 **Abhängigkeiten.** Die Python-Pakete im Image sind auf Version und Prüfsumme festgelegt: `server/requirements.lock` für Server und Druckdienst, `print/requirements-brother.txt` für die Brother-Bibliothek. Es sind die Versionen, mit denen die Tests laufen. Wer in einer `pyproject.toml` eine Abhängigkeit ergänzt oder in der Entwicklungsumgebung eine aktualisiert, erneuert die Sperrdatei: im Ordner `server` `python tests/test_requirements_lock.py`. Sonst schlägt genau dieser Test fehl. Anleitung: [`docs/betrieb.md`](docs/betrieb.md), Abschnitt 9.1.
 
-`Dockerfile` und `docker-compose.yml` sind in der Zielumgebung noch nicht gebaut und gestartet worden: Auf dem Entwicklungsrechner gibt es kein Docker.
+**Fertiges Image und Updates.** Jede Version erscheint auf GitHub als Release samt Image `ghcr.io/<konto>/stowly:X.Y.Z` (ohne die Brother-Bibliothek). Mit dem Updater auf dem Rechner bietet die App neue Versionen per Knopf an. Einrichten und Veröffentlichen: [`docs/betrieb.md`](docs/betrieb.md), Abschnitt 9; was sich je Version ändert: [`CHANGELOG.md`](CHANGELOG.md).
+
+Gebaut und betrieben wird Stowly bisher auf einer Synology mit DSM 6.2.4 ([`docs/betrieb.md`](docs/betrieb.md), Abschnitt 4.4). Auf dem Entwicklungsrechner gibt es kein Docker.
+
+## Rechte
+
+Alle Rechte vorbehalten. Der Code ist zum Ansehen öffentlich, eine Lizenz zum Verwenden, Ändern oder Weitergeben gibt es nicht. Beiträge von außen nimmt das Repository nicht an.
 
 ## Hinweise
 

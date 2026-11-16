@@ -25,6 +25,9 @@ import {
   type Stats,
   type SyncRequest,
   type SyncResponse,
+  type UpdateInstallInput,
+  type UpdateState,
+  type UpdateStatus,
 } from "@/contract/api.gen";
 import type { StatsRange } from "@/contract/core";
 import { CoreError, type CoreErrorCode } from "@/contract/errors";
@@ -41,6 +44,7 @@ export const LOOKUP_TIMEOUT_MS = 6_000;
 
 const LOOKUP_STATES: ReadonlySet<string> = new Set<LookupResultState>(["found", "not_found", "pending", "skipped", "disabled"]);
 const PUSH_TEST_STATES: ReadonlySet<string> = new Set<PushTestStatus>(["sent", "gone", "rejected", "failed"]);
+const UPDATE_STATES: ReadonlySet<string> = new Set<UpdateState>(["idle", "requested", "installing", "done", "failed"]);
 
 const OFFLINE_MESSAGE = "Der Server ist nicht erreichbar.";
 
@@ -51,7 +55,7 @@ const ERROR_CODES: Record<ErrorCode, CoreErrorCode> = {
   rate_limited: "rate_limited",
   not_configured: "not_configured",
   not_found: "not_found",
-  conflict: "invalid",
+  conflict: "conflict",
   protocol_mismatch: "protocol_mismatch",
   payload_too_large: "internal",
   not_implemented: "not_supported",
@@ -258,10 +262,44 @@ export class ApiClient {
     return { status: answer.status, http_status: answer.http_status, message: answer.message };
   }
 
-  /** Der Zustand von Sicherung, Home Assistant und Push (`GET /api/integrations`). */
+  /** Der Zustand von Sicherung, Home Assistant, Push und Updates (`GET /api/integrations`). */
   async integrations(token: string): Promise<IntegrationStatus> {
     const answer = await this.json<IntegrationStatus>(ENDPOINTS.get_integrations, ENDPOINTS.get_integrations.path, { token, timeoutMs: REQUEST_TIMEOUT_MS });
-    if (!isRecord(answer) || typeof answer.timezone !== "string" || !isRecord(answer.backup) || !isRecord(answer.ha) || !isRecord(answer.push)) {
+    if (
+      !isRecord(answer) ||
+      typeof answer.timezone !== "string" ||
+      !isRecord(answer.backup) ||
+      !isRecord(answer.ha) ||
+      !isRecord(answer.push) ||
+      !isRecord(answer.update)
+    ) {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return answer;
+  }
+
+  // ---------------------------------------------------------------- Updates (Protokoll 11.5)
+
+  /**
+   * Fragt GitHub sofort nach dem neuesten Release (`POST /api/update/check`) und liefert den
+   * Zustand danach. Ein Fehler bei GitHub steht in `check_error`; 429 kommt als "rate_limited".
+   */
+  async checkUpdate(token: string): Promise<UpdateStatus> {
+    const answer = await this.json<UpdateStatus>(ENDPOINTS.check_update, ENDPOINTS.check_update.path, { token, timeoutMs: REQUEST_TIMEOUT_MS });
+    if (!isUpdateStatus(answer)) {
+      throw new CoreError("offline", OFFLINE_MESSAGE);
+    }
+    return answer;
+  }
+
+  /**
+   * Fordert das Update auf `version` beim Updater an (`POST /api/update/install`, 202) und liefert
+   * den Zustand danach. Die Version geht so hinaus, wie sie ist: Ihre Form prüft der Server (422).
+   */
+  async installUpdate(token: string, version: string): Promise<UpdateStatus> {
+    const body: UpdateInstallInput = { version };
+    const answer = await this.json<UpdateStatus>(ENDPOINTS.install_update, ENDPOINTS.install_update.path, { token, body, timeoutMs: REQUEST_TIMEOUT_MS });
+    if (!isUpdateStatus(answer)) {
       throw new CoreError("offline", OFFLINE_MESSAGE);
     }
     return answer;
@@ -300,6 +338,41 @@ export class ApiClient {
 }
 
 const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+/** Die Felder eines `UpdateStatus`, die Text oder null sind. */
+const UPDATE_TEXTS = [
+  "repo",
+  "latest",
+  "latest_name",
+  "notes",
+  "published_at",
+  "url",
+  "checked_at",
+  "check_error",
+  "updater_seen_at",
+  "state_version",
+  "state_at",
+  "state_message",
+] as const;
+
+/**
+ * Prüfung der Form eines `UpdateStatus` (docs/integrationen.md, 10.4), als Antwort auf Suchen und
+ * Anfordern: Was nicht so aussieht, stammt nicht vom Stowly-Server. Im Zustand der Integrationen
+ * genügt wie bei den übrigen Teilen ein Objekt; ein Fehler darin soll dort nicht auch Sicherung,
+ * Home Assistant und Push verbergen.
+ */
+function isUpdateStatus(value: unknown): value is UpdateStatus {
+  return (
+    isRecord(value) &&
+    typeof value.configured === "boolean" &&
+    typeof value.current === "string" &&
+    typeof value.available === "boolean" &&
+    typeof value.updater_ready === "boolean" &&
+    typeof value.state === "string" &&
+    UPDATE_STATES.has(value.state) &&
+    UPDATE_TEXTS.every((key) => value[key] === null || typeof value[key] === "string")
+  );
+}
 
 /** Prüfung der Form einer Statistik: Was nicht so aussieht, stammt nicht vom Stowly-Server. */
 function isStats(value: unknown): value is Stats {

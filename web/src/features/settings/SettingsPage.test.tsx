@@ -1,12 +1,25 @@
 /**
  * Einstellungen auf der Attrappe: Darstellung, dieses Gerät, Haushalt (samt Uhrzeit der
- * Tagesnachricht), Geräte, Sicherung, Home Assistant und Bring!, Über, Abmelden.
+ * Tagesnachricht), Geräte, Sicherung, Home Assistant und Bring!, Aktualisierung, Über, Abmelden.
  */
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CoreError, formatTimestamp, HA_MIRROR_DELAY_S, PUSH_TEST_INTERVAL_S, ROUTES, type Device, type HaState, type HaStatus, type Live } from "@/contract";
+import {
+  CoreError,
+  formatDate,
+  formatTimestamp,
+  HA_MIRROR_DELAY_S,
+  PUSH_TEST_INTERVAL_S,
+  ROUTES,
+  toLocalDate,
+  type Device,
+  type HaState,
+  type HaStatus,
+  type Live,
+  type UpdateStatus,
+} from "@/contract";
 import { renderApp } from "@/app/render.test-setup";
 import { DEVICE_IDS, type MockCore } from "@/mock";
 import { deviceTimeZone } from "@/ui";
@@ -18,6 +31,7 @@ import { sortDevices } from "./DevicesSection";
 import { describeHa, durationText, linkedText } from "./HomeAssistantSection";
 import { notifyTimeHint, readTime } from "./NotifyTimeSetting";
 import { describePush, testMessage } from "./PushSetting";
+import { checkIntervalText, checkResult, describeLatest, describeUpdateState, INSTALL_WARNING, installErrorText, UPDATE_POLL_MS } from "./UpdateSection";
 
 function value<T>(live: Live<T>): T {
   const current = live.get();
@@ -871,5 +885,392 @@ describe("Uhrzeit der Tagesnachricht", () => {
     await ready();
     await act(() => core.settings.update({ notify_time: "18:05" }));
     await waitFor(() => expect(field()).toHaveValue("18:05"));
+  });
+});
+
+const UPDATE = "Aktualisierung";
+
+/** Ein Zustand der Updates: eingerichtet, eine neue Version mit Änderungen, der Updater bereit. */
+function updateStatus(changes: Partial<UpdateStatus> = {}): UpdateStatus {
+  const now = Date.now();
+  return {
+    configured: true,
+    repo: "beispiel/stowly",
+    current: "0.1.0",
+    latest: "0.2.0",
+    latest_name: "Updates aus den Einstellungen",
+    notes: "## Neu\n\n- Updates <b>direkt</b> installieren\n- Zweite Zeile",
+    published_at: "2026-11-12T09:00:00.000Z",
+    url: "https://github.com/beispiel/stowly/releases/tag/v0.2.0",
+    available: true,
+    checked_at: new Date(now - 2 * 3_600_000).toISOString(),
+    check_error: null,
+    updater_ready: true,
+    updater_seen_at: new Date(now - 60_000).toISOString(),
+    state: "idle",
+    state_version: null,
+    state_at: null,
+    state_message: null,
+    ...changes,
+  };
+}
+
+/** Öffnet die Einstellungen mit diesem Zustand der Updates; er gilt schon beim ersten Laden. */
+async function settingsWithUpdate(update: UpdateStatus): Promise<MockCore> {
+  const core = renderApp();
+  core.control.setIntegrations({ update });
+  await openSettings();
+  return core;
+}
+
+/** Was die Statuszeile des Abschnitts für Screenreader ansagt. */
+function announced(): string {
+  return section(UPDATE).querySelector("p.sr-only[role='status']")?.textContent ?? "";
+}
+
+describe("Aktualisierung", () => {
+  it("nennt ohne STOWLY_UPDATE_REPO nur die installierte Version und warum", async () => {
+    renderApp({ scenarios: ["release-off"] }, ROUTES.settings);
+    await ready();
+    const update = section(UPDATE);
+    expect(document.getElementById("aktualisierung")).toBe(update);
+    expect(await within(update).findByText("Installierte Version")).toBeInTheDocument();
+    expect(update).toHaveTextContent("Installierte VersionUpdates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).0.1.0");
+    expect(within(update).queryByText("Neueste Version")).not.toBeInTheDocument();
+    expect(within(update).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("zeigt eine aktuelle Version und die letzte Suche, ohne etwas zum Installieren anzubieten", async () => {
+    renderApp({}, ROUTES.settings);
+    await ready();
+    const update = section(UPDATE);
+    expect(await within(update).findByText("Neueste Version")).toBeInTheDocument();
+    expect(update).toHaveTextContent("Neue Versionen kommen aus beispiel/stowly auf GitHub.");
+    expect(update).toHaveTextContent("Stowly ist auf dem neuesten Stand.");
+    expect(update).toHaveTextContent(/Gelungen vor 2 Stunden \(\d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}\)\. Der Server sucht von selbst alle 6 Stunden\./);
+    expect(within(update).getByRole("button", { name: "Nach Updates suchen" })).toBeInTheDocument();
+    expect(within(update).queryByRole("button", { name: "Update installieren" })).not.toBeInTheDocument();
+    expect(within(update).queryByText("neu")).not.toBeInTheDocument();
+    expect(announced()).toBe("");
+  });
+
+  it("zeigt eine neue Version mit Datum und ihre Änderungen aufklappbar als Klartext", async () => {
+    const status = updateStatus();
+    await settingsWithUpdate(status);
+    const update = section(UPDATE);
+    expect(await within(update).findByText("neu")).toBeInTheDocument();
+    const day = formatDate(toLocalDate(new Date(status.published_at ?? "")));
+    expect(update).toHaveTextContent(`„Updates aus den Einstellungen“, erschienen am ${day}. Neuer als die installierte Version 0.1.0.`);
+    expect(within(update).getByRole("button", { name: "Update installieren" })).toBeInTheDocument();
+
+    const toggle = within(update).getByRole("button", { name: "Änderungen zeigen" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(update).queryByText(/Zweite Zeile/)).not.toBeInTheDocument();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAccessibleName("Änderungen verbergen");
+    const notes = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    // Klartext: Nichts davon wird als HTML gelesen, und die Zeilenumbrüche bleiben.
+    expect(notes?.textContent).toBe(status.notes);
+    expect(notes?.querySelector("b")).toBeNull();
+    expect(notes).toHaveTextContent("Updates <b>direkt</b> installieren");
+
+    const link = within(update).getByRole("link", { name: "Auf GitHub ansehen" });
+    expect(link).toHaveAttribute("href", status.url);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(update).queryByText(/Zweite Zeile/)).not.toBeInTheDocument();
+  });
+
+  it("verlinkt nur Seiten auf GitHub und lässt die Änderungen ohne Inhalt weg", async () => {
+    await settingsWithUpdate(updateStatus({ url: "https://example.org/release" }));
+    expect(await within(section(UPDATE)).findByRole("button", { name: "Änderungen zeigen" })).toBeInTheDocument();
+    expect(within(section(UPDATE)).queryByRole("link")).not.toBeInTheDocument();
+    cleanup();
+
+    await settingsWithUpdate(updateStatus({ notes: null, url: null }));
+    expect(await within(section(UPDATE)).findByText("Neueste Version")).toBeInTheDocument();
+    expect(within(section(UPDATE)).queryByText(/Änderungen in/)).not.toBeInTheDocument();
+  });
+
+  it("sucht auf Knopfdruck, meldet das Ergebnis und wartet danach so lange, wie der Server sagt", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    const check = vi.spyOn(core.update, "check");
+    await ready();
+    const update = section(UPDATE);
+    const button = await within(update).findByRole("button", { name: "Nach Updates suchen" });
+    await userEvent.click(button);
+    expect(await screen.findByText("Stowly ist auf dem neuesten Stand.")).toBeInTheDocument();
+    expect(check).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(update).toHaveTextContent("Gelungen gerade eben"));
+
+    // Gleich noch einmal: höchstens einmal je Minute.
+    await userEvent.click(button);
+    expect(await within(update).findByText("Gerade erst gesucht")).toBeInTheDocument();
+    expect(update).toHaveTextContent("Nach Updates suchen geht höchstens einmal je Minute. Bitte kurz warten.");
+    const left = Number(/Nächste Suche in (\d+) s/.exec(update.textContent ?? "")?.[1]);
+    expect(left).toBeGreaterThan(50);
+    expect(left).toBeLessThanOrEqual(60);
+    // Der Knopf ruht, behält aber den Fokus.
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(button);
+    expect(check).toHaveBeenCalledTimes(2);
+  });
+
+  it("nimmt die Wartezeit des Servers und sagt, wenn er fehlt", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    const check = vi.spyOn(core.update, "check").mockRejectedValueOnce(new CoreError("offline"));
+    await ready();
+    const update = section(UPDATE);
+    await userEvent.click(await within(update).findByRole("button", { name: "Nach Updates suchen" }));
+    expect(await within(update).findByText("Gesucht wird über den Server, und der ist gerade nicht erreichbar.")).toBeInTheDocument();
+
+    // Was fehlt, sagt der Server selbst.
+    check.mockRejectedValueOnce(new CoreError("not_configured", "Die Abfrage bei GitHub ist gerade nicht verfügbar."));
+    await userEvent.click(within(update).getByRole("button", { name: "Nach Updates suchen" }));
+    expect(await within(update).findByText("Die Abfrage bei GitHub ist gerade nicht verfügbar.")).toBeInTheDocument();
+
+    check.mockRejectedValueOnce(new CoreError("rate_limited", "Zu oft.", { retry_after_s: 42 }));
+    await userEvent.click(within(update).getByRole("button", { name: "Nach Updates suchen" }));
+    expect(await within(update).findByText("Nächste Suche in 42 s")).toBeInTheDocument();
+  });
+
+  it("meldet nach der Suche eine neue Version oder den Fehler bei GitHub", async () => {
+    const core = renderApp({}, ROUTES.settings);
+    const check = vi.spyOn(core.update, "check").mockResolvedValueOnce(updateStatus({ checked_at: new Date().toISOString() }));
+    await ready();
+    const update = section(UPDATE);
+    await userEvent.click(await within(update).findByRole("button", { name: "Nach Updates suchen" }));
+    expect(await screen.findByText("Neue Version gefunden: Stowly 0.2.0")).toBeInTheDocument();
+    expect(within(update).getByRole("button", { name: "Update installieren" })).toBeInTheDocument();
+
+    check.mockResolvedValueOnce(updateStatus({ check_error: "GitHub ist nicht erreichbar." }));
+    await userEvent.click(within(update).getByRole("button", { name: "Nach Updates suchen" }));
+    expect(await screen.findByText("Die Suche ist gescheitert: GitHub ist nicht erreichbar.")).toBeInTheDocument();
+    expect(update).toHaveTextContent("Die letzte Suche ist gescheitert: GitHub ist nicht erreichbar.");
+  });
+
+  it("fordert ein Update erst nach der Rückfrage an; Abbrechen lässt alles, wie es war", async () => {
+    const core = renderApp({ scenarios: ["release-new"] }, ROUTES.settings);
+    const install = vi.spyOn(core.update, "install");
+    await ready();
+    const update = section(UPDATE);
+    const button = await within(update).findByRole("button", { name: "Update installieren" });
+    expect(update).toHaveTextContent("Update auf 0.2.0");
+
+    await userEvent.click(button);
+    const title = "Update auf 0.2.0 installieren?";
+    expect(screen.getByRole("dialog", { name: title })).toHaveTextContent(INSTALL_WARNING);
+    await userEvent.click(within(screen.getByRole("dialog", { name: title })).getByRole("button", { name: "Abbrechen" }));
+    expect(screen.queryByRole("dialog", { name: title })).not.toBeInTheDocument();
+    expect(install).not.toHaveBeenCalled();
+    await waitFor(() => expect(button).toHaveFocus());
+
+    await userEvent.click(button);
+    await userEvent.click(within(screen.getByRole("dialog", { name: title })).getByRole("button", { name: "Installieren" }));
+    expect(install).toHaveBeenCalledWith("0.2.0");
+    const state = await within(update).findByText("Angefordert");
+    expect(update).toHaveTextContent("Der Updater übernimmt in den nächsten Minuten.");
+    expect(screen.queryByRole("dialog", { name: title })).not.toBeInTheDocument();
+    expect(within(update).queryByRole("button", { name: "Update installieren" })).not.toBeInTheDocument();
+    // Der Fokus geht an den neuen Stand, und die Statuszeile sagt ihn an.
+    const target = state.closest<HTMLElement>("[tabindex='-1']");
+    expect(target).not.toBeNull();
+    await waitFor(() => expect(target).toHaveFocus());
+    expect(announced()).toBe("Angefordert. Der Updater übernimmt in den nächsten Minuten.");
+  });
+
+  it("zeigt in der Rückfrage, was der Server gegen das Anfordern hat, und lädt seinen Stand neu", async () => {
+    const core = renderApp({ scenarios: ["release-new"] }, ROUTES.settings);
+    const install = vi.spyOn(core.update, "install").mockRejectedValueOnce(new CoreError("conflict", "Ein Update ist schon angefordert."));
+    const load = vi.spyOn(core.integrations, "load");
+    await ready();
+    await userEvent.click(await within(section(UPDATE)).findByRole("button", { name: "Update installieren" }));
+    const dialog = screen.getByRole("dialog", { name: "Update auf 0.2.0 installieren?" });
+    const loads = load.mock.calls.length;
+    await userEvent.click(within(dialog).getByRole("button", { name: "Installieren" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Ein Update ist schon angefordert.");
+    expect(load.mock.calls.length).toBeGreaterThan(loads);
+
+    const cases: [CoreError, string][] = [
+      [new CoreError("not_configured", "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9)."), "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9)."],
+      [new CoreError("conflict", "Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen."), "Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen."],
+      [new CoreError("offline"), "Zum Anfordern braucht es den Server, und der ist gerade nicht erreichbar."],
+    ];
+    for (const [error, text] of cases) {
+      install.mockRejectedValueOnce(error);
+      await userEvent.click(within(dialog).getByRole("button", { name: "Installieren" }));
+      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(text));
+    }
+  });
+
+  it("nennt jeden Stand eines Updates und bietet währenddessen nichts zum Installieren an", async () => {
+    const at = "2026-11-16T09:02:00.000Z";
+    const stale = "Der Updater hat die Anforderung noch nicht abgeholt. Läuft die Aufgabe auf dem Rechner?";
+    const silent = "Der Updater meldet sich seit 15 Minuten nicht. Bitte auf dem Rechner nachsehen.";
+    const back = "Die neue Version startete nicht, zurück auf 0.1.0.";
+    const installing = "Der Updater holt Stowly 0.2.0 und startet Stowly neu; dabei ist es kurz nicht erreichbar.";
+    const cases: { changes: Partial<UpdateStatus>; title: string; text: string; announcement: string; offered: boolean }[] = [
+      {
+        changes: { state: "requested", state_version: "0.2.0", state_at: at },
+        title: "Angefordert",
+        text: "Der Updater übernimmt in den nächsten Minuten.",
+        announcement: "Angefordert. Der Updater übernimmt in den nächsten Minuten.",
+        offered: false,
+      },
+      {
+        changes: { state: "requested", state_version: "0.2.0", state_at: at, updater_ready: false, state_message: stale },
+        title: "Angefordert",
+        text: `Der Updater übernimmt in den nächsten Minuten. ${stale}`,
+        announcement: `Angefordert. Der Updater übernimmt in den nächsten Minuten. ${stale}`,
+        offered: false,
+      },
+      { changes: { state: "installing", state_version: "0.2.0", state_at: at }, title: "Wird installiert …", text: installing, announcement: `Wird installiert … ${installing}`, offered: false },
+      {
+        changes: { state: "installing", state_version: "0.2.0", state_at: at, state_message: silent },
+        title: "Wird installiert …",
+        text: `${installing} ${silent}`,
+        announcement: `Wird installiert … ${installing} ${silent}`,
+        offered: false,
+      },
+      {
+        changes: { state: "done", state_version: "0.2.0", state_at: at, current: "0.2.0", available: false },
+        title: "Aktualisiert auf 0.2.0",
+        text: `Am ${formatTimestamp(at)}.`,
+        announcement: `Aktualisiert auf 0.2.0. Am ${formatTimestamp(at)}.`,
+        offered: false,
+      },
+      // Nach einem gescheiterten Update geht ein neuer Versuch.
+      {
+        changes: { state: "failed", state_version: "0.2.0", state_at: at, state_message: back },
+        title: "Update auf 0.2.0 gescheitert",
+        text: back,
+        announcement: `Update auf 0.2.0 gescheitert. ${back}`,
+        offered: true,
+      },
+    ];
+    for (const { changes, title, text, announcement, offered } of cases) {
+      await settingsWithUpdate(updateStatus(changes));
+      const update = section(UPDATE);
+      expect(await within(update).findByText(title), title).toBeInTheDocument();
+      expect(update, title).toHaveTextContent(text);
+      expect(announced(), title).toBe(announcement);
+      expect(Boolean(within(update).queryByRole("button", { name: "Update installieren" })), title).toBe(offered);
+      cleanup();
+    }
+
+    // Ohne Stand, aber mit einem Satz des Servers: der Satz.
+    await settingsWithUpdate(updateStatus({ state_message: "Hinweis des Servers." }));
+    await waitFor(() => expect(announced()).toBe("Hinweis des Servers."));
+    // Sichtbar als Hinweis, dazu in der Statuszeile.
+    expect(within(section(UPDATE)).getAllByText("Hinweis des Servers.")).toHaveLength(2);
+  });
+
+  it("sagt, wenn sich der Updater auf dem Rechner nicht meldet, statt das Installieren anzubieten", async () => {
+    renderApp({ scenarios: ["release-no-updater"] }, ROUTES.settings);
+    await ready();
+    const update = section(UPDATE);
+    expect(await within(update).findByText("Stowly 0.2.0 lässt sich nicht installieren")).toBeInTheDocument();
+    expect(update).toHaveTextContent("Der Updater auf dem Rechner meldet sich nicht. Anleitung: docs/betrieb.md, Abschnitt 9.");
+    expect(update).toHaveTextContent(/Zuletzt hat er sich am \d{2}\.\d{2}\.\d{4}, \d{2}:\d{2} gemeldet\./);
+    expect(within(update).getByText("neu")).toBeInTheDocument();
+    expect(within(update).queryByRole("button", { name: "Update installieren" })).not.toBeInTheDocument();
+  });
+
+  it("fragt während eines Updates alle 10 Sekunden nach und sagt „Server startet neu …“, solange der Server fehlt", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const core = await settingsWithUpdate(updateStatus({ state: "installing", state_version: "0.2.0", state_at: new Date().toISOString() }));
+      const load = vi.spyOn(core.integrations, "load");
+      const update = section(UPDATE);
+      expect(await within(update).findByText("Wird installiert …")).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(UPDATE_POLL_MS));
+      expect(load).toHaveBeenCalledTimes(1);
+
+      // Stowly startet neu: Der Server fehlt, das ist hier kein Fehler.
+      act(() => core.control.setOnline(false));
+      await waitFor(() => expect(announced()).toBe("Server startet neu …"));
+      expect(within(update).getAllByText("Server startet neu …")).toHaveLength(2);
+      expect(within(update).queryByText("Zustand der Updates fehlt")).not.toBeInTheDocument();
+      // Auch beim nächsten Nachfragen bleibt es dabei.
+      await act(() => vi.advanceTimersByTimeAsync(UPDATE_POLL_MS));
+      expect(load.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(announced()).toBe("Server startet neu …");
+
+      // Die neue Version läuft: danach fragt der Abschnitt nicht mehr nach.
+      core.control.setIntegrations({ update: updateStatus({ current: "0.2.0", available: false, state: "done", state_version: "0.2.0", state_at: new Date().toISOString() }) });
+      act(() => core.control.setOnline(true));
+      expect(await within(update).findByText("Aktualisiert auf 0.2.0")).toBeInTheDocument();
+      expect(announced()).toMatch(/^Aktualisiert auf 0\.2\.0\. Am /);
+      const calls = load.mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(3 * UPDATE_POLL_MS));
+      expect(load).toHaveBeenCalledTimes(calls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fragt nur nach, solange die Einstellungen offen sind", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const core = await settingsWithUpdate(updateStatus({ state: "requested", state_version: "0.2.0", state_at: new Date().toISOString() }));
+      const load = vi.spyOn(core.integrations, "load");
+      expect(await within(section(UPDATE)).findByText("Angefordert")).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(2 * UPDATE_POLL_MS));
+      expect(load).toHaveBeenCalledTimes(2);
+
+      await userEvent.click(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Bestand" }));
+      await screen.findByRole("heading", { name: "Bestand" });
+      await act(() => vi.advanceTimersByTimeAsync(3 * UPDATE_POLL_MS));
+      expect(load).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sagt ohne laufendes Update und ohne Server, dass der Zustand fehlt, und lädt ihn, sobald er wieder da ist", async () => {
+    const core = renderApp({ scenarios: ["offline"] }, ROUTES.settings);
+    await ready();
+    const update = section(UPDATE);
+    expect(await within(update).findByText("Zustand der Updates fehlt")).toBeInTheDocument();
+    expect(update).toHaveTextContent("Den Zustand kennt nur der Server, und der ist gerade nicht erreichbar.");
+    expect(within(update).getByRole("button", { name: "Erneut versuchen" })).toBeInTheDocument();
+    expect(update).not.toHaveTextContent("Server startet neu");
+    act(() => core.control.setOnline(true));
+    expect(await within(update).findByText("Neueste Version")).toBeInTheDocument();
+  });
+
+  it("beschreibt Versionen, Stände und Ergebnisse in Sätzen", () => {
+    expect(checkIntervalText(21_600)).toBe("alle 6 Stunden");
+    expect(checkIntervalText(3_600)).toBe("jede Stunde");
+    expect(checkIntervalText(120)).toBe("alle zwei Minuten");
+
+    expect(describeLatest(updateStatus({ latest: null, checked_at: null }))).toEqual({
+      value: "noch nicht gefragt",
+      hint: "Der Server fragt GitHub kurz nach seinem Start und danach alle 6 Stunden.",
+    });
+    // Gefragt, aber es gibt noch kein Release (404).
+    expect(describeLatest(updateStatus({ latest: null }))).toEqual({ value: "noch keine Version veröffentlicht", hint: "Im Repository beispiel/stowly gibt es noch kein Release." });
+    expect(describeLatest(updateStatus({ latest: "0.1.0", available: false, latest_name: null, published_at: null }))).toEqual({ value: "0.1.0", hint: "Stowly ist auf dem neuesten Stand." });
+
+    expect(describeUpdateState(updateStatus())).toBeNull();
+    expect(describeUpdateState(updateStatus({ state: "failed", state_version: "0.2.0" }))).toEqual({ tone: "danger", title: "Update auf 0.2.0 gescheitert", text: "Die bisherige Version läuft weiter." });
+    expect(describeUpdateState(updateStatus({ state: "requested", state_version: "0.2.0" }))?.tone).toBe("info");
+    expect(describeUpdateState(updateStatus({ state: "requested", state_version: "0.2.0", state_message: "Läuft die Aufgabe?" }))?.tone).toBe("warn");
+    expect(describeUpdateState(updateStatus({ state: "done", state_version: "0.2.0", state_at: null }))).toEqual({ tone: "success", title: "Aktualisiert auf 0.2.0", text: "" });
+    // Einen Stand, den die App nicht kennt (ein neuerer Server), übergeht sie bis auf den Satz dazu.
+    const unknown = "downloading" as UpdateStatus["state"];
+    expect(describeUpdateState(updateStatus({ state: unknown }))).toBeNull();
+    expect(describeUpdateState(updateStatus({ state: unknown, state_message: "Lädt." }))).toEqual({ tone: "neutral", title: "", text: "Lädt." });
+
+    expect(checkResult(updateStatus({ latest: null, available: false }))).toEqual({ tone: "neutral", message: "Auf GitHub ist noch keine Version veröffentlicht." });
+    expect(checkResult(updateStatus({ latest: "0.1.0", available: false }))).toEqual({ tone: "success", message: "Stowly ist auf dem neuesten Stand." });
+
+    expect(installErrorText(new CoreError("not_configured"))).toBe("Updates sind auf dem Rechner nicht vollständig eingerichtet (docs/betrieb.md, Abschnitt 9).");
+    expect(installErrorText(new CoreError("conflict", "Diese Version ist schon installiert."))).toBe("Diese Version ist schon installiert.");
+    expect(installErrorText(new CoreError("invalid", "Die Anfrage entspricht nicht dem Vertrag."))).toBe("Die Anfrage entspricht nicht dem Vertrag.");
   });
 });

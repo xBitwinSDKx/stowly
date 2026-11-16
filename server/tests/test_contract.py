@@ -63,6 +63,9 @@ def test_openapi_lists_every_endpoint_and_command():
         ("DELETE", "/api/push/subscription"),
         ("POST", "/api/push/test"),
         ("GET", "/api/integrations"),
+        # Updates über GitHub
+        ("POST", "/api/update/check"),
+        ("POST", "/api/update/install"),
     }
     mapping = document["components"]["schemas"]["Command"]["discriminator"]["mapping"]
     assert sorted(mapping) == sorted(COMMAND_TYPES)

@@ -56,10 +56,25 @@ HA_SYNC_INTERVAL_S = 120
 # Testnachricht (POST /api/push/test): höchstens eine je Gerät in diesem Abstand.
 PUSH_TEST_INTERVAL_S = 10
 
+# Updates über GitHub (docs/integrationen.md, Abschnitt 10): Der Server fragt eine Minute nach dem
+# Start, dann alle UPDATE_CHECK_INTERVAL_S Sekunden nach dem neuesten Release, auf Knopfdruck
+# (POST /api/update/check) höchstens einmal in UPDATE_CHECK_MIN_GAP_S Sekunden. Die Änderungen des
+# Releases kommen gekürzt auf UPDATE_NOTES_MAX Zeichen mit. Der Updater auf dem Rechner gilt als
+# eingerichtet, wenn er sich vor höchstens UPDATER_READY_S Sekunden gemeldet hat; holt er eine
+# Anforderung nicht binnen UPDATE_REQUEST_STALE_S Sekunden ab, meldet die App das.
+UPDATE_CHECK_FIRST_S = 60
+UPDATE_CHECK_INTERVAL_S = 6 * 3600
+UPDATE_CHECK_MIN_GAP_S = 60
+UPDATE_NOTES_MAX = 4000
+UPDATER_READY_S = 600
+UPDATE_REQUEST_STALE_S = 600
+# Versionen sind SemVer ohne Zusatz, im Release-Tag mit oder ohne „v" davor.
+VERSION_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+$"
+
 # Wohin eine Push-Nachricht führt: Der Server setzt den Ursprung der App davor, den sie beim
 # Anmelden mitgibt (docs/integrationen.md, 4.5). Es sind Adressen der Web-App
 # (ROUTES in web/src/contract/routes.ts: warnings, settings).
-PUSH_PATHS = {"daily": "/warnungen", "test": "/einstellungen"}
+PUSH_PATHS = {"daily": "/warnungen", "test": "/einstellungen", "update": "/einstellungen"}
 
 Month = Annotated[str, Field(pattern=MONTH_PATTERN)]
 Count = Annotated[int, Field(ge=0)]
@@ -74,7 +89,8 @@ class ErrorCode(StrEnum):
     INVALID_PASSWORD = "invalid_password"  # 401: falsches Haushalts-Passwort
     RATE_LIMITED = "rate_limited"  # 429: zu viele Fehlversuche, Retry-After beachten
     # 503: Auf dem Server ist kein Passwort gesetzt, oder eine Integration, die der Aufruf braucht,
-    # ist nicht eingerichtet (Push: STOWLY_PUSH_CONTACT, Sensor: STOWLY_HA_SUMMARY_TOKEN).
+    # ist nicht eingerichtet (Push: STOWLY_PUSH_CONTACT, Sensor: STOWLY_HA_SUMMARY_TOKEN,
+    # Updates: STOWLY_UPDATE_REPO oder der Updater meldet sich nicht).
     NOT_CONFIGURED = "not_configured"
     NOT_FOUND = "not_found"  # 404
     CONFLICT = "conflict"  # 409
@@ -417,8 +433,56 @@ class PushStatus(Model):
     last_error: str | None = Field(description="Fehler des letzten Laufs; null nach einem Erfolg.")
 
 
+class UpdateState(StrEnum):
+    """Wo ein Update steht (docs/integrationen.md, 10.4)."""
+
+    IDLE = "idle"  # nichts angefordert, oder das Ergebnis betrifft eine andere Version
+    REQUESTED = "requested"  # angefordert, der Updater hat es noch nicht aufgenommen
+    INSTALLING = "installing"  # der Updater arbeitet daran
+    DONE = "done"  # installiert: Dieser Server läuft mit state_version
+    FAILED = "failed"  # gescheitert; state_message sagt warum, die vorige Version läuft
+
+
+class UpdateStatus(Model):
+    """Updates über GitHub (docs/integrationen.md, Abschnitt 10). Nie ein Token."""
+
+    configured: bool = Field(description="STOWLY_UPDATE_REPO ist gesetzt.")
+    repo: str | None = Field(description="Das Repository der Releases (STOWLY_UPDATE_REPO).")
+    current: str = Field(description="Version dieses Servers.")
+    latest: str | None = Field(
+        description='Version des neuesten Releases ohne „v"; null = noch nicht gefragt oder keins.'
+    )
+    latest_name: str | None = Field(description="Titel des neuesten Releases.")
+    notes: str | None = Field(
+        description="Änderungen des neuesten Releases als Markdown-Text, höchstens 4000 Zeichen."
+    )
+    published_at: Timestamp | None = Field(description="Wann das neueste Release erschienen ist.")
+    url: str | None = Field(description="Seite des neuesten Releases auf GitHub.")
+    available: bool = Field(description="latest ist neuer als current.")
+    checked_at: Timestamp | None = Field(description="Letzte gelungene Abfrage bei GitHub.")
+    check_error: str | None = Field(description="Fehler der letzten Abfrage; null nach einem Erfolg.")
+    updater_ready: bool = Field(
+        description="Der Updater auf dem Rechner hat sich vor höchstens 10 Minuten gemeldet."
+    )
+    updater_seen_at: Timestamp | None = Field(description="Letzte Meldung des Updaters.")
+    state: UpdateState
+    state_version: str | None = Field(description="Die Version, um die es in state geht.")
+    state_at: Timestamp | None = Field(description="Seit wann state gilt.")
+    state_message: str | None = Field(
+        description="Erklärung zu state, bei failed der Grund; sonst meist null."
+    )
+
+
+class UpdateInstallInput(Model):
+    """Anforderung eines Updates (POST /api/update/install)."""
+
+    version: Annotated[str, Field(pattern=VERSION_PATTERN, max_length=40)] = Field(
+        description="Die Version, die die App als neueste gezeigt hat; muss latest sein."
+    )
+
+
 class IntegrationStatus(Model):
-    """Zustand von Sicherung, Home Assistant und Push für die Einstellungen der App."""
+    """Zustand von Sicherung, Home Assistant, Push und Updates für die Einstellungen der App."""
 
     timezone: str = Field(
         description="Zeitzone des Servers für Uhrzeiten und den heutigen Tag (STOWLY_TIMEZONE)."
@@ -426,3 +490,4 @@ class IntegrationStatus(Model):
     backup: BackupStatus
     ha: HaStatus
     push: PushStatus
+    update: UpdateStatus

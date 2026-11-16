@@ -231,14 +231,14 @@ Die Nutzlast ist JSON im Format „Declarative Web Push" (WebKit, Push API der W
 
 ### 4.6 Kopfzeilen
 
-| Kopfzeile | Tagesnachricht | Testnachricht |
-|---|---|---|
-| `TTL` | `86400` (ein Tag) | `300` |
-| `Topic` | `stowly-daily` | `stowly-test` |
-| `Urgency` | `normal` | `high` |
-| `Content-Encoding` | `aes128gcm` | `aes128gcm` |
-| `Content-Type` | `application/octet-stream` | `application/octet-stream` |
-| `Authorization` | `vapid t=…, k=…` (4.4) | ebenso |
+| Kopfzeile | Tagesnachricht | Testnachricht | Neue Version (10.2) |
+|---|---|---|---|
+| `TTL` | `86400` (ein Tag) | `300` | `86400` |
+| `Topic` | `stowly-daily` | `stowly-test` | `stowly-update` |
+| `Urgency` | `normal` | `high` | `normal` |
+| `Content-Encoding` | `aes128gcm` | `aes128gcm` | `aes128gcm` |
+| `Content-Type` | `application/octet-stream` | `application/octet-stream` | ebenso |
+| `Authorization` | `vapid t=…, k=…` (4.4) | ebenso | ebenso |
 
 `Topic` (höchstens 32 Zeichen aus dem base64url-Alphabet) lässt den Push-Dienst eine noch nicht zugestellte ältere Nachricht desselben Themas ersetzen: Nach einem Funkloch kommt nur die neueste. Zeitgrenze je Anfrage 10 Sekunden.
 
@@ -585,10 +585,11 @@ Alle Einstellungen des Servers, beim Start gelesen und geprüft (`server/stowly/
 | `STOWLY_HA_CA` | Pfad zu einer PEM-Datei | – | Datei lesbar und als PEM ladbar | Vertrauen des Systems |
 | `STOWLY_HA_SUMMARY_TOKEN` | Text, mindestens 32 Zeichen | – | Länge; nur druckbares ASCII ohne Leerraum | kein Sensor (503 `not_configured`) |
 | `STOWLY_PUSH_CONTACT` | `mailto:<Adresse>` oder `https://<Host>` | – | Form: `mailto:` mit einer Adresse samt Domäne oder `https://` mit Host, das Schema klein geschrieben, ohne Benutzerangabe | kein Push (503 `not_configured`) |
+| `STOWLY_UPDATE_REPO` | `<konto>/<name>` | – | Muster `^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`, Name nicht `.` oder `..` | keine Abfrage bei GitHub (10.1) |
 
 Ist von Home Assistant nur `STOWLY_HA_CA` gesetzt, gilt das als halbe Einrichtung: `problem` nennt die drei fehlenden Variablen. `STOWLY_HA_SUMMARY_TOKEN` allein gehört nicht dazu: Der Sensor braucht den Abgleich nicht.
 
-Nur für Docker Compose, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB_GID`, `FORWARDED_ALLOW_IPS`, `TZ` (die Zeitzone für Stowly ist `STOWLY_TIMEZONE`). `.env.example` nennt jede Variable mit einem kurzen Satz; Beispiele nur mit Platzhaltern (`stowly.example`, `ha.example`, Token als `…`).
+Nur für Docker Compose und den Updater, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB_GID`, `FORWARDED_ALLOW_IPS`, `TZ` (die Zeitzone für Stowly ist `STOWLY_TIMEZONE`), `STOWLY_IMAGE` und `STOWLY_VERSION` (fertiges Image, 10.1), `STOWLY_VOLUME` (Name des Datenvolumes für den Updater, 10.6). `.env.example` nennt jede Variable mit einem kurzen Satz; Beispiele nur mit Platzhaltern (`stowly.example`, `ha.example`, Token als `…`).
 
 ## 8. Zustand der Integrationen
 
@@ -598,7 +599,8 @@ Nur für Docker Compose, nicht vom Server gelesen: `STOWLY_PUBLISH`, `STOWLY_USB
 - **`backup`** (`BackupStatus`): wie in 3.6. `configured` und `problem` nach 3.1, `time` aus `STOWLY_BACKUP_TIME`, auch wenn die Sicherung aus ist; `null` nur, wenn sie gar nicht eingerichtet ist.
 - **`ha`** (`HaStatus`): `configured` und `problem` nach 5.1; `entity` aus `STOWLY_HA_TODO_ENTITY`; `state`, `last_ok_at`, `last_error`, `last_error_at` nach 5.6; `linked` = offene Einträge mit `bring_key`; `sensor` = `STOWLY_HA_SUMMARY_TOKEN` gesetzt.
 - **`push`** (`PushStatus`): `configured` nach 4.1; `problem` ist derzeit immer `null` (ein ungültiger `STOWLY_PUSH_CONTACT` beendet schon den Start); `subscriptions` = Abos im Haushalt; `this_device` = das fragende Gerät hat eines; `last_run_at` = `job_runs.push_daily.last_at`; `last_sent_at` = `state.sent_at`; `last_error` = `job_runs.push_daily.last_error`.
-- **Nie** darin: ein Token, ein privater Schlüssel, die Adresse von HA, `STOWLY_PUSH_CONTACT`. Öffentliche age-Schlüssel nur gekürzt.
+- **`update`** (`UpdateStatus`): nach 10.4.
+- **Nie** darin: ein Token, ein privater Schlüssel, die Adresse von HA, `STOWLY_PUSH_CONTACT`, Pfade des Rechners oder das Log des Updaters. Öffentliche age-Schlüssel nur gekürzt.
 
 Die App lädt den Zustand, wenn die Einstellungen offen sind (`core.integrations.load`); offline sagt sie, dass er fehlt.
 
@@ -643,3 +645,104 @@ Grenzen, solange die Probe aussteht:
 - Kürzt Bring! Namen, sieht Stowly den eigenen Artikel nie: Er gilt nie als gelöscht oder abgehakt, und die Warnung nach zehn Minuten (5.4, Schritt 3) sagt es. Kennt die Probe die Länge, kürzt Stowly die Namen vor `add_item` selbst.
 - Liefert `get_items` keine erledigten Artikel und zeigt HA neue Artikel erst verzögert, bleibt ein Eintrag offen, den jemand in Bring! abhakt, bevor Stowly den Artikel je gesehen hat.
 - Zeigt ein Neustart von HA die Liste zwei Abgleiche lang leer, also länger als zwei Minuten, gelten ihre Artikel als gelöscht. Sonst bräuchte „gelöscht" mehr Abgleiche oder eine Zeitspanne.
+
+## 10. Updates über GitHub
+
+Der Server fragt GitHub nach dem neuesten Release, die App bietet es an, und installiert wird es vom Updater auf dem Rechner (`updater/stowly-update.sh`), der Docker bedienen darf. Der Server selbst bekommt nie Zugriff auf Docker und läuft weiter ohne Rechte. Anleitung zum Einrichten: [`betrieb.md`](betrieb.md), Abschnitt 9.
+
+### 10.1 Einrichten
+
+- **`STOWLY_UPDATE_REPO=<konto>/<name>`:** das öffentliche Repository der Releases. Leer heißt keine Abfrage; `update.configured` ist dann `false`, und die App zeigt nur die Version.
+- **Betrieb mit fertigem Image:** `STOWLY_IMAGE` (etwa `ghcr.io/<konto>/stowly`) und `STOWLY_VERSION` (etwa `0.2.0`) stehen in der `.env`. Sie liest nur Docker Compose und der Updater, nicht der Server.
+- **Neue Version:** Als neu gilt nur das Release, das GitHub als „latest" führt. Vorabversionen und Entwürfe liefert `releases/latest` nicht. Das Image dazu (`<STOWLY_IMAGE>:X.Y.Z`) entsteht in GitHub Actions, bevor das Release erscheint.
+
+### 10.2 Abfrage bei GitHub
+
+- **Aufruf:** `GET https://api.github.com/repos/{repo}/releases/latest`, ohne Token.
+  - Kopfzeilen: `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `User-Agent: Stowly/<version>`.
+  - Zeitüberschreitung nach 10 Sekunden.
+- **Takt:**
+  - `UPDATE_CHECK_FIRST_S` (60) Sekunden nach dem Start, danach `UPDATE_CHECK_INTERVAL_S` (6 Stunden) nach der letzten Abfrage, ob gelungen oder nicht.
+  - Dazu auf Knopfdruck (`POST /api/update/check`), höchstens einmal in `UPDATE_CHECK_MIN_GAP_S` (60) Sekunden, sonst 429 mit `Retry-After`. Ein Knopfdruck beginnt den Takt neu.
+- **200:**
+  - `tag_name` ohne führendes „v" muss `VERSION_PATTERN` (`1.2.3`) treffen. Sonst gilt die Abfrage als gescheitert mit „Das neueste Release hat keine Versionsnummer wie 1.2.3 (Tag …)."
+  - `name` wird `latest_name` (leer ergibt `null`).
+  - `body` wird `notes`, gekürzt auf `UPDATE_NOTES_MAX` (4000) Zeichen, mit „…" am Ende.
+  - `published_at` wird in das Zeitformat des Vertrags umgewandelt.
+  - `html_url` wird `url`, nur wenn sie mit `https://github.com/` beginnt, sonst `null`.
+- **404:** Es gibt noch kein Release, die Abfrage gilt aber als gelungen: `latest` bis `url` sind `null`, `check_error` ist `null`, `checked_at` ist gesetzt.
+- **Fehler:** In allen folgenden Fällen bleiben die bisherigen Angaben zum neuesten Release stehen.
+  - **403 oder 429:** `check_error` „GitHub lehnt die Abfrage gerade ab (Ratenlimit). Der nächste Versuch kommt planmäßig."
+  - **anderer Status:** „GitHub antwortet mit <Status>."
+  - **Netzfehler oder Zeitüberschreitung:** „GitHub ist nicht erreichbar."
+  - **200, aber kein JSON-Objekt:** „GitHub antwortet unerwartet." Fehlt `tag_name`, nennt die Meldung zum Tag „(Tag fehlt)".
+  - **Weiterleitungen** (3xx) folgt der Server nicht: „GitHub antwortet mit <Status>."
+- **Gespeichert** in `job_runs`, Aufgabe `update_check`, mit `scheduler.record_success` bzw. `record_failure`. Der Zustand (`state`) enthält `latest`, `latest_name`, `notes`, `published_at`, `url` und `notified`. So übersteht er einen Neustart.
+- **Push, einmal je Version:** Ist `latest` neuer als der Server und noch nicht gemeldet (`notified` ≠ `latest`), geht eine Nachricht an alle Abos des Haushalts:
+  - Titel „Neue Version", Text „Stowly X.Y.Z ist verfügbar.", Tag `stowly-update`, Ziel `/einstellungen`.
+  - Danach gilt `notified` = `latest`, auch wenn Push nicht eingerichtet ist. Ein späteres Einschalten meldet so nichts nach.
+
+### 10.3 Dateien in `/data/update`
+
+Der Austausch zwischen Server (uid 10001) und Updater (root) läuft über Dateien im Datenvolume. Den Ordner legt der Server beim Start an.
+
+- **Format:** UTF-8, je Zeile `key=value`, Werte ohne Zeilenumbruch. Unbekannte Schlüssel und Zeilen ohne `=` werden überlesen.
+- **Zeitpunkte:** in UTC, entweder `YYYY-MM-DDTHH:MM:SSZ` (so schreibt sie der Updater) oder im Format des Vertrags (so schreibt sie der Server). Gelesen werden beide.
+
+| Datei | schreibt | Inhalt |
+|---|---|---|
+| `request` | Server: zuerst `request.tmp`, dann umbenannt | `version=X.Y.Z`, `requested_at=<Zeitpunkt>`, `device=<Gerätename>` (höchstens 60 Zeichen, Steuerzeichen und `=` entfernt) |
+| `state` | Updater | `state=installing\|done\|failed`, `version=<Ziel>`, `from=<vorher>`, `at=<Zeitpunkt>`, `message=<Satz>` |
+| `updater` | Updater, bei jedem Lauf | `seen_at=<Zeitpunkt>`, `updater=<Version des Skripts>` |
+| `log` | Updater | Ausgabe des letzten Updates, nur zur Fehlersuche auf dem Rechner |
+| `before-<alt>-<zeit>.sqlite3` | Updater | Kopie der Datenbank vor dem Update; die drei neuesten bleiben |
+| `lock/` | Updater | Sperre während eines Laufs |
+
+### 10.4 Zustand (`UpdateStatus`)
+
+- **`configured`, `repo`:** aus `STOWLY_UPDATE_REPO`.
+- **`current`:** `stowly.__version__`.
+- **`latest` bis `url`, `checked_at`, `check_error`:** aus `job_runs` (10.2). `checked_at` ist die letzte gelungene Abfrage, auch eine mit 404.
+- **`available`:** `latest` ist gesetzt und neuer als `current`. Verglichen werden die drei Zahlen.
+- **`updater_seen_at`:** `seen_at` aus `updater`. **`updater_ready`:** höchstens `UPDATER_READY_S` (600) Sekunden alt.
+- **`state`:** Die erste passende Regel gilt.
+  1. `request` liegt vor, und `state` meldet `installing` für dieselbe Version: `installing`, `state_at` aus `at`.
+  2. `request` liegt vor: `requested`; `state_version` und `state_at` aus `request`.
+     - Ist die Anforderung älter als `UPDATE_REQUEST_STALE_S` (600 Sekunden) und `updater_ready` falsch: `state_message` „Der Updater hat die Anforderung noch nicht abgeholt. Läuft die Aufgabe auf dem Rechner?"
+  3. `state` meldet `installing`: `installing`.
+     - Ist `at` älter als 15 Minuten: `state_message` „Der Updater meldet sich seit 15 Minuten nicht. Bitte auf dem Rechner nachsehen."
+  4. `state` meldet `done` und `version` = `current`: `done`.
+  5. `state` meldet `failed`: `failed`, mit `message` als `state_message`.
+  6. Sonst `idle`, auch bei `done` für eine andere Version als `current`, etwa nach einem Zurückspielen von Hand.
+
+  Bei `installing`, `done` und `failed` kommen `state_version` und `state_at` aus `state`, bei `requested` aus `request`.
+- **Nie** darin: Pfade des Rechners, der Inhalt von `log`.
+
+### 10.5 Anfordern
+
+`POST /api/update/install` mit `{"version": "X.Y.Z"}`. Geprüft wird in dieser Reihenfolge:
+
+1. **`STOWLY_UPDATE_REPO` fehlt:** 503 `not_configured` „Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO)."
+2. **`updater_ready` ist falsch:** 503 `not_configured` „Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9)."
+3. **`state` ist `requested` oder `installing`:** 409 `conflict` „Ein Update ist schon angefordert."
+4. **`version` ≠ `latest`:** 409 `conflict` „Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen."
+5. **`latest` ist nicht neuer als `current`:** 409 `conflict` „Diese Version ist schon installiert."
+6. **Sonst:** `request` schreiben (10.3), eine Zeile ins Log („Update auf X.Y.Z angefordert von <Gerät>"), Antwort 202 mit `UpdateStatus` (`requested`).
+
+In die Datei kommt nur die geprüfte Versionsnummer, dazu Zeitpunkt und Gerätename, nie etwas anderes aus der Anfrage. Eine vorhandene `state` mit `failed` bleibt liegen, bis der Updater sie überschreibt.
+
+### 10.6 Der Updater
+
+`updater/stowly-update.sh` ist ein POSIX-Skript. Es läuft jede Minute als root, auf DSM über den Aufgabenplaner, auf Debian über einen systemd-Timer.
+
+1. **Ordner finden:** Den Ordner des Datenvolumes liefert `docker volume inspect` (Name aus `STOWLY_VOLUME`, Vorgabe `stowly_stowly-data`). Dann `updater` schreiben.
+2. **Anforderung:** Liegt kein `request` vor, ist der Lauf zu Ende. Sonst die Sperre `lock/` anlegen; besteht sie schon, Ende.
+3. **Prüfen:** Die Version muss `^[0-9]+\.[0-9]+\.[0-9]+$` treffen, `STOWLY_IMAGE` in der `.env` stehen. Sonst `failed`, `request` löschen.
+4. **Laden:** `state` auf `installing`, dann `docker pull <STOWLY_IMAGE>:<version>` mit bis zu drei Versuchen. Scheitert das: `failed`, `request` löschen. Die alte Version läuft unverändert weiter.
+5. **Sichern:** Stowly anhalten (`stop`). Die Datenbank samt `-wal` und `-shm` nach `before-<alt>-<zeit>.sqlite3` kopieren.
+6. **Umstellen:** `STOWLY_VERSION` in der `.env` setzen. Geschrieben wird in die vorhandene Datei, damit Besitzer und Rechte bleiben; vorher entsteht eine Kopie `.env.bak`. Dann `up -d stowly`.
+7. **Warten:** bis zu 180 Sekunden, bis `docker inspect` `healthy` meldet.
+8. **Erfolg:** `done`, `request` löschen. Alte Images aufräumen; die aktuelle und die vorige Version bleiben.
+9. **Sonst zurück:** anhalten, die Kopie zurückspielen (`-wal` und `-shm` des Fehlversuchs löschen), die alte `STOWLY_VERSION` setzen, `up -d`, warten. Dann `failed` mit „Die neue Version startete nicht, zurück auf <alt>." und dem Ende des Container-Logs in `log`. `request` löschen.
+
+Der Updater tauscht nur das Image. Ändert eine Version `docker-compose.yml`, die `.env` oder den Updater selbst, nennt der Changelog das, und es wird einmal von Hand nachgezogen.

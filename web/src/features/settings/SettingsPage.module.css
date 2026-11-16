@@ -129,6 +129,38 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Aktualisierung: der Stand des Updates bekommt nach der Rückfrage den Fokus */
+.focusTarget {
+  border-radius: var(--radius-md);
+}
+
+/* Änderungen eines Releases: Schaltflächen, darunter der Text */
+.release {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Verweis nach außen (Release auf GitHub): so hoch antippbar wie eine Schaltfläche */
+.external {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+  font-weight: var(--weight-medium);
+}
+
+/* Klartext, wie ihn GitHub liefert: Zeilenumbrüche bleiben, lange Wörter brechen um */
+.notes {
+  max-width: 44rem;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Anleitung in Schritten (Installation auf dem iPhone) */
 .steps {
   display: grid;

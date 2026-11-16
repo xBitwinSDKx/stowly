@@ -131,6 +131,9 @@ describe("Texte", () => {
     const blocked = "Ein anderer Tab mit einer älteren Version von Stowly hält die lokalen Daten fest. Schließe ihn, dann geht es hier weiter.";
     expect(errorText(new CoreError("not_supported", blocked))).toBe(blocked);
     expect(errorText(new CoreError("not_supported"))).toBe("Das ist in dieser Ausbaustufe noch nicht verfügbar.");
+    // Und "conflict": Was am Stand des Servers nicht mehr passt, sagt nur der Server.
+    expect(errorText(new CoreError("conflict", "Ein Update ist schon angefordert."), { conflict: "Eigener Satz" })).toBe("Ein Update ist schon angefordert.");
+    expect(errorText(new CoreError("conflict"))).toBe("Das passt nicht mehr zum Stand auf dem Server. Bitte neu laden und noch einmal versuchen.");
     expect(errorText(new TypeError("x is undefined"))).toBe("Unerwarteter Fehler. Bitte noch einmal versuchen.");
   });
 });

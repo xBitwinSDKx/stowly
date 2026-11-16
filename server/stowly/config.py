@@ -243,6 +243,22 @@ def _ha_summary_token(env: Mapping[str, str]) -> str | None:
     return token
 
 
+_UPDATE_REPO = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")
+
+
+def _update_repo(env: Mapping[str, str]) -> str | None:
+    """``STOWLY_UPDATE_REPO``: das GitHub-Repository der Releases, ``<konto>/<name>``."""
+    repo = _text(env, "STOWLY_UPDATE_REPO")
+    if repo is None:
+        return None
+    if not _UPDATE_REPO.fullmatch(repo) or repo.split("/", 1)[1] in {".", ".."}:
+        raise ValueError(
+            f"STOWLY_UPDATE_REPO: '{repo}' ist kein GitHub-Repository (erwartet <konto>/<name>, "
+            "etwa beispiel/stowly)."
+        )
+    return repo
+
+
 def _push_contact(env: Mapping[str, str]) -> str | None:
     """``STOWLY_PUSH_CONTACT``: ``mailto:<Adresse>`` oder eine ``https://``-Adresse (VAPID ``sub``)."""
     contact = _text(env, "STOWLY_PUSH_CONTACT")
@@ -319,10 +335,21 @@ class Settings:
     ha_summary_token: str | None = field(default=None, repr=False)
     # Absender für Web-Push (Abschnitt 4.1); None = kein Push.
     push_contact: str | None = None
+    # Updates über GitHub (Abschnitt 10): Repository „<konto>/<name>"; None = keine Prüfung.
+    update_repo: str | None = None
 
     @property
     def database_path(self) -> Path:
         return self.data_dir / "stowly.sqlite3"
+
+    @property
+    def update_dir(self) -> Path:
+        """Austausch mit dem Updater auf dem Rechner (docs/integrationen.md, 10.3)."""
+        return self.data_dir / "update"
+
+    @property
+    def update_configured(self) -> bool:
+        return self.update_repo is not None
 
     @property
     def configured(self) -> bool:
@@ -444,4 +471,5 @@ class Settings:
             ha_ca=_ha_ca(env),
             ha_summary_token=_ha_summary_token(env),
             push_contact=_push_contact(env),
+            update_repo=_update_repo(env),
         )

@@ -1426,3 +1426,100 @@ describe("Wartezeit der Testnachricht", () => {
     expect((await expectCoreError(core.push.test(), "rate_limited")).details.retry_after_s).toBe(10);
   });
 });
+
+describe("Updates über GitHub", () => {
+  it("zeigt je Ausgangslage, was der Server weiß; ohne Angabe eingerichtet und aktuell", async () => {
+    const update = async (scenarios: MockScenario[]) => (await mock({ scenarios }).integrations.load()).update;
+    expect(await update([])).toMatchObject({
+      configured: true,
+      repo: "beispiel/stowly",
+      current: "0.1.0",
+      latest: "0.1.0",
+      available: false,
+      checked_at: "2026-11-13T08:00:00.000Z",
+      check_error: null,
+      updater_ready: true,
+      state: "idle",
+      state_message: null,
+    });
+    const fresh = await update(["release-new"]);
+    expect(fresh).toMatchObject({ latest: "0.2.0", available: true, updater_ready: true, url: "https://github.com/beispiel/stowly/releases/tag/v0.2.0" });
+    expect(fresh.notes).toContain("\n- Updates lassen sich in den Einstellungen suchen und installieren.");
+    expect(await update(["release-no-updater"])).toMatchObject({ latest: "0.2.0", available: true, updater_ready: false, updater_seen_at: "2026-11-10T10:00:00.000Z" });
+    expect(await update(["release-off"])).toMatchObject({ configured: false, repo: null, current: "0.1.0", latest: null, updater_ready: false });
+    // Dieselbe Version meldet der Abgleich.
+    expect(value(mock().sync.status).server_version).toBe("0.1.0");
+  });
+
+  it("sucht höchstens einmal je Minute und braucht den Server", async () => {
+    let now = NOW;
+    const core = mock({ now: () => now });
+    expect(await core.update.check()).toMatchObject({ checked_at: NOW.toISOString(), check_error: null, available: false });
+    expect((await expectCoreError(core.update.check(), "rate_limited")).details.retry_after_s).toBe(60);
+    now = new Date(NOW.getTime() + 59_500);
+    expect((await expectCoreError(core.update.check(), "rate_limited")).details.retry_after_s).toBe(1);
+    now = new Date(NOW.getTime() + 60_000);
+    expect((await core.update.check()).checked_at).toBe(now.toISOString());
+    expect((await core.integrations.load()).update.checked_at).toBe(now.toISOString());
+
+    await expectCoreError(mock({ scenarios: ["offline"] }).update.check(), "offline");
+    const off = await expectCoreError(mock({ scenarios: ["release-off"] }).update.check(), "not_configured");
+    expect(off.message).toBe("Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+  });
+
+  it("fordert an, prüft dabei wie der Server, und die Anforderung bleibt ohne Wartezeit stehen", async () => {
+    const core = mock({ scenarios: ["release-new"] });
+    await expectCoreError(core.update.install("v0.2.0"), "invalid");
+    expect((await expectCoreError(core.update.install("0.1.0"), "conflict")).message).toBe("Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen.");
+    expect(await core.update.install("0.2.0")).toMatchObject({ state: "requested", state_version: "0.2.0", state_at: NOW.toISOString(), state_message: null });
+    expect((await expectCoreError(core.update.install("0.2.0"), "conflict")).message).toBe("Ein Update ist schon angefordert.");
+    expect((await core.integrations.load()).update.state).toBe("requested");
+    // Ohne Wartezeit spielt die Attrappe den Updater nicht nach: Der Abgleich bleibt erreichbar.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(value(core.sync.status).online).toBe(true);
+    expect((await core.integrations.load()).update.state).toBe("requested");
+
+    const silent = await expectCoreError(mock({ scenarios: ["release-no-updater"] }).update.install("0.2.0"), "not_configured");
+    expect(silent.message).toBe("Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9).");
+    expect((await expectCoreError(mock().update.install("0.1.0"), "conflict")).message).toBe("Diese Version ist schon installiert.");
+    await expectCoreError(mock({ scenarios: ["release-off"] }).update.install("0.2.0"), "not_configured");
+    await expectCoreError(mock({ scenarios: ["release-new", "offline"] }).update.install("0.2.0"), "offline");
+  });
+
+  it("spielt mit Wartezeit den Updater nach: Er beginnt, der Server startet neu, dann läuft die neue Version", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const core = createMockCore({ latency: 10, now: () => NOW, scenarios: ["release-new"] });
+      const requested = core.update.install("0.2.0");
+      await vi.advanceTimersByTimeAsync(5);
+      expect((await requested).state).toBe("requested");
+      await vi.advanceTimersByTimeAsync(80);
+      const installing = core.integrations.load();
+      await vi.advanceTimersByTimeAsync(5);
+      expect((await installing).update.state).toBe("installing");
+      await vi.advanceTimersByTimeAsync(80);
+      // Stowly ist angehalten: Der Server antwortet nicht.
+      expect(value(core.sync.status).online).toBe(false);
+      await vi.advanceTimersByTimeAsync(240);
+      expect(value(core.sync.status)).toMatchObject({ online: true, server_version: "0.2.0" });
+      const done = core.integrations.load();
+      await vi.advanceTimersByTimeAsync(5);
+      expect((await done).update).toMatchObject({ state: "done", state_version: "0.2.0", current: "0.2.0", available: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lässt sich über setIntegrations setzen; damit arbeiten Suchen und Anfordern weiter", async () => {
+    const core = mock();
+    const before = (await core.integrations.load()).update;
+    core.control.setIntegrations({ update: { ...before, latest: "0.3.0", available: true, state: "failed", state_version: "0.3.0", state_message: "Die neue Version startete nicht, zurück auf 0.1.0." } });
+    expect((await core.integrations.load()).update).toMatchObject({ state: "failed", latest: "0.3.0" });
+    // Nach einem gescheiterten Update geht ein neuer Versuch.
+    expect((await core.update.install("0.3.0")).state).toBe("requested");
+    core.control.setIntegrations({ timezone: "Europe/Vienna" });
+    expect((await core.integrations.load()).update.state).toBe("requested");
+    core.control.setIntegrations(null);
+    expect((await core.integrations.load()).update).toEqual(before);
+  });
+});

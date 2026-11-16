@@ -222,6 +222,31 @@ describe("notificationclick", () => {
     expect(opened).toEqual([]);
   });
 
+  it("führt ohne Ziel in der Mitteilung nach ihrer Kennung, auch bei einer neuen Version", async () => {
+    // Die Nachricht zu einer neuen Version (docs/integrationen.md 10.2), wie sie ankommt.
+    const update = {
+      web_push: 8030,
+      notification: { title: "Neue Version", body: "Stowly 0.2.0 ist verfügbar.", navigate: `${ORIGIN}${PUSH_PATHS.update}`, lang: "de-DE", dir: "ltr", tag: "stowly-update", silent: false },
+    };
+    expect(parsePushPayload({ json: () => update })).toMatchObject({ title: "Neue Version", options: { tag: "stowly-update", data: { navigate: `${ORIGIN}/einstellungen` } } });
+
+    // Gibt der Browser beim Tipp weder `navigate` noch `data` mit, gilt das Ziel nach der Kennung.
+    const targets: [string, string][] = [
+      ["stowly-update", PUSH_PATHS.update],
+      ["stowly-daily", PUSH_PATHS.daily],
+      ["stowly-test", PUSH_PATHS.test],
+      ["unbekannt", "/"],
+    ];
+    for (const [tag, path] of targets) {
+      const { clients, opened } = clientsWith([]);
+      const work: Promise<unknown>[] = [];
+      handleNotificationClick({ notification: { data: null, tag, close: () => undefined }, waitUntil: (promise) => work.push(promise) }, clients, ORIGIN);
+      await Promise.all(work);
+      expect(opened, tag).toEqual([`${ORIGIN}${path}`]);
+    }
+    expect(PUSH_PATHS.update).toBe("/einstellungen");
+  });
+
   it("nimmt relative Ziele im eigenen Ursprung", () => {
     expect(targetUrl("/warnungen", ORIGIN)).toBe(`${ORIGIN}/warnungen`);
     expect(targetUrl(`${ORIGIN}/warnungen?x=1`, ORIGIN)).toBe(`${ORIGIN}/warnungen?x=1`);

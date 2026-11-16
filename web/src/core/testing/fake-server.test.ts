@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { ENDPOINTS, ID_POOL_TARGET, PROTOCOL_VERSION, type ErrorBody, type IntegrationStatus, type SyncResponse } from "@/contract";
+import { ENDPOINTS, ID_POOL_TARGET, PROTOCOL_VERSION, UPDATE_CHECK_MIN_GAP_S, type ErrorBody, type IntegrationStatus, type SyncResponse, type UpdateStatus } from "@/contract";
 
 import fakeApi, { createFakeNetwork, FAKE_PASSWORD, FakeServer, HA_OFF, validateCommand, type FakeRequest, type FakeResponse } from "./fake-api";
 
@@ -273,6 +273,143 @@ describe("Statistik und Integrationen", () => {
     server.timezone = "Europe/Vienna";
     server.haStatus = { ...HA_OFF, configured: true, entity: "todo.einkaufsliste", state: "pending", sensor: true };
     expect(await load()).toMatchObject({ timezone: "Europe/Vienna", ha: { configured: true, state: "pending", sensor: true } });
+  });
+});
+
+describe("Updates über GitHub (docs/integrationen.md, Abschnitt 10)", () => {
+  const RELEASE = { version: "0.2.0", name: "Neu", notes: "- eins\n- zwei", published_at: "2026-11-12T09:00:00.000Z", url: "https://github.com/beispiel/stowly/releases/tag/v0.2.0" };
+
+  function setup() {
+    let now = new Date(AT);
+    const server = new FakeServer({ now: () => now });
+    const network = createFakeNetwork(server);
+    return {
+      server,
+      network,
+      advance(ms: number) {
+        now = new Date(now.getTime() + ms);
+      },
+      now: () => now.toISOString(),
+    };
+  }
+
+  async function post(network: ReturnType<typeof createFakeNetwork>, token: string, path: string, body?: unknown, method = "POST") {
+    const response = await network.fetch(path, { method, headers: { authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: response.status, headers: response.headers, body: (await response.json()) as UpdateStatus & ErrorBody };
+  }
+
+  it("antwortet auf Suchen und Anfordern wie der Server: Reihenfolge der Prüfungen, Sperre, Fehlerformat", async () => {
+    const { server, network, advance, now } = setup();
+    const token = await login(network);
+    const integrations = async () => ((await (await network.fetch(ENDPOINTS.get_integrations.path, { headers: { authorization: `Bearer ${token}` } })).json()) as IntegrationStatus).update;
+
+    // Vorgabe: nicht eingerichtet.
+    expect(await integrations()).toEqual({
+      configured: false,
+      repo: null,
+      current: "0.1.0",
+      latest: null,
+      latest_name: null,
+      notes: null,
+      published_at: null,
+      url: null,
+      available: false,
+      checked_at: null,
+      check_error: null,
+      updater_ready: false,
+      updater_seen_at: null,
+      state: "idle",
+      state_version: null,
+      state_at: null,
+      state_message: null,
+    });
+    expect((await network.fetch(ENDPOINTS.check_update.path, { method: "POST" })).status).toBe(401);
+    expect((await post(network, token, ENDPOINTS.check_update.path)).status).toBe(503);
+    // Erst die Form der Anfrage (422), dann „nicht eingerichtet" (503).
+    expect((await post(network, token, ENDPOINTS.install_update.path, { version: "v0.2.0" })).status).toBe(422);
+    expect((await post(network, token, ENDPOINTS.install_update.path, { version: "0.2.0", extra: 1 })).status).toBe(422);
+    expect((await post(network, token, ENDPOINTS.install_update.path, { version: `${"1".repeat(38)}.0.0` })).status).toBe(422);
+    const off = await post(network, token, ENDPOINTS.install_update.path, { version: "0.2.0" });
+    expect([off.status, off.body.error.code, off.body.error.message]).toEqual([503, "not_configured", "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO)."]);
+
+    server.updateRepo = "beispiel/stowly";
+    server.githubRelease = RELEASE;
+    const checked = await post(network, token, ENDPOINTS.check_update.path);
+    expect(checked.status).toBe(200);
+    expect(checked.headers.get("cache-control")).toBe("no-store");
+    expect(checked.body).toMatchObject({ configured: true, repo: "beispiel/stowly", latest: "0.2.0", notes: "- eins\n- zwei", available: true, checked_at: now(), updater_ready: false });
+    const limited = await post(network, token, ENDPOINTS.check_update.path);
+    expect([limited.status, limited.headers.get("retry-after"), limited.body.error.code, limited.body.error.details]).toEqual([
+      429,
+      String(UPDATE_CHECK_MIN_GAP_S),
+      "rate_limited",
+      { retry_after_s: UPDATE_CHECK_MIN_GAP_S },
+    ]);
+    expect((await post(network, token, ENDPOINTS.check_update.path, undefined, "GET")).status).toBe(405);
+
+    // Der Updater meldet sich nicht: 503 vor jedem 409.
+    expect((await post(network, token, ENDPOINTS.install_update.path, { version: "0.1.0" })).body.error.message).toBe(
+      "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9).",
+    );
+    server.updaterSeenAt = now();
+    const wrong = await post(network, token, ENDPOINTS.install_update.path, { version: "0.1.0" });
+    expect([wrong.status, wrong.body.error.code]).toEqual([409, "conflict"]);
+    advance(1_000);
+    const accepted = await post(network, token, ENDPOINTS.install_update.path, { version: "0.2.0" });
+    expect(accepted.status).toBe(202);
+    expect(accepted.body).toMatchObject({ state: "requested", state_version: "0.2.0", state_at: now() });
+    expect(server.updateRequest).toEqual({ version: "0.2.0", requested_at: now(), device: "Test" });
+    expect((await post(network, token, ENDPOINTS.install_update.path, { version: "0.2.0" })).body.error.message).toBe("Ein Update ist schon angefordert.");
+
+    // GitHub antwortet nicht: Der Aufruf gelingt, die bisherigen Angaben bleiben.
+    advance(UPDATE_CHECK_MIN_GAP_S * 1000);
+    server.githubError = "GitHub ist nicht erreichbar.";
+    expect((await post(network, token, ENDPOINTS.check_update.path)).body).toMatchObject({ latest: "0.2.0", check_error: "GitHub ist nicht erreichbar.", checked_at: checked.body.checked_at });
+  });
+
+  it("leitet den Stand aus Anforderung, Updater und laufender Version ab (10.4)", () => {
+    const { server, advance, now } = setup();
+    server.updateRepo = "beispiel/stowly";
+    server.githubRelease = RELEASE;
+    server.checkGithub();
+    expect(server.updateStatus()).toMatchObject({ latest: "0.2.0", available: true, updater_ready: false, state: "idle" });
+
+    // Bereit ist der Updater höchstens 600 Sekunden nach seiner letzten Meldung.
+    server.updaterSeenAt = now();
+    advance(600_000);
+    expect(server.updateStatus().updater_ready).toBe(true);
+    advance(1);
+    expect(server.updateStatus().updater_ready).toBe(false);
+
+    // Angefordert; nach zehn Minuten ohne Updater mit Hinweis.
+    const requestedAt = now();
+    server.updateRequest = { version: "0.2.0", requested_at: requestedAt, device: "Handy" };
+    expect(server.updateStatus()).toMatchObject({ state: "requested", state_version: "0.2.0", state_at: requestedAt, state_message: null });
+    advance(600_001);
+    expect(server.updateStatus().state_message).toBe("Der Updater hat die Anforderung noch nicht abgeholt. Läuft die Aufgabe auf dem Rechner?");
+    server.updaterSeenAt = now();
+    expect(server.updateStatus().state_message).toBeNull();
+
+    // Der Updater arbeitet daran: mit der Anforderung nur für dieselbe Version.
+    server.updaterState = { state: "installing", version: "0.1.5", at: now(), message: null };
+    expect(server.updateStatus().state).toBe("requested");
+    server.updaterState = { state: "installing", version: "0.2.0", at: now(), message: null };
+    expect(server.updateStatus()).toMatchObject({ state: "installing", state_version: "0.2.0", state_at: now(), state_message: null });
+    server.updateRequest = null;
+    advance(15 * 60_000 + 1);
+    expect(server.updateStatus()).toMatchObject({ state: "installing", state_message: "Der Updater meldet sich seit 15 Minuten nicht. Bitte auf dem Rechner nachsehen." });
+
+    // Fertig: „done" nur, wenn der Server jetzt mit dieser Version läuft.
+    server.updaterState = { state: "done", version: "0.2.0", at: now(), message: null };
+    expect(server.updateStatus().state).toBe("idle");
+    server.updateCurrent = "0.2.0";
+    expect(server.updateStatus()).toMatchObject({ state: "done", state_version: "0.2.0", available: false });
+    server.updateCurrent = "0.10.0";
+    expect(server.updateStatus()).toMatchObject({ state: "idle", available: false });
+
+    server.updateCurrent = "0.1.0";
+    server.updaterState = { state: "failed", version: "0.2.0", at: now(), message: "Die neue Version startete nicht, zurück auf 0.1.0." };
+    expect(server.updateStatus()).toMatchObject({ state: "failed", state_version: "0.2.0", state_message: "Die neue Version startete nicht, zurück auf 0.1.0.", available: true });
   });
 });
 

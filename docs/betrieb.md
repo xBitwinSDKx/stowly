@@ -331,6 +331,8 @@ Der Befehl gibt dem Datenbestand eine neue Kennung und endet. Danach verhält si
 
 ## 9. Aktualisieren
 
+Läuft Stowly mit dem fertigen Image von GitHub, geht ein Update per Knopf in der App (9.2) oder von Hand mit `docker compose pull` (9.3). Wer selbst baut:
+
 ```
 # vorher eine Sicherung herunterladen (Abschnitt 8)
 git pull                       # neuen Stand holen; ohne Remote siehe Abschnitt 12
@@ -355,6 +357,81 @@ Das Image installiert die Python-Pakete aus zwei Dateien, in denen jede Datei vo
 3. `git diff server/requirements.lock` lesen (neue Pakete, neue Versionen, Lizenzen), dann `python -m pytest tests/test_requirements_lock.py` und das Image bauen (Prüfliste F1).
 
 Wer eine Abhängigkeit ergänzt oder aktualisiert und die Sperrdatei vergisst, merkt es an `server/tests/test_requirements_lock.py`: Der Test nennt, was fehlt oder abweicht. `print/requirements-brother.txt` wird von Hand gepflegt (Versionen und Prüfsummen aus `https://pypi.org/pypi/<name>/<version>/json`); der Test prüft, dass der Brother-Bibliothek zusammen mit der Sperrdatei nichts fehlt.
+
+### 9.2 Über GitHub, per Knopf in der App
+
+Stowly erscheint als fertiges Image auf GitHub: `ghcr.io/<konto>/stowly:X.Y.Z`. Der Server merkt selbst, wenn eine neue Version als „latest" veröffentlicht ist. Die App zeigt sie unter Einstellungen → „Aktualisierung" samt Änderungen, und je Version kommt einmal eine Push-Nachricht. Ein Tipp auf „Update installieren" legt eine Anforderung ab. Ausgeführt wird sie vom **Updater** auf dem Rechner, denn der Server selbst darf Docker nicht bedienen. Regeln und Dateien: [`integrationen.md`](integrationen.md), Abschnitt 10.
+
+**Einmal einrichten:**
+
+1. In der `.env`:
+
+   ```
+   STOWLY_UPDATE_REPO=<konto>/stowly
+   STOWLY_IMAGE=ghcr.io/<konto>/stowly
+   STOWLY_VERSION=0.2.0
+   ```
+
+   `STOWLY_VERSION` ist die Version, die gerade laufen soll; der Updater stellt sie danach selbst um.
+2. Auf das fertige Image umstellen (statt zu bauen): `docker compose pull`, dann `docker compose up -d`, ohne `--build`.
+3. Den Updater als **root** jede Minute starten lassen. Er tut nur etwas, wenn in der App jemand „Installieren" getippt hat; sonst meldet er sich nur beim Server.
+   - **Synology DSM:** Systemsteuerung → Aufgabenplaner → Erstellen → Geplante Aufgabe → Benutzerdefiniertes Skript.
+     - Reiter „Allgemein": Benutzer `root`.
+     - Reiter „Zeitplan": täglich, „Innerhalb desselben Tages fortsetzen", alle 1 Minute (gibt es das nicht, alle 5 Minuten), bis 23:59.
+     - Reiter „Aufgabeneinstellungen": `sh /volume1/…/stowly/updater/stowly-update.sh`, mit dem Pfad des Projektordners.
+   - **Debian:** ein systemd-Timer, jede Minute:
+
+     ```
+     # /etc/systemd/system/stowly-update.service
+     [Service]
+     Type=oneshot
+     ExecStart=/bin/sh /home/<benutzer>/stowly/updater/stowly-update.sh
+
+     # /etc/systemd/system/stowly-update.timer
+     [Timer]
+     OnBootSec=1min
+     OnUnitActiveSec=1min
+     [Install]
+     WantedBy=timers.target
+     ```
+
+     Danach `sudo systemctl daemon-reload && sudo systemctl enable --now stowly-update.timer`.
+4. Probe: Nach spätestens einer Minute zeigt die App unter „Aktualisierung", dass sich der Updater meldet.
+
+**Was beim Update geschieht** (etwa ein bis zwei Minuten):
+- Der Updater lädt das neue Image; scheitert das, läuft die alte Version unverändert weiter.
+- Er hält Stowly an und legt eine Kopie der Datenbank in `update/` im Datenvolume ab (`before-<alt>-<zeit>.sqlite3`; die drei neuesten bleiben).
+- Er stellt `STOWLY_VERSION` in der `.env` um (vorher `.env.bak`) und startet. Wird der Container binnen drei Minuten nicht „healthy", spielt er die Kopie zurück und startet die alte Version.
+- Das Ergebnis zeigt die App, die Einzelheiten stehen in `update/log` im Datenvolume. Die Web-App auf den Handys kommt danach wie immer über „Jetzt aktualisieren".
+
+**Grenzen:**
+- Der Updater tauscht nur das Image. Ändert eine Version `docker-compose.yml`, die `.env` oder den Updater selbst, steht das im Changelog unter „Von Hand" und wird einmal von Hand nachgezogen.
+- Der Updater läuft als root aus dem Projektordner: Wer diesen Ordner ändern darf, kann darüber Befehle als root ausführen. Der Ordner gehört deshalb nur Administratoren.
+- Die Docker-Oberfläche von DSM nicht zum Ändern des Containers benutzen. Compose und der Updater sind dann nicht mehr im Bilde.
+
+### 9.3 Von Hand, mit dem fertigen Image
+
+Ohne Updater, oder wenn er streikt: eine Sicherung herunterladen (Abschnitt 8), `STOWLY_VERSION` in der `.env` auf die neue Version setzen, dann
+
+```
+docker compose pull
+docker compose up -d
+docker compose logs --tail 50 stowly
+```
+
+Zurück geht es nur mit der Sicherung von vorher (siehe oben), denn eine ältere Version startet nicht mit einer neueren Datenbank.
+
+### 9.4 Eine neue Version veröffentlichen
+
+Am Entwicklungsrechner, im Repository:
+
+1. In `CHANGELOG.md` einen Abschnitt `## X.Y.Z` schreiben. Muss beim Umstieg etwas von Hand geschehen, kommt es dort unter „Von Hand".
+2. `python scripts/release.py X.Y.Z` setzt die Nummer an allen Stellen. Danach alle Prüfungen laufen lassen, committen („Version X.Y.Z") und das Tag setzen: `git tag vX.Y.Z`.
+3. `git push` und `git push origin vX.Y.Z`. GitHub Actions (`.github/workflows/release.yml`) testet, baut das Image ohne die Brother-Bibliothek, lädt es hoch und veröffentlicht danach das Release als „latest". Erst dann sieht es der Server.
+
+Ein Tag mit Zusatz (`vX.Y.Z-rc.1`) durchläuft dasselbe als Vorabversion: Das Image heißt `:X.Y.Z-rc.1`, es gibt kein `:latest`, und das Release ist als Vorabversion markiert. Der Server bietet es nicht an; so lässt sich die Pipeline gefahrlos ausprobieren.
+
+Beim allerersten Image muss das Paket auf GitHub einmal öffentlich gestellt werden (Paket `stowly` → Package settings → Change visibility → Public). Sonst kann der Rechner es nicht ohne Anmeldung laden.
 
 ## 10. Wo die Daten liegen
 
@@ -537,7 +614,7 @@ Eigene Anleitung samt Prüfliste: [`../pi/README.md`](../pi/README.md).
 ### 14.5 Schriften und Brother-Bibliothek
 
 - Die Etiketten werden mit DejaVu gesetzt. Die drei Schriftdateien liefert Stowly selbst mit (Paket `stowly_print`, Ordner `fonts`: DejaVu 2.37 samt Lizenztext `DejaVu-LICENSE.txt`); so sehen die Etiketten am Server und am Pi gleich aus. Das Image enthält sie zusätzlich als Systempaket `fonts-dejavu-core`, als Rückfall. Beim Start nennt der Druckdienst im Log, welche Schrift er nimmt („Schriften der Etiketten: regular: …/stowly_print/fonts/DejaVuSans.ttf, …“). Fehlt die Schrift an beiden Stellen, druckt Stowly mit einer Ersatzschrift ohne Umlaute („ü“ wird „ue“) und meldet das im Log. Die Lizenz von DejaVu erlaubt das Weitergeben, solange ihr Text dabei bleibt.
-- Die Brother-Bibliothek `brother_ql_next` steht unter der GPL-3.0. Sie gehört nicht zum Quelltext von Stowly: Das Image lädt sie beim Bau auf Version und Prüfsumme festgelegt von PyPI nach (`print/requirements-brother.txt`; `packbits` gibt es nur als Quellpaket und wird mit dem setuptools aus der Sperrdatei gebaut, Abschnitt 9.1), und nur der Brother-Treiber lädt sie, erst beim Benutzen. Wer ein Image mit ihr an andere weitergibt, muss deren GPL-Bedingungen einhalten.
+- Die Brother-Bibliothek `brother_ql_next` steht unter der GPL-3.0. Sie gehört nicht zum Quelltext von Stowly: Das Image lädt sie beim Bau auf Version und Prüfsumme festgelegt von PyPI nach (`print/requirements-brother.txt`; `packbits` gibt es nur als Quellpaket und wird mit dem setuptools aus der Sperrdatei gebaut, Abschnitt 9.1), und nur der Brother-Treiber lädt sie, erst beim Benutzen. Wer ein Image mit ihr an andere weitergibt, muss deren GPL-Bedingungen einhalten. Das fertige Image auf GitHub (Abschnitt 9.2) entsteht deshalb ohne sie (`--build-arg STOWLY_BROTHER=0`): Ein Brother-Drucker direkt am Server meldet dort `config`. Wer einen braucht, baut das Image selbst; ohne Angabe ist die Bibliothek dabei.
 
 ## 15. Benachrichtigungen (Web-Push)
 
@@ -990,3 +1067,16 @@ Mit der Liste, die ihr wirklich nutzt (Abschnitt 17.2; ein späterer Wechsel hak
 | K6 | Nur mit eigener Zertifizierungsstelle: 18.3 (`REQUESTS_CA_BUNDLE` im Container von HA, sonst `verify_ssl: false`) | Der Sensor bekommt Werte; im Log von HA kein Fehler zum Zertifikat. Bitte notieren, welcher Weg ging. |
 | K7 | `curl` wie in 18.1, aber an `/api/ha/stock` | JSON mit `state`, `product_count`, `zones` (je Zone `name`, `count`, `products`) und `truncated` |
 | K8 | Sensor und Karte aus 18.4 in HA, HA neu starten | `sensor.stowly_bestand` mit der Zahl der Packungen; die Karte zeigt je Zone eine Tabelle, abgelaufene Daten rot, bald fällige orange; im Log von HA keine Warnung zur Größe der Attribute |
+
+### L. Updates über GitHub
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| L1 | Abschnitt 9.2 einrichten (`.env`, `docker compose pull`, `up -d`, Aufgabe für den Updater) | In der App unter „Aktualisierung“: installierte Version, „Updater bereit“; in `update/updater` im Datenvolume ein frisches `seen_at` |
+| L2 | „Nach Updates suchen“, zweimal schnell hintereinander | Das erste Mal der Stand von GitHub; das zweite Mal der Hinweis, in einer Minute erneut zu suchen |
+| L3 | Eine Vorabversion veröffentlichen (`vX.Y.Z-rc.1`, 9.4) | Das Image `:X.Y.Z-rc.1` liegt auf ghcr.io; die App bietet nichts an |
+| L4 | Eine neue Version veröffentlichen (9.4) | Nach dem nächsten Suchen „Neue Version“ mit den Änderungen; eine Push-Nachricht „Stowly X.Y.Z ist verfügbar.“, nur einmal |
+| L5 | „Update installieren“, Rückfrage bestätigen | „Angefordert“, dann „Wird installiert“, dann nach ein bis zwei Minuten „Aktualisiert auf X.Y.Z“; Bestand und Geräte unverändert; auf den Handys „Jetzt aktualisieren“ |
+| L6 | In `update/` und im Projektordner nachsehen | `before-<alt>-<zeit>.sqlite3`, `.env.bak`, in der `.env` die neue `STOWLY_VERSION`; die `.env` gehört weiter ihrem Besitzer |
+| L7 | Eine Anforderung für eine Version, die es nicht gibt (von Hand: `update/request` mit `version=9.9.9`) | Nach einer Minute „gescheitert“: Das Image ließ sich nicht laden; die alte Version läuft weiter |
+| L8 | Die Aufgabe des Updaters zehn Minuten lang anhalten | Die App sagt, dass sich der Updater nicht meldet, und bietet kein Installieren an |

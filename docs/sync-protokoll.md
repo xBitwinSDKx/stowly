@@ -605,7 +605,9 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `PUT /api/push/subscription` | Token | `PushSubscriptionInput { endpoint, keys { p256dh, auth }, origin }`; 204; 422 bei ungültigem oder unbekanntem Push-Dienst; 503 `not_configured` |
 | `DELETE /api/push/subscription` | Token | 204, auch ohne Abo; 503 `not_configured` |
 | `POST /api/push/test` | Token | 200 `PushTestResult { status, http_status, message }`, `Cache-Control: no-store`; 404 ohne Abo dieses Geräts; 429 `rate_limited`; 503 `not_configured` |
-| `GET /api/integrations` | Token | 200 `IntegrationStatus { timezone, backup, ha, push }`, `Cache-Control: no-store` (11.4) |
+| `GET /api/integrations` | Token | 200 `IntegrationStatus { timezone, backup, ha, push, update }`, `Cache-Control: no-store` (11.4) |
+| `POST /api/update/check` | Token | 200 `UpdateStatus`, `Cache-Control: no-store`; 429 `rate_limited` öfter als einmal je Minute; 503 `not_configured` ohne `STOWLY_UPDATE_REPO` (11.5) |
+| `POST /api/update/install` | Token | `UpdateInstallInput { version }`; 202 `UpdateStatus`; 409 `conflict`; 503 `not_configured` (11.5) |
 | `/print/v1/…` | Token | Druckdienst des Servers, siehe [`etiketten.md`](etiketten.md) |
 
 - **Bilder sind ohne Anmeldung abrufbar**, weil `<img>` keinen `Authorization`-Kopf senden kann. Die Kennung ist der Hash des Inhalts und nicht zu erraten; ausgeliefert werden nur Vorschaubilder aus Open Food Facts.
@@ -640,7 +642,11 @@ Alle vier Aufrufe mit Geräte-Token; das Abo gehört zum Gerät, höchstens eine
 
 ### 11.4 Zustand der Integrationen
 
-`GET /api/integrations` mit Geräte-Token: Sicherung, Home Assistant und Push für die Einstellungen der App. Nie ein Token, nie ein privater Schlüssel, keine Adresse von HA und kein Push-Kontakt; öffentliche age-Schlüssel nur gekürzt. Felder und Regeln: [`integrationen.md`](integrationen.md), Abschnitt 8.
+`GET /api/integrations` mit Geräte-Token: Sicherung, Home Assistant, Push und Updates für die Einstellungen der App. Nie ein Token, nie ein privater Schlüssel, keine Adresse von HA und kein Push-Kontakt; öffentliche age-Schlüssel nur gekürzt. Felder und Regeln: [`integrationen.md`](integrationen.md), Abschnitt 8.
+
+### 11.5 Updates
+
+`POST /api/update/check` und `POST /api/update/install` mit Geräte-Token. Der erste fragt GitHub sofort nach dem neuesten Release, der zweite legt eine Anforderung für den Updater auf dem Rechner ab. Beide liefern danach `UpdateStatus`. Abfrage, Dateien, Zustände und die Prüfungen beim Anfordern: [`integrationen.md`](integrationen.md), Abschnitt 10.
 
 ## 12. Ereignisprotokoll
 
@@ -700,13 +706,13 @@ Jede Fehlerantwort unter `/api` hat denselben Rumpf (`ErrorBody`):
 | 401 | `invalid_password` | falsches Haushalts-Passwort | `invalid_password` |
 | 404 | `not_found` | Pfad oder Datensatz gibt es nicht | `not_found` |
 | 400, 405, 422 | `invalid_request` | Anfrage verletzt den Vertrag; bei 400 und 422 nennt `details.errors` die Stellen (`loc`, `msg`, `type`) | `invalid` |
-| 409 | `conflict` | Zustand passt nicht zur Anfrage | `invalid` |
+| 409 | `conflict` | Zustand passt nicht zur Anfrage (etwa: Update schon angefordert) | `conflict` |
 | 409 | `protocol_mismatch` | verschiedene Protokollversionen; `details: { server, client }` | `protocol_mismatch` |
 | 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf | `internal` |
-| 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung, zu viele Testnachrichten (11.3); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
+| 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung, zu viele Testnachrichten (11.3), zu häufiges Suchen nach Updates (11.5); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
 | 500 | `internal` | Fehler im Server; Einzelheiten nur im Log | `internal` |
 | 501 | `not_implemented` | Endpunkt ist noch nicht umgesetzt | `not_supported` |
-| 503 | `not_configured` | `STOWLY_PASSWORD` ist nicht gesetzt, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (`STOWLY_PUSH_CONTACT`), Sensor (`STOWLY_HA_SUMMARY_TOKEN`) | `not_configured` |
+| 503 | `not_configured` | `STOWLY_PASSWORD` ist nicht gesetzt, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (`STOWLY_PUSH_CONTACT`), Sensor (`STOWLY_HA_SUMMARY_TOKEN`), Updates (`STOWLY_UPDATE_REPO` oder der Updater meldet sich nicht) | `not_configured` |
 
 `message` ist deutscher Klartext und als Rückfall anzeigbar. Die App unterscheidet nach `code` und zeigt dazu ihren eigenen Text; die letzte Spalte nennt, als welchen Fehler ihr Kern die Antwort an die Oberfläche weitergibt (`web/src/core/http.ts`). Eine Fehlerantwort ohne diesen Rumpf stammt nicht vom Stowly-Server und gilt in der App als `offline` (Abschnitt 9.2). Im Server: `raise ApiError(status, ErrorCode.X, "…")` aus `stowly/errors.py`. Unbekannte Pfade unter `/api` und `/print` antworten bei jeder Methode mit 404, ein bekannter Pfad mit falscher Methode mit 405 und der Kopfzeile `Allow`; 401 trägt `WWW-Authenticate: Bearer`.
 

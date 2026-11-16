@@ -34,6 +34,10 @@ export const HA_SUMMARY_LIST_MAX = 5;
 export const HA_SUMMARY_ENTRY_MAX = 40;
 /** Sensor für Home Assistant: höchstens so viele Zeichen im Satz `message`. */
 export const HA_SUMMARY_MESSAGE_MAX = 255;
+/** Updates über GitHub: Der Server fragt in diesem Abstand nach dem neuesten Release. */
+export const UPDATE_CHECK_INTERVAL_S = 21600;
+/** Updates über GitHub: „Nach Updates suchen“ höchstens einmal in so vielen Sekunden. */
+export const UPDATE_CHECK_MIN_GAP_S = 60;
 /** Liste aller Waren für Home Assistant: höchstens so viele Zeichen je Produktname. */
 export const HA_STOCK_NAME_MAX = 60;
 /** Liste aller Waren für Home Assistant: höchstens so viele Einträge über alle Zonen. */
@@ -45,7 +49,7 @@ export const HA_SYNC_INTERVAL_S = 120;
 /** Höchstens eine Testnachricht je Gerät in so vielen Sekunden. */
 export const PUSH_TEST_INTERVAL_S = 10;
 /** Wohin eine Push-Nachricht führt; der Server setzt den Ursprung der App davor. */
-export const PUSH_PATHS = {"daily": "/warnungen", "test": "/einstellungen"};
+export const PUSH_PATHS = {"daily": "/warnungen", "test": "/einstellungen", "update": "/einstellungen"};
 /**
  * Eingabegrenzen des Vertrags: Zeichen bei Texten, Anzahl bei Listen, Tage bei Fristen.
  * Kern und Attrappe prüfen damit, bevor ein Befehl entsteht (src/contract/input.ts).
@@ -131,6 +135,7 @@ export const COMMAND_TYPES = [
 
 /** Alle Endpunkte des Servers. Platzhalter wie {device_id} ersetzt der Aufrufer. */
 export const ENDPOINTS = {
+  check_update: { method: "POST", path: "/api/update/check" },
   delete_push_subscription: { method: "DELETE", path: "/api/push/subscription" },
   download_backup: { method: "GET", path: "/api/backup" },
   get_image: { method: "GET", path: "/api/images/{image_id}" },
@@ -140,6 +145,7 @@ export const ENDPOINTS = {
   ha_stock: { method: "GET", path: "/api/ha/stock" },
   ha_summary: { method: "GET", path: "/api/ha/summary" },
   health: { method: "GET", path: "/api/health" },
+  install_update: { method: "POST", path: "/api/update/install" },
   list_devices: { method: "GET", path: "/api/devices" },
   list_events: { method: "GET", path: "/api/events" },
   login: { method: "POST", path: "/api/auth/login" },
@@ -731,13 +737,14 @@ export interface IdPoolState {
   have: number;
 }
 
-/** Zustand von Sicherung, Home Assistant und Push für die Einstellungen der App. */
+/** Zustand von Sicherung, Home Assistant, Push und Updates für die Einstellungen der App. */
 export interface IntegrationStatus {
   /** Zeitzone des Servers für Uhrzeiten und den heutigen Tag (STOWLY_TIMEZONE). */
   timezone: string;
   backup: BackupStatus;
   ha: HaStatus;
   push: PushStatus;
+  update: UpdateStatus;
 }
 
 /** Etikett-Vorlage. Die App reicht `body` unverändert mit jedem Druckauftrag weiter. */
@@ -1197,6 +1204,52 @@ export interface SyncResponse {
   id_pool: IdPoolGrant;
   /** Schlägt der Server unbekannte Barcodes bei Open Food Facts nach? false = abgeschaltet (STOWLY_OFF_ENABLED=0). */
   lookup_enabled: boolean;
+}
+
+/** Anforderung eines Updates (POST /api/update/install). */
+export interface UpdateInstallInput {
+  /** Die Version, die die App als neueste gezeigt hat; muss latest sein. */
+  version: string;
+}
+
+/** Wo ein Update steht (docs/integrationen.md, 10.4). */
+export type UpdateState = "idle" | "requested" | "installing" | "done" | "failed";
+
+/** Updates über GitHub (docs/integrationen.md, Abschnitt 10). Nie ein Token. */
+export interface UpdateStatus {
+  /** STOWLY_UPDATE_REPO ist gesetzt. */
+  configured: boolean;
+  /** Das Repository der Releases (STOWLY_UPDATE_REPO). */
+  repo: string | null;
+  /** Version dieses Servers. */
+  current: string;
+  /** Version des neuesten Releases ohne „v"; null = noch nicht gefragt oder keins. */
+  latest: string | null;
+  /** Titel des neuesten Releases. */
+  latest_name: string | null;
+  /** Änderungen des neuesten Releases als Markdown-Text, höchstens 4000 Zeichen. */
+  notes: string | null;
+  /** Wann das neueste Release erschienen ist. */
+  published_at: string | null;
+  /** Seite des neuesten Releases auf GitHub. */
+  url: string | null;
+  /** latest ist neuer als current. */
+  available: boolean;
+  /** Letzte gelungene Abfrage bei GitHub. */
+  checked_at: string | null;
+  /** Fehler der letzten Abfrage; null nach einem Erfolg. */
+  check_error: string | null;
+  /** Der Updater auf dem Rechner hat sich vor höchstens 10 Minuten gemeldet. */
+  updater_ready: boolean;
+  /** Letzte Meldung des Updaters. */
+  updater_seen_at: string | null;
+  state: UpdateState;
+  /** Die Version, um die es in state geht. */
+  state_version: string | null;
+  /** Seit wann state gilt. */
+  state_at: string | null;
+  /** Erklärung zu state, bei failed der Grund; sonst meist null. */
+  state_message: string | null;
 }
 
 export interface Zone {

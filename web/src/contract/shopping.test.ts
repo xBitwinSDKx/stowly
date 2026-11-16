@@ -136,6 +136,6 @@ describe("FIFO", () => {
 
 describe("Push", () => {
   it("führt zu Adressen, die es in der App gibt", () => {
-    expect(PUSH_PATHS).toEqual({ daily: ROUTES.warnings, test: ROUTES.settings });
+    expect(PUSH_PATHS).toEqual({ daily: ROUTES.warnings, test: ROUTES.settings, update: ROUTES.settings });
   });
 });

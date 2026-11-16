@@ -86,7 +86,7 @@ export function testMessage(result: PushTestResult): PushMessage {
 }
 
 /** Sekunden bis `until` (Millisekunden), jede Sekunde neu gezeichnet; 0, sobald die Zeit um ist. */
-function useSecondsLeft(until: number): number {
+export function useSecondsLeft(until: number): number {
   const [, tick] = useReducer((count: number) => count + 1, 0);
   const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
   useEffect(() => {

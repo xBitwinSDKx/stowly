@@ -64,6 +64,7 @@ import type {
   ShoppingItem,
   ShoppingItemChanges,
   Stats,
+  UpdateStatus,
   Zone,
   ZoneChanges,
 } from "./api.gen";
@@ -587,11 +588,32 @@ export interface StatsApi {
 
 export interface IntegrationsApi {
   /**
-   * Zustand von Sicherung, Home Assistant und Push für die Einstellungen; nie ein Token.
+   * Zustand von Sicherung, Home Assistant, Push und Updates für die Einstellungen; nie ein Token.
    * Braucht den Server.
    * @throws CoreError offline | unauthorized (nicht angemeldet oder gesperrt) | not_supported (501)
    */
   load(): Promise<IntegrationStatus>;
+}
+
+/**
+ * Updates über GitHub (docs/integrationen.md, Abschnitt 10). Den Zustand liefert
+ * `integrations.load()` in `update`; diese beiden Aufrufe liefern ihn nach der Aktion neu.
+ * Beide brauchen den Server.
+ */
+export interface UpdateApi {
+  /**
+   * `POST /api/update/check`: fragt GitHub sofort nach dem neuesten Release. Ein Fehler bei
+   * GitHub ist kein Fehler dieses Aufrufs, er steht in `check_error`.
+   * @throws CoreError offline | not_configured (STOWLY_UPDATE_REPO fehlt) | rate_limited (`details.retry_after_s`, höchstens einmal je Minute)
+   */
+  check(): Promise<UpdateStatus>;
+  /**
+   * `POST /api/update/install`: fordert das Update auf `version` an, die Version, die die App als
+   * neueste gezeigt hat. Danach steht `state` auf "requested"; der Server ist während des Updates
+   * eine bis zwei Minuten nicht erreichbar.
+   * @throws CoreError offline | not_configured (Updates aus oder der Updater meldet sich nicht) | conflict (schon angefordert, nicht mehr die neueste, nicht neuer) | invalid (keine Version wie 1.2.3)
+   */
+  install(version: string): Promise<UpdateStatus>;
 }
 
 // --------------------------------------------------------------------------------------
@@ -934,6 +956,8 @@ export interface Core {
   readonly push: PushApi;
   /** Statistik (Stufe 2). Braucht den Server. */
   readonly stats: StatsApi;
-  /** Zustand von Sicherung, Home Assistant und Push (Stufe 2). Braucht den Server. */
+  /** Zustand von Sicherung, Home Assistant, Push und Updates (Stufe 2). Braucht den Server. */
   readonly integrations: IntegrationsApi;
+  /** Updates über GitHub suchen und anfordern. Braucht den Server. */
+  readonly update: UpdateApi;
 }

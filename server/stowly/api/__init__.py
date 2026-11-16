@@ -20,6 +20,7 @@ from stowly.api import (
     stats,
     sync,
     system,
+    update,
 )
 
 router = APIRouter()
@@ -35,5 +36,6 @@ router.include_router(stats.router)
 router.include_router(push.router)
 router.include_router(integrations.router)
 router.include_router(ha.router)
+router.include_router(update.router)
 
 __all__ = ["router"]

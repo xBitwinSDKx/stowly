@@ -297,6 +297,69 @@ def test_invalid_push_contacts(contact):
     assert "geheim" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "beispiel/stowly",
+        "Beispiel-Konto/stowly.app_2",
+        "a/b",
+        "a" * 39 + "/stowly",
+        "beispiel/" + "n" * 100,
+        "beispiel/.github",
+        "beispiel/...",
+        "beispiel/stowly.git",
+    ],
+)
+def test_update_repositories(repo, tmp_path):
+    settings = Settings.from_env({"STOWLY_UPDATE_REPO": f" {repo} ", "STOWLY_DATA_DIR": str(tmp_path)})
+    assert settings.update_repo == repo and settings.update_configured is True
+    assert settings.update_dir == tmp_path / "update"
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_an_empty_update_repository_means_no_updates(value):
+    env = {} if value is None else {"STOWLY_UPDATE_REPO": value}
+    settings = Settings.from_env(env)
+    assert settings.update_repo is None and settings.update_configured is False
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "stowly",
+        "/stowly",
+        "beispiel/",
+        "beispiel//stowly",
+        "beispiel/stowly/releases",
+        "-beispiel/stowly",
+        "bei_spiel/stowly",
+        "bei.spiel/stowly",
+        "bei spiel/stowly",
+        "beispiel/sto wly",
+        "beispiel/stöwly",
+        "beispiel/sto\nwly",
+        "beispiel\\stowly",
+        "a" * 40 + "/stowly",
+        "beispiel/" + "n" * 101,
+        "https://github.com/beispiel/stowly",
+        "github.com/beispiel/stowly",
+        "beispiel/.",
+        "beispiel/..",
+    ],
+)
+def test_invalid_update_repositories(repo):
+    with pytest.raises(ValueError, match="STOWLY_UPDATE_REPO"):
+        Settings.from_env({"STOWLY_UPDATE_REPO": repo})
+
+
+def test_an_invalid_update_repository_ends_the_start_with_exit_code_2(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("STOWLY_DATA_DIR", str(tmp_path / "daten"))
+    monkeypatch.setenv("STOWLY_UPDATE_REPO", "https://github.com/beispiel/stowly")
+    assert main([]) == 2
+    assert "Konfigurationsfehler: STOWLY_UPDATE_REPO" in capsys.readouterr().err
+    assert not (tmp_path / "daten").exists()  # nichts angelegt, auch kein Ordner für Updates
+
+
 def test_secrets_never_appear_in_the_representation():
     settings = Settings.from_env(
         {

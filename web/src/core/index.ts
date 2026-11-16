@@ -984,6 +984,17 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       },
     },
 
+    // Updates über GitHub (Protokoll 11.5): Beide Aufrufe brauchen den Server und liefern den
+    // Zustand danach. Gespeichert wird davon nichts; den Zustand lädt `integrations.load` neu.
+    update: {
+      check() {
+        return runtime.server((token) => api.checkUpdate(token));
+      },
+      install(version) {
+        return runtime.server((token) => api.installUpdate(token, version));
+      },
+    },
+
     dispose() {
       disposed = true;
       scheduler.stop();

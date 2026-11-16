@@ -1,0 +1,139 @@
+# Release von Stowly (docs/betrieb.md, Abschnitt 9.4).
+#
+# Ausgelöst durch ein Tag vX.Y.Z (oder vX.Y.Z-rc.N für eine Vorabversion):
+#   1. test:    alle Tests (Server, Druckdienst, Updater, Web-App) und die Prüfung des Vertrags
+#   2. image:   prüft die Versionsnummern im Code, baut das Image ohne die Brother-Bibliothek
+#               (GPL-3.0) und lädt es nach ghcr.io/<konto>/stowly:X.Y.Z (bei einer echten Version
+#               auch :latest)
+#   3. release: erst wenn das Image da ist, das Release mit dem Abschnitt aus CHANGELOG.md; eine
+#               echte Version als "latest" (die bietet der NAS an), eine Vorabversion als prerelease
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python-Pakete (Sperrdatei, Druckdienst, Server, Werkzeuge der Tests)
+        run: |
+          python -m pip install --no-deps --require-hashes --only-binary=:all: -r server/requirements.lock
+          python -m pip install --no-deps --no-build-isolation --no-index ./print ./server
+          python -m pip install --no-deps --no-build-isolation --require-hashes -r print/requirements-brother.txt
+          python -m pip install "pytest>=9" "ruff>=0.17" "packaging>=24"
+
+      - name: Ruff
+        run: |
+          python -m ruff check server print updater scripts
+          python -m ruff format --check server print updater scripts
+
+      - name: Tests des Servers (samt Prüfung des Vertrags)
+        run: python -m pytest -q server/tests -p no:cacheprovider
+
+      - name: Tests des Druckdienstes
+        run: python -m pytest -q print/tests -p no:cacheprovider
+
+      - name: Tests des Updaters
+        run: python -m pytest -q updater/tests -p no:cacheprovider
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web-App (Typen und Tests)
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+
+  image:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version und Tags
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          base="${version%%-*}"
+          python3 scripts/release.py --check "$base"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/stowly"
+          {
+            echo "version=$version"
+            echo "image=$image"
+            echo "tags<<EOF"
+            echo "$image:$version"
+            if [ "$version" = "$base" ]; then echo "$image:latest"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: STOWLY_BROTHER=0
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=Stowly
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release mit dem Abschnitt aus CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          base="${version%%-*}"
+          python3 scripts/release.py --notes "$base" > notes.md
+          if [ "$version" = "$base" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Stowly $version" \
+              --notes-file notes.md --latest
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Stowly $version" \
+              --notes-file notes.md --prerelease --latest=false
+          fi

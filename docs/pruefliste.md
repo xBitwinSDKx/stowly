@@ -2,7 +2,7 @@
 
 Auf dem Entwicklungsrechner laufen Server, Druckdienst und App zusammen: automatische Tests auf allen Seiten, dazu ein Durchgang im Browser mit dem Bild-Treiber. Alles, was Docker, echte Handys, einen echten Drucker oder den Raspberry Pi braucht, ließ sich dort nicht prüfen. Diese Liste führt in der Reihenfolge hindurch, in der man es tut.
 
-Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis K in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
+Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis L in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
 
 ## A. Container
 
@@ -241,3 +241,10 @@ Offen sind Android, Home Assistant mit Bring!, die automatische Sicherung auf de
   - In der Lösch-Historie mit Enter wiederherstellen: Der Fokus geht an die nächste Zeile.
   - Ein Gerät umbenennen und während des Speicherns Escape drücken: Nichts schließt.
 - [ ] **57.** Zeitangaben: Was vorgestern war, heißt „vor 2 Tagen", nicht „gestern".
+
+## T. Updates über GitHub
+
+- [ ] **58.** Einrichten nach [`betrieb.md`](betrieb.md), Abschnitt 9.2: fertiges Image, Updater im Aufgabenplaner bzw. als systemd-Timer (L1).
+- [ ] **59.** Suchen, Vorabversion und neue Version (L2–L4): Die Push-Nachricht kommt einmal je Version.
+- [ ] **60.** Ein Update per Knopf in der App (L5, L6): Daten und Anmeldungen bleiben, die Handys holen sich die neue App.
+- [ ] **61.** Gegenproben (L7, L8): Ein gescheiterter Download lässt die alte Version laufen; ohne Updater gibt es kein Installieren.

@@ -1,6 +1,7 @@
 """Zustand der Integrationen für die App (docs/integrationen.md, Abschnitt 8; Protokoll 11.4).
 
-Nie darin: ein Token, ein privater Schlüssel, die Adresse von Home Assistant, ``STOWLY_PUSH_CONTACT``.
+Nie darin: ein Token, ein privater Schlüssel, die Adresse von Home Assistant, ``STOWLY_PUSH_CONTACT``,
+Pfade des Rechners oder das Log des Updaters.
 """
 
 import dataclasses
@@ -16,7 +17,7 @@ from fastapi.testclient import TestClient
 from ha_fake import FakeHA
 from support import Device
 
-from stowly import db, push, scheduler
+from stowly import __version__, db, push, scheduler
 from stowly.api import integrations as endpoint
 from stowly.app import create_app
 from stowly.config import Settings
@@ -26,6 +27,7 @@ from stowly.contract.api import IntegrationStatus
 HA_TOKEN = "ha-token-" + "x" * 40
 SUMMARY_TOKEN = "sensor-token-" + "y" * 40
 CONTACT = "mailto:betrieb@example.org"
+REPO = "beispiel/stowly"
 
 
 def status(client: TestClient, device: Device) -> dict:
@@ -73,6 +75,25 @@ def test_nothing_set_up(client):
             "last_sent_at": None,
             "last_error": None,
         },
+        "update": {
+            "configured": False,
+            "repo": None,
+            "current": __version__,
+            "latest": None,
+            "latest_name": None,
+            "notes": None,
+            "published_at": None,
+            "url": None,
+            "available": False,
+            "checked_at": None,
+            "check_error": None,
+            "updater_ready": False,
+            "updater_seen_at": None,
+            "state": "idle",
+            "state_version": None,
+            "state_at": None,
+            "state_message": None,
+        },
     }
     assert client.get("/api/integrations").status_code == 401
 
@@ -93,6 +114,7 @@ def everything(settings, tmp_path) -> Settings:
         ha_todo_entity="todo.einkaufsliste",
         ha_summary_token=SUMMARY_TOKEN,
         push_contact=CONTACT,
+        update_repo=REPO,
     )
 
 
@@ -113,7 +135,11 @@ def test_everything_set_up_and_never_a_secret(everything, monkeypatch):
     monkeypatch.setattr(endpoint, "server_now", lambda: datetime(2026, 11, 14, 9, 0, tzinfo=UTC))
     home = FakeHA()
     home.token = HA_TOKEN
-    app = create_app(everything, job_clock=Early(), ha_transport=httpx2.MockTransport(home))
+    # GitHub fragt der Server erst eine Minute nach dem Start; käme es dazu, bliebe es im Test.
+    github = httpx2.MockTransport(lambda request: httpx2.Response(404))
+    app = create_app(
+        everything, job_clock=Early(), ha_transport=httpx2.MockTransport(home), update_transport=github
+    )
     with TestClient(app) as client:
         phone, tablet = Device(client, "Handy"), Device(client, "Tablet")
         # Der Abgleich mit HA läuft gleich nach dem Start einmal.
@@ -164,6 +190,25 @@ def test_everything_set_up_and_never_a_secret(everything, monkeypatch):
         True,
     )
     assert (theirs["push"]["subscriptions"], theirs["push"]["this_device"]) == (1, False)
+    assert mine["update"] == {
+        "configured": True,
+        "repo": REPO,
+        "current": __version__,
+        "latest": None,
+        "latest_name": None,
+        "notes": None,
+        "published_at": None,
+        "url": None,
+        "available": False,
+        "checked_at": None,
+        "check_error": None,
+        "updater_ready": False,
+        "updater_seen_at": None,
+        "state": "idle",
+        "state_version": None,
+        "state_at": None,
+        "state_message": None,
+    }
 
     text = response.text
     for secret in (
@@ -177,6 +222,8 @@ def test_everything_set_up_and_never_a_secret(everything, monkeypatch):
     ):
         assert secret not in text, secret
     assert str(everything.backup_dir) not in text and Path(everything.backup_dir).name not in text
+    for folder in (everything.data_dir, everything.update_dir):
+        assert str(folder) not in text and json.dumps(str(folder))[1:-1] not in text
 
 
 def test_half_set_up_integrations_name_the_reason(settings, tmp_path):

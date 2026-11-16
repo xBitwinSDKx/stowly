@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isCoreError, useCore, useLive, type IntegrationStatus } from "@/contract";
 import { errorText } from "@/ui";
 
-/** Der Zustand von Sicherung, Home Assistant und Push, wie ihn der Server meldet. */
+/** Der Zustand von Sicherung, Home Assistant, Push und Updates, wie ihn der Server meldet. */
 export type IntegrationsState =
   | { status: "loading" }
   | { status: "ready"; value: IntegrationStatus }

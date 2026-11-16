@@ -35,16 +35,22 @@ RUN apt-get update \
 #  1. alle Abhängigkeiten aus server/requirements.lock, nur fertige Wheels, dazu setuptools,
 #  2. Druckdienst und Server aus dem Quelltext, gebaut mit diesem setuptools, ohne PyPI,
 #  3. die Brother-Bibliothek (print/requirements-brother.txt; GPL-3.0, nur im Treiber-Modul
-#     geladen). packbits gibt es nur als Quellpaket; auch das baut dieses setuptools.
+#     geladen), nur mit STOWLY_BROTHER=1 (Vorgabe). packbits gibt es nur als Quellpaket; auch das
+#     baut dieses setuptools. Das öffentliche Image aus GitHub Actions entsteht mit
+#     STOWLY_BROTHER=0 und enthält so nichts unter der GPL: Ein Brother-Drucker am Server meldet
+#     dort "config"; wer einen braucht, baut das Image selbst (docs/betrieb.md, Abschnitt 14.5).
 # setuptools braucht nur der Bau. pip check bricht ab, wenn danach eine Abhängigkeit fehlt.
 # Installiert wird nach site-packages; die Quellen bleiben nicht im Image. Seit Stufe 2 sind darunter
 # cryptography mit cffi (Web-Push), pyrage (Sicherungen im Format age) und tzdata (Zeitzonen, denn
 # das schlanke Image bringt keine eigenen mit): alle als fertige Wheels, ohne Compiler im Image.
+ARG STOWLY_BROTHER=1
 COPY print/ /src/print/
 COPY server/ /src/server/
 RUN pip install --no-deps --require-hashes --only-binary=:all: -r /src/server/requirements.lock \
     && pip install --no-deps --no-build-isolation --no-index /src/print /src/server \
-    && pip install --no-deps --no-build-isolation --require-hashes -r /src/print/requirements-brother.txt \
+    && if [ "$STOWLY_BROTHER" = "1" ]; then \
+         pip install --no-deps --no-build-isolation --require-hashes -r /src/print/requirements-brother.txt; \
+       fi \
     && pip uninstall --yes setuptools \
     && pip check \
     && rm -rf /src

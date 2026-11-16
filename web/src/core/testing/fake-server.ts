@@ -56,6 +56,13 @@
  * - `GET /api/integrations`: Die Sicherung ist nie eingerichtet; Push zählt die Abos der
  *   Nachbildung. Den Zustand von Home Assistant gibt der Test vor (`haStatus`, Vorgabe „aus"),
  *   samt `linked`: Einen Abgleich mit Bring! gibt es hier nicht, `bring_key` auch nicht.
+ * - Updates (`/api/update/…`, docs/integrationen.md 10): Vorgabe „nicht eingerichtet"
+ *   (`updateRepo` null). Statt GitHub zu fragen, nimmt die Nachbildung `githubRelease` (oder
+ *   scheitert mit `githubError`); den Updater auf dem Rechner spielt der Test über
+ *   `updaterSeenAt`, `updaterState` und `updateRequest` nach, die Dateien in `/data/update`.
+ *   `current` ist `updateCurrent` (Vorgabe 0.1.0), nicht `FAKE_VERSION`. Es gibt keine
+ *   planmäßige Abfrage (nur `checkGithub()`) und keinen Push zu einer neuen Version; die Sperre
+ *   von `UPDATE_CHECK_MIN_GAP_S` gilt nur zwischen zwei Abfragen auf Knopfdruck.
  * - `GET /api/stats` (fake-stats.ts) rechnet die Monate in `timezone` der Nachbildung (Vorgabe
  *   Europe/Berlin) über `Intl`, nicht über `zoneinfo`; Namen vergleicht sie annähernd wie
  *   `str.casefold()`. Die Sätze bei 400 sind die des Servers (Stand Runde 2).
@@ -73,6 +80,7 @@ import {
   PROTOCOL_VERSION,
   PUSH_PATHS,
   PUSH_TEST_INTERVAL_S,
+  UPDATE_CHECK_MIN_GAP_S,
   type Changes,
   type Command,
   type CommandResult,
@@ -92,6 +100,7 @@ import {
   type ServerHealth,
   type ShoppingItem,
   type SyncResponse,
+  type UpdateStatus,
   type Zone,
 } from "@/contract/api.gen";
 import { gtinCheckDigit, isStoreInternalBarcode, isValidBarcode } from "@/contract/barcode";
@@ -537,6 +546,62 @@ const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
   failed: { status: "failed", http_status: 503, message: "Der Push-Dienst ist gerade nicht erreichbar (503)." },
 };
 
+// ------------------------------------------------------------------------------------------
+// Updates über GitHub (docs/integrationen.md, Abschnitt 10)
+// ------------------------------------------------------------------------------------------
+
+/** Das neueste Release, wie es der Server aus der Antwort von GitHub macht (10.2). */
+export interface FakeRelease {
+  /** Version ohne „v", etwa "0.2.0". */
+  version: string;
+  name: string | null;
+  notes: string | null;
+  published_at: string | null;
+  url: string | null;
+}
+
+/** Was der Updater in `/data/update/state` schreibt (10.3). */
+export interface FakeUpdaterState {
+  state: "installing" | "done" | "failed";
+  /** Die Zielversion. */
+  version: string;
+  at: string;
+  message: string | null;
+}
+
+/** Die Anforderung in `/data/update/request` (10.3). */
+export interface FakeUpdateRequest {
+  version: string;
+  requested_at: string;
+  /** Name des Geräts, das angefordert hat. */
+  device: string;
+}
+
+/** So lange nach seiner letzten Meldung gilt der Updater als bereit (`UPDATER_READY_S` im Server). */
+const UPDATER_READY_MS = 600_000;
+/** Holt der Updater eine Anforderung so lange nicht ab, sagt `state_message` das (`UPDATE_REQUEST_STALE_S`). */
+const UPDATE_REQUEST_STALE_MS = 600_000;
+/** Meldet sich der Updater während der Installation so lange nicht, sagt `state_message` das (10.4). */
+const UPDATE_INSTALLING_STALE_MS = 15 * 60_000;
+/** Eine Version wie 1.2.3 (`VERSION_PATTERN` im Server). */
+const VERSION_RE = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/;
+
+/** Ist `version` neuer als `than`? Verglichen werden die drei Zahlen; was keine Version wie 1.2.3 ist, ist nie neuer. */
+function isNewerVersion(version: string, than: string): boolean {
+  const a = VERSION_RE.exec(version);
+  const b = VERSION_RE.exec(than);
+  if (!a || !b) {
+    return false;
+  }
+  for (let part = 1; part <= 3; part += 1) {
+    const difference = Number(a[part]) - Number(b[part]);
+    if (difference !== 0) {
+      return difference > 0;
+    }
+  }
+  return false;
+}
+
 export class FakeServer {
   /** Kennung des Datenbestands. */
   datasetId = newUuid();
@@ -560,6 +625,20 @@ export class FakeServer {
   timezone = "Europe/Berlin";
   /** Zustand von Home Assistant in `GET /api/integrations` (docs/integrationen.md, 5.6 und 8). */
   haStatus: HaStatus = HA_OFF;
+  /** STOWLY_UPDATE_REPO; null (Vorgabe) = Updates sind nicht eingerichtet. */
+  updateRepo: string | null = null;
+  /** Die Version dieses Servers (`UpdateStatus.current`); nach einem Update setzt der Test die neue. */
+  updateCurrent = "0.1.0";
+  /** Was GitHub bei der nächsten Abfrage als neuestes Release liefert; null = es gibt noch keins (404). */
+  githubRelease: FakeRelease | null = null;
+  /** Scheitert die nächste Abfrage bei GitHub, steht hier der Satz für `check_error`; sonst null. */
+  githubError: string | null = null;
+  /** Letzte Meldung des Updaters (Datei `updater`); null = er hat sich nie gemeldet. */
+  updaterSeenAt: string | null = null;
+  /** Was der Updater zuletzt in `state` geschrieben hat; null = nichts. */
+  updaterState: FakeUpdaterState | null = null;
+  /** Die Anforderung für den Updater (Datei `request`); null = keine. Der Updater löscht sie, wenn er fertig ist. */
+  updateRequest: FakeUpdateRequest | null = null;
 
   private tables: Tables = EMPTY_TABLES;
   /** Was der Server an der Einkaufsliste selbst schreibt (7.6), samt Sperren und Uhren. */
@@ -568,6 +647,10 @@ export class FakeServer {
   private readonly pushSubscriptions = new Map<string, PushSubscriptionInput>();
   /** Zeitpunkt der letzten Testnachricht je Gerät in Millisekunden. */
   private readonly pushTests = new Map<string, number>();
+  /** Was der Server bei GitHub zuletzt gesehen hat (`job_runs`, 10.2). */
+  private updateSeen: { release: FakeRelease | null; checked_at: string | null; check_error: string | null } = { release: null, checked_at: null, check_error: null };
+  /** Zeitpunkt der letzten Abfrage auf Knopfdruck in Millisekunden. */
+  private lastUpdateCheck: number | null = null;
   private readonly revs = new Map<string, number>();
   private settingsRev = 0;
   private readonly results = new Map<string, CommandResult>();
@@ -655,6 +738,78 @@ export class FakeServer {
   /** Vergisst alle Push-Abos, wie nach dem Einspielen einer älteren Sicherung. */
   forgetPushSubscriptions(): void {
     this.pushSubscriptions.clear();
+  }
+
+  /**
+   * Fragt GitHub, wie es der Server planmäßig tut (10.2), ohne die Sperre für den Knopf: übernimmt
+   * `githubRelease`, oder merkt sich bei `githubError` nur den Fehler. Dann bleiben die bisherigen
+   * Angaben zum neuesten Release stehen.
+   */
+  checkGithub(): void {
+    if (this.githubError !== null) {
+      this.updateSeen = { ...this.updateSeen, check_error: this.githubError };
+    } else {
+      this.updateSeen = { release: this.githubRelease ? { ...this.githubRelease } : null, checked_at: this.stamp(), check_error: null };
+    }
+  }
+
+  /** `UpdateStatus` nach den Regeln aus docs/integrationen.md 10.4; bei `state` gilt die erste passende. */
+  updateStatus(): UpdateStatus {
+    const nowMs = this.now().getTime();
+    const release = this.updateSeen.release;
+    const ready = this.updaterSeenAt !== null && nowMs - Date.parse(this.updaterSeenAt) <= UPDATER_READY_MS;
+    const status: UpdateStatus = {
+      configured: this.updateRepo !== null,
+      repo: this.updateRepo,
+      current: this.updateCurrent,
+      latest: release?.version ?? null,
+      latest_name: release?.name ?? null,
+      notes: release?.notes ?? null,
+      published_at: release?.published_at ?? null,
+      url: release?.url ?? null,
+      available: release !== null && isNewerVersion(release.version, this.updateCurrent),
+      checked_at: this.updateSeen.checked_at,
+      check_error: this.updateSeen.check_error,
+      updater_ready: ready,
+      updater_seen_at: this.updaterSeenAt,
+      state: "idle",
+      state_version: null,
+      state_at: null,
+      state_message: null,
+    };
+    const request = this.updateRequest;
+    const written = this.updaterState;
+    if (request && written?.state === "installing" && written.version === request.version) {
+      return { ...status, state: "installing", state_version: written.version, state_at: written.at };
+    }
+    if (request) {
+      const stale = nowMs - Date.parse(request.requested_at) > UPDATE_REQUEST_STALE_MS && !ready;
+      return {
+        ...status,
+        state: "requested",
+        state_version: request.version,
+        state_at: request.requested_at,
+        state_message: stale ? "Der Updater hat die Anforderung noch nicht abgeholt. Läuft die Aufgabe auf dem Rechner?" : null,
+      };
+    }
+    if (written?.state === "installing") {
+      const stale = nowMs - Date.parse(written.at) > UPDATE_INSTALLING_STALE_MS;
+      return {
+        ...status,
+        state: "installing",
+        state_version: written.version,
+        state_at: written.at,
+        state_message: stale ? "Der Updater meldet sich seit 15 Minuten nicht. Bitte auf dem Rechner nachsehen." : null,
+      };
+    }
+    if (written?.state === "done" && written.version === this.updateCurrent) {
+      return { ...status, state: "done", state_version: written.version, state_at: written.at };
+    }
+    if (written?.state === "failed") {
+      return { ...status, state: "failed", state_version: written.version, state_at: written.at, state_message: written.message };
+    }
+    // Auch „done" für eine andere Version als die laufende, etwa nach einem Zurückspielen von Hand.
+    return status;
   }
 
   /** Schreibt einen Datensatz direkt, als hätte ihn ein anderes Gerät geändert. */
@@ -1191,6 +1346,54 @@ export class FakeServer {
     return json(200, result);
   }
 
+  /** `/api/update/…` (Protokoll 11.5, docs/integrationen.md 10.2 und 10.5). */
+  private update(method: string, path: string, device: FakeDevice, body: unknown): FakeResponseData {
+    if (path !== "/api/update/check" && path !== "/api/update/install") {
+      return failure(404, "not_found", "Diesen Aufruf gibt es nicht.");
+    }
+    if (method !== "POST") {
+      return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "POST" });
+    }
+    if (path === "/api/update/check") {
+      if (this.updateRepo === null) {
+        return failure(503, "not_configured", "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+      }
+      const nowMs = this.now().getTime();
+      const last = this.lastUpdateCheck;
+      if (last !== null && nowMs - last < UPDATE_CHECK_MIN_GAP_S * 1000) {
+        const wait = Math.max(1, Math.ceil((last + UPDATE_CHECK_MIN_GAP_S * 1000 - nowMs) / 1000));
+        return failure(429, "rate_limited", "Nach Updates suchen geht höchstens einmal je Minute.", { retry_after_s: wait }, { "retry-after": String(wait) });
+      }
+      this.lastUpdateCheck = nowMs;
+      this.checkGithub();
+      return json(200, this.updateStatus());
+    }
+    // POST /api/update/install: zuerst die Form (422, wie die Prüfung des Rumpfs im Server), dann 10.5 der Reihe nach.
+    if (!object({ version: req((value) => typeof value === "string" && value.length <= 40 && VERSION_RE.test(value)) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage entspricht nicht dem Vertrag.", { errors: [] });
+    }
+    const version = (body as { version: string }).version;
+    const status = this.updateStatus();
+    if (!status.configured) {
+      return failure(503, "not_configured", "Updates sind auf diesem Server nicht eingerichtet (STOWLY_UPDATE_REPO).");
+    }
+    if (!status.updater_ready) {
+      return failure(503, "not_configured", "Der Updater auf dem Rechner meldet sich nicht (docs/betrieb.md, Abschnitt 9).");
+    }
+    if (status.state === "requested" || status.state === "installing") {
+      return failure(409, "conflict", "Ein Update ist schon angefordert.");
+    }
+    if (version !== status.latest) {
+      return failure(409, "conflict", "Das ist nicht die neueste bekannte Version. Bitte erst nach Updates suchen.");
+    }
+    if (!isNewerVersion(version, this.updateCurrent)) {
+      return failure(409, "conflict", "Diese Version ist schon installiert.");
+    }
+    // In die Anforderung kommt nur die geprüfte Version, dazu Zeitpunkt und Gerätename.
+    this.updateRequest = { version, requested_at: this.stamp(), device: device.name };
+    return json(202, this.updateStatus());
+  }
+
   /** `GET /api/integrations`: Die Sicherung ist hier nie eingerichtet; Home Assistant gibt `haStatus` vor. */
   private integrations(device: FakeDevice): IntegrationStatus {
     return {
@@ -1206,6 +1409,7 @@ export class FakeServer {
         last_sent_at: null,
         last_error: null,
       },
+      update: this.updateStatus(),
     };
   }
 
@@ -1260,6 +1464,9 @@ export class FakeServer {
     }
     if (path.startsWith("/api/push/")) {
       return this.push(method, path, device, body);
+    }
+    if (path.startsWith("/api/update/")) {
+      return this.update(method, path, device, body);
     }
     if (method === "GET" && path === "/api/integrations") {
       return json(200, this.integrations(device));

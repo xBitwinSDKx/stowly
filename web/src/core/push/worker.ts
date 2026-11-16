@@ -70,12 +70,13 @@ export interface NotificationLike {
 }
 
 /**
- * Ziel nach der Kennung (`tag`) der Mitteilung (docs/integrationen.md 4.6, 4.9): der letzte
+ * Ziel nach der Kennung (`tag`) der Mitteilung (docs/integrationen.md 4.6, 4.9, 10.2): der letzte
  * Rückfall, wenn der Browser beim Tipp weder `navigate` noch `data` mitgibt.
  */
 const TAG_TARGETS: Readonly<Record<string, string>> = {
   "stowly-daily": PUSH_PATHS.daily,
   "stowly-test": PUSH_PATHS.test,
+  "stowly-update": PUSH_PATHS.update,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
