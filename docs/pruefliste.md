@@ -356,6 +356,13 @@ Automatisch geprüft:
 - **Keine vorzeitige Übernahme:** solange es den alten noch gibt (auch angehalten oder beim Löschen), wenn Docker nicht antwortet, und ohne Journal. Einem laufenden Besitzer nimmt keiner die Sperre weg, auch keine alte. In den übrigen Fällen gilt die alte Regel mit 30 Minuten.
 - **Journal:** Wer weiterführt, trägt sich ein; ein zweiter lebender Updater hält sich dann heraus, auch mit seiner eigenen, älteren ID in der Hand. Ohne eigene Container-ID führt keiner weiter.
 - **Wiederanlauf nach `stopping`:** Hält Docker Stowly noch an, wartet der Updater bis zu 45 Sekunden und startet es dann wieder; sonst meldet er, dass es weiterläuft.
+- **Rückweg nach einem Absturz:**
+  - Die Datenbank geht zurück, auch wenn der neue Container schon gelöscht war (`phase=rollback`) oder sein `start` beim Absturz noch unterwegs war.
+  - Kein zweites Mal, wenn die alte Version schon wieder läuft (`phase=restored`).
+  - Einen alten Container, der auf der Datenbank der neuen nicht healthy wird, hält der Updater vorher an.
+  - Lief die alte Version seit der Sicherung und läuft sie mit der jetzigen Datenbank, bleibt diese.
+  - Die ersetzte Datenbank liegt als `replaced-…` in `update/`.
+  - Ohne alten Container wird der neue gestartet statt gelöscht.
 - **Server:** Nach einer Stunde „wird installiert“ sagt `state_message`, wo man nachsieht.
 - **App:**
   - Während eines Updates zeigt sie keinen Befehl für den Updater, nach „done“ ohne Neuladen wieder.

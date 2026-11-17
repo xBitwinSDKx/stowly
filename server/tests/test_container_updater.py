@@ -407,7 +407,8 @@ class Host:
         (self.data / "stowly.sqlite3").write_bytes(b"db-alt")
         (self.data / "stowly.sqlite3-wal").write_bytes(b"wal-alt")
         self.engine = FakeEngine(self.data)
-        self.engine.add_dsm_stowly()
+        # Stowly läuft seit vor dem Update (das Abbild aus DSM nennt eine spätere Zeit als die Uhr hier).
+        self.engine.add_dsm_stowly()["State"]["StartedAt"] = "2026-11-16T09:00:00.123456789Z"
         self.engine.add_updater()
         self.engine.add_image("0.1.9", image_config("0.1.9"))
         self.clock = FakeClock()
@@ -744,6 +745,175 @@ def test_a_crash_after_starting_an_unhealthy_version_restores_the_database(host)
     host.new_updater().tick()
     assert (host.data / "stowly.sqlite3").read_bytes() == b"db-alt"
     assert not (host.data / "stowly.sqlite3-shm").exists()
+    stowly = host.stowly()
+    assert stowly is not None and stowly["Id"] == DSM_ID
+
+
+def test_a_crash_after_deleting_the_new_container_still_restores_the_database(host):
+    """Der Rückweg brach ab, nachdem der neue Container gelöscht war, aber bevor die Datenbank zurück war. Bis 0.5.0
+    lief die alte Version danach auf der Datenbank der neuen (und startete bei neuerem Schema gar nicht)."""
+    host.engine.offer(NEW, health="unhealthy")
+    write_new_data(host)
+    host.request()
+    crash_during(host, "DELETE", r"/containers/[0-9a-f]+")
+    assert (host.data / "stowly.sqlite3").read_bytes() == b"db-neu"
+    assert journal_of(host)["phase"] == "rollback"
+    host.new_updater().tick()
+    assert (host.data / "stowly.sqlite3").read_bytes() == b"db-alt"
+    assert not (host.data / "stowly.sqlite3-shm").exists()
+    stowly = host.stowly()
+    assert stowly is not None and stowly["Id"] == DSM_ID and stowly["State"]["Running"] is True
+    state = host.state()
+    assert (state["state"], state["message"]) == (
+        "failed",
+        f"Das Update auf {NEW} brach ab, zurück auf {OLD}.",
+    )
+    # Umkehrbar: Die ersetzte Datenbank liegt in update/ und steht im Log.
+    copies = sorted(path.name for path in host.update.glob("replaced-*.sqlite3"))
+    assert len(copies) == 1 and (host.update / copies[0]).read_bytes() == b"db-neu"
+    assert f"die bisherige liegt in update/{copies[0]}" in (host.update / "log").read_text(encoding="utf-8")
+
+
+def work_in_the_old_version(host: Host, *, running: bool) -> None:
+    """Der Anwender startet stowly-vorher von Hand, nachdem das Update abbrach, und arbeitet damit."""
+    host.clock.sleep(600)
+    started = host.clock.now().strftime("%Y-%m-%dT%H:%M:%S.250000000Z")
+    if running:
+        state = {"Status": "running", "Running": True, "StartedAt": started, "Health": {"Status": "healthy"}}
+    else:
+        state = {"Status": "exited", "Running": False, "StartedAt": started}
+    host.engine.containers[DSM_ID]["State"] = state
+    (host.data / "stowly.sqlite3").write_bytes(b"db-alt-und-arbeit")
+
+
+def test_an_old_version_started_since_the_backup_keeps_its_work(host):
+    """Der Rückweg brach ab (``rollback``), danach lief die alte Version von Hand gestartet weiter. Der spätere
+    Wiederanlauf darf ihre neue Arbeit nicht mit der Sicherung überschreiben: Sie läuft mit der jetzigen
+    Datenbank, also bleibt diese."""
+    host.engine.offer(NEW, health="unhealthy")  # scheitert, bevor es migriert
+    host.request()
+    crash_during(host, "DELETE", r"/containers/[0-9a-f]+")
+    assert journal_of(host)["phase"] == "rollback"
+    work_in_the_old_version(host, running=True)
+    host.new_updater().tick()
+    assert (host.data / "stowly.sqlite3").read_bytes() == b"db-alt-und-arbeit"
+    assert host.engine.containers[DSM_ID]["State"]["Running"] is True
+    assert not list(host.update.glob("replaced-*.sqlite3"))
+    assert host.state()["state"] == "failed"
+    assert "die Datenbank bleibt, wie sie ist" in (host.update / "log").read_text(encoding="utf-8")
+
+
+def test_a_stopped_old_version_that_ran_since_the_backup_keeps_its_work(host):
+    """Wie oben, nur ist die alte Version beim Wiederanlauf gerade angehalten (die allgemeine Regel spielte sonst
+    zurück, weil der alte nicht läuft): Sie startet mit der jetzigen Datenbank und behält sie."""
+    host.engine.offer(NEW)
+    host.request()
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/rename")
+    work_in_the_old_version(host, running=False)
+    host.new_updater().tick()
+    assert (host.data / "stowly.sqlite3").read_bytes() == b"db-alt-und-arbeit"
+    stowly = host.stowly()
+    assert stowly is not None and stowly["Id"] == DSM_ID and stowly["State"]["Running"] is True
+
+
+def test_without_the_old_container_the_new_one_is_never_deleted(host):
+    """Den alten gibt es nicht mehr (etwa schon gelöscht, als der Updater nach „healthy" starb), und der neue
+    steht gerade. Bisher löschte der Rückweg den einzigen verbliebenen Container; jetzt startet er ihn."""
+    host.engine.offer(NEW)
+    host.request()
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/start")
+    new = host.stowly()
+    assert new is not None and new["Id"] != DSM_ID
+    new["State"] = {"Status": "exited", "Running": False, "StartedAt": "2026-11-16T12:00:00Z"}
+    del host.engine.containers[DSM_ID]
+    host.new_updater().tick()
+    assert host.engine.find(new["Id"]) is not None and host.state()["state"] == "done"
+
+
+def test_without_the_old_container_a_broken_off_rollback_keeps_the_new_one(host):
+    """Auch im Schritt ``rollback``: Fehlt der alte Container (etwa von Hand gelöscht), bleibt der neue stehen."""
+    host.engine.offer(NEW, health="unhealthy")
+    host.request()
+    crash_during(host, "GET", r"/containers/[0-9a-f]+/logs")  # im Rückweg, der neue steht noch
+    assert journal_of(host)["phase"] == "rollback"
+    new_id = journal_of(host)["new_id"]
+    assert host.engine.find(new_id) is not None
+    del host.engine.containers[DSM_ID]
+    host.new_updater().tick()
+    assert host.engine.find(new_id) is not None
+    state = host.state()
+    assert state["state"] == "failed" and state["message"].startswith("Der alte Container fehlt")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-11-16T11:35:35.216219837Z", datetime(2026, 11, 16, 11, 35, 35, tzinfo=UTC)),
+        ("2026-11-16T12:36:05+01:00", datetime(2026, 11, 16, 11, 36, 5, tzinfo=UTC)),
+        ("2026-11-16T11:35:35", datetime(2026, 11, 16, 11, 35, 35, tzinfo=UTC)),
+        ("0001-01-01T00:00:00Z", None),
+        ("gestern", None),
+        (None, None),
+    ],
+)
+def test_docker_times_are_read_in_utc(value, expected):
+    moment = run._docker_time(value)
+    assert (moment.replace(microsecond=0) if moment else None) == expected
+
+
+def test_a_rollback_that_already_restored_does_not_restore_again(host):
+    """Brach der Rückweg erst nach dem Start der alten Version ab, läuft sie schon auf der zurückgespielten
+    Datenbank und schreibt hinein: Ein zweites Zurückspielen nähme ihr das wieder weg."""
+    host.engine.offer(NEW, health="unhealthy")
+    write_new_data(host)
+    host.request()
+    crash_during(host, "POST", rf"/containers/{DSM_ID}/start")
+    assert journal_of(host)["phase"] == "restored"
+    (host.data / "stowly.sqlite3").write_bytes(b"db-alt-und-neues")
+    host.new_updater().tick()
+    assert (host.data / "stowly.sqlite3").read_bytes() == b"db-alt-und-neues"
+    assert host.state()["state"] == "failed" and not (host.update / "journal").exists()
+
+
+def test_an_old_container_started_by_docker_is_stopped_before_the_database_goes_back(host, monkeypatch):
+    """Ein Neustart des NAS mitten im Rückweg startet den alten Container von selbst (Neustart-Regel). Die
+    Datenbank geht trotzdem zurück, aber nie unter einem laufenden Stowly."""
+    host.engine.offer(NEW, health="unhealthy")
+    write_new_data(host)
+    host.request()
+    crash_during(host, "DELETE", r"/containers/[0-9a-f]+")
+    # Auf der Datenbank der neuen Version verweigert die alte den Start: nicht healthy.
+    host.engine.containers[DSM_ID]["State"] = {
+        "Status": "running",
+        "Running": True,
+        "StartedAt": "2026-11-16T10:05:00.5Z",
+        "Health": {"Status": "unhealthy"},
+    }
+    original = run.Run.restore_database
+
+    def only_when_stopped(self: run.Run, backup: str) -> None:
+        assert host.engine.containers[DSM_ID]["State"]["Running"] is False
+        original(self, backup)
+
+    monkeypatch.setattr(run.Run, "restore_database", only_when_stopped)
+    host.new_updater().tick()
+    assert (host.data / "stowly.sqlite3").read_bytes() == b"db-alt"
+    assert host.engine.containers[DSM_ID]["State"]["Running"] is True
+    assert "er wird vor dem Zurückspielen angehalten" in (host.update / "log").read_text(encoding="utf-8")
+
+
+def test_a_start_of_the_new_version_still_under_way_is_rolled_back_with_the_database(host):
+    """Der Updater starb, während Docker die neue Version noch startete: Beim Wiederanlauf sieht sie noch nicht
+    gestartet aus, hat aber schon migriert. Läuft der alte Container nicht, geht die Datenbank immer zurück."""
+    host.engine.offer(NEW, health="unhealthy")
+    write_new_data(host)
+    host.request()
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/start")
+    new = host.stowly()
+    assert new is not None and new["Id"] != DSM_ID
+    new["State"] = {"Status": "created", "Running": False, "StartedAt": "0001-01-01T00:00:00Z"}
+    host.new_updater().tick()
+    assert (host.data / "stowly.sqlite3").read_bytes() == b"db-alt"
     stowly = host.stowly()
     assert stowly is not None and stowly["Id"] == DSM_ID
 

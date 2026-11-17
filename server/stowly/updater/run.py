@@ -94,9 +94,14 @@ LOG = "log"
 LOCK = "lock"
 JOURNAL = "journal"
 _BACKUP = re.compile(r"before-.+\.sqlite3")
+# Die Datenbank, die ein Zurückspielen ersetzte (``Run.keep_replaced``); fällt nicht unter ``_BACKUP``.
+_REPLACED = re.compile(r"replaced-[0-9]{8}T[0-9]{6}Z\.sqlite3")
+_DOCKER_TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?")
 VERSION = exact(VERSION_PATTERN)
 # Was in einem Journal stehen darf (Run.resume prüft es, bevor es einen Container anfasst).
-PHASES = frozenset({"stopping", "renaming", "renamed", "created", "starting"})
+# Schritte im Journal. ``rollback``: Der Rückweg hat begonnen, die Datenbank muss zurück (auch wenn der neue
+# Container schon gelöscht ist). ``restored``: Sie ist zurück; ein Wiederanlauf startet nur noch den alten.
+PHASES = frozenset({"stopping", "renaming", "renamed", "created", "starting", "rollback", "restored"})
 _CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
 _CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 UNKNOWN_VERSION = "unbekannt"
@@ -428,6 +433,22 @@ class Clock:
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
+
+
+def _docker_time(value: object) -> datetime | None:
+    """Eine Zeit von Docker (``2026-11-17T07:51:30.906123456Z``, auch mit Versatz) in UTC; ``None`` für
+    „nie" (``0001-…``) oder eine andere Form."""
+    if not isinstance(value, str) or value.startswith("0001"):
+        return None
+    match = _DOCKER_TIME.fullmatch(value)
+    if match is None:
+        return None
+    zone = match.group(2) or "Z"
+    try:
+        moment = datetime.fromisoformat(match.group(1) + ("+00:00" if zone == "Z" else zone))
+    except ValueError:
+        return None
+    return moment.astimezone(UTC)
 
 
 def stamp(moment: datetime) -> str:
@@ -935,16 +956,43 @@ class Run:
             if self.update.kind(backup + suffix) == "file":
                 self.update.copy_to(backup + suffix, self.data, DATABASE + suffix)
 
-    def prune_backups(self) -> None:
-        """Nur die drei neuesten Kopien bleiben."""
+    def prune_backups(self, pattern: re.Pattern[str] = _BACKUP) -> None:
+        """Nur die drei neuesten Kopien bleiben (``before-…`` oder, mit ``_REPLACED``, ``replaced-…``)."""
         copies = []
         for name in self.update.names():
             info = self.update.lstat(name)
-            if _BACKUP.fullmatch(name) and info is not None:
+            if pattern.fullmatch(name) and info is not None:
                 copies.append((info.st_mtime, name))
         for _mtime, name in sorted(copies, reverse=True)[KEEP_BACKUPS:]:
             for suffix in ("", *DATABASE_SUFFIXES):
                 self.update.unlink(name + suffix)
+
+    def keep_replaced(self) -> str | None:
+        """Hebt die jetzige Datenbank vor dem Zurückspielen als ``replaced-<zeit>.sqlite3`` (samt ``-wal`` und
+        ``-shm``) in ``update/`` auf; die drei neuesten bleiben. So lässt sich jedes Zurückspielen umkehren.
+        ``None``, wenn es keine Datenbank gibt; Fehler (``LinkFound``, ``OSError``) gehen an den Aufrufer."""
+        assert self.data is not None
+        if self.data.kind(DATABASE) == "missing":
+            return None
+        name = f"replaced-{self.clock.now().astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
+        self.backup_database(name)
+        self.prune_backups(_REPLACED)
+        return name
+
+    def ran_since_backup(self, old: Mapping[str, Any]) -> bool:
+        """Wurde der alte Container nach der Sicherung gestartet (von Hand, oder Docker per Neustart-Regel nach
+        einem Neustart des NAS)? Dann hat die alte Version womöglich neue Daten. Im Zweifel ja."""
+        raw = (old.get("State") or {}).get("StartedAt")
+        if isinstance(raw, str) and raw.startswith("0001"):
+            return False  # nie gestartet
+        match = re.search(r"-([0-9]{8}T[0-9]{6}Z)\.sqlite3$", self.journal.get("backup", ""))
+        started = _docker_time(raw)
+        if match is None or started is None:
+            return True
+        backed_up = datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        # Sekundengenau wie der Name der Sicherung. Ein Start in derselben Sekunde, gleich nach dem Anhalten
+        # und Sichern, kommt praktisch nicht vor.
+        return started.replace(microsecond=0) > backed_up
 
     def cleanup_images(self, repository: str, keep: set[str]) -> None:
         """Alte Images derselben Herkunft; die neue und die vorige Version bleiben."""
@@ -1125,7 +1173,17 @@ class Run:
         self.finish(DONE, f"Aktualisiert von {self.old} auf {self.new}.")
 
     def rollback(self, target: Target, new_id: str | None, *, restore: bool, reason: str | None) -> None:
-        """9. Zurück: Log des neuen Containers, ihn löschen, Datenbank zurück, alten zurückbenennen und starten."""
+        """9. Zurück: Log des neuen Containers, ihn löschen, Datenbank zurück, alten zurückbenennen und starten.
+
+        Mit ``restore`` steht vorher ``phase=rollback`` im Journal und nach dem Zurückspielen ``restored``: Bricht
+        der Rückweg ab, spielt der Wiederanlauf die Datenbank auch dann zurück, wenn der neue Container schon weg
+        ist, aber kein zweites Mal unter einem schon wieder laufenden alten.
+        """
+        if restore:
+            # Nur ein Sicherheitsnetz: Lässt es sich nicht schreiben, spielt der Wiederanlauf trotzdem zurück,
+            # solange der alte Container nicht läuft.
+            with contextlib.suppress(OSError):
+                self.write_journal(phase="rollback")
         if new_id is not None:
             try:
                 tail = self.engine.logs(new_id, tail=50, tty=self.journal.get("tty") == "1")
@@ -1143,11 +1201,7 @@ class Run:
                 except DockerError as exc:
                     self.say(f"Aufräumen: {exc}")
         if restore:
-            try:
-                self.restore_database(self.journal["backup"])
-                self.say("Datenbank von vor dem Update zurückgespielt.")
-            except (LinkFound, OSError, KeyError) as exc:
-                self.say(f"Die Kopie der Datenbank ließ sich nicht zurückspielen ({exc}).")
+            self.restore_for_rollback(target)
         try:
             old = self.engine.container(target.id)
             if old is not None and clone.container_name(old) != target.name:
@@ -1164,6 +1218,54 @@ class Run:
                 FAILED,
                 f"Die neue Version startete nicht, und {self.old} startet auch nicht mehr. {NOT_RUNNING_HINT}",
             )
+
+    def restore_for_rollback(self, target: Target) -> None:
+        """Spielt die Datenbank von vor dem Update zurück; danach ``phase=restored``. Drei Vorsichten:
+
+        - **Die alte Version lief seit der Sicherung** (von Hand gestartet, oder Docker startete sie nach einem
+          Neustart des NAS): Sie hat womöglich neue Daten. Erst zeigt sie, ob sie mit der jetzigen Datenbank
+          läuft; wenn ja, bleibt diese. Nur wenn nicht (die neue Version hat schon migriert), geht es weiter.
+        - **Nie unter einem laufenden Stowly:** Läuft der alte Container, wird er vorher angehalten.
+        - **Umkehrbar:** Die jetzige Datenbank kommt vorher als ``replaced-<zeit>.sqlite3`` nach ``update/``.
+        """
+        try:
+            old = self.engine.container(target.id)
+            if old is not None and self.ran_since_backup(old):
+                self.say(
+                    "Die alte Version lief seit der Sicherung; sie probiert zuerst die jetzige Datenbank."
+                )
+                if _health(old) in STOPPED_STATES:
+                    self.engine.start(target.id)
+                if self.wait_healthy(target.id):
+                    self.say("Sie läuft damit; die Datenbank bleibt, wie sie ist.")
+                    with contextlib.suppress(OSError):
+                        self.write_journal(phase="restored")
+                    return
+                old = self.engine.container(target.id)
+            if old is not None and _health(old) not in STOPPED_STATES:
+                self.say("Der alte Container läuft; er wird vor dem Zurückspielen angehalten.")
+                self.engine.stop(target.id, STOP_TIMEOUT_S)
+        except DockerError as exc:
+            self.say(
+                f"Der alte Container ließ sich nicht starten oder anhalten ({exc}); die Datenbank bleibt, wie sie ist."
+            )
+            return
+        try:
+            kept = self.keep_replaced()
+        except (LinkFound, OSError) as exc:
+            self.say(f"Die jetzige Datenbank ließ sich nicht aufheben ({exc}); sie bleibt, wie sie ist.")
+            return
+        try:
+            self.restore_database(self.journal["backup"])
+        except (LinkFound, OSError, KeyError) as exc:
+            self.say(f"Die Kopie der Datenbank ließ sich nicht zurückspielen ({exc}).")
+            return
+        self.say(
+            "Datenbank von vor dem Update zurückgespielt"
+            + (f"; die bisherige liegt in update/{kept}." if kept else ".")
+        )
+        with contextlib.suppress(OSError):
+            self.write_journal(phase="restored")
 
     # ------------------------------------------------------------------ Wiederanlauf
 
@@ -1219,9 +1321,30 @@ class Run:
             if new is not None and phase == "starting" and _health(new) in ("healthy", "starting"):
                 if self.wait_healthy(str(new_id)):
                     return self.succeed(target, repository)
-            ran = new is not None and not str((new.get("State") or {}).get("StartedAt", "")).startswith(
-                "0001"
-            )
+            if old is None and new is not None:
+                # Den alten gibt es nicht mehr (etwa schon gelöscht, als der Updater nach „healthy" starb, oder von
+                # Hand): Der neue ist der einzige, ihn zu löschen ließe nichts übrig. Lieber ihn starten und warten.
+                if _health(new) in STOPPED_STATES:
+                    self.engine.start(str(new_id))
+                if self.wait_healthy(str(new_id)):
+                    return self.succeed(target, repository)
+                return self.finish(
+                    FAILED,
+                    f"Der alte Container fehlt, und die neue Version {self.new} wurde nicht healthy. "
+                    f"{NOT_RUNNING_HINT}",
+                )
+            if phase in ("rollback", "restored"):
+                # Der Rückweg brach ab: bei ``rollback`` die Datenbank noch zurückspielen, auch ohne neuen
+                # Container; bei ``restored`` ist sie zurück, dann nur noch den alten starten.
+                restore = phase == "rollback"
+            else:
+                ran = new is not None and not str((new.get("State") or {}).get("StartedAt", "")).startswith(
+                    "0001"
+                )
+                # Läuft der alte Container nicht, hat seit der Sicherung höchstens die neue Version die
+                # Datenbank angefasst: Zurückspielen ist dann immer richtig, auch wenn ein start der neuen noch
+                # unterwegs war oder ihr Container schon gelöscht ist.
+                restore = ran or old is None or _health(old) in STOPPED_STATES
         except DockerError as exc:
             self.say(f"Docker antwortet nicht ({exc}); neuer Versuch beim nächsten Durchgang.")
             if self.log is not None:
@@ -1231,7 +1354,7 @@ class Run:
         self.rollback(
             target,
             new_id,
-            restore=ran,
+            restore=restore,
             reason=f"Das Update auf {self.new} brach ab, zurück auf {self.old}.",
         )
 

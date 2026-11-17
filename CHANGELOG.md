@@ -14,6 +14,12 @@ Update per Knopf robuster.
 - **Wiederanlauf beim Anhalten:** Startet ein Updater neu oder wird er ersetzt, während Docker Stowly gerade anhält, wartet er, bis es steht, und startet es wieder. Bisher konnte Stowly danach aus bleiben, obwohl es hieß, es laufe weiter.
 - **Zwei Updater gleichzeitig:** Wer ein abgebrochenes Update weiterführt, trägt sich ins Journal ein. Ein zweiter Updater hält sich dann heraus, statt dasselbe Update gleichzeitig weiterzuführen. Einem Updater, der noch läuft, nimmt keiner mehr die Sperre weg.
 - **Ohne eigene Container-ID** verwirft ein Updater kein abgebrochenes Update mehr. Er lässt es liegen, bis ein Updater mit ID es zu Ende bringt.
+- **Rückweg nach einem Absturz:** Brach der Weg zurück zur alten Version mittendrin ab, nachdem der neue Container schon gelöscht war, lief die alte Version danach auf der Datenbank der neuen; bei neuerem Schema startete sie gar nicht. Jetzt geht die Datenbank beim Wiederanlauf zurück, mit diesen Vorsichten:
+  - kein zweites Mal, wenn die alte Version schon wieder läuft;
+  - nie unter einem laufenden Stowly;
+  - nicht, wenn die alte Version seit der Sicherung lief (etwa von Hand gestartet) und mit der jetzigen Datenbank läuft, denn dann hat sie womöglich neue Daten.
+
+  Die ersetzte Datenbank hebt der Updater als `update/replaced-<zeit>.sqlite3` auf. Fehlt der alte Container, löscht er den neuen nicht mehr.
 
 Von Hand: Nach dem Update auf 0.5.1 den Updater einmal erneuern, mit dem Befehl aus Einrichtung → Updates und auf demselben Weg wie beim Anlegen (docs/betrieb.md, Abschnitt 19.3). Erst dann übernimmt auch der Updater nach einer Minute.
 
