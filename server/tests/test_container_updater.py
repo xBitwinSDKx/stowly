@@ -760,6 +760,336 @@ def test_another_updater_does_not_take_over_a_fresh_lock_of_a_crashed_run(host):
     assert not (host.update / "journal").exists()
 
 
+RENEWED_ID = "e" * 64
+THIRD_ID = "f" * 64
+
+
+def renewed_updater(host: Host, own_id: str = RENEWED_ID, *, replace: bool = True) -> run.Updater:
+    """Ein weiterer Updater-Container mit derselben Quelle für /data. ``replace``: wie
+    ``docker rm -f stowly-updater; docker run …`` mit dem Befehl aus der App, der alte ist dann gelöscht."""
+    old = host.engine.containers[UPDATER_ID]
+    host.engine.containers[own_id] = {**old, "Id": own_id}
+    if replace:
+        del host.engine.containers[UPDATER_ID]
+    return run.Updater(
+        Engine(host.engine),
+        data_dir=host.data,
+        own_id=own_id,
+        image_ref="docker.io/beispiel/stowly",
+        clock=host.clock,
+    )
+
+
+def journal_of(host: Host) -> dict[str, str]:
+    return updates.read_fields(host.update / "journal") or {}
+
+
+def crash_while_starting(host: Host) -> None:
+    """Die neue Version läuft schon, dann stirbt der Updater; seine Sperre bleibt (ein SIGKILL räumt nichts auf)."""
+    host.engine.offer(NEW)
+    host.request()
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/start")
+    (host.update / "lock").mkdir()
+
+
+def test_a_renewed_updater_takes_over_the_lock_of_the_deleted_one_after_a_minute(host):
+    # Wie am 17.11.2026 am NAS: Mitten im Start der neuen Version wurde der Updater mit dem Befehl aus der
+    # App erneuert. Bis 0.5.0 wartete der neue 30 Minuten auf die Sperre des gelöschten; jetzt übernimmt er,
+    # sobald Docker den gelöschten seit OWNER_GONE_S nicht mehr kennt.
+    crash_while_starting(host)
+    renewed = renewed_updater(host)
+    renewed.tick()
+    host.clock.sleep(run.OWNER_GONE_S - 1)
+    renewed.tick()
+    assert host.state()["state"] == "installing" and journal_of(host)["updater"] == UPDATER_ID
+    host.clock.sleep(1)
+    renewed.tick()
+    state = host.state()
+    assert (state["state"], state["message"]) == ("done", f"Aktualisiert von {OLD} auf {NEW}.")
+    assert not (host.update / "journal").exists() and not (host.update / "lock").exists()
+    assert host.engine.by_name("stowly-vorher") is None
+    text = (host.update / "log").read_text(encoding="utf-8")
+    assert (
+        f"Die Sperre gehörte dem Updater {UPDATER_ID[:12]}, den es nicht mehr gibt; dieser Updater übernimmt."
+        in text
+    )
+
+
+def test_a_stop_that_docker_still_finishes_does_not_fool_the_successor(host):
+    """Docker führt ein angenommenes ``stop`` zu Ende, auch wenn der Updater, der es schickte, schon gelöscht
+    ist. Hätte der Nachfolger sofort übernommen, hätte er Stowly noch laufen sehen, „läuft weiter“ gemeldet und
+    es danach aus gelassen. Nach OWNER_GONE_S ist der stop durch, und er startet Stowly wieder."""
+    host.engine.offer(NEW)
+    host.request()
+    running = dict(host.engine.containers[DSM_ID]["State"])
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/stop")
+    (host.update / "lock").mkdir()
+    stopped = host.engine.containers[DSM_ID]["State"]
+    host.engine.containers[DSM_ID]["State"] = running  # Docker fährt Stowly noch herunter
+    renewed = renewed_updater(host)
+    renewed.tick()
+    assert journal_of(host)["phase"] == "stopping" and journal_of(host)["updater"] == UPDATER_ID
+    host.engine.containers[DSM_ID]["State"] = stopped  # jetzt ist der stop durch
+    host.clock.sleep(run.OWNER_GONE_S)
+    renewed.tick()
+    state = host.state()
+    assert (state["state"], state["message"]) == (
+        "failed",
+        f"Das Update auf {NEW} brach ab; Stowly läuft weiter mit {OLD}.",
+    )
+    assert host.engine.containers[DSM_ID]["State"]["Running"] is True
+
+
+@pytest.mark.parametrize("status", ["exited", "removing"])
+def test_a_second_updater_waits_while_the_first_still_exists(host, status):
+    """Angehalten oder gerade beim Löschen ist nicht weg: Der erste könnte wieder anlaufen und weitermachen."""
+    crash_while_starting(host)
+    other = renewed_updater(host, replace=False)
+    host.engine.containers[UPDATER_ID] = {
+        **host.engine.containers[UPDATER_ID],
+        "State": {"Status": status, "Running": False},
+    }
+    other.tick()
+    host.clock.sleep(run.OWNER_GONE_S)
+    other.tick()
+    assert (host.update / "journal").exists() and host.state()["state"] == "installing"
+    assert journal_of(host)["updater"] == UPDATER_ID
+    # Erst wenn es ihn nicht mehr gibt, übernimmt der zweite, und auch dann erst nach der Karenz.
+    del host.engine.containers[UPDATER_ID]
+    other.tick()
+    assert host.state()["state"] == "installing"
+    host.clock.sleep(run.OWNER_GONE_S)
+    other.tick()
+    assert host.state()["state"] == "done"
+
+
+def test_no_takeover_while_docker_does_not_answer(host, monkeypatch):
+    crash_while_starting(host)
+    renewed = renewed_updater(host)
+    real = renewed.engine.container
+
+    def flaky(ref: str) -> dict[str, Any] | None:
+        if ref == UPDATER_ID:
+            raise DockerError("Docker antwortet nicht")
+        return real(ref)
+
+    monkeypatch.setattr(renewed.engine, "container", flaky)
+    renewed.tick()
+    host.clock.sleep(run.OWNER_GONE_S)
+    renewed.tick()
+    assert host.state()["state"] == "installing" and journal_of(host)["updater"] == UPDATER_ID
+
+
+def test_a_renewed_updater_does_not_take_over_without_a_journal(host):
+    """Stirbt der Updater beim Laden des Images, gibt es noch kein Journal und damit keinen Besitzer; dann gilt
+    weiter die Frist der Sperre. Die alte Version läuft dabei unverändert."""
+    host.engine.offer(NEW)
+    host.request()
+    (host.update / "lock").mkdir()  # die Sperre eines Laufs, der noch beim Laden war
+    renewed = renewed_updater(host)
+    renewed.tick()
+    host.clock.sleep(run.OWNER_GONE_S)
+    renewed.tick()
+    assert (host.update / "request").exists() and (host.update / "lock").exists()
+    assert not (host.update / "journal").exists() and not (host.update / "state").exists()
+
+
+def test_after_taking_over_the_journal_belongs_to_the_renewed_updater(host):
+    """Stirbt auch der neue mitten im Wiederanlauf, erkennt er die Sperre nach seinem Neustart als seine."""
+    crash_while_starting(host)
+    renewed = renewed_updater(host)
+    renewed.tick()
+    host.clock.sleep(run.OWNER_GONE_S)
+    host.engine.crash_after = ("DELETE", r"/containers/[0-9a-f]+")  # beim Löschen des alten Stowly
+    with pytest.raises(Crash):
+        renewed.tick()
+    assert journal_of(host)["updater"] == RENEWED_ID
+    (host.update / "lock").mkdir()
+    run.Updater(
+        Engine(host.engine),
+        data_dir=host.data,
+        own_id=RENEWED_ID,
+        image_ref="docker.io/beispiel/stowly",
+        clock=host.clock,
+    ).tick()
+    assert host.state()["state"] == "done"
+    assert not (host.update / "journal").exists()
+
+
+def test_a_resume_on_a_free_lock_puts_the_own_id_into_the_journal(host):
+    """Gab der erste Updater die Sperre beim Beenden frei (das ``finally``, etwa bei SIGTERM), nimmt sie ein
+    anderer per mkdir. Auch dann nennt das Journal danach ihn. Der erste hält sich beim nächsten Durchgang
+    heraus, statt mit seiner alten ID im Journal gleichzeitig weiterzumachen."""
+    host.engine.offer(NEW)
+    host.request()
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/start")
+    assert not (host.update / "lock").exists()
+    other = renewed_updater(host, replace=False)
+    host.engine.crash_after = ("DELETE", r"/containers/[0-9a-f]+")
+    with pytest.raises(Crash):
+        other.tick()
+    assert journal_of(host)["updater"] == RENEWED_ID
+    (host.update / "lock").mkdir()  # die Sperre des zweiten, liegen geblieben
+    host.updater.tick()  # der erste: Das Journal nennt den zweiten, und den gibt es noch
+    assert journal_of(host)["updater"] == RENEWED_ID and host.state()["state"] == "installing"
+
+
+def age_the_lock(host: Host) -> None:
+    """Die Sperre ist älter als STALE_LOCK_S (etwa nach langem Laden des Images)."""
+    old = time.time() - run.STALE_LOCK_S - 60
+    os.utime(host.update / "lock", (old, old))
+
+
+def test_an_old_lock_does_not_skip_the_grace(host):
+    """Auch eine alte Sperre übernimmt der Nachfolger erst nach der Karenz, wenn ihr Besitzer gerade gelöscht
+    wurde: Sonst wäre die Erneuerung nach „über einer Stunde“ (alte Sperre) nie geschützt."""
+    crash_while_starting(host)
+    age_the_lock(host)
+    renewed = renewed_updater(host)
+    renewed.tick()
+    assert host.state()["state"] == "installing" and journal_of(host)["updater"] == UPDATER_ID
+    host.clock.sleep(run.OWNER_GONE_S)
+    renewed.tick()
+    assert host.state()["state"] == "done"
+
+
+def test_a_running_owner_keeps_its_lock_even_when_it_is_old(host):
+    crash_while_starting(host)
+    age_the_lock(host)
+    other = renewed_updater(host, replace=False)  # der erste läuft
+    other.tick()
+    host.clock.sleep(run.OWNER_GONE_S)
+    other.tick()
+    assert host.state()["state"] == "installing" and journal_of(host)["updater"] == UPDATER_ID
+
+
+def test_a_stopped_owner_loses_an_old_lock(host):
+    crash_while_starting(host)
+    age_the_lock(host)
+    other = renewed_updater(host, replace=False)
+    host.engine.containers[UPDATER_ID] = {
+        **host.engine.containers[UPDATER_ID],
+        "State": {"Status": "exited", "Running": False},
+    }
+    other.tick()
+    assert host.state()["state"] == "done"
+
+
+def stop_still_running(host: Host) -> dict[str, Any]:
+    """Der Updater stirbt beim ``stop``; Docker fährt Stowly noch herunter. Liefert den Stand danach."""
+    host.engine.offer(NEW)
+    host.request()
+    running = dict(host.engine.containers[DSM_ID]["State"])
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/stop")
+    stopped = host.engine.containers[DSM_ID]["State"]
+    host.engine.containers[DSM_ID]["State"] = running
+    return stopped
+
+
+def test_a_restart_during_a_running_stop_waits_for_the_stop(host, monkeypatch):
+    """Derselbe Updater läuft gleich wieder an (Neustart, Restart-Policy; die Sperre gab sein ``finally``
+    frei). Er sieht Stowly noch laufen, wartet aber, bis der stop durch ist, und startet es dann wieder."""
+    stopped = stop_still_running(host)
+    real_sleep = host.clock.sleep
+    finished: list[bool] = []
+
+    def finish_stop() -> None:
+        if not finished:  # einmal: Docker hält Stowly an
+            finished.append(True)
+            host.engine.containers[DSM_ID]["State"] = stopped
+
+    def sleep(seconds: float) -> None:
+        real_sleep(seconds)
+        finish_stop()
+
+    monkeypatch.setattr(host.clock, "sleep", sleep)
+    host.new_updater().tick()
+    finish_stop()  # spätestens jetzt ist der stop durch
+    state = host.state()
+    assert (state["state"], state["message"]) == (
+        "failed",
+        f"Das Update auf {NEW} brach ab; Stowly läuft weiter mit {OLD}.",
+    )
+    assert host.engine.containers[DSM_ID]["State"]["Running"] is True
+
+
+def test_a_stop_that_never_comes_ends_after_the_settle_time(host):
+    """Hält Stowly nicht an (der Updater starb vor dem stop), heißt es nach STOP_SETTLE_S: läuft weiter."""
+    stop_still_running(host)
+    host.new_updater().tick()
+    assert host.state()["state"] == "failed"
+    assert host.engine.containers[DSM_ID]["State"]["Running"] is True
+    assert sum(host.clock.slept) >= run.STOP_SETTLE_S
+
+
+def test_an_updater_without_its_id_does_not_resume(host):
+    """Ohne eigene ID lehnte check_journal ab und verwarf ein rettbares Update; jetzt bleibt es liegen."""
+    host.engine.offer(NEW)
+    host.request()
+    crash_during(host, "POST", r"/containers/[0-9a-f]+/start")  # die Sperre ist frei
+    blind = run.Updater(
+        Engine(host.engine),
+        data_dir=host.data,
+        own_id=None,
+        image_ref="docker.io/beispiel/stowly",
+        clock=host.clock,
+    )
+    blind.tick()
+    blind.tick()
+    assert host.state()["state"] == "installing" and journal_of(host)["updater"] == UPDATER_ID
+    assert (host.update / "request").exists() and not (host.update / "lock").exists()
+    # Der Grund steht auch in update/log, worauf die App verweist; einmal, nicht bei jedem Durchgang.
+    text = (host.update / "log").read_text(encoding="utf-8")
+    assert text.count("kennt seine Container-ID nicht") == 1
+
+
+def test_a_journal_without_an_updater_field_is_still_resumed(host):
+    """Ein Journal ohne Feld ``updater`` (ältere Versionen) bleibt nicht samt Sperre für immer liegen."""
+    crash_while_starting(host)
+    fields = journal_of(host)
+    del fields["updater"]
+    (host.update / "journal").write_bytes(run.format_fields(fields))
+    (host.update / "lock").rmdir()
+    host.updater.tick()
+    assert host.state()["state"] == "done" and not (host.update / "lock").exists()
+
+
+def test_the_own_lock_is_read_again_before_resuming(host):
+    """Hat ein anderer die Sperre inzwischen übernommen, hält sich der erste heraus, auch mit seiner ID in der
+    älteren Momentaufnahme; die Sperre bleibt liegen."""
+    crash_while_starting(host)
+    seen = journal_of(host)
+    (host.update / "journal").write_bytes(run.format_fields({**seen, "updater": RENEWED_ID}))
+    data = run.SafeFolder(host.data)
+    update = data.child("update")
+    try:
+        assert host.updater._take_lock(update, dict(seen)) is False
+    finally:
+        update.close()
+        data.close()
+    assert (host.update / "lock").exists() and journal_of(host)["updater"] == RENEWED_ID
+
+
+def test_a_second_updater_keeps_out_when_another_claimed_the_journal_meanwhile(host):
+    """Zwei lebende Updater sehen beide den gelöschten Besitzer. Der eine übernimmt und trägt sich ein; der andere
+    legt die Sperre im selben Moment neu an, liest das Journal neu, sieht den einen und hält sich heraus. Die
+    Sperre bleibt dabei liegen: Sie steht jetzt für die des einen."""
+    crash_while_starting(host)
+    third = renewed_updater(host, THIRD_ID, replace=False)
+    renewed_updater(host)  # der zweite; den ersten gibt es nicht mehr
+    seen = journal_of(host)  # was der dritte gelesen hatte: noch der erste
+    (host.update / "journal").write_bytes(run.format_fields({**seen, "updater": RENEWED_ID}))
+    data = run.SafeFolder(host.data)
+    update = data.child("update")
+    try:
+        assert third._take_over(update, dict(seen)) is False
+    finally:
+        update.close()
+        data.close()
+    assert (host.update / "lock").exists() and journal_of(host)["updater"] == RENEWED_ID
+    assert third.took_over is None
+
+
 # --- Symlinks --------------------------------------------------------------------------------------
 
 

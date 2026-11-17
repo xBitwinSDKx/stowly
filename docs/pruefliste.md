@@ -339,3 +339,28 @@ Automatisch geprüft, auch gegen den echten Server und Druckdienst mit Bild-Trei
 - [ ] **75.** Den Pi neu koppeln, das sudo-Passwort tippt der Anwender; danach „Rolle: 62 mm endlos" und der Abgleich der Rolle (O10); QL-570 aus und wieder an (O11).
 - [ ] **76.** „Online abfragen" an einem offline angelegten Produkt, mit Bild (O12, O13).
 - [ ] **77.** Schmale oder gestanzte Rolle am QL-570, sobald eine da ist: Die Karte nennt die Rolle, das Etikett passt, mit der falschen Rolle druckt er nichts. Ungeprüft ist, ob der QL-570 bei gestanzten Rollen ihre Länge meldet: Steht in `GET /v1/health` bei `loaded` eine Länge von `null`, passt die gestanzte Rolle zu keinem Papier, und jeder Druck darauf endet mit `media_mismatch`; dann den Treiber nachbessern.
+
+**Stand 17.11.2026** (eigenes NAS, Synology DSM 6.2.4; den Testcontainer hat der Anwender übersprungen, weil sein Stowly noch nicht in Benutzung ist, deshalb entfallen 72 und 73):
+- **74, Update per Knopf:** Es hing bei „wird installiert“, obwohl Stowly 0.5.0 schon lief und „healthy“ war; es fehlte nur der Abschluss.
+  - Ursache: Während des Updates lief die DSM-Aufgabe mit dem alten Updater-Befehl mehrmals. Angestoßen hatte das der Hinweis „Der Updater ist älter als Stowly: Befehl erneut ausführen“.
+  - Jedes `docker rm -f stowly-updater` brach den Abschluss ab. Ein neuer Updater übernimmt ein fremdes, angefangenes Update erst, wenn die Sperre 30 Minuten alt ist.
+  - Gelöst per SSH: den Updater mit dem neuen Befehl aus der App angelegt und die verwaiste Sperre `update/lock` entfernt. Der Updater übernahm („Wiederanlauf“), fand die neue Version „healthy“ und entfernte den alten Container: „Aktualisiert von 0.4.0 auf 0.5.0.“
+  - Umgesetzt in 0.5.1 (X): Solange ein Update läuft, rät die App nicht zum Neuanlegen des Updaters. Eine Sperre, deren Container nicht mehr existiert, übernimmt der Updater nach einer Minute.
+- **74, Etiketten:** Laut Anwender liefen O1 bis O3 am PC über http und O8 am iPhone wie beschrieben. Bei O8 waren es 62 mm endlos und 40 mm Länge, Probedruck am QL-570 mit Druckdienst 0.4.0. Bei O9 blieb der Probedruck mit „29 mm endlos“ ausstehend, und die Karte zeigte „Druckdienst 0.4.0 kann dieses Papier nicht“ mit „Neu koppeln“.
+- **75 und 76** (O10 bis O15): auf Wunsch des Anwenders übersprungen. Der Pi bleibt vorerst bei Druckdienst 0.4.0. Für ein anderes Papier als 62 mm endlos muss er neu gekoppelt werden.
+
+## X. Update per Knopf robuster (0.5.1)
+
+Automatisch geprüft:
+- **Übernahme:** Der Updater übernimmt die Sperre eines gelöschten Updaters nach einer Minute und bringt das Update bis „done“ zu Ende, auch wenn die Sperre schon älter als 30 Minuten ist. Ein `stop`, das Docker nach dem Löschen noch zu Ende führt, sieht er dabei schon als beendet.
+- **Keine vorzeitige Übernahme:** solange es den alten noch gibt (auch angehalten oder beim Löschen), wenn Docker nicht antwortet, und ohne Journal. Einem laufenden Besitzer nimmt keiner die Sperre weg, auch keine alte. In den übrigen Fällen gilt die alte Regel mit 30 Minuten.
+- **Journal:** Wer weiterführt, trägt sich ein; ein zweiter lebender Updater hält sich dann heraus, auch mit seiner eigenen, älteren ID in der Hand. Ohne eigene Container-ID führt keiner weiter.
+- **Wiederanlauf nach `stopping`:** Hält Docker Stowly noch an, wartet der Updater bis zu 45 Sekunden und startet es dann wieder; sonst meldet er, dass es weiterläuft.
+- **Server:** Nach einer Stunde „wird installiert“ sagt `state_message`, wo man nachsieht.
+- **App:**
+  - Während eines Updates zeigt sie keinen Befehl für den Updater, nach „done“ ohne Neuladen wieder.
+  - Nach einer Stunde zeigt sie den Befehl, auch bei einem aktuellen Updater, mit dem Rat, ins Log zu sehen. Gemessen wird mit der Uhr des NAS.
+  - Meldet sich der Updater gar nicht, zeigt sie ihn mit einer Warnung.
+
+- [ ] **78.** Das eigene Stowly per Knopf auf 0.5.1 bringen. Noch während „wird installiert“ Einrichtung → Updates öffnen: Dort steht kein Befehl, sondern „Gerade läuft ein Update …“. Nach „Aktualisiert auf 0.5.1“ erscheinen Hinweis und Befehl (M14).
+- [ ] **79.** Den Updater mit dem neuen Befehl erneuern (M15). Die Übernahme der Sperre am NAS nicht absichtlich herbeiführen; sie ist automatisch geprüft.

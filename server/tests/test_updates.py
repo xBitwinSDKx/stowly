@@ -697,6 +697,20 @@ def test_installing_this_request(bench):
     assert bench.state() == ("installing", NEWER, bench.clock.stamp(-60), None)
 
 
+def test_installing_this_request_for_over_an_hour_says_where_to_look(bench):
+    # Mit der Uhr des Servers, nicht der des Geräts: Die App rät dann auch zum Erneuern des Updaters.
+    bench.requested(NEWER, ago_s=3700)
+    bench.reported("installing", NEWER, ago_s=3600)
+    assert bench.state()[3] is None
+    bench.reported("installing", NEWER, ago_s=3601)
+    assert bench.state() == (
+        "installing",
+        NEWER,
+        bench.clock.stamp(-3601),
+        "Das Update läuft seit über einer Stunde. Woran es hängt, zeigt update/log im Datenordner.",
+    )
+
+
 def test_a_state_for_another_request_means_requested(bench):
     bench.requested(NEWEST, ago_s=10)
     for state in ("installing", "failed", "done"):

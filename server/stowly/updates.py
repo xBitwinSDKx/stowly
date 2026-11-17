@@ -123,10 +123,13 @@ FAILED = "failed"
 READY_WITHIN = timedelta(seconds=UPDATER_READY_S)
 REQUEST_STALE_AFTER = timedelta(seconds=UPDATE_REQUEST_STALE_S)
 INSTALLING_QUIET_AFTER = timedelta(minutes=15)
+# Danach gilt ein Update mit Anforderung als hängend (das Laden allein darf bis zu 3 × 15 Minuten dauern).
+INSTALLING_SLOW_AFTER = timedelta(hours=1)
 REQUEST_NOT_PICKED_UP = (
     "Der Updater hat die Anforderung noch nicht abgeholt. Läuft die Aufgabe auf dem Rechner?"
 )
 UPDATER_QUIET = "Der Updater meldet sich seit 15 Minuten nicht. Bitte auf dem Rechner nachsehen."
+UPDATE_SLOW = "Das Update läuft seit über einer Stunde. Woran es hängt, zeigt update/log im Datenordner."
 
 # --- Anfordern (10.5) --------------------------------------------------------------------------
 
@@ -409,9 +412,12 @@ def update_state(files: Files, now: datetime, *, updater_ready: bool) -> dict[st
     reported_at = parse_time(reported.get("at"))
     if files.request is not None:
         wanted = version_of(files.request.get("version"))
-        # 1. Der Updater arbeitet an genau dieser Anforderung.
+        # 1. Der Updater arbeitet an genau dieser Anforderung; nach einer Stunde sagt die App, wo man nachsieht.
         if kind == INSTALLING and same_version(wanted, reported_version):
-            return _described(UpdateState.INSTALLING, reported_version, reported_at)
+            slow = reported_at is not None and now - reported_at > INSTALLING_SLOW_AFTER
+            return _described(
+                UpdateState.INSTALLING, reported_version, reported_at, UPDATE_SLOW if slow else None
+            )
         # 2. Angefordert, noch nicht aufgenommen.
         requested_at = parse_time(files.request.get("requested_at"))
         stale = requested_at is not None and now - requested_at > REQUEST_STALE_AFTER and not updater_ready

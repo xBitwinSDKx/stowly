@@ -2,6 +2,21 @@
 
 Jede Version, die auf GitHub erscheint, steht hier. Der Abschnitt einer Version wird zum Text ihres Releases; die App zeigt ihn unter Einstellungen → Aktualisierung. Muss beim Umstieg etwas von Hand geschehen (`docker-compose.yml`, `.env`, der Updater), steht es unter „Von Hand".
 
+## 0.5.1
+
+Update per Knopf robuster.
+
+- **Kein Neuanlegen mitten im Update:** Einrichtung → Updates riet nach dem Neustart der neuen Version „Der Updater ist älter als Stowly: Befehl erneut ausführen“, auch während das Update noch lief. Der Befehl löscht aber den laufenden Updater, und das Update blieb bei „wird installiert“ stehen.
+  - Jetzt steht dort, solange ein Update läuft: „Gerade läuft ein Update. Den Updater erst danach erneuern“. Den Befehl zeigt die App erst nach „Aktualisiert auf …“, ohne Neuladen.
+  - Hängt ein Update über eine Stunde, erscheint der Befehl wieder, auch bei einem aktuellen Updater, mit dem Rat, zuerst ins Log zu sehen. Einstellungen → Aktualisierung sagt es dann ebenfalls. Gemessen wird mit der Uhr des NAS, nicht mit der des Handys.
+  - Meldet sich der Updater mitten im Update gar nicht, warnt die App vor dem Befehl.
+- **Updater übernimmt nach einer Minute:** Wird der Updater-Container gelöscht, während er ein Update abschließt, bringt sein Nachfolger es nach einer Minute zu Ende oder kehrt zur alten Version zurück. Bisher wartete er 30 Minuten. Die Minute braucht es, weil Docker einen schon angenommenen Aufruf, etwa das Anhalten, auch ohne den gelöschten Updater zu Ende führt. Stirbt der Updater schon beim Laden des Images, bleibt es bei 30 Minuten; die alte Version läuft dann unverändert weiter.
+- **Wiederanlauf beim Anhalten:** Startet ein Updater neu oder wird er ersetzt, während Docker Stowly gerade anhält, wartet er, bis es steht, und startet es wieder. Bisher konnte Stowly danach aus bleiben, obwohl es hieß, es laufe weiter.
+- **Zwei Updater gleichzeitig:** Wer ein abgebrochenes Update weiterführt, trägt sich ins Journal ein. Ein zweiter Updater hält sich dann heraus, statt dasselbe Update gleichzeitig weiterzuführen. Einem Updater, der noch läuft, nimmt keiner mehr die Sperre weg.
+- **Ohne eigene Container-ID** verwirft ein Updater kein abgebrochenes Update mehr. Er lässt es liegen, bis ein Updater mit ID es zu Ende bringt.
+
+Von Hand: Nach dem Update auf 0.5.1 den Updater einmal erneuern, mit dem Befehl aus Einrichtung → Updates und auf demselben Weg wie beim Anlegen (docs/betrieb.md, Abschnitt 19.3). Erst dann übernimmt auch der Updater nach einer Minute.
+
 ## 0.5.0
 
 Etiketten gestalten, Produktdaten neu abfragen und eine Druckerkarte, die sagt, was zu tun ist.

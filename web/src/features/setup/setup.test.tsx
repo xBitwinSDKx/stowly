@@ -832,6 +832,113 @@ describe("Updates", () => {
     expect(await screen.findByText(/Dieses Image kennt keinen fertigen Befehl für den Updater-Container/)).toBeInTheDocument();
   });
 
+  // Am NAS beim Update auf 0.5.0: Der Hinweis erschien mitten im Update, und jedes Ausführen des Befehls
+  // löschte den Updater, der das Update gerade abschloss.
+  it.each(["requested", "installing"] as const)("rät während eines Updates (%s) nicht zum Erneuern des Updaters, danach wieder", async (state) => {
+    const core = await openStep({ scenarios: ["setup-open"] }, "updates");
+    await userEvent.click(await screen.findByRole("switch", { name: "Nach neuen Versionen suchen" }));
+    const older = { updater_ready: true, updater_seen_at: new Date().toISOString(), updater_kind: "container", updater_version: "0.2.1", state_version: "0.3.0" } as const;
+    updateStatus(core, { ...older, state });
+    await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zurück" }));
+    expect(await screen.findByText("Gerade läuft ein Update. Den Updater erst danach erneuern; der Befehl würde das Update abbrechen.")).toBeInTheDocument();
+    expect(screen.queryByText("Der Updater ist älter als Stowly: Befehl erneut ausführen.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Befehl für den Updater" })).not.toBeInTheDocument();
+
+    updateStatus(core, { ...older, state: "done" });
+    await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zurück" }));
+    expect(await screen.findByText("Der Updater ist älter als Stowly: Befehl erneut ausführen.")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Befehl für den Updater" })).toBeInTheDocument();
+    expect(screen.queryByText(/Gerade läuft ein Update/)).not.toBeInTheDocument();
+  });
+
+  it("fragt während eines Updates nach und rät zum Erneuern, sobald es fertig ist", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const core = await openStep({ scenarios: ["setup-open"] }, "updates");
+    await userEvent.click(await screen.findByRole("switch", { name: "Nach neuen Versionen suchen" }));
+    const older = { updater_ready: true, updater_seen_at: new Date().toISOString(), updater_kind: "container", updater_version: "0.2.1", state_version: "0.3.0" } as const;
+    updateStatus(core, { ...older, state: "installing", state_at: new Date().toISOString() });
+    await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zurück" }));
+    expect(await screen.findByText(/^Gerade läuft ein Update\./)).toBeInTheDocument();
+    // Ohne die Seite zu verlassen: Das nächste Nachfragen bringt den Stand nach dem Update.
+    updateStatus(core, { ...older, state: "done", state_at: new Date().toISOString() });
+    await act(() => vi.advanceTimersByTimeAsync(UPDATE_POLL_MS));
+    expect(await screen.findByText("Der Updater ist älter als Stowly: Befehl erneut ausführen.")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Befehl für den Updater" })).toBeInTheDocument();
+  });
+
+  it("zeigt den Befehl wieder, wenn ein Update seit über einer Stunde hängt, mit dem Rat, erst ins Log zu sehen", async () => {
+    const core = await openStep({ scenarios: ["setup-open"] }, "updates");
+    await userEvent.click(await screen.findByRole("switch", { name: "Nach neuen Versionen suchen" }));
+    updateStatus(core, {
+      updater_ready: true,
+      updater_seen_at: new Date().toISOString(),
+      updater_kind: "container",
+      updater_version: "0.2.1",
+      state: "installing",
+      state_version: "0.3.0",
+      state_at: new Date(Date.now() - 61 * 60_000).toISOString(),
+    });
+    await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zurück" }));
+    expect(await screen.findByText("Der Updater ist älter als Stowly: Befehl erneut ausführen.")).toBeInTheDocument();
+    expect(screen.getByText(/^Das Update läuft seit über einer Stunde\. Vorher in update\/log/)).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Befehl für den Updater" })).toBeInTheDocument();
+    expect(screen.queryByText(/^Gerade läuft ein Update/)).not.toBeInTheDocument();
+  });
+
+  it("misst die Dauer eines Updates mit der Uhr des NAS, nicht mit der des Geräts", async () => {
+    // Das NAS geht drei Stunden nach (oder das Gerät vor): Das Update läuft erst seit einer Minute.
+    const nas = Date.now() - 3 * 3_600_000;
+    const core = await openStep({ scenarios: ["setup-open"] }, "updates");
+    await userEvent.click(await screen.findByRole("switch", { name: "Nach neuen Versionen suchen" }));
+    updateStatus(core, {
+      updater_ready: true,
+      updater_seen_at: new Date(nas + 60_000).toISOString(),
+      updater_kind: "container",
+      updater_version: "0.2.1",
+      state: "installing",
+      state_version: "0.3.0",
+      state_at: new Date(nas).toISOString(),
+    });
+    await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zurück" }));
+    expect(await screen.findByText(/^Gerade läuft ein Update\./)).toBeInTheDocument();
+    expect(screen.queryByText(/seit über einer Stunde/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Befehl für den Updater" })).not.toBeInTheDocument();
+  });
+
+  it("bietet den Befehl auch einem aktuellen Updater an, wenn ein Update über eine Stunde hängt", async () => {
+    const core = await openStep({ scenarios: ["setup-open"] }, "updates");
+    await userEvent.click(await screen.findByRole("switch", { name: "Nach neuen Versionen suchen" }));
+    updateStatus(core, {
+      updater_ready: true,
+      updater_seen_at: new Date().toISOString(),
+      updater_kind: "container",
+      updater_version: "0.3.0",
+      state: "installing",
+      state_version: "0.3.0",
+      state_at: new Date(Date.now() - 61 * 60_000).toISOString(),
+    });
+    await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zurück" }));
+    expect(await screen.findByText(/^Das Update läuft seit über einer Stunde\./)).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Befehl für den Updater" })).toBeInTheDocument();
+    expect(screen.queryByText("Der Updater ist älter als Stowly: Befehl erneut ausführen.")).not.toBeInTheDocument();
+  });
+
+  it("warnt, wenn sich der Updater mitten in einem Update nicht meldet, und zeigt den Befehl trotzdem", async () => {
+    const core = await openStep({ scenarios: ["setup-open"] }, "updates");
+    await userEvent.click(await screen.findByRole("switch", { name: "Nach neuen Versionen suchen" }));
+    updateStatus(core, { updater_ready: false, updater_seen_at: new Date(Date.now() - 11 * 60_000).toISOString(), state: "installing", state_version: "0.3.0", state_at: new Date().toISOString() });
+    await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zurück" }));
+    expect(await screen.findByText(/^Gerade läuft ein Update, aber der Updater meldet sich nicht/)).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Befehl für den Updater" })).toBeInTheDocument();
+  });
+
   it("sperrt den Schalter, wenn die Umgebung entscheidet", async () => {
     await openStep({ scenarios: ["setup-env"] }, "updates");
     const toggle = await screen.findByRole("switch", { name: "Nach neuen Versionen suchen" });

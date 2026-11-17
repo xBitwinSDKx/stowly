@@ -534,6 +534,7 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 | Unter „Zurückspielen" steht „Das Zurückspielen ist gescheitert: …" | Beim Neustart ging etwas schief; die bisherige Datenbank läuft weiter. Grund im Satz und im Log (Abschnitt 8.3). |
 | „Beim ersten Start lässt sich eine Sicherung nur im Heimnetz zurückspielen …" | Die Seite ist über einen Namen oder eine Adresse außerhalb des Heimnetzes offen: Stowly über seine IP-Adresse öffnen, etwa `http://192.168.1.10:8010`. |
 | Die Anmeldung wird trotz richtigem Passwort abgelehnt (zu viele Fehlversuche) | Sperre nach 5 falschen Passwörtern; 60 Sekunden warten. |
+| Ein Update per Knopf steht lange auf „wird installiert“, Stowly läuft aber schon mit der neuen Version | Der Updater wurde mitten im Update ersetzt, meist weil sein Befehl (DSM-Aufgabe) währenddessen noch einmal lief. Ein Updater ab 0.5.1 übernimmt das angefangene Update eine Minute, nachdem der alte Updater-Container gelöscht wurde. Starb der alte schon beim Laden des Images, oder ist der neue älter als 0.5.1, wartet er 30 Minuten und bringt es dann zu Ende. Den Befehl nie während „wird installiert“ ausführen (Abschnitt 19.3). Die Schritte stehen in `update/log` im Datenordner. |
 | Etiketten für einen Drucker am Server bleiben „ausstehend" | Sagt die App „Der Druckdienst des Servers läuft nicht": Im Log steht „Der Druckdienst des Servers ließ sich nicht starten", meist ist `/data/print` nicht beschreibbar (`docker compose exec stowly ls -ld /data/print`); `/print/…` antwortet dann mit 503. Sonst ist das Etikett noch nicht abgeglichen; die App versucht es nach dem nächsten Abgleich wieder („Jetzt drucken" gleicht vorher ab). |
 | Im Log „Schrift DejaVuSans… fehlt" | Die Etiketten entstehen mit einer Ersatzschrift ohne Umlaute. Die Schriften liegen im Paket `stowly_print` (Ordner `fonts`) und im Image zusätzlich als `fonts-dejavu-core`; fehlen sie an beiden Stellen, ist die Installation unvollständig: Image neu bauen (`docker compose build --no-cache`), ohne Docker `sudo apt install fonts-dejavu-core` und den Server neu starten. |
 | Ein Brother am Server meldet `config` | Modell, Adresse oder Rolle passen nicht, oder die Brother-Bibliothek fehlt; Grund im Log (Abschnitt 14). |
@@ -1055,11 +1056,15 @@ DSM 6.2 kann in der Oberfläche den Socket von Docker nicht in einen Container e
 
 1. Systemsteuerung → **Aufgabenplaner** → Erstellen → **Geplante Aufgabe** → **Benutzerdefiniertes Skript**.
 2. Reiter **Allgemein:** Name `Stowly-Updater anlegen`, Benutzer `root`. Reiter **Zeitplan:** beliebig, die Aufgabe wird nur einmal von Hand ausgeführt.
-3. Reiter **Aufgabeneinstellungen:** den Befehl aus dem Assistenten bzw. aus Einstellungen → Aktualisierung einfügen. OK.
+3. Reiter **Aufgabeneinstellungen:** den Befehl aus dem Assistenten einfügen (Einrichtung → Updates; nach dem Abschluss der Einrichtung über Einstellungen → „Einrichtung und Zugang“). OK.
 4. Die Aufgabe markieren → **Ausführen**. Nach wenigen Sekunden zeigt die App „Updater bereit".
 5. Die Aufgabe wieder löschen. Der Updater-Container `stowly-updater` läuft von selbst weiter, auch nach einem Neustart des NAS.
 
-Meldet die App, dass der Updater älter ist als Stowly, den Befehl auf dieselbe Weise noch einmal ausführen; er ersetzt den alten Updater.
+Meldet die App nach einem Update, dass der Updater älter ist als Stowly, den Befehl auf dieselbe Weise noch einmal ausführen; er ersetzt den alten Updater. Das aber erst, wenn das Update fertig ist und Einstellungen → Aktualisierung „Aktualisiert auf …“ zeigt. Der Befehl löscht den laufenden Updater (`docker rm -f`), und ein Update, das er gerade abschließt, bricht dann mittendrin ab. Seit 0.5.1 gilt:
+- **Kein Befehl während eines Updates:** Die App zeigt ihn nicht, solange ein Update läuft und der Updater sich meldet, höchstens eine Stunde lang (gemessen mit der Uhr des NAS).
+- **Nach einer Stunde:** Hängt das Update so lange, zeigt die App den Befehl wieder, auch bei einem aktuellen Updater, mit dem Rat, zuerst `update/log` im Datenordner anzusehen. Einstellungen → Aktualisierung sagt dann ebenfalls, wo man nachsieht.
+- **Updater meldet sich nicht:** Läuft ein Update und der Updater meldet sich gar nicht, zeigt die App den Befehl mit einer Warnung. Er könnte gerade ein großes Image laden.
+- **Übernahme nach einer Minute:** Ein erneuerter Updater übernimmt ein so abgebrochenes Update nach einer Minute statt nach 30. Das gilt ab dem Anhalten des alten Containers; während das Image noch lädt, gibt es noch kein Journal, und es bleibt bei 30 Minuten.
 
 ### 19.4 Ein zweiter Ordner für die Sicherungen
 
@@ -1323,6 +1328,8 @@ Mit der Liste, die ihr wirklich nutzt, oder mit einer Probe-Liste: Seit 0.4.0 ha
 | M11 | Eine neue Version veröffentlichen, dann „Update installieren“ | Der Updater-Container tauscht den Container aus; „Aktualisiert auf X.Y.Z“; Daten, Ports, Ordner und Neustart-Regel bleiben; in DSM keine Reste wie `stowly-vorher` |
 | M12 | Container in DSM neu starten | Stowly kommt mit denselben Zertifikaten zurück; kein neues Profil nötig |
 | M13 | Compose-Installation mit Reverse Proxy auf 0.3.0 aktualisieren | Anmeldung mit dem Passwort aus der `.env` geht weiter; der Assistent öffnet sich nicht von selbst; unter Einstellungen → „Einrichtung und Zugang“ steht „Sichere Verbindung“ als erledigt, sobald die App über HTTPS läuft |
+| M14 | Ab 0.5.1: „Update installieren“, dann noch während „wird installiert“ Einrichtung → Updates öffnen | Statt „Der Updater ist älter als Stowly: Befehl erneut ausführen.“ steht „Gerade läuft ein Update. Den Updater erst danach erneuern; der Befehl würde das Update abbrechen.“, ohne Befehl; nach „Aktualisiert auf X.Y.Z“ erscheinen Hinweis und Befehl |
+| M15 | Den Updater danach mit dem Befehl aus Einrichtung → Updates erneuern (19.3) | „Updater bereit“, der gelbe Hinweis ist weg; in DSM läuft `stowly-updater` mit dem Image der neuen Version |
 
 ### N. Sicherung und Home Assistant in der App (0.4.0)
 

@@ -11,7 +11,11 @@ Alle ``HEARTBEAT_S`` Sekunden ein Durchgang (``Updater.tick``):
    der Server beschreiben; deshalb gilt ein Journal nur, wenn es dem Updater selbst gehört und keinen
    zweiten harten Link hat, und vor jedem Docker-Aufruf damit prüft er den Inhalt: beide Container mit
    derselben Quelle für ``/data`` wie er selbst, das Repository des Ziels, ein Name der Sicherung wie
-   ``before-<version>-<zeit>.sqlite3``. Sonst ``failed``, ohne einen Container anzufassen.
+   ``before-<version>-<zeit>.sqlite3``. Sonst ``failed``, ohne einen Container anzufassen. Hält ein
+   anderer Updater die Sperre, übernimmt er sie, wenn es dessen Container laut Docker seit ``OWNER_GONE_S``
+   nicht mehr gibt (erneuert mit ``docker rm -f``); einem laufenden nie. Ist der Besitzer unbekannt oder
+   angehalten, gilt ``STALE_LOCK_S``. Wer die Sperre für einen Wiederanlauf nimmt, trägt sich ins Journal
+   ein. Ohne eigene Container-ID führt er kein Update weiter.
 4. **Anforderung** in ``update/request``: das Update, Schritt für Schritt wie in 10.7, unter der Sperre
    ``update/lock/``, die auch der Host-Updater nimmt.
 
@@ -43,7 +47,7 @@ from stowly.contract.api import VERSION_PATTERN
 from stowly.contract.ids import exact
 from stowly.updater import clone
 from stowly.updater.command import own_container_id
-from stowly.updater.docker import DockerError, Engine, PullFailed
+from stowly.updater.docker import STOP_GRACE_S, DockerError, Engine, PullFailed
 
 log = logging.getLogger("stowly.updater")
 
@@ -57,6 +61,22 @@ PULL_TRIES = 3
 PULL_PAUSE_S = 10.0
 KEEP_BACKUPS = 3
 STALE_LOCK_S = 30 * 60
+# Karenz, bevor ein Updater die Sperre eines gelöschten übernimmt (``_owner_gone``): länger als jeder
+# einzelne Aufruf, den Docker nach dem Löschen des Aufrufers noch zu Ende führt (``stop`` mit Frist und
+# Zugabe), dazu ein Herzschlag.
+OWNER_GONE_S = STOP_TIMEOUT_S + STOP_GRACE_S + HEARTBEAT_S
+# Was ``Updater._owner_state`` über den Besitzer einer Sperre sagt.
+OWNER_UNKNOWN, OWNER_RUNNING, OWNER_STOPPED, OWNER_MISSING, OWNER_GONE = (
+    "unknown",
+    "running",
+    "stopped",
+    "missing",
+    "gone",
+)
+# So lange sieht der Wiederanlauf nach ``stopping`` nach, ob ein noch laufender ``stop`` Stowly anhält.
+STOP_SETTLE_S = STOP_TIMEOUT_S + STOP_GRACE_S
+# Zustände eines angehaltenen Containers (``_health``).
+STOPPED_STATES = ("exited", "created", "dead")
 FILE_MAX = 64 * 1024
 DATA_MOUNT = "/data"
 DATABASE = "stowly.sqlite3"
@@ -512,6 +532,11 @@ class Updater:
         self.clock = clock or Clock()
         self.target: Target | None = None
         self._update: SafeFolder | None = None
+        # Die ID des gelöschten Updaters, dessen Sperre dieser Durchgang übernommen hat (``_take_lock``).
+        self.took_over: str | None = None
+        # Seit wann Docker einen Updater aus einem Journal nicht mehr kennt (``_owner_state``), je ID.
+        self._missing_since: dict[str, float] = {}
+        self._warned_without_id = False
 
     # ------------------------------------------------------------------ Durchgang
 
@@ -548,7 +573,21 @@ class Updater:
                     self.target = None
                 self.beat()
                 journal = self._read_journal(update)
-                if journal is not None:
+                if journal is not None and self.own_id is None:
+                    # Ohne eigene ID prüft check_journal nichts und verwürfe ein rettbares Update; ein Updater
+                    # mit ID bringt es zu Ende.
+                    if not self._warned_without_id:
+                        self._warned_without_id = True
+                        text = (
+                            "Ein Update brach mittendrin ab, aber dieser Updater kennt seine Container-ID nicht "
+                            "und führt es deshalb nicht weiter. Bitte den Updater mit dem Befehl aus der App "
+                            "erneuern."
+                        )
+                        log.error("%s", text)
+                        # Auch in update/log, worauf die App bei einem hängenden Update verweist.
+                        with contextlib.suppress(OSError, LinkFound), update.append_log(LOG) as stream:
+                            stream.write(f"{stamp(self.clock.now())} {text}\n".encode())
+                elif journal is not None:
                     self._guarded(update, data, journal, lambda run: run.resume(journal))
                 elif update.kind(REQUEST) != "missing":
                     self._guarded(update, data, None, lambda run: run.execute())
@@ -629,15 +668,102 @@ class Updater:
             update.rmdir(LOCK)
 
     def _take_lock(self, update: SafeFolder, journal: dict[str, str] | None) -> bool:
+        """Nimmt die Sperre ``lock/``. Für einen Wiederanlauf (``journal``) trägt sich der Updater danach ins
+        Journal ein (``_claim``): Es nennt immer den, der die Sperre hält.
+
+        Eine fremde Sperre nimmt er nur, wenn ihr Besitzer laut Docker seit ``OWNER_GONE_S`` fehlt
+        (``_take_over``), oder nach ``STALE_LOCK_S``, wenn der Besitzer unbekannt (kein Journal, keine ID,
+        Docker antwortet nicht) oder sein Container angehalten ist. Einem laufenden Besitzer und einem
+        gerade verschwundenen (Karenz) nimmt er sie nie, auch nicht über die alte Sperre.
+        """
+        self.took_over = None
+        seen = journal.get("updater", "") if journal is not None else None
         if update.mkdir(LOCK):
-            return True
-        if journal is not None and self.own_id is not None and journal.get("updater") == self.own_id:
-            return True  # die Sperre des eigenen, abgebrochenen Laufs
+            return journal is None or self._claim(update, journal, expected=seen)
+        if journal is not None and self.own_id is not None and seen == self.own_id:
+            # Die Sperre des eigenen, abgebrochenen Laufs; neu gelesen, falls sie inzwischen ein anderer hält.
+            return self._claim(update, journal, expected=self.own_id)
+        owner = self._owner_state(journal) if journal is not None else OWNER_UNKNOWN
+        if owner == OWNER_GONE:
+            assert journal is not None
+            return self._take_over(update, journal)
+        if owner in (OWNER_RUNNING, OWNER_MISSING):
+            return False
         info = update.lstat(LOCK)
         if info is not None and time.time() - info.st_mtime > STALE_LOCK_S:
             update.rmdir(LOCK)
-            return update.mkdir(LOCK)
+            if not update.mkdir(LOCK):
+                return False
+            return journal is None or self._claim(update, journal, expected=seen)
         return False
+
+    def _owner_state(self, journal: Mapping[str, str]) -> str:
+        """Was Docker über den Updater-Container sagt, der das Journal schrieb.
+
+        - ``OWNER_UNKNOWN``: keine gültige fremde ID im Journal, keine eigene ID, oder Docker antwortet nicht.
+        - ``OWNER_RUNNING``: Es gibt ihn, und er läuft, startet neu, pausiert oder wird gerade gelöscht.
+        - ``OWNER_STOPPED``: Es gibt ihn, aber er ist angehalten (``exited``, ``created``, ``dead``).
+        - ``OWNER_MISSING`` / ``OWNER_GONE``: Docker kennt ihn nicht mehr, erst seit Kurzem bzw. seit
+          ``OWNER_GONE_S``. Docker löscht einen Container erst, wenn sein Prozess beendet ist (``docker rm -f``
+          beim Erneuern des Updaters). Einen Aufruf, den Docker schon angenommen hat, führt es aber auch
+          dann zu Ende, etwa ``stop`` mit seiner Frist; deshalb die Karenz, länger als jeder einzelne Aufruf.
+        """
+        owner = journal.get("updater", "")
+        if self.own_id is None or owner == self.own_id or not _CONTAINER_ID.fullmatch(owner):
+            return OWNER_UNKNOWN
+        try:
+            info = self.engine.container(owner)
+        except DockerError:
+            return OWNER_UNKNOWN
+        if info is not None:
+            self._missing_since.pop(owner, None)
+            stopped = (info.get("State") or {}).get("Status") in STOPPED_STATES
+            return OWNER_STOPPED if stopped else OWNER_RUNNING
+        first = self._missing_since.setdefault(owner, self.clock.monotonic())
+        return OWNER_GONE if self.clock.monotonic() - first >= OWNER_GONE_S else OWNER_MISSING
+
+    def _take_over(self, update: SafeFolder, journal: dict[str, str]) -> bool:
+        """Übernimmt die Sperre eines gelöschten Updaters: neu anlegen (frische Zeit, sonst hielte sie ein
+        anderer womöglich für alt), dann ``_claim``. Hat inzwischen ein anderer Updater das Journal
+        übernommen, steht die neue Sperre für seine und bleibt liegen."""
+        owner = journal["updater"]
+        update.rmdir(LOCK)
+        if not update.mkdir(LOCK):
+            return False  # ein anderer war schneller
+        if not self._claim(update, journal, expected=owner):
+            return False
+        self.took_over = owner
+        log.info(
+            "Die Sperre gehörte dem Updater %s, den es nicht mehr gibt; dieser Updater übernimmt.", owner[:12]
+        )
+        return True
+
+    def _claim(self, update: SafeFolder, journal: dict[str, str], *, expected: str | None = None) -> bool:
+        """Nach dem Nehmen der Sperre für einen Wiederanlauf: das Journal neu lesen und die eigene ID eintragen.
+
+        So nennt das Journal immer den Updater, der die Sperre hält. Ein zweiter, der sie für die eines
+        Gelöschten hält, sieht das beim Neulesen und hält sich heraus (``expected``: der Updater, dem die
+        Sperre zuletzt gehörte; nennt das Journal inzwischen einen anderen, ``False`` und die Sperre bleibt).
+        Ist das Journal weg, ist der Lauf vorbei: Sperre wieder frei, ``False``. ``journal`` wird zum neu
+        gelesenen Stand.
+        """
+        fresh = self._read_journal(update)
+        if fresh is None:
+            update.rmdir(LOCK)
+            return False
+        if expected is not None and fresh.get("updater", "") != expected:
+            return False
+        if self.own_id is not None and fresh.get("updater") != self.own_id:
+            try:
+                update.write(JOURNAL, format_fields({**fresh, "updater": self.own_id}))
+            except OSError as exc:
+                log.warning("Das Journal ließ sich nicht übernehmen (%s).", exc)
+                update.rmdir(LOCK)
+                return False
+            fresh["updater"] = self.own_id
+        journal.clear()
+        journal.update(fresh)
+        return True
 
     # ------------------------------------------------------------------ Herzschlag und Ziel
 
@@ -772,6 +898,17 @@ class Run:
                 return False
             self.updater.beat()
             self.clock.sleep(HEALTH_POLL_S)
+
+    def settle(self, ref: str) -> dict[str, Any] | None:
+        """Bis ``STOP_SETTLE_S`` nachsehen, ob der Container anhält (ein noch laufender ``stop``); der
+        Herzschlag geht derweil weiter. Liefert den letzten Stand."""
+        deadline = self.clock.monotonic() + STOP_SETTLE_S
+        info = self.engine.container(ref)
+        while info is not None and _health(info) not in STOPPED_STATES and self.clock.monotonic() < deadline:
+            self.updater.beat()
+            self.clock.sleep(HEALTH_POLL_S)
+            info = self.engine.container(ref)
+        return info
 
     def backup_name(self) -> str:
         return f"before-{self.old}-{self.clock.now().astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
@@ -1044,6 +1181,11 @@ class Run:
         self.say(
             f"Wiederanlauf: Das Update auf {_line(self.new)[:40]} brach ab (Schritt {_line(phase)[:20]})."
         )
+        if self.updater.took_over:
+            self.say(
+                f"Die Sperre gehörte dem Updater {self.updater.took_over[:12]}, den es nicht mehr gibt; "
+                "dieser Updater übernimmt."
+            )
         problem = journal_problem(journal)
         if problem is not None:
             if not VERSION.match(self.new):
@@ -1063,7 +1205,12 @@ class Run:
             if phase == "stopping":
                 if old is None:
                     return self.finish(FAILED, f"Der Container von Stowly fehlt. {NOT_RUNNING_HINT}")
-                if _health(old) in ("exited", "created", "dead"):
+                if _health(old) not in STOPPED_STATES:
+                    # Ein stop, den Docker schon angenommen hat, läuft womöglich noch: Der Updater, der ihn
+                    # schickte, starb, wurde neu gestartet oder gelöscht. Erst nachsehen, ob er Stowly anhält,
+                    # bevor es heißt, es laufe weiter.
+                    old = self.settle(target.id)
+                if old is not None and _health(old) in STOPPED_STATES:
                     self.engine.start(target.id)
                     self.wait_healthy(target.id)
                 return self.finish(
