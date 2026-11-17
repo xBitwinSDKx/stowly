@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stowly-print"
-version = "0.4.0"
+version = "0.5.0"
 description = "Stowly-Druckdienst: Etiketten rendern, Druckertreiber, Auftragswarteschlange"
 requires-python = ">=3.12"
 # Bewusst klein gehalten: Das Paket läuft auch auf dem Raspberry Pi (Python 3.13,
