@@ -22,6 +22,7 @@ export {
   CalendarClock as CalendarClockIcon,
   ChartColumn as StatsIcon,
   Check as CheckIcon,
+  ChefHat as ChefHatIcon,
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
   ChevronUp as ChevronUpIcon,

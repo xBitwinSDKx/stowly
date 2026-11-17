@@ -96,6 +96,16 @@
  *   Drucker wie beim Server, aber ohne Uhr je Feld.
  * - Updates schaltet ohne `updateRepo` (STOWLY_UPDATE_REPO) der Schalter der App (`updateSwitch`)
  *   mit `updateRepoDefault` ein; Push hängt am Kontakt (`pushContact`, Vorgabe aus der Umgebung).
+ * - KI-Vorschläge (seit 0.6.0, `/api/server-config/ai…` und `/api/cook/ideas…`): Es gibt kein
+ *   Anthropic. „Prüfen" liefert `aiCheckState`; ein Auftrag bleibt `cookRunningPolls` Abfragen lang
+ *   "running" und endet dann mit `cookOutcome` (Vorgabe: ein Vorschlag aus den ersten Produkten des
+ *   Bestands) oder mit `cookProblem`. Die Bremsen sind die des Servers (ein Auftrag zugleich, 30 s je
+ *   Gerät, `FAKE_AI_DAILY_MAX` am Tag in `timezone`, die Prüfung mit 3 s Abstand), die Gutschrift für
+ *   Fehler, die Anthropic nicht berechnet, auch. Eine Prüfung oder ein Auftrag „läuft" hier nie über
+ *   die Antwort hinaus, also gibt es kein 429 für eine gleichzeitige Prüfung, und Aufträge laufen nicht
+ *   ab (kein `COOK_JOB_TTL_S`, nur `expireCookJobs()`). Der Zähler liegt im Arbeitsspeicher; einen
+ *   Neustart gibt es hier nicht. Die Form des Schlüssels prüft die Nachbildung wie der Server, die
+ *   Sätze bei 422 sind eigene.
  *
  * Ohne DOM und ohne Node: Die Datei läuft in den Tests (jsdom) und im Entwicklungsserver.
  */
@@ -103,6 +113,7 @@ import { x25519 } from "@noble/curves/ed25519.js";
 import { bech32 } from "@scure/base";
 
 import {
+  AI_DEVICE_GAP_S,
   COMMAND_TYPES,
   ID_POOL_TARGET,
   LIMITS,
@@ -112,6 +123,9 @@ import {
   PUSH_PATHS,
   PUSH_TEST_INTERVAL_S,
   UPDATE_CHECK_MIN_GAP_S,
+  type AiCheckState,
+  type AiConfig,
+  type AiModel,
   type BackupConfig,
   type BackupFile,
   type BackupStatus,
@@ -119,6 +133,10 @@ import {
   type Command,
   type CommandResult,
   type ConfigSource,
+  type CookFailure,
+  type CookIdeas,
+  type CookJob,
+  type CookProblem,
   type Device,
   type ErrorBody,
   type ErrorCode,
@@ -762,6 +780,62 @@ export const FAKE_SCHEMA_VERSION = 5;
 const BACKUP_RUN_GAP_MS = 60_000;
 /** Zwischen zwei Prüfungen bei Home Assistant mindestens so viel Abstand. */
 const HA_CHECK_GAP_MS = 3_000;
+
+// Seit 0.6.0: KI-Vorschläge (docs/plan-0.6.md, 2).
+/** Zwischen zwei Prüfungen des Schlüssels mindestens so viel Abstand. */
+const AI_CHECK_GAP_MS = 3_000;
+/** Höchstens so viele Anfragen am Tag für den ganzen Haushalt (`AI_DAILY_MAX` des Servers). */
+export const FAKE_AI_DAILY_MAX = 20;
+/** Läuft schon ein Auftrag, sagt der Server: in so vielen Sekunden noch einmal (`BUSY_RETRY_S`). */
+const FAKE_BUSY_RETRY_S = 5;
+/** Höchstens so viele Produkte gehen an Claude (`COOK_STOCK_MAX`). */
+const FAKE_COOK_STOCK_MAX = 300;
+/** Der Satz, wenn der Merker steht, die Datei mit dem Schlüssel aber fehlt (nach einem Zurückspielen). */
+export const FAKE_AI_KEY_LOST = "Der API-Schlüssel für die KI-Vorschläge fehlt (steht in keiner Sicherung); bitte neu eintragen.";
+const AI_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as const satisfies readonly AiModel[];
+const AI_MODEL_DEFAULT: AiModel = "claude-opus-5-5";
+/** Was „Prüfen" je Ergebnis sagt; der Server sagt es mit eigenen Worten. */
+const AI_CHECK_MESSAGES: Record<AiCheckState, string> = {
+  ok: "Schlüssel und Modell passen.",
+  key_rejected: "Anthropic lehnt den API-Schlüssel ab.",
+  forbidden: "Der API-Schlüssel darf dieses Modell nicht nutzen.",
+  model_unavailable: "Das Modell gibt es für diesen Schlüssel nicht.",
+  busy: "Anthropic ist gerade ausgelastet.",
+  unreachable: "Anthropic ist nicht erreichbar.",
+  error: "Anthropic hat unerwartet geantwortet.",
+};
+/** Fehler, für die Anthropic nichts berechnet hat: Sie zählen nicht für heute (docs/plan-0.6.md, 2.6). */
+const CREDITED_FAILURES: ReadonlySet<CookFailure> = new Set<CookFailure>(["key_rejected", "forbidden", "billing", "model_unavailable", "busy", "unavailable", "unreachable"]);
+const COOK_JOB_ID = /^[0-9a-f]{32}$/;
+
+/** Die Form eines API-Schlüssels, wie der Server sie prüft: der Satz, wenn sie nicht stimmt; sonst null. */
+function aiKeyProblem(key: string): string | null {
+  const trimmed = key.trim();
+  if (!/^[\x21-\x7e]+$/.test(trimmed) || trimmed.length > LIMITS.ai_key || !trimmed.startsWith("sk-ant-") || trimmed.startsWith("sk-ant-admin")) {
+    return "Kein API-Schlüssel von Anthropic in der erwarteten Form (sk-ant-…).";
+  }
+  return null;
+}
+
+/** Kalendertag eines Zeitpunkts in einer Zeitzone, "YYYY-MM-DD". */
+function dayIn(timezone: string, moment: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(moment);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value ?? "00";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+/** Sekunden bis zum nächsten Tag in der Zeitzone, auf die Minute genau (mindestens 1). */
+function secondsUntilNextDay(timezone: string, nowMs: number): number {
+  const today = dayIn(timezone, new Date(nowMs));
+  let probe = nowMs;
+  while (dayIn(timezone, new Date(probe)) === today) {
+    probe += 3_600_000;
+  }
+  while (dayIn(timezone, new Date(probe - 60_000)) !== today) {
+    probe -= 60_000;
+  }
+  return Math.max(1, Math.ceil((probe - nowMs) / 1000));
+}
 /** Dateien von Stowly im Ordner der Sicherungen. */
 const OWN_BACKUP_FILE = /^stowly-\d{4}-\d{2}-\d{2}-\d{4}\.sqlite3\.gz\.age$/;
 const AGE_PUBLIC = /^age1[02-9ac-hj-np-z]{58}$/;
@@ -976,6 +1050,21 @@ export class FakeServer {
   readonly images = new Set<string>();
   /** Die Vorschauen, wie sie ankamen (`POST /api/labels/preview`). */
   readonly previews: Record<string, unknown>[] = [];
+  // Seit 0.6.0: KI-Vorschläge (docs/plan-0.6.md, 2). Anthropic gibt es hier nicht.
+  /** STOWLY_ANTHROPIC_API_KEY; null = keiner (dann gilt der aus der App). */
+  aiEnvKey: string | null = null;
+  /** Was „Prüfen" bei Anthropic ergibt (`POST /api/server-config/ai/check`). */
+  aiCheckState: AiCheckState = "ok";
+  /** Die Prüfungen, wie sie kamen: mit eigenem Schlüssel (sonst der wirksame) und mit welchem Modell. */
+  readonly aiChecks: { key: boolean; model: AiModel }[] = [];
+  /** So viele Abfragen lang meldet `GET /api/cook/ideas/{id}` einen Auftrag noch als "running". */
+  cookRunningPolls = 0;
+  /** Womit die nächsten Aufträge enden; null = ein Vorschlag aus den ersten Produkten des Bestands. */
+  cookOutcome: CookIdeas | null = null;
+  /** Woran die nächsten Aufträge scheitern; null = sie gelingen. Geht `cookOutcome` vor. */
+  cookProblem: CookProblem | null = null;
+  /** Die Aufträge, wie sie angenommen wurden: Gerät, Wunsch, Zutaten. */
+  readonly cookStarts: { device_id: string; wish: string; focus: string[] }[] = [];
 
   private tables: Tables = EMPTY_TABLES;
   /** Was der Server an der Einkaufsliste selbst schreibt (7.6), samt Sperren und Uhren. */
@@ -1034,6 +1123,17 @@ export class FakeServer {
   /** Das zuletzt gespeicherte Ergebnis je Barcode (`off_lookups`) und wann er zuletzt neu gefragt wurde. */
   private readonly offStored = new Map<string, LookupResult>();
   private readonly refreshedAt = new Map<string, number>();
+  /** Der Schlüssel aus der App (in /data/secrets); nie in einer Antwort. */
+  private aiAppKey: string | null = null;
+  /** Der Merker in `server_config`: wann der Schlüssel eingetragen wurde. Steht er ohne Schlüssel, fehlt die Datei. */
+  private aiKeySetAt: string | null = null;
+  private aiModel: AiModel | null = null;
+  /** Anfragen am Tag `day` (Zeitzone des Servers). */
+  private aiUsage = { day: "", count: 0 };
+  private lastAiCheck: number | null = null;
+  private readonly cookJobs = new Map<string, { device_id: string; job: CookJob; polls: number; focus: string[] }>();
+  /** Wann jedes Gerät zuletzt einen Auftrag gestartet hat, in Millisekunden. */
+  private readonly cookStartedAt = new Map<string, number>();
 
   private readonly now: () => Date;
   private password: string;
@@ -1865,6 +1965,231 @@ export class FakeServer {
       return this.sensorTokenRequest(method);
     }
     return failure(404, "not_found", "Diesen Aufruf gibt es nicht.");
+  }
+
+  // ---------------------------------------------------------------- Seit 0.6.0: KI-Vorschläge
+
+  /** Der Schlüssel aus der App, wie er gespeichert ist; null = keiner. Steht in keiner Antwort. */
+  get aiKey(): string | null {
+    return this.aiAppKey;
+  }
+
+  /** Die Datei mit dem Schlüssel ist weg, der Merker bleibt: wie nach dem Zurückspielen einer Sicherung. */
+  loseAiKey(): void {
+    this.aiAppKey = null;
+  }
+
+  /** Alle Aufträge sind weg, wie nach `COOK_JOB_TTL_S` oder einem Neustart. */
+  expireCookJobs(): void {
+    this.cookJobs.clear();
+  }
+
+  /** Anfragen heute (Tag in `timezone`); ein neuer Tag beginnt bei null. */
+  private aiUsedToday(): number {
+    const today = dayIn(this.timezone, this.now());
+    if (this.aiUsage.day !== today) {
+      this.aiUsage = { day: today, count: 0 };
+    }
+    return this.aiUsage.count;
+  }
+
+  /** `AiConfig`: die wirksame Einrichtung mit Quelle; nie der Schlüssel. */
+  aiConfig(): AiConfig {
+    const env = this.aiEnvKey !== null;
+    const app = this.aiAppKey !== null;
+    return {
+      // Wie der Server: Ein Schlüssel, der nach dem Zurückspielen fehlt, kam aus der App.
+      source: env ? "env" : app || this.aiKeySetAt !== null ? "app" : "default",
+      key_set: env || app,
+      key_set_at: !env && app ? this.aiKeySetAt : null,
+      model: this.aiModel ?? AI_MODEL_DEFAULT,
+      model_source: this.aiModel === null ? "default" : "app",
+      configured: env || app,
+      problem: !env && !app && this.aiKeySetAt !== null ? FAKE_AI_KEY_LOST : null,
+      used_today: this.aiUsedToday(),
+      daily_limit: FAKE_AI_DAILY_MAX,
+    };
+  }
+
+  /** `PATCH /api/server-config/ai`: nur vorhandene Felder; `key: null` entfernt den Schlüssel. */
+  private patchAi(body: unknown): FakeResponseData {
+    if (!object({ key: opt(nullable(text(1, LIMITS.ai_key))), model: opt(oneOf(...AI_MODELS)) })(body ?? {})) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const changes = (body ?? {}) as { key?: string | null; model?: AiModel };
+    if (changes.key !== undefined && this.aiEnvKey !== null) {
+      return failure(409, "conflict", "Der API-Schlüssel kommt aus der Umgebung (STOWLY_ANTHROPIC_API_KEY) und lässt sich nur dort ändern.");
+    }
+    const problem = typeof changes.key === "string" ? aiKeyProblem(changes.key) : null;
+    if (problem !== null) {
+      // Wie der Server: die Stelle und ein Satz, nie der Wert.
+      return failure(422, "invalid_request", problem, { errors: [{ loc: ["body", "key"], msg: problem, type: "value_error" }] });
+    }
+    if (changes.key !== undefined) {
+      this.aiAppKey = changes.key === null ? null : changes.key.trim();
+      this.aiKeySetAt = changes.key === null ? null : this.stamp();
+    }
+    if (changes.model !== undefined) {
+      this.aiModel = changes.model;
+    }
+    return json(200, this.aiConfig());
+  }
+
+  /** `POST /api/server-config/ai/check`: liefert `aiCheckState`; eine Prüfung mit Abstand. */
+  private checkAi(body: unknown): FakeResponseData {
+    if (!object({ key: opt(text(1, LIMITS.ai_key)), model: opt(oneOf(...AI_MODELS)) })(body ?? {})) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const input = (body ?? {}) as { key?: string; model?: AiModel };
+    if (input.key !== undefined && this.aiEnvKey !== null) {
+      return failure(409, "conflict", "Der Schlüssel kommt aus der Umgebung; geprüft wird der von dort.");
+    }
+    const problem = input.key === undefined ? null : aiKeyProblem(input.key);
+    if (problem !== null) {
+      return failure(422, "invalid_request", problem, { errors: [{ loc: ["body", "key"], msg: problem, type: "value_error" }] });
+    }
+    const nowMs = this.now().getTime();
+    if (this.lastAiCheck !== null && nowMs - this.lastAiCheck < AI_CHECK_GAP_MS) {
+      const wait = Math.max(1, Math.ceil((this.lastAiCheck + AI_CHECK_GAP_MS - nowMs) / 1000));
+      return failure(429, "rate_limited", "Bitte kurz warten, dann noch einmal prüfen.", { retry_after_s: wait }, { "retry-after": String(wait) });
+    }
+    if (input.key === undefined && !this.aiConfig().configured) {
+      return failure(503, "not_configured", "Es ist noch kein API-Schlüssel eingetragen.");
+    }
+    this.lastAiCheck = nowMs;
+    const model = input.model ?? this.aiModel ?? AI_MODEL_DEFAULT;
+    this.aiChecks.push({ key: input.key !== undefined, model });
+    return json(200, { state: this.aiCheckState, message: AI_CHECK_MESSAGES[this.aiCheckState], model });
+  }
+
+  /** Alles unter `/api/server-config/ai`. */
+  private aiRequest(method: string, path: string, body: unknown): FakeResponseData {
+    if (path === "/api/server-config/ai") {
+      if (method === "GET") {
+        return json(200, this.aiConfig());
+      }
+      if (method === "PATCH") {
+        return this.patchAi(body);
+      }
+      return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "GET, PATCH" });
+    }
+    if (path === "/api/server-config/ai/check" && method === "POST") {
+      return this.checkAi(body);
+    }
+    return failure(404, "not_found", "Diesen Aufruf gibt es nicht.");
+  }
+
+  /** Die Produkte mit Namen, von denen etwas im Bestand ist: die gewählten zuerst, dann nach Namen. */
+  private namedStock(focus: readonly string[] = []): Product[] {
+    const stocked = new Set<string>();
+    for (const pkg of this.tables.packages.values()) {
+      if (pkg.removed_at === null) {
+        stocked.add(pkg.product_id);
+      }
+    }
+    const rank = (product: Product) => (focus.includes(product.id) ? 0 : 1);
+    return [...this.tables.products.values()]
+      .filter((product) => product.deleted_at === null && product.merged_into === null && product.name.trim() !== "" && stocked.has(product.id))
+      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, "de"));
+  }
+
+  /** Ein Vorschlag aus den ersten Produkten des Bestands, mit ihren Namen in Stowly. */
+  private defaultIdeas(focus: readonly string[]): CookIdeas {
+    const stocked = this.namedStock(focus);
+    const used = stocked.slice(0, 2);
+    return {
+      ideas: [
+        {
+          title: `Resteessen mit ${used.map((product) => product.name).join(" und ")}`,
+          summary: "Ein Vorschlag der Nachbildung.",
+          minutes: 20,
+          uses: used.map((product) => ({ product_id: product.id, name: product.name })),
+          missing: ["Zwiebel"],
+          steps: ["Alles vorbereiten.", "Garen und abschmecken."],
+          search: used[0]?.name ?? "Resteessen",
+        },
+      ],
+      model: this.aiModel ?? AI_MODEL_DEFAULT,
+      fallback: false,
+      stock_count: Math.min(stocked.length, FAKE_COOK_STOCK_MAX),
+      truncated: stocked.length > FAKE_COOK_STOCK_MAX,
+    };
+  }
+
+  /** `POST /api/cook/ideas`: die Prüfungen in der Reihenfolge des Servers, dann ein Auftrag (202). */
+  private startCook(device: FakeDevice, body: unknown): FakeResponseData {
+    if (!object({ wish: opt(text(0, LIMITS.cook_wish)), focus: opt(listOf(uuid, 0, LIMITS.cook_focus)) })(body ?? {})) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const input = (body ?? {}) as { wish?: string; focus?: string[] };
+    if (!this.aiConfig().configured) {
+      return failure(503, "not_configured", "Für Vorschläge von Claude fehlt der API-Schlüssel.", { reason: this.aiKeySetAt !== null && this.aiEnvKey === null ? "lost" : "missing" });
+    }
+    if (this.namedStock().length === 0) {
+      return failure(409, "conflict", "Im Bestand ist kein Produkt mit Namen.");
+    }
+    const nowMs = this.now().getTime();
+    const limited = (reason: string, message: string, wait: number) =>
+      failure(429, "rate_limited", message, { reason, retry_after_s: wait }, { "retry-after": String(wait) });
+    if ([...this.cookJobs.values()].some((entry) => entry.job.state === "running")) {
+      return limited("busy", "Gerade läuft schon eine Anfrage.", FAKE_BUSY_RETRY_S);
+    }
+    const last = this.cookStartedAt.get(device.id);
+    if (last !== undefined && nowMs - last < AI_DEVICE_GAP_S * 1000) {
+      return limited("too_soon", "Dieses Gerät hat eben erst gefragt.", Math.max(1, Math.ceil((last + AI_DEVICE_GAP_S * 1000 - nowMs) / 1000)));
+    }
+    if (this.aiUsedToday() >= FAKE_AI_DAILY_MAX) {
+      return limited("daily_limit", "Für heute sind alle Anfragen verbraucht.", secondsUntilNextDay(this.timezone, nowMs));
+    }
+    // Erst jetzt zählt die Anfrage für heute.
+    this.aiUsage = { ...this.aiUsage, count: this.aiUsage.count + 1 };
+    this.cookStartedAt.set(device.id, nowMs);
+    const focus = [...new Set(input.focus ?? [])];
+    const job: CookJob = {
+      id: hex(16),
+      state: "running",
+      started_at: this.stamp(),
+      finished_at: null,
+      result: null,
+      problem: null,
+      used_today: this.aiUsage.count,
+      daily_limit: FAKE_AI_DAILY_MAX,
+    };
+    this.cookJobs.set(job.id, { device_id: device.id, job, polls: 0, focus });
+    this.cookStarts.push({ device_id: device.id, wish: (input.wish ?? "").trim(), focus });
+    return json(202, job);
+  }
+
+  /** `GET /api/cook/ideas/{id}`: nur für das Gerät, das ihn startete; nach `cookRunningPolls` Abfragen fertig. */
+  private cookJob(device: FakeDevice, id: string): FakeResponseData {
+    if (!COOK_JOB_ID.test(id)) {
+      return failure(422, "invalid_request", "Keine Kennung eines Auftrags.", { errors: [{ loc: ["path", "job_id"], msg: "Keine Kennung eines Auftrags.", type: "string_pattern_mismatch" }] });
+    }
+    const entry = this.cookJobs.get(id);
+    if (!entry || entry.device_id !== device.id) {
+      return failure(404, "not_found", "Diesen Auftrag gibt es nicht (mehr).");
+    }
+    if (entry.job.state === "running") {
+      if (entry.polls < this.cookRunningPolls) {
+        entry.polls += 1;
+      } else {
+        const problem = this.cookProblem;
+        if (problem !== null && CREDITED_FAILURES.has(problem.reason)) {
+          // Anthropic hat nichts berechnet: Die Anfrage zählt nicht.
+          this.aiUsedToday();
+          this.aiUsage = { ...this.aiUsage, count: Math.max(0, this.aiUsage.count - 1) };
+        }
+        entry.job = {
+          ...entry.job,
+          state: problem === null ? "done" : "failed",
+          finished_at: this.stamp(),
+          result: problem === null ? (this.cookOutcome ?? this.defaultIdeas(entry.focus)) : null,
+          problem,
+          used_today: this.aiUsedToday(),
+        };
+      }
+    }
+    return json(200, entry.job);
   }
 
   /** Alle Kopplungen, älteste zuerst. */
@@ -3003,6 +3328,16 @@ export class FakeServer {
     }
     if (path === "/api/server-config/ha" || path.startsWith("/api/server-config/ha/")) {
       return this.haRequest(method, path, body);
+    }
+    if (path === "/api/server-config/ai" || path.startsWith("/api/server-config/ai/")) {
+      return this.aiRequest(method, path, body);
+    }
+    if (method === "POST" && path === "/api/cook/ideas") {
+      return this.startCook(device, body);
+    }
+    const cookMatch = /^\/api\/cook\/ideas\/([^/]+)$/.exec(path);
+    if (method === "GET" && cookMatch) {
+      return this.cookJob(device, decodeURIComponent(cookMatch[1] ?? ""));
     }
     if (method === "POST" && path === "/api/backup/run") {
       return this.runBackup();

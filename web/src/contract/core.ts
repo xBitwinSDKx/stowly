@@ -41,8 +41,14 @@
  * Schnittstelle sind camelCase (`core.data.removedPackages`, `core.stock.store`).
  */
 import type {
+  AiCheck,
+  AiCheckInput,
+  AiConfig,
+  AiConfigChanges,
   BackupFile,
   Command,
+  CookIdeasInput,
+  CookJob,
   Device,
   DirectPrinterConfig,
   HaCheck,
@@ -88,7 +94,7 @@ import type {
   Zone,
   ZoneChanges,
 } from "./api.gen";
-import { PRINTER_ERROR_CODES } from "./api.gen";
+import { COOK_DEADLINE_S, PRINTER_ERROR_CODES } from "./api.gen";
 import type { CoreErrorCode } from "./errors";
 
 // --------------------------------------------------------------------------------------
@@ -868,6 +874,72 @@ export interface HaConfigApi {
 }
 
 // --------------------------------------------------------------------------------------
+// Was koche ich? Vorschläge von Claude (seit 0.6.0; docs/plan-0.6.md, 3): braucht den Server
+// --------------------------------------------------------------------------------------
+//
+// Die Such-Links zu Cookidoo und Chefkoch baut die Oberfläche allein (src/features/cook). Hier steht
+// der zweite Weg: Der Server fragt Claude mit dem API-Schlüssel des Haushalts (docs/sync-protokoll.md,
+// 11.13). Der Code wird erst beim ersten Aufruf geladen (src/core/ai.ts); scheitert das Laden,
+// scheitert der Aufruf mit "offline". Den Schlüssel liefert keine Antwort, auch keinen Teil davon.
+
+/** So lange wartet `ai.wait` höchstens: die Frist eines Auftrags am Server (`COOK_DEADLINE_S`) und 30 Sekunden dazu. */
+export const COOK_WAIT_MS = (COOK_DEADLINE_S + 30) * 1000;
+
+/** Optionen für `ai.wait`. */
+export interface CookWaitOptions {
+  /** Beendet das Warten, nicht den Auftrag: `wait` scheitert dann mit `signal.reason` (wie `fetch`). */
+  signal?: AbortSignal;
+  /** Nach jeder Abfrage, solange der Auftrag läuft, mit seinem Stand (etwa `used_today`). */
+  onTick?: (job: CookJob) => void;
+}
+
+export interface AiApi {
+  /** `GET /api/server-config/ai`: Quelle des Schlüssels, Modell, Tageszähler; nie der Schlüssel. @throws CoreError offline | unauthorized | not_supported */
+  load(): Promise<AiConfig>;
+  /**
+   * `PATCH /api/server-config/ai`: nur die vorhandenen Felder; `key: null` entfernt den Schlüssel. Einen
+   * Schlüssel prüft der Kern vorher wie der Server (`checkAiKey`, src/contract/ai.ts), ohne Anfrage und
+   * ohne ihn im Satz zu wiederholen. Wirkt ohne Neustart.
+   * @throws CoreError invalid (Form des Schlüssels, `details.errors` an ["body","key"]) | conflict (der Schlüssel kommt
+   *   aus der Umgebung, STOWLY_ANTHROPIC_API_KEY) | offline | unauthorized
+   */
+  update(changes: AiConfigChanges): Promise<AiConfig>;
+  /**
+   * `POST /api/server-config/ai/check`: prüft Schlüssel und Modell bei Anthropic, ohne Tokens zu kosten;
+   * ohne Felder die wirksamen. Was Anthropic antwortet, ist kein Fehler dieses Aufrufs: Es steht in `state`.
+   * @throws CoreError rate_limited (eine Prüfung zugleich, mit 3 Sekunden Abstand; `details.retry_after_s`)
+   *   | not_configured (kein Schlüssel) | conflict (aus der Umgebung, aber mit `key`) | invalid | offline | unauthorized
+   */
+  check(input?: AiCheckInput): Promise<AiCheck>;
+  /**
+   * `POST /api/cook/ideas`: startet einen Auftrag und liefert ihn sofort (202, "running"). `wish` wird an
+   * den Rändern gekürzt, doppelte Kennungen in `focus` fallen weg; ein zu langer Wunsch oder mehr als
+   * `LIMITS.cook_focus` Zutaten scheitern ohne Anfrage. Erst wenn der Server den Auftrag annimmt, zählt er
+   * für heute. Der Kern merkt sich seine Kennung (`lastJob`).
+   * @throws CoreError invalid | not_configured (kein wirksamer Schlüssel; `details.reason` "missing" oder "lost")
+   *   | conflict (kein Produkt mit Namen im Bestand) | rate_limited (`details.reason` "busy", "too_soon" oder
+   *   "daily_limit", dazu `details.retry_after_s`) | offline | unauthorized
+   */
+  start(input: CookIdeasInput): Promise<CookJob>;
+  /**
+   * `GET /api/cook/ideas/{id}`: der Stand eines Auftrags. Was bei Anthropic schiefging, steht im Auftrag
+   * (`state: "failed"`, `problem`), nicht als Fehler dieses Aufrufs.
+   * @throws CoreError not_found (abgelaufen, nach einem Neustart des Servers weg, oder von einem anderen Gerät) | offline | unauthorized
+   */
+  job(id: string): Promise<CookJob>;
+  /**
+   * Wartet, bis der Auftrag nicht mehr läuft, und liefert ihn: fragt nach 1 Sekunde, nach 2 weiteren und
+   * dann alle 3 Sekunden, höchstens `COOK_WAIT_MS` lang. Ist der Server zwischendurch nicht erreichbar,
+   * fragt es weiter. Läuft der Auftrag nach der Frist noch, kommt er als "failed" mit `timeout` zurück,
+   * so wie ihn der Server nach seiner eigenen Frist meldet.
+   * @throws CoreError not_found | unauthorized | offline (der Server blieb bis zur Frist unerreichbar)
+   */
+  wait(id: string, options?: CookWaitOptions): Promise<CookJob>;
+  /** Die Kennung des Auftrags, den dieses Gerät zuletzt gestartet hat (seit dem Start der App), oder null: So findet die Seite nach einem Wechsel zu ihm zurück. */
+  lastJob(): Promise<string | null>;
+}
+
+// --------------------------------------------------------------------------------------
 // Einstellungen dieses Geräts
 // --------------------------------------------------------------------------------------
 
@@ -1288,4 +1360,6 @@ export interface Core {
   readonly haConfig: HaConfigApi;
   /** Etiketten gestalten (seit 0.5.0). Braucht den Server, außer `templates`. */
   readonly labels: LabelsApi;
+  /** KI-Vorschläge für „Was koche ich?" (seit 0.6.0): Schlüssel, Modell, Aufträge. Braucht den Server. */
+  readonly ai: AiApi;
 }

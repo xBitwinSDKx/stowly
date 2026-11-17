@@ -8,6 +8,8 @@ deshalb, und der Status sagt es.
 * ``ha_token`` (``ha_token.json``): ``{"token", "url", "set_at"}``. Der Token gilt nur für die Adresse, für
   die er eingetragen wurde.
 * ``ha_sensor_token`` (``ha_sensor_token.json``): ``{"token", "set_at"}``.
+* ``anthropic_key`` (``anthropic_key.json``, seit 0.6.0): ``{"key", "set_at"}``, der API-Schlüssel für die
+  KI-Vorschläge (``aiconfig.py``).
 
 Lesen wirft nie: Eine fehlende, zu große oder kaputte Datei gilt als nicht da (zu groß oder kaputt mit
 einer Warnung im Log, die den Inhalt nie nennt). Schreiben und Löschen gehen nur unter den festen Namen und
@@ -30,7 +32,8 @@ log = logging.getLogger("stowly.secrets")
 
 HA_TOKEN = "ha_token"
 HA_SENSOR_TOKEN = "ha_sensor_token"
-NAMES = frozenset({HA_TOKEN, HA_SENSOR_TOKEN})
+ANTHROPIC_KEY = "anthropic_key"
+NAMES = frozenset({HA_TOKEN, HA_SENSOR_TOKEN, ANTHROPIC_KEY})
 
 DIR_MODE = 0o700
 FILE_MODE = 0o600

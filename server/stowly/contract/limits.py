@@ -53,5 +53,9 @@ LIMITS: Final = MappingProxyType(
         "ha_token": 2000,  # Zugangs-Token von Home Assistant (ein JWT, meist um 180 Zeichen)
         # Seit 0.5.0 (docs/plan-0.5.md):
         "label_text": 40,  # eigener Text auf einem Etikett (Feld text der Gestaltung)
+        # Seit 0.6.0 (docs/plan-0.6.md):
+        "ai_key": 300,  # API-Schlüssel von Anthropic (sk-ant-…, heute um 108 Zeichen)
+        "cook_wish": 200,  # Wunsch zu den KI-Vorschlägen („vegetarisch, schnell, für 2“)
+        "cook_focus": 5,  # gewählte Zutaten (Produkte), auf die die KI-Vorschläge setzen sollen
     }
 )

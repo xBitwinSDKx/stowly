@@ -102,6 +102,12 @@ def test_openapi_lists_every_endpoint_and_command():
         ("POST", "/api/labels/preview"),
         ("POST", "/api/lookup/{barcode}/refresh"),
         ("PUT", "/api/products/{product_id}/image"),
+        # 0.6.0: Was koche ich? (KI-Vorschläge)
+        ("GET", "/api/server-config/ai"),
+        ("PATCH", "/api/server-config/ai"),
+        ("POST", "/api/server-config/ai/check"),
+        ("POST", "/api/cook/ideas"),
+        ("GET", "/api/cook/ideas/{job_id}"),
     }
     mapping = document["components"]["schemas"]["Command"]["discriminator"]["mapping"]
     assert sorted(mapping) == sorted(COMMAND_TYPES)

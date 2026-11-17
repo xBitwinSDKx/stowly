@@ -44,6 +44,7 @@ describe("App", () => {
     const more = screen.getByRole("navigation", { name: "Weitere Bereiche" });
     expect(within(more).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual([
       "Warnungen",
+      "Was koche ich?",
       "Lösch-Historie",
       "Statistik",
       "Drucker: 4 Etiketten offen",
@@ -53,9 +54,21 @@ describe("App", () => {
     await userEvent.click(within(more).getByRole("link", { name: "Lösch-Historie" }));
     expect(await screen.findByRole("heading", { name: "Lösch-Historie" })).toBeInTheDocument();
 
+    await userEvent.click(within(more).getByRole("link", { name: "Was koche ich?" }));
+    expect(await screen.findByRole("heading", { name: "Was koche ich?", level: 1 })).toBeInTheDocument();
+    expect(window.location.pathname).toBe(ROUTES.cook);
+
     await userEvent.click(screen.getByRole("button", { name: /Dieses Gerät/ }));
     const menu = screen.getByRole("menu", { name: "Geräte-Menü" });
-    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Einstellungen", "Sync-Status", "Lösch-Historie", "Statistik", "Drucker", "Abmelden"]);
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Einstellungen",
+      "Sync-Status",
+      "Was koche ich?",
+      "Lösch-Historie",
+      "Statistik",
+      "Drucker",
+      "Abmelden",
+    ]);
     await userEvent.click(within(menu).getByRole("menuitem", { name: "Drucker" }));
     expect(await screen.findByRole("heading", { name: "Drucker" })).toBeInTheDocument();
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -74,6 +87,7 @@ describe("App", () => {
       [ROUTES.scan]: "Scannen",
       [ROUTES.shopping]: "Einkaufsliste",
       [ROUTES.stats]: "Statistik",
+      [ROUTES.cook]: "Was koche ich?",
       [ROUTES.setup]: "Einrichtung",
     };
     // Jede Adresse hat hier einen Titel: Eine neue Ansicht fehlt sonst in diesem Test.
@@ -318,6 +332,7 @@ describe("Rahmen am Handy", () => {
       "Zonen",
       "Einstellungen",
       "Warnungen",
+      "Was koche ich?",
       "Lösch-Historie",
       "Statistik",
       "Drucker4 offen",

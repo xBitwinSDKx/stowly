@@ -60,6 +60,7 @@ Die Einstellungen stehen in `.env` und sind dort beschrieben ([`.env.example`](.
 | `STOWLY_HTTPS_PORT` | Port des HTTPS-Listeners im Container; im Image `8443`. Veröffentlicht wird er nur über `docker-compose.override.yml` (Abschnitt 20) |
 | `STOWLY_HA_URL`, `STOWLY_HA_TOKEN`, `STOWLY_HA_TODO_ENTITY`, `STOWLY_HA_CA` | Einkaufsliste nach Bring! über Home Assistant: Adresse, Token, To-do-Liste, eigene Zertifizierungsstelle. Ist eine der ersten drei gesetzt, kommen alle drei von hier; leer = Einrichtung in der App (Abschnitt 17.2). Die Zertifizierungsstelle gibt es nur hier (17.4) |
 | `STOWLY_HA_SUMMARY_TOKEN` | Token des Sensors für Home Assistant, mindestens 32 Zeichen; leer = der Sensor-Token aus der App, sonst kein Sensor (Abschnitt 18.1) |
+| `STOWLY_ANTHROPIC_API_KEY` | API-Schlüssel von Anthropic (`sk-ant-…`) für die Vorschläge von Claude; leer = der Schlüssel aus der App, sonst nur die Such-Links (Abschnitt 21) |
 | `STOWLY_PUBLISH` | unter welcher Adresse des Rechners der Container erreichbar ist; Vorgabe `127.0.0.1:8010` |
 | `STOWLY_USB_GID` | nur mit `docker-compose.usb.yml`: Gruppe, der der USB-Drucker gehört; Vorgabe `46` (plugdev) (Abschnitt 14.3) |
 | `TZ` | Zeitzone des Containers; Stowly selbst richtet sich nach `STOWLY_TIMEZONE` |
@@ -67,6 +68,7 @@ Die Einstellungen stehen in `.env` und sind dort beschrieben ([`.env.example`](.
 Hinweise:
 
 - Enthält das Passwort Sonderzeichen (`#`, `$`, Leerzeichen, Anführungszeichen), in einfache Anführungszeichen setzen: `STOWLY_PASSWORD='mein#Passwort'`.
+- Die `.env` kann Passwort, Tokens und den API-Schlüssel für Anthropic enthalten: nur für ihren Besitzer lesbar machen, `chmod 600 .env`. Der Updater behält Besitzer und Rechte bei (Abschnitt 9.2).
 - Geänderte Werte gelten nach `docker compose up -d`.
 - Ein geändertes Passwort lässt angemeldete Geräte angemeldet. Einzelne Geräte meldet man in der App unter „Einstellungen → Geräte" ab; das sperrt ihr Token.
 - Nach 5 falschen Passwörtern innerhalb von 5 Minuten lehnt der Server 60 Sekunden lang jede Anmeldung ab, für alle gemeinsam.
@@ -500,18 +502,18 @@ Beim allerersten Image muss das Paket auf GitHub einmal öffentlich gestellt wer
 | Datenbank mit allem: Bestand, Einkaufsliste, Produktbilder, Geräte und ihre Abos für Benachrichtigungen, Ereignisprotokoll, der Schlüssel des Servers für Benachrichtigungen, was Stowly zuletzt nach Bring! geschrieben hat, die Einstellungen aus der App (ohne Tokens) | Docker-Volume `stowly-data`, im Container `/data/stowly.sqlite3` (im Betrieb dazu `-wal` und `-shm`) |
 | Druckdienst des Servers: Auftragsspeicher samt `boot_id`, Bilder des Bild-Treibers | im selben Volume unter `/data/print/` (`jobs.sqlite3`, `images/`). Nicht in den Sicherungen; geht er verloren, fragt die App bei offenen Etiketten nach, statt doppelt zu drucken |
 | Sicherungen, verschlüsselt | `/backups`, wenn dort ein eigener Ordner eingebunden ist (Docker Compose: `backups` im Ordner des Repositorys; DSM: Abschnitt 19.4), sonst im Volume unter `/data/backups/` (Abschnitt 8.1); die geheimen Schlüssel dazu nur beim Haushalt |
-| Tokens aus der App: für Home Assistant und den Sensor | im Volume unter `/data/secrets/` (Ordner `0700`, Dateien `0600`); nicht in den Sicherungen (Abschnitte 17.2, 18.1) |
+| Tokens aus der App: für Home Assistant und den Sensor; der API-Schlüssel für die Vorschläge von Claude | im Volume unter `/data/secrets/` (Ordner `0700`, Dateien `0600`); nicht in den Sicherungen (Abschnitte 17.2, 18.1, 21) |
 | Zurückspielen: die hochgeladene Datei, die geprüfte Kopie und 7 Tage lang die Datenbank von vor dem Zurückspielen (`previous.sqlite3`) | im Volume unter `/data/restore/` (`0700`); nicht in den Sicherungen (Abschnitt 8.3) |
-| Einstellungen des Servers | `.env` im Ordner des Repositorys bzw. die Umgebung des Containers, samt Passwort und Tokens, soweit dort gesetzt; was in der App eingestellt wurde (Push-Kontakt, Updates, Sicherung, Adresse und Liste von Home Assistant, Stand der Einrichtung), in der Datenbank (`server_config`), das Passwort aus der App nur als Hash, die Tokens aus der App in `/data/secrets/` |
+| Einstellungen des Servers | `.env` im Ordner des Repositorys bzw. die Umgebung des Containers, samt Passwort und Tokens, soweit dort gesetzt; was in der App eingestellt wurde (Push-Kontakt, Updates, Sicherung, Adresse und Liste von Home Assistant, Modell und Tageszähler der Vorschläge von Claude, Stand der Einrichtung), in der Datenbank (`server_config`), das Passwort aus der App nur als Hash, die Tokens aus der App in `/data/secrets/` |
 | Zertifizierungsstelle und Zertifikat für HTTPS (Abschnitt 20) | im Volume unter `/data/tls/`; nicht in den Sicherungen, beim Umzug den ganzen Datenordner mitnehmen |
 | eigene Anpassung an den Proxy, die Zertifizierungsstelle für Home Assistant | `docker-compose.override.yml`, falls angelegt; die Zertifizierungsstelle etwa als `ha-ca.pem` im Ordner des Repositorys (Abschnitt 17.4) |
 | lokale Kopie je Gerät, ungesendete Änderungen, Token | im Browser-Speicher des Handys (IndexedDB) |
 
 Das Volume findet `docker volume inspect <ordnername>_stowly-data` (unter Debian üblicherweise `/var/lib/docker/volumes/…/_data`). `docker compose down` lässt es bestehen; erst `docker compose down -v` löscht es und damit den ganzen Haushalt. Beim Container per Mausklick (Abschnitt 19) ist der Datenordner der Ordner, der unter `/data` eingebunden ist, etwa `docker/stowly`.
 
-**Was neben der Datenbank liegt** (`/data/tls`, `/data/secrets`, `/data/restore`, `/data/print`), steht in keiner Sicherung. Wer umzieht, nimmt deshalb den ganzen Datenordner mit (Abschnitt 20.4). Sonst entsteht eine neue Zertifizierungsstelle, und die Tokens für Home Assistant und den Sensor sind neu einzutragen.
+**Was neben der Datenbank liegt** (`/data/tls`, `/data/secrets`, `/data/restore`, `/data/print`), steht in keiner Sicherung. Wer umzieht, nimmt deshalb den ganzen Datenordner mit (Abschnitt 20.4). Sonst entsteht eine neue Zertifizierungsstelle, und die Tokens für Home Assistant und den Sensor sowie der API-Schlüssel für Anthropic sind neu einzutragen.
 
-Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, nie Passwort, Tokens oder ein geheimer Schlüssel.
+Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, nie Passwort, Tokens, API-Schlüssel oder ein geheimer Schlüssel. Von den Vorschlägen von Claude stehen dort nur Modell, Tokens und die Kennung der Anfrage, nie Vorratsliste, Wunsch oder Antwort.
 
 ## 11. Wenn etwas nicht geht
 
@@ -557,6 +559,17 @@ Im Log des Servers (`docker compose logs stowly`) stehen Zugriffe und Hinweise, 
 | Ein Eintrag erscheint nicht in Bring! | Er ist keine zwei Minuten offen, oder er hat keinen Namen (ein Platzhalter, der noch auf Open Food Facts wartet), oder in Bring! steht schon ein Artikel desselben Namens: Dann bindet Stowly den Eintrag an ihn, statt einen zweiten anzulegen (Abschnitt 17.1). |
 | Der Sensor in HA ist „nicht verfügbar", im Log von HA steht 401 | In `secrets.yaml` fehlt `Bearer ` vor dem Token, oder er stimmt nicht mit dem Sensor-Token überein, etwa nach „Neu erzeugen" (Abschnitt 18.1). Bei 503: Es gibt keinen Sensor-Token, weder aus der App noch aus `STOWLY_HA_SUMMARY_TOKEN`. Bei einem Fehler zum Zertifikat: Abschnitt 18.3. |
 | Die App bleibt nach einer Änderung an `STOWLY_CSP` leer, oder die Konsole des Browsers meldet „Content Security Policy" | Die eigene Policy verbietet etwas, das die App braucht: zurück zur Vorgabe (`STOWLY_CSP` leer) und Abschnitt 13. |
+| Unter „KI-Vorschläge“ steht „Der API-Schlüssel für die KI-Vorschläge fehlt (steht in keiner Sicherung); bitte neu eintragen.“ | Nach dem Zurückspielen auf einem neuen Rechner oder einem Umzug ohne Datenordner: den Schlüssel in der App neu eintragen (Abschnitt 21.2). |
+| „Anthropic lehnt den API-Schlüssel ab. …“ (bei „Prüfen“ oder einem Vorschlag) | Der Schlüssel ist falsch oder wurde in der Console gelöscht: neuen anlegen (21.1) und in der App unter „Ersetzen“ eintragen; aus der `.env`: `STOWLY_ANTHROPIC_API_KEY` ändern, `docker compose up -d`. |
+| „Für das Konto des API-Schlüssels gibt es kein Guthaben, oder die Abrechnung ist nicht eingerichtet …“ | In der Console von Anthropic Guthaben aufladen oder die Abrechnung einrichten. Die Anfrage zählt nicht zum Tageslimit. Meldet Anthropic das als gewöhnlichen Fehler (400), steht in der App „Anthropic hat die Anfrage nicht angenommen …“ und im Log der Satz von Anthropic. |
+| „Das gewählte Modell steht für diesen API-Schlüssel nicht bereit. …“ | Das Modell ist für das Konto nicht freigeschaltet oder wurde abgekündigt: ein anderes wählen, „Prüfen“. |
+| „Anthropic ist nicht erreichbar (Internetverbindung oder DNS des Servers prüfen).“ | Der Container kommt nicht ins Internet, oder eine Firewall sperrt `api.anthropic.com`: Probe in Abschnitt 21.5. Im Log steht die Art des Fehlers. |
+| „Anthropic bremst gerade …“ oder „Anthropic ist gerade überlastet oder gestört. …“ | Eine kurze Wartezeit hat Stowly schon selbst abgewartet und es noch einmal versucht. Später noch einmal; die Anfrage zählt nicht. Kommt es oft vor, in der Console die Grenzen des Kontos ansehen. |
+| „Die Verbindung zu Anthropic ist während der Anfrage abgebrochen. …“ | Das Netz des Servers war kurz weg, nachdem die Anfrage schon unterwegs war. Noch einmal; die Anfrage zählt, denn Anthropic kann sie berechnet haben. |
+| „Claude hat nicht rechtzeitig geantwortet. …“ | Claude brauchte zu lange; ein Auftrag wartet höchstens 90 Sekunden. Noch einmal, oder Sonnet bzw. Haiku wählen. Die Anfrage zählt, denn Anthropic kann sie berechnet haben. |
+| „Claude lehnt diese Anfrage ab. …“ | Der Wunsch oder ein Produktname führte zur Ablehnung. Bei Opus und Sonnet antwortet sonst meist schon ein Ersatzmodell; den Wunsch umformulieren. |
+| Mit Opus und Sonnet scheitert jede Anfrage mit „Anthropic hat die Anfrage nicht angenommen …“, mit Haiku nicht | Vermutlich nimmt Anthropic den Kopf für das Ersatzmodell (`server-side-fallback-2026-07-01`) für dieses Konto nicht an; im Log steht der Satz von Anthropic mit der Kennung der Anfrage. Bis zu einem Update Haiku wählen. |
+| „Heute sind schon 20 Anfragen an Claude gegangen …“ | Das Tageslimit des Haushalts ist erreicht; um Mitternacht (`STOWLY_TIMEZONE`) geht es wieder. Die Such-Links gehen weiter. |
 
 ## 12. Das Repository auf den Server bringen
 
@@ -1118,12 +1131,62 @@ Den Fingerabdruck der CA zeigt die App unter Einstellungen → „Einrichtung un
 
 ### 20.4 Sichern und umziehen
 
-`/data/tls` (die CA) und `/data/secrets` (die Tokens für Home Assistant und den Sensor) gehören zum Datenordner, aber zu keiner Sicherung (Abschnitt 8). Für einen Umzug auf einen anderen Rechner deshalb:
+`/data/tls` (die CA) und `/data/secrets` (die Tokens für Home Assistant und den Sensor, der API-Schlüssel für Anthropic) gehören zum Datenordner, aber zu keiner Sicherung (Abschnitt 8). Für einen Umzug auf einen anderen Rechner deshalb:
 
 1. Stowly anhalten und den **ganzen Datenordner** mitnehmen (DSM: der Ordner unter `/data`, etwa `docker/stowly`; Docker Compose: das Volume `stowly-data`, Abschnitt 10), dazu den Ordner der Sicherungen, wenn er außerhalb liegt.
 2. Auf dem neuen Rechner den Container mit diesem Ordner anlegen (19.1). Dieselbe CA, dieselben Tokens, alle Anmeldungen: Es läuft weiter wie vorher.
 
-Geht das nicht, etwa nach einem Plattenausfall, bleibt die Sicherung: beim ersten Start „Aus einer Sicherung wiederherstellen" (8.3). Dann entsteht eine neue CA: Jedes Gerät muss ihr neu vertrauen und jeder Pi neu gekoppelt werden; der Assistent beginnt mit der sicheren Verbindung. Die Tokens für Home Assistant und den Sensor fehlen und sind neu einzutragen bzw. neu zu erzeugen (17.2, 18.1); die App sagt es.
+Geht das nicht, etwa nach einem Plattenausfall, bleibt die Sicherung: beim ersten Start „Aus einer Sicherung wiederherstellen" (8.3). Dann entsteht eine neue CA: Jedes Gerät muss ihr neu vertrauen und jeder Pi neu gekoppelt werden; der Assistent beginnt mit der sicheren Verbindung. Die Tokens für Home Assistant und den Sensor fehlen und sind neu einzutragen bzw. neu zu erzeugen (17.2, 18.1), ebenso der API-Schlüssel für Anthropic (21.2); die App sagt es.
+
+## 21. Was koche ich? Vorschläge von Claude
+
+Die Seite „Was koche ich?“ steht unter „Weitere Bereiche“, in der Seitenleiste und im Menü am Handy. Sie sucht mit Zutaten aus dem Vorrat bei Cookidoo und Chefkoch; das geht ohne Einrichtung, auch offline. Vorschläge von Claude brauchen einen API-Schlüssel von Anthropic. Die Regeln stehen in [`integrationen.md`](integrationen.md), Abschnitt 13.
+
+### 21.1 Schlüssel anlegen
+
+1. Auf console.anthropic.com ein Konto anlegen oder sich anmelden und Guthaben aufladen. Die Kosten trägt dieses Konto.
+2. Am besten einen eigenen Schlüssel nur für Stowly anlegen und ein Ausgabenlimit setzen, wie es die Console anbietet.
+3. Den Schlüssel (`sk-ant-…`) gleich kopieren; die Console zeigt ihn nur einmal.
+
+### 21.2 In der App eintragen
+
+1. Einstellungen → „KI-Vorschläge“: den Schlüssel einfügen und „Speichern“. Die App zeigt danach nur „gesetzt“, nie den Schlüssel.
+2. „Prüfen“: Anthropic bestätigt Schlüssel und Modell. Das kostet keine Tokens.
+3. Das Modell wählen:
+   - **Opus 5.5** (Vorgabe): die besten Vorschläge, grob 7 Cent je Anfrage.
+   - **Sonnet 5.5**: etwa halb so teuer.
+   - **Haiku 5.5**: unter einem Cent.
+
+Der Schlüssel liegt danach nur auf dem Server in `/data/secrets` (Abschnitt 10) und in keiner Sicherung. Nach dem Zurückspielen auf einem anderen Rechner ist er neu einzutragen; die App sagt es.
+
+### 21.3 Aus der `.env`
+
+```
+STOWLY_ANTHROPIC_API_KEY=sk-ant-…
+```
+
+Dann `docker compose up -d`; beim Container per Mausklick steht die Variable in seinen Einstellungen unter „Umgebung“. Sie geht vor, und der Schlüssel ist in der App gesperrt. Das Modell wählt man trotzdem in der App. Eine Variable `ANTHROPIC_API_KEY` liest Stowly nicht.
+
+### 21.4 Was an Anthropic geht
+
+Nur auf Knopfdruck („Vorschläge von Claude“) und nur vom Server aus:
+
+- je Produkt im Bestand, höchstens 300: Name, Marke, Größe und Anzahl, dazu die Tage bis zum MHD;
+- das heutige Datum, der Wunsch und die gewählten Zutaten.
+
+Nie dabei sind Zonen, Barcodes, Bilder, Kennungen, Geräte und die Einkaufsliste. Höchstens 20 Anfragen am Tag gehen für den ganzen Haushalt hinaus, eine zugleich und je Gerät mit 30 Sekunden Abstand. Was Anthropic nicht berechnet hat (etwa ein abgelehnter Schlüssel), zählt nicht.
+
+### 21.5 Netz
+
+Der Container braucht Zugang zu `https://api.anthropic.com`. Probe aus dem Container:
+
+```
+docker compose exec stowly python -c "import httpx2; print(httpx2.get('https://api.anthropic.com/v1/models').status_code)"
+```
+
+Sie zeigt `401`: erreichbar, nur ohne Schlüssel abgelehnt. Beim Container per Mausklick heißt es `docker exec <container> python …`.
+
+Ein Proxy aus der Umgebung des Containers (`HTTPS_PROXY`, `ALL_PROXY`) gilt auch für diese Verbindung; TLS bleibt dabei bis zu Anthropic geschlossen. `SSL_CERT_FILE` und `SSL_CERT_DIR` ersetzen die Zertifizierungsstellen, denen Stowly vertraut, und mit `SSLKEYLOGFILE` schriebe der Server die Schlüssel der TLS-Sitzungen in eine Datei. Diese Variablen setzt nur, wer die Verbindung bewusst umlenken oder mitlesen will; wer die Umgebung des Containers ändern kann, sieht auch den API-Schlüssel.
 
 ## Prüfliste für die Zielumgebung
 
@@ -1381,3 +1444,24 @@ Erst in einem Testcontainer (19.1) mit einem Drucker am Server mit Bild-Treiber,
 | O13 | „Übernehmen", dann „Speichern" | Felder und Bild sind gespeichert; ein zweites Gerät zeigt das Bild nach dem Abgleich |
 | O14 | Gleich noch einmal „Online abfragen" | „Open Food Facts bremst gerade; in einer Minute noch einmal." |
 | O15 | Ein Produkt ohne Barcode oder nur mit ladeninternem Code (beginnt mit 2); dann eines mit Barcode, aber offline | Kein Knopf; offline ist er gesperrt und sagt warum |
+
+### P. Was koche ich? (0.6.0)
+
+Am eigenen Stowly oder in einem Testcontainer (19.1), mit Bestand. Den API-Schlüssel trägt der Anwender selbst ein (21.2); er erscheint nie im Chat, in einem Log oder einem Bildschirmfoto.
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| P1 | „Was koche ich?“ öffnen, am PC über die Seitenleiste, am Handy über das Menü | Zwei bis drei Zutaten vorgewählt, das Dringendste zuerst, als kurze Begriffe („Spaghetti“ statt Marke und Größe) |
+| P2 | Einen Begriff antippen und ändern, eine Zutat aus dem Vorrat dazunehmen; „Bei Cookidoo suchen“, dann „Bei Chefkoch suchen“ | Beide öffnen in einem neuen Tab eine Suche mit genau diesen Begriffen, auch mit Umlauten (etwa „Kürbis“); am iPhone auch aus der installierten App |
+| P3 | Warnungen → „Was koche ich daraus?“ | Die Seite öffnet mit dieser Zutat vorgewählt |
+| P4 | Ohne Schlüssel: den Teil „Vorschläge von Claude“ ansehen | Ein Hinweis mit Link zu Einstellungen → „KI-Vorschläge“; die Such-Links gehen |
+| P5 | Einstellungen → „KI-Vorschläge“: Schlüssel eintragen, „Speichern“, „Prüfen“ | „gesetzt“, nie der Schlüssel; „Prüfen“ meldet Erfolg; in der Console von Anthropic keine Kosten dafür |
+| P6 | Wunsch „vegetarisch, schnell“, Opus 5.5, „Vorschläge von Claude“ | Fortschritt mit Sekunden, nach etwa 15 bis 45 Sekunden drei Karten: Titel, Zeit, Kurzbeschreibung, „Aus dem Vorrat“ mit MHD, „Fehlt“, Zubereitung zum Aufklappen, „Ähnliches bei Cookidoo“ und „… bei Chefkoch“, Hinweis „Allergene und Haltbarkeit selbst prüfen“; kein Gericht mit Fleisch oder Fisch |
+| P7 | Dasselbe mit Sonnet 5.5 und mit Haiku 5.5 | Je drei Karten; Antwortzeit und Kosten in der Console notieren |
+| P8 | Auf einer Karte „Fehlendes auf die Einkaufsliste“ | Die angehakten Zutaten stehen auf der Einkaufsliste, ohne Doppelte; ein zweites Gerät sieht sie nach dem Abgleich; mit Home Assistant stehen sie nach höchstens zwei Minuten in Bring! |
+| P9 | Gleich noch einmal „Vorschläge von Claude“ | Ein Satz mit der Wartezeit (30 Sekunden je Gerät); danach geht es, und „heute n von 20“ zählt mit |
+| P10 | Während Claude überlegt, die Seite verlassen und zurückkehren | Der Fortschritt und dann das Ergebnis erscheinen wieder |
+| P11 | Stowly neu starten (Container anhalten und starten), dann Einstellungen → „KI-Vorschläge“ | „heute n von 20“ steht wie vor dem Neustart |
+| P12 | Offline (Flugmodus) die Seite öffnen | Die Such-Links gehen (die Rezeptseiten brauchen dann Netz); der Teil zu Claude sagt, dass er offline nicht geht |
+| P13 | Log des Servers ansehen | Je Anfrage Modell, Tokens und Kennung der Anfrage; kein Produktname, kein Wunsch, kein Schlüssel |
+| P14 | Arbeitsspeicher des Containers (DSM: Container → Übersicht) vor und während einer Anfrage | Messwert notieren; das SDK von Anthropic wird erst bei der ersten Anfrage geladen |

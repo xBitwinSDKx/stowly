@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 
-import { formatBuild, isTimeOfDay, ROUTES, setupPath, useCore, useLive, type DevicePrefs, type SettingsChanges } from "@/contract";
+import { formatBuild, isTimeOfDay, ROUTES, setupPath, useCore, useLive, type AiConfig, type DevicePrefs, type SettingsChanges } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
 import { useLogout } from "@/features/auth/logout";
-import { errorText, List, ListLink, ListRow, plural, Section } from "@/ui";
-import { Button, ButtonLink, cx, SegmentedControl, Switch, TextField, useToast } from "@/ui/base";
+import { modelName } from "@/features/cook/texts";
+import { errorText, List, ListLink, ListRow, Notice, plural, Section } from "@/ui";
+import { Button, ButtonLink, cx, SegmentedControl, Spinner, Switch, TextField, useToast } from "@/ui/base";
 import { InstallIcon, LockOpenIcon, LogOutIcon, PrinterIcon, ZonesIcon } from "@/ui/icons";
 import { ACCENTS, setAccent, setTheme, useTheme, type AccentKey, type ThemeChoice } from "@/ui/theme";
 
@@ -13,7 +14,7 @@ import { DevicesSection } from "./DevicesSection";
 import { HomeAssistantSection } from "./HomeAssistantSection";
 import { useIntegrations } from "./integrations";
 import { IosInstallSteps } from "./IosInstallSteps";
-import { useLoaded } from "./loaded";
+import { loadedValue, useLoaded, type LoadedResource } from "./loaded";
 import { DEFAULT_NOTIFY_TIME, NotifyTimeSetting } from "./NotifyTimeSetting";
 import { PushSetting } from "./PushSetting";
 import { SetupSection } from "./SetupSection";
@@ -147,6 +148,105 @@ export function describeConnection(location: Pick<Location, "protocol" | "hostna
   };
 }
 
+const AI_OFFLINE = "Die Einrichtung der KI-Vorschläge kennt nur der Server, und der ist gerade nicht erreichbar.";
+
+type AiSectionModule = typeof import("./AiSection");
+
+let aiSection: AiSectionModule | null = null;
+let aiSectionLoading: Promise<AiSectionModule> | null = null;
+
+/** Der Abschnitt „KI-Vorschläge" (seit 0.6.0), nachgeladen; ein gescheitertes Laden darf ein späterer Aufruf noch einmal versuchen. */
+function loadAiSection(): Promise<AiSectionModule> {
+  aiSectionLoading ??= import("./AiSection").then(
+    (module) => {
+      aiSection = module;
+      return module;
+    },
+    (error: unknown) => {
+      aiSectionLoading = null;
+      throw error;
+    },
+  );
+  return aiSectionLoading;
+}
+
+// Wie die Ansichten selbst (app/pages.tsx, `preloadPages`): mit diesem Teil gleich mitholen, damit der
+// Abschnitt auch dann da ist, wenn der Server später nicht mehr erreichbar ist (ohne Service Worker).
+loadAiSection().catch(() => undefined);
+
+/**
+ * Platz für „KI-Vorschläge": Das Formular gehört nicht in den Teil der Einstellungen, den jeder Aufruf
+ * braucht, und kommt mit dem ersten Zeichnen nach. Lässt es sich nicht laden (ohne Server und ohne
+ * Service Worker), steht hier ein Hinweis; der Rest der Einstellungen bleibt.
+ */
+function AiSectionSlot({ config }: { config: LoadedResource<AiConfig> }) {
+  const [loaded, setLoaded] = useState<AiSectionModule | null>(aiSection);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (loaded) {
+      return;
+    }
+    let active = true;
+    setFailed(false);
+    loadAiSection().then(
+      (module) => {
+        if (active) {
+          setLoaded(module);
+        }
+      },
+      () => {
+        if (active) {
+          setFailed(true);
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [loaded, attempt]);
+
+  if (loaded) {
+    return <loaded.AiSection config={config} />;
+  }
+  return (
+    <Section title="KI-Vorschläge" id="ki">
+      {failed ? (
+        <Notice
+          tone="warn"
+          role="status"
+          action={
+            <Button size="sm" onClick={() => setAttempt((count) => count + 1)}>
+              Erneut versuchen
+            </Button>
+          }
+        >
+          Dieser Abschnitt ließ sich nicht laden. Mit Verbindung zum Server geht es wieder.
+        </Notice>
+      ) : (
+        <p className={styles.muted}>
+          <Spinner label="KI-Vorschläge werden geladen" />
+        </p>
+      )}
+    </Section>
+  );
+}
+
+/** Die Zeile „KI-Vorschläge" unter „Über": wie die Produktdaten, nach der Einrichtung beim Server (`ai.load`). */
+export function describeAi(config: Pick<AiConfig, "configured" | "model"> | null): RowText {
+  if (config === null) {
+    return { value: "unbekannt", hint: "Ob Vorschläge von Claude eingerichtet sind, weiß nur der Server." };
+  }
+  if (config.configured) {
+    return {
+      value: `Anthropic (${modelName(config.model)})`,
+      hint: "„Was koche ich?“ fragt Claude auf Knopfdruck nach Gerichten; dabei geht die Vorratsliste an Anthropic. Mehr unter „KI-Vorschläge“.",
+    };
+  }
+  return { value: "aus", hint: "Ohne API-Schlüssel gibt es auf „Was koche ich?“ nur die Such-Links zu Cookidoo und Chefkoch." };
+}
+
 /** Die Zeile „Produktdaten": richtet sich danach, ob der Server Barcodes nachschlägt (`sync.status.lookup_enabled`). */
 export function describeLookup(enabled: boolean | null | undefined): RowText {
   if (enabled === false) {
@@ -165,7 +265,7 @@ export function describeLookup(enabled: boolean | null | undefined): RowText {
  * Einstellungen nach dem Entwurf: eine Liste aus Zeilen mit dem Bedienelement rechts,
  * gegliedert in Darstellung, dieses Gerät (samt Benachrichtigungen), Haushalt (samt der Uhrzeit
  * der Tagesnachricht), Geräte, Einrichtung und Zugang, Sicherung, Home Assistant und Bring!,
- * Aktualisierung, diese App und Über. Solange die Ansicht offen ist, lädt sie den Zustand der
+ * KI-Vorschläge (nachgeladen), Aktualisierung, diese App und Über. Solange die Ansicht offen ist, lädt sie den Zustand der
  * Integrationen (Sicherung, Home Assistant, Push, Updates) und die Einstellungen des Servers
  * (Kontakt für Push, Schalter für Updates).
  */
@@ -183,6 +283,7 @@ export function SettingsPage() {
   const { theme, accent } = useTheme();
   const integrations = useIntegrations();
   const serverConfig = useLoaded(() => core.serverConfig.load(), "Die Einstellungen des Servers kennt nur er, und er ist gerade nicht erreichbar.");
+  const ai = useLoaded(() => core.ai.load(), AI_OFFLINE);
   const [installing, setInstalling] = useState(false);
   const [persisting, setPersisting] = useState(false);
 
@@ -236,6 +337,7 @@ export function SettingsPage() {
 
   const connection = describeConnection(window.location, app?.secure_context);
   const lookup = describeLookup(sync?.lookup_enabled);
+  const aiRow = describeAi(loadedValue(ai.state));
   const multiZone = zones.length > 1;
   const primaryZone = zones.find((zone) => zone.id === settings.primary_zone_id) ?? zones[0];
   const deviceName = session?.status === "signed_in" ? session.device.name : "";
@@ -343,6 +445,8 @@ export function SettingsPage() {
 
       <HomeAssistantSection integrations={integrations.state} onReload={integrations.reload} />
 
+      <AiSectionSlot config={ai} />
+
       <UpdateSection integrations={integrations.state} onReload={integrations.reload} serverConfig={serverConfig} />
 
       <Section title="Diese App" id="app" description="Installation und Speicher auf diesem Gerät.">
@@ -417,6 +521,9 @@ export function SettingsPage() {
           </ListRow>
           <ListRow label="Produktdaten" hint={lookup.hint}>
             <span className={styles.value}>{lookup.value}</span>
+          </ListRow>
+          <ListRow label="KI-Vorschläge" hint={aiRow.hint}>
+            <span className={styles.value}>{aiRow.value}</span>
           </ListRow>
         </List>
       </Section>

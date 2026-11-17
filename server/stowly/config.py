@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 import pyrage
 
+from stowly.contract.limits import LIMITS
 from stowly.contract.timeutil import is_time_of_day
 
 # server/stowly/config.py -> Wurzel des Repositorys (nur in einem Quell-Checkout sinnvoll)
@@ -71,6 +72,19 @@ HA_SUMMARY_TOKEN_MIN = 32
 _MAILTO = re.compile(r"^mailto:[^\s@<>()\[\],;:\"]+@[^\s@<>()\[\],;:\"]+\.[^\s@<>()\[\],;:\"]+$")
 # Ein Hostname aus Buchstaben, Ziffern, Bindestrich und Punkt (auch eine IPv4-Adresse).
 _HOSTNAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$")
+# KI-Vorschläge (docs/plan-0.6.md, 2): So beginnt ein API-Schlüssel von Anthropic, so ein Admin-Schlüssel.
+ANTHROPIC_KEY_PREFIX = "sk-ant-"
+ANTHROPIC_ADMIN_PREFIX = "sk-ant-admin"
+ANTHROPIC_KEY_SHAPE = (
+    f"Ein API-Schlüssel von Anthropic beginnt mit {ANTHROPIC_KEY_PREFIX}, hat höchstens {LIMITS['ai_key']} "
+    "Zeichen und besteht nur aus druckbaren ASCII-Zeichen ohne Leerraum (so, wie die Console ihn anzeigt)."
+)
+ANTHROPIC_KEY_ADMIN = (
+    "Das ist ein Admin-Schlüssel (sk-ant-admin…); der gehört nicht auf den Server. Für die Vorschläge "
+    "genügt ein gewöhnlicher API-Schlüssel aus der Console, am besten ein eigener mit Ausgabenlimit."
+)
+# Nur mit --dev: die nachgebildete Anthropic-API der e2e-Tests der App, nie ein anderer Rechner.
+_ANTHROPIC_DEV_URL = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/?")
 
 
 def _in_source_checkout() -> bool:
@@ -256,6 +270,57 @@ def _ha_summary_token(env: Mapping[str, str]) -> str | None:
 
 
 _UPDATE_REPO = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}")
+
+
+def anthropic_key_problem(key: str) -> str | None:
+    """Die Form eines API-Schlüssels von Anthropic, schon am Rand gekürzt: ``None`` = in Ordnung, sonst der
+    deutsche Satz dazu (nie mit dem Schlüssel).
+
+    Dieselbe Prüfung gilt für ``STOWLY_ANTHROPIC_API_KEY`` und den Schlüssel aus der App (``aiconfig.py``):
+    druckbares ASCII ohne Leerraum (er kommt so unversehrt in die Kopfzeile ``Authorization``), Anfang
+    ``sk-ant-``, höchstens ``LIMITS["ai_key"]`` Zeichen und kein Admin-Schlüssel.
+    """
+    if (
+        not key
+        or len(key) > LIMITS["ai_key"]
+        or not _plain_ascii(key)
+        or not key.startswith(ANTHROPIC_KEY_PREFIX)
+    ):
+        return ANTHROPIC_KEY_SHAPE
+    if key.startswith(ANTHROPIC_ADMIN_PREFIX):
+        return ANTHROPIC_KEY_ADMIN
+    return None
+
+
+def _anthropic_api_key(env: Mapping[str, str]) -> str | None:
+    """``STOWLY_ANTHROPIC_API_KEY`` nach ``anthropic_key_problem``; die Meldung nennt nie den Wert."""
+    key = _text(env, "STOWLY_ANTHROPIC_API_KEY")
+    if key is None:
+        return None
+    problem = anthropic_key_problem(key)
+    if problem is not None:
+        raise ValueError(f"STOWLY_ANTHROPIC_API_KEY: {problem}")
+    return key
+
+
+def _anthropic_base_url(env: Mapping[str, str], dev: bool) -> str | None:
+    """``STOWLY_ANTHROPIC_BASE_URL``: nur im Entwicklungsmodus und nur ``http://127.0.0.1:<port>``, für die
+    nachgebildete Anthropic-API der e2e-Tests der App. Im Betrieb spricht Stowly nur mit api.anthropic.com."""
+    raw = _text(env, "STOWLY_ANTHROPIC_BASE_URL")
+    if raw is None:
+        return None
+    if not dev:
+        raise ValueError(
+            "STOWLY_ANTHROPIC_BASE_URL: nur im Entwicklungsmodus (--dev) erlaubt; im Betrieb spricht Stowly "
+            "immer mit https://api.anthropic.com."
+        )
+    match = _ANTHROPIC_DEV_URL.fullmatch(raw)
+    if match is None or not 1 <= int(match.group(1)) <= 65535:
+        raise ValueError(
+            "STOWLY_ANTHROPIC_BASE_URL: erwartet ist http://127.0.0.1:<port> (die nachgebildete API der "
+            "e2e-Tests)."
+        )
+    return f"http://127.0.0.1:{int(match.group(1))}"
 
 
 def _update_repo(env: Mapping[str, str]) -> str | None:
@@ -459,6 +524,12 @@ class Settings:
     # True: ``password`` ist der Rückfall des Entwicklungsmodus (DEV_PASSWORD). Er gilt wie STOWLY_PASSWORD,
     # wird aber nie als Hash gespeichert (docs/sync-protokoll.md, Abschnitt 5).
     password_fallback: bool = False
+    # KI-Vorschläge (docs/plan-0.6.md, 2): der API-Schlüssel von Anthropic aus STOWLY_ANTHROPIC_API_KEY; None =
+    # keiner aus der Umgebung, dann gilt der aus der App (aiconfig.py). Nie in einer Ausgabe (repr).
+    anthropic_api_key: str | None = field(default=None, repr=False)
+    # Nur mit --dev: http://127.0.0.1:<port> der nachgebildeten Anthropic-API (e2e-Tests der App); None =
+    # https://api.anthropic.com.
+    anthropic_base_url: str | None = None
 
     @property
     def database_path(self) -> Path:
@@ -586,6 +657,8 @@ class Settings:
             image_ref=_image_ref(env),
             image_tag=_image_tag(env),
             password_fallback=fallback,
+            anthropic_api_key=_anthropic_api_key(env),
+            anthropic_base_url=_anthropic_base_url(env, is_dev),
         )
 
     @property
@@ -595,6 +668,6 @@ class Settings:
 
     @property
     def secrets_dir(self) -> Path:
-        """Tokens aus der App (Home Assistant, Sensor), außerhalb der Datenbank und jeder Sicherung
-        (``secretstore.py``)."""
+        """Tokens und Schlüssel aus der App (Home Assistant, Sensor, Anthropic), außerhalb der Datenbank und
+        jeder Sicherung (``secretstore.py``)."""
         return self.data_dir / "secrets"

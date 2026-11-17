@@ -23,6 +23,8 @@ export const ROUTES = {
   shopping: "/einkaufsliste",
   /** Statistik: verbraucht und entsorgt (Stufe 2). */
   stats: "/statistik",
+  /** Was koche ich? Such-Links und Vorschläge von Claude aus dem Vorrat (seit 0.6.0); Vorwahl mit `cookPath`. */
+  cook: "/kochen",
   /** Einrichtung: Vollbild, außerhalb des Rahmens; dahinter das Kürzel eines Schritts (`setupPath`). */
   setup: "/einrichtung",
 } as const;
@@ -46,6 +48,14 @@ export const SETUP_SLUGS: Readonly<Record<SetupStepKey, string>> = {
 /** Adresse der Einrichtung: mit Schritt dessen Seite, ohne der erste offene Schritt. */
 export function setupPath(step?: SetupStepKey): string {
   return step === undefined ? ROUTES.setup : `${ROUTES.setup}/${SETUP_SLUGS[step]}`;
+}
+
+/** Der Parameter, mit dem eine Adresse von „Was koche ich?" Zutaten vorwählt: `/kochen?mit=<Produkt-ID>,…`. */
+export const COOK_WITH_PARAM = "mit";
+
+/** Adresse von „Was koche ich?"; mit Produkt-IDs sind genau diese Zutaten vorgewählt. */
+export function cookPath(productIds: readonly string[] = []): string {
+  return productIds.length === 0 ? ROUTES.cook : `${ROUTES.cook}?${COOK_WITH_PARAM}=${productIds.map(encodeURIComponent).join(",")}`;
 }
 
 /** Die Seite zu einem Kürzel der Adresse; null, wenn es keines ist. */

@@ -24,9 +24,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from stowly import (
     __version__,
+    aiconfig,
     auth,
     autobackup,
     bring,
+    claude,
+    cook,
     daily,
     db,
     hacheck,
@@ -47,7 +50,7 @@ from stowly.auth import LoginGuard
 from stowly.config import MAX_REQUEST_BYTES, Settings
 from stowly.contract.api import RESTORE_MAX_BYTES, ErrorCode
 from stowly.contract.schema import build_openapi
-from stowly.errors import error_response, install_error_handlers
+from stowly.errors import error_response, install_error_handlers, no_store
 from stowly.printing import PrintGateway, ServerPrinting
 from stowly.web import install_web
 
@@ -114,10 +117,38 @@ class BodyLimit:
         await response(scope, receive, send)
 
 
-def report_configuration(settings: Settings) -> None:
-    """Schreibt beim Start ins Log, was eingerichtet ist und was nur halb (nie einen Token, nie das Passwort).
+class NoStore:
+    """Setzt ``Cache-Control: no-store`` auf jede Antwort unter ``errors.NO_STORE_PATHS`` (KI-Vorschläge), auch
+    auf Fehler der Anmeldung, des Vertrags und der Größe (401, 405, 413, 422); ein anderer Wert weicht. Liegt
+    außen um ``BodyLimit``. Den 500 schickt Starlette außerhalb jeder Middleware; dort setzt ihn der Handler in
+    ``errors.py``. Andere Pfade bleiben, wie sie sind (``/api/images`` etwa mit ``immutable``)."""
 
-    Passwort, Push und Updates nach ihren wirksamen Werten: aus der Umgebung oder aus der App.
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not no_store(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+
+        async def sending(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = [
+                    (name, value)
+                    for name, value in message.get("headers", ())
+                    if name.lower() != b"cache-control"
+                ]
+                message = {**message, "headers": [*headers, (b"cache-control", b"no-store")]}
+            await send(message)
+
+        await self.app(scope, receive, sending)
+
+
+def report_configuration(settings: Settings) -> None:
+    """Schreibt beim Start ins Log, was eingerichtet ist und was nur halb (nie einen Token, nie einen Schlüssel,
+    nie das Passwort).
+
+    Passwort, Push, Updates und KI-Vorschläge nach ihren wirksamen Werten: aus der Umgebung oder aus der App.
     """
     con = db.connect(settings.database_path)
     try:
@@ -128,6 +159,8 @@ def report_configuration(settings: Settings) -> None:
         ha = haconfig.effective(settings, con)
         # Die Sicherung ebenso (Umgebung, App, Vorgabe; der Ordner nach serverconfig.backup_folder).
         backup = serverconfig.backup_setup(settings, con)
+        # KI-Vorschläge: Quelle des Schlüssels und Modell (der Schlüssel im eigenen Speicher).
+        ai = aiconfig.effective(settings, con)
     finally:
         con.close()
     if not has_password:
@@ -156,6 +189,19 @@ def report_configuration(settings: Settings) -> None:
         log.warning("Sensor für Home Assistant: %s", ha.sensor_problem)
     if contact is None:
         log.info("Push ist aus: Es gibt keinen Kontakt für die Push-Dienste (App oder STOWLY_PUSH_CONTACT).")
+    if ai.configured:
+        log.info(
+            "KI-Vorschläge mit %s, Schlüssel %s.",
+            ai.model.value,
+            "aus der Umgebung" if ai.source == "env" else "aus der App",
+        )
+    elif ai.problem is not None:
+        log.warning("KI-Vorschläge: %s", ai.problem)
+    if settings.anthropic_base_url is not None:
+        log.warning(
+            "KI-Vorschläge gehen an %s statt an Anthropic (STOWLY_ANTHROPIC_BASE_URL, nur zum Entwickeln).",
+            settings.anthropic_base_url,
+        )
     if repo is not None:
         log.info("Updates: Releases von %s auf GitHub.", repo)
     if settings.https_port is not None:
@@ -176,6 +222,8 @@ def build_app(
     ha_clock: off.Clock | None = None,
     update_transport: httpx2.AsyncBaseTransport | None = None,
     update_clock: off.Clock | None = None,
+    ai_transport: httpx2.AsyncBaseTransport | None = None,
+    ai_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Baut die Anwendung, ohne Dateien oder die Datenbank anzufassen.
 
@@ -184,11 +232,13 @@ def build_app(
     den Push-Diensten und deren Uhr, ``job_clock`` die Uhr des Zeitplans, ``ha_transport`` und
     ``ha_clock`` die Verbindung zu Home Assistant und die Uhr des Abgleichs mit Bring!,
     ``update_transport`` und ``update_clock`` die Verbindung zu GitHub und die Uhr der Updates (Takt
-    der Abfragen, Bremse des Knopfs, Alter der Dateien des Updaters).
+    der Abfragen, Bremse des Knopfs, Alter der Dateien des Updaters), ``ai_transport`` und ``ai_clock``
+    die Verbindung zu Anthropic und die Uhr der KI-Vorschläge (Bremsen, Tageszähler, Aufträge).
     """
 
     gateway = PrintGateway()
     update_timer = update_clock or off.Clock()
+    ai_timer = ai_clock or off.Clock()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -225,12 +275,23 @@ def build_app(
         # Zurückspielen: Abgelaufenes (hochgeladene Dateien, Kandidaten, die alte Datenbank nach 7 Tagen) räumt
         # diese Schleife weg, auch wenn niemand mehr fragt.
         sweeper = asyncio.create_task(_sweep_restore(app.state.restore), name="stowly-restore")
+        # KI-Vorschläge (docs/plan-0.6.md, 2): der Draht zu Anthropic (das SDK lädt erst der erste Aufruf) und
+        # die Aufträge mit ihrem Worker; beide gibt es nur, solange die App bedient wird.
+        wire = claude.Claude(base_url=settings.anthropic_base_url, transport=ai_transport)
+        kitchen = cook.CookService(settings, app.state.secrets, app.state.cook_guard, wire)
+        kitchen.start()
+        app.state.claude = wire
+        app.state.cook = kitchen
         try:
             async with _serving(app):
                 yield
         finally:
             sweeper.cancel()
             await asyncio.gather(sweeper, return_exceptions=True)
+            app.state.cook = None
+            app.state.claude = None
+            await kitchen.aclose()
+            await wire.aclose()
             # Nicht abbrechen: Ein Takt, der gerade die Datenbank liest, wird fertig; ein laufender
             # Lauf bekommt ein paar Sekunden (Scheduler.aclose), der Abgleich mit HA und die Abfrage
             # bei GitHub ebenso.
@@ -327,6 +388,14 @@ def build_app(
     app.state.secrets = secretstore.SecretStore(settings.secrets_dir)
     app.state.ha_transport = ha_transport
     app.state.ha_check = hacheck.CheckGuard(ha_clock)
+    # KI-Vorschläge: die Uhr (Tageszähler, Bremsen, Alter der Aufträge), die Prüfung des Schlüssels (eine
+    # zugleich, 3 Sekunden Abstand) und die Bremsen der Vorschläge; der Draht zu Anthropic und die Aufträge
+    # entstehen erst im lifespan.
+    app.state.ai_clock = ai_timer
+    app.state.ai_check = hacheck.CheckGuard(ai_timer)
+    app.state.cook_guard = cook.CookGuard(ai_timer)
+    app.state.claude = None
+    app.state.cook = None
     # Zurückspielen (stowly/restore.py): Hochgeladenes und Geprüftes im Arbeitsspeicher, dazu der Neustart,
     # den die Listener bereitstellen (__main__.Listeners.request_restart); ohne sie gibt es keinen.
     app.state.restore = restore.RestoreManager(settings)
@@ -334,6 +403,8 @@ def build_app(
 
     install_error_handlers(app)
     app.add_middleware(BodyLimit)
+    # Nach BodyLimit hinzugefügt, liegt also außen herum: Auch dessen 413 trägt den Kopf.
+    app.add_middleware(NoStore)
     app.include_router(api_router, prefix="/api")
     # Eingebunden, nicht als FastAPI-Endpunkte: docs/openapi.json bleibt, wie es ist.
     app.mount("/print", gateway)
@@ -440,6 +511,8 @@ def create_app(
     ha_clock: off.Clock | None = None,
     update_transport: httpx2.AsyncBaseTransport | None = None,
     update_clock: off.Clock | None = None,
+    ai_transport: httpx2.AsyncBaseTransport | None = None,
+    ai_clock: off.Clock | None = None,
 ) -> FastAPI:
     """Anwendung für den Betrieb: legt die Datenbank an und migriert sie, übernimmt ``STOWLY_PASSWORD``
     als Hash, legt den Ordner für den Austausch mit dem Updater an (``/data/update``,
@@ -459,9 +532,12 @@ def create_app(
         ha_clock=ha_clock,
         update_transport=update_transport,
         update_clock=update_clock,
+        ai_transport=ai_transport,
+        ai_clock=ai_clock,
     )
     app.state.tls.prepare(wizard.stored_certificate_addresses(settings))
-    # /data/secrets (0700); scheitert das, steht es im Zustand von HA, und der Server startet trotzdem.
+    # /data/secrets (0700); scheitert das, steht es im Zustand von HA und der KI-Vorschläge, und der Server
+    # startet trotzdem.
     app.state.secrets.prepare()
     return app
 

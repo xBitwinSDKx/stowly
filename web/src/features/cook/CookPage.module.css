@@ -1,0 +1,290 @@
+/* Was koche ich? Zutaten als Chips, Such-Links, Vorschläge von Claude als Karten. */
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.small {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* ---------------------------------------------------------------- Zutaten */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: var(--touch-target);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+}
+
+.chip.soon {
+  border-color: var(--color-warn);
+}
+
+.chip.expired {
+  border-color: var(--color-danger);
+}
+
+/* Der Begriff selbst: Ein Tipp öffnet das Feld zum Ändern. */
+.chipTerm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  min-width: 0;
+  min-height: var(--touch-target);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--weight-medium);
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.chipTerm:hover {
+  background: var(--color-hover);
+}
+
+.chipWhen {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-normal);
+}
+
+.soon .chipWhen {
+  color: var(--color-warn);
+}
+
+.expired .chipWhen {
+  color: var(--color-danger);
+}
+
+/* Das Feld zum Ändern steht an der Stelle des Chips. */
+.chipEdit {
+  flex: 1 1 14rem;
+  max-width: 22rem;
+}
+
+.ingredientsFoot {
+  margin-top: var(--space-3);
+}
+
+/* Die Auswahl im Dialog „Zutat hinzufügen" */
+.picker {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.options {
+  display: grid;
+  max-height: min(24rem, 55vh);
+  overflow-y: auto;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.options > li + li {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.option {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.option:hover {
+  background: var(--color-hover);
+}
+
+.optionTerm {
+  font-weight: var(--weight-medium);
+}
+
+/* ---------------------------------------------------------------- Such-Links */
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+/* Ein Verweis nach außen, so hoch antippbar wie eine Schaltfläche */
+.external {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+  padding: 0 var(--space-4);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.external:hover {
+  background: var(--color-hover);
+}
+
+.linkFoot {
+  margin-top: var(--space-2);
+}
+
+/* ---------------------------------------------------------------- Vorschläge von Claude */
+
+.ai {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.ask {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 44rem;
+}
+
+.askActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+.counter {
+  font-variant-numeric: tabular-nums;
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.seconds {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- Karten */
+
+.cards {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.card {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.cardTitle {
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+
+.summary {
+  overflow-wrap: anywhere;
+}
+
+.part {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.partTitle {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.uses {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.use {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.missing {
+  display: grid;
+}
+
+.steps {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: 1.4em;
+  list-style: decimal;
+  overflow-wrap: anywhere;
+}
+
+.cardLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+/* Verweis nach außen im Fließtext der Karte */
+.textLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+  font-weight: var(--weight-medium);
+}
+
+.cardFoot {
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+@media (min-width: 64rem) {
+  .cards {
+    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  }
+}

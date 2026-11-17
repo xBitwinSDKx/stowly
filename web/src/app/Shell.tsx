@@ -12,6 +12,7 @@ import { Badge, Button, ButtonLink, cx, IconButton, TextField } from "@/ui/base"
 import {
   AlertCircleIcon,
   BellIcon,
+  ChefHatIcon,
   ChevronDownIcon,
   CloseIcon,
   CloudCheckIcon,
@@ -319,6 +320,7 @@ function ShellFrame() {
                   items={[
                     { key: "settings", label: "Einstellungen", icon: <SettingsIcon />, to: ROUTES.settings },
                     { key: "sync", label: "Sync-Status", icon: <RefreshIcon />, to: ROUTES.sync },
+                    { key: "cook", label: "Was koche ich?", icon: <ChefHatIcon />, to: ROUTES.cook },
                     { key: "history", label: "Lösch-Historie", icon: <HistoryIcon />, to: ROUTES.history },
                     { key: "stats", label: "Statistik", icon: <StatsIcon />, to: ROUTES.stats },
                     { key: "printers", label: "Drucker", icon: <PrinterIcon />, to: ROUTES.printers },

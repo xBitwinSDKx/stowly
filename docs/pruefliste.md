@@ -375,3 +375,55 @@ Automatisch geprüft:
 **Stand 17.11.2026** (eigenes NAS):
 - **78:** Das Update per Knopf von 0.5.0 auf 0.5.1 lief in gut einer Minute ohne Zwischenfall. Der Updater 0.5.0 hielt Stowly an, sicherte, startete 0.5.1, fand es „healthy“ und räumte das alte Image 0.4.0 auf: „Aktualisiert von 0.5.0 auf 0.5.1.“ Ob Einrichtung → Updates währenddessen den neuen Hinweis zeigte (M14), ist nicht eigens angesehen.
 - **79:** Den Updater per SSH mit demselben Befehl erneuert, den die App zeigt: Image 0.5.1, `--volumes-from` des neuen Containers. Vorher prüfte ein Skript, dass `update/state` „done“ für 0.5.1 meldet. Das Lebenszeichen kommt seitdem mit Version 0.5.1 (M15, in der App nicht eigens angesehen).
+
+## Y. Was koche ich? (0.6.0)
+
+Automatisch geprüft, ohne einen echten Aufruf bei Anthropic. Die Tests bilden die API nach; der Server-Teil steckt in `server/tests`, die App in vitest und e2e gegen den echten Server.
+- **Schlüssel:**
+  - Er steht nie in einer Antwort, im Log (auch DEBUG), in den Dateien der Datenbank, in einer Sicherung oder einem Ereignis.
+  - Er geht nur in der Kopfzeile an `api.anthropic.com`, auch wenn Variablen `ANTHROPIC_*` gesetzt sind.
+  - Die Umgebung geht vor der App; eine falsche Form gibt 422 ohne den Wert.
+  - Fehlt die Datei nach dem Zurückspielen, sagt es `problem`.
+- **Anfrage:** `effort` low, festes Schema, kein Parameter `thinking`, kein Sampling, keine Tools; Kopf und `fallbacks` nur bei Opus und Sonnet.
+- **Vorratsliste:**
+  - Reihenfolge und FIFO; Platzhalter fallen weg.
+  - Höchstens 300 Produkte, die gewählten Zutaten auch jenseits der Grenze.
+  - Keine Zone, kein Barcode, keine Kennung im Prompt.
+- **Antwort:** unbekannte Schlüssel fallen weg, Namen aus Stowly, alles gesäubert und gekürzt; Ablehnung mit und ohne Kategorie; Antwort über das Ersatzmodell.
+- **Fehler:** jede Zeile der Tabelle in `integrationen.md`, 13.6, samt Gutschrift.
+- **Bremsen:**
+  - eine Anfrage zugleich, 30 Sekunden je Gerät, 20 am Tag;
+  - der Tageswechsel in `STOWLY_TIMEZONE`, auch ein Rücksprung der Uhr;
+  - der Zähler übersteht einen Neustart.
+- **Wiederholung:** ein zweiter Versuch nur, wenn der erste sicher nichts gekostet hat; nach dem Senden abgebrochen zählt, nicht gesendet zählt nicht; `x-should-retry: false` gilt.
+- **Aufträge:** 202, dann `running` und `done`; ein fremdes Gerät bekommt 404; nach 15 Minuten weg.
+- **App:**
+  - Suchbegriffe und Links (nur Cookidoo und Chefkoch);
+  - Vorwahl und `?mit=`;
+  - Karten, „Fehlendes auf die Einkaufsliste“ ohne Doppelte;
+  - Einstellungen mit gesperrtem Schlüssel aus der Umgebung;
+  - alle Fehlertexte.
+
+**Unabhängige Sicherheitsprüfung, 17.11.2026:** Server und App, mit Proben gegen eine nachgebildete API; kein Fund hoch oder mittel.
+- **Behoben:**
+  - die Zählung bei der Wiederholung (jetzt ohne die des SDK) und ein langes `retry-after`;
+  - `no-store` auf allen Fehlerantworten;
+  - die Prüfung bei kaputter oder fremder Antwort;
+  - kürzere Felder im Prompt, die die höchsten Kosten senken;
+  - Namen nur aus unsichtbaren Zeichen;
+  - der Rücksprung der Uhr;
+  - das Laden des SDK außerhalb der Ereignisschleife;
+  - die Zwischendatei der `.env` im Updater für Docker Compose.
+- **Bewusst so gelassen:**
+  - Die gekürzte Meldung von Anthropic bei 400 steht im Log.
+  - Ein als Feldname geschickter Schlüssel kommt im 422 an denselben Absender zurück.
+  - Proxy- und Zertifikatsvariablen wirken (`betrieb.md`, 21.5).
+  - Das Passwortfeld könnte der Passwortmanager des Browsers zum Speichern anbieten, wie beim Token für Home Assistant.
+
+Am Gerät, mit dem eigenen Schlüssel (`betrieb.md`, Tabelle P); den Schlüssel trägt der Anwender selbst ein:
+- [ ] **80.** Vorabversion `0.6.0-rc.1` am eigenen Stowly oder in einem Testcontainer: Seite, Vorwahl, Begriffe ändern und beide Such-Links, am PC und am iPhone, auch aus der installierten App und mit Umlauten (P1 bis P4).
+- [ ] **81.** Schlüssel eintragen und „Prüfen“ (P5).
+- [ ] **82.** Ein Durchgang je Modell mit Wunsch: Antwortzeit, Qualität, Kosten in der Console, Ersatzmodell bei einer Ablehnung, falls eine vorkommt (P6, P7). Danach `COOK_EFFORT` gegebenenfalls nachstellen. Nimmt Anthropic den Kopf für das Ersatzmodell nicht an, ihn abschalten.
+- [ ] **83.** „Fehlendes auf die Einkaufsliste“ bis zu Bring! (P8).
+- [ ] **84.** Bremse je Gerät, Rückkehr auf die Seite, Zähler nach einem Neustart, offline (P9 bis P12).
+- [ ] **85.** Log und Arbeitsspeicher am NAS (P13, P14).

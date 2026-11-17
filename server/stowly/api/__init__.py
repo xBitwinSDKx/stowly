@@ -8,8 +8,10 @@ Pfade, Methoden, Parameter und Modelle sind durch ``docs/openapi.json`` festgele
 from fastapi import APIRouter
 
 from stowly.api import (
+    aiconfig,
     auth,
     backup,
+    cook,
     devices,
     events,
     ha,
@@ -54,5 +56,8 @@ router.include_router(restore.router)
 # 0.5.0: Etiketten gestalten, Produktbild setzen
 router.include_router(labels.router)
 router.include_router(products.router)
+# 0.6.0: Was koche ich? (KI-Vorschläge einrichten und abfragen)
+router.include_router(aiconfig.router)
+router.include_router(cook.router)
 
 __all__ = ["router"]

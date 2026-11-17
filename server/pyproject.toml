@@ -19,6 +19,9 @@ dependencies = [
     "pyrage>=1.4,<2",
     # Zeitzonendaten für zoneinfo: Windows und das schlanke Image bringen keine eigenen mit.
     "tzdata>=2026.6",
+    # KI-Vorschläge für „Was koche ich?“ (seit 0.6.0): das offizielle SDK der Anthropic-API, auf
+    # httpx2. Nur stowly/claude.py importiert es, und erst beim ersten Gebrauch.
+    "anthropic>=2.4,<3",
     "stowly-print",
 ]
 

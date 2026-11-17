@@ -11,6 +11,8 @@ from typing import Any
 
 from stowly.contract import ID_POOL_TARGET, MAX_CHANGES_PER_SYNC, MAX_COMMANDS_PER_SYNC, PROTOCOL_VERSION, ids
 from stowly.contract.api import (
+    AI_DEVICE_GAP_S,
+    COOK_DEADLINE_S,
     HA_MIRROR_DELAY_S,
     HA_STOCK_ENTRY_MAX,
     HA_STOCK_NAME_MAX,
@@ -257,6 +259,16 @@ def _constants() -> list[str]:
             "PUSH_PATHS",
             PUSH_PATHS,
             "Wohin eine Push-Nachricht führt; der Server setzt den Ursprung der App davor.",
+        ),
+        (
+            "COOK_DEADLINE_S",
+            COOK_DEADLINE_S,
+            "KI-Vorschläge: Frist eines Auftrags am Server; die App wartet etwas länger.",
+        ),
+        (
+            "AI_DEVICE_GAP_S",
+            AI_DEVICE_GAP_S,
+            "KI-Vorschläge: Ein Gerät startet höchstens alle so viele Sekunden einen Auftrag.",
         ),
     ]
     lines: list[str] = []

@@ -26,6 +26,8 @@ import { FakeServer, type FakeRequestData, type FakeResponseData } from "./fake-
 export { FAKE_PRINT_TOKEN, FakePrintService, type FakePrintOptions } from "./fake-print";
 export {
   checkPushSubscription,
+  FAKE_AI_DAILY_MAX,
+  FAKE_AI_KEY_LOST,
   FAKE_HA_CHECK,
   FAKE_PASSWORD,
   FAKE_SCHEMA_VERSION,

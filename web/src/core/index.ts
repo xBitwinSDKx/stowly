@@ -22,6 +22,7 @@
  *   admin.ts           Sicherung jetzt, Dateien und Home Assistant (nachgeladen, Stufe B)
  *   restore.ts         eine Sicherung zurückspielen (nachgeladen, Stufe B)
  *   labels.ts          Etiketten gestalten, Produktdaten neu abfragen, Produktbild (nachgeladen, 0.5.0)
+ *   ai.ts              KI-Vorschläge für „Was koche ich?": Schlüssel, Modell, Aufträge (nachgeladen, 0.6.0)
  *   images.ts          Produktbilder vorab laden
  *   background.ts      Abgleich im Service Worker
  *   push/              Push auf diesem Gerät (device.ts) und Nachrichten im Service Worker (worker.ts)
@@ -1042,6 +1043,8 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       "deleteSensorToken",
     ]),
     labels: later(() => labels().then((module) => module.labels), ["design", "preview", "save", "reset", "templates"]),
+    // KI-Vorschläge (seit 0.6.0): nachgeladen, siehe `later`. Die Pausen beim Warten laufen über die Zeitgeber des Kerns.
+    ai: later(() => import("./ai").then((module) => module.createAi(runtime, fetchFn, { timers: options.timers })), ["load", "update", "check", "start", "job", "wait", "lastJob"]),
 
     app: {
       state: app,

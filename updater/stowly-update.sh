@@ -255,14 +255,22 @@ until docker pull "$IMAGE:$NEW" >&3 2>&1; do
   sleep "$PULL_PAUSE_S"
 done
 
-# In die vorhandene Datei schreiben, nicht ersetzen: So bleiben Besitzer und Rechte der .env.
+# In die vorhandene Datei schreiben, nicht ersetzen: So bleiben Besitzer und Rechte der .env. Die
+# Zwischendatei enthält Passwort, Tokens und Schlüssel aus der .env: neu angelegt (noclobber), nur für
+# root lesbar (umask 077). Lässt sie sich nicht schreiben, bleibt die .env unberührt.
 set_env_version() {
-  tmp="$ENV_FILE.stowly-update.$$"
-  if grep -q '^[[:space:]]*STOWLY_VERSION[[:space:]]*=' "$ENV_FILE"; then
-    sed "s/^[[:space:]]*STOWLY_VERSION[[:space:]]*=.*/STOWLY_VERSION=$1/" "$ENV_FILE" > "$tmp"
-  else
-    cat "$ENV_FILE" > "$tmp"
-    printf 'STOWLY_VERSION=%s\n' "$1" >> "$tmp"
+  tmp=$(mktemp -u "$ENV_FILE.stowly-update.XXXXXXXXXX") || return 1
+  if ! (
+    umask 077
+    set -C
+    if grep -q '^[[:space:]]*STOWLY_VERSION[[:space:]]*=' "$ENV_FILE"; then
+      sed "s/^[[:space:]]*STOWLY_VERSION[[:space:]]*=.*/STOWLY_VERSION=$1/" "$ENV_FILE" > "$tmp"
+    else
+      cat "$ENV_FILE" > "$tmp" && printf 'STOWLY_VERSION=%s\n' "$1" >> "$tmp"
+    fi
+  ); then
+    rm -f "$tmp"
+    return 1
   fi
   cat "$tmp" > "$ENV_FILE"
   rm -f "$tmp"

@@ -4,13 +4,20 @@ Gegenstücke in der App, wo es sie gibt: ``display_name`` rechnet wie ``productT
 (web/src/contract/labels.ts), ``quantity_label`` wie ``shoppingQuantityLabel``
 (web/src/contract/shopping.ts). Gezählt wird in Zeichen (Unicode-Codepunkte), wie Home Assistant
 die Länge eines Zustands zählt.
+
+``clean`` macht fremden Text anzeigbar: Namen aus Home Assistant (``hacheck.py``) und alles, was von Claude
+kommt (``cook.py``).
 """
 
+import unicodedata
 from collections.abc import Sequence
 
 UNKNOWN_PRODUCT = "Unbekanntes Produkt"
 ELLIPSIS = "…"
 TIMES = "×"
+# Zeichen, die in keinem angezeigten fremden Text stehen: Steuer- und Formatzeichen (auch Richtungswechsel),
+# Zeilen- und Absatztrenner, halbe Ersatzzeichen, private Zeichen.
+_DROPPED = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co"})
 
 
 def display_name(name: str | None, first_barcode: str | None) -> str:
@@ -36,6 +43,14 @@ def shorten(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 1, 0)].rstrip() + ELLIPSIS
+
+
+def clean(text: str, limit: int | None = None) -> str:
+    """Ein fremder Text zum Anzeigen: ohne Steuer- und Formatzeichen, Leerraum (auch Zeilenumbrüche) zu einem
+    Leerzeichen zusammengefasst, am Rand ohne; mit ``limit`` höchstens so viele Zeichen (``shorten``)."""
+    kept = "".join(" " if unicodedata.category(char) in _DROPPED else char for char in text)
+    joined = " ".join(kept.split())
+    return joined if limit is None else shorten(joined, limit)
 
 
 def day_month(day: str) -> str:

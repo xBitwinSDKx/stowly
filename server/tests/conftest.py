@@ -50,14 +50,16 @@ def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sicherheitsnetz: Kein Test kommt je wirklich ins Netz, auch nicht aus Versehen.
 
     Der Test-Client und ``httpx2.MockTransport`` sind davon nicht berührt; nur der echte
-    Transport von httpx2 verweigert den Dienst.
+    Transport von httpx2 verweigert den Dienst, und zwar mit ``pytest.fail``: Das ist keine
+    ``Exception``, also macht kein ``except Exception`` daraus still einen Verbindungsfehler (das SDK
+    von Anthropic täte das mit einem ``AssertionError``; test_claude.py prüft es).
     """
 
     def refuse(_self: object, request: httpx2.Request) -> httpx2.Response:
-        raise AssertionError(f"Ein Test wollte wirklich ins Netz: {request.method} {request.url}")
+        pytest.fail(f"Ein Test wollte wirklich ins Netz: {request.method} {request.url}")
 
     async def refuse_async(_self: object, request: httpx2.Request) -> httpx2.Response:
-        raise AssertionError(f"Ein Test wollte wirklich ins Netz: {request.method} {request.url}")
+        pytest.fail(f"Ein Test wollte wirklich ins Netz: {request.method} {request.url}")
 
     monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", refuse)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", refuse_async)

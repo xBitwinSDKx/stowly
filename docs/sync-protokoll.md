@@ -640,6 +640,11 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 | `POST /api/server-config/ha/sensor-token` | Token | 201 `HaSensorToken { token }`; 409 aus der Umgebung (11.10) |
 | `GET /api/server-config/ha/sensor-token` | Token | 200 `HaSensorToken`; 404 ohne; 409 aus der Umgebung (11.10) |
 | `DELETE /api/server-config/ha/sensor-token` | Token | 204, auch ohne; 409 aus der Umgebung (11.10) |
+| `GET /api/server-config/ai` | Token | 200 `AiConfig`, `Cache-Control: no-store` (11.13) |
+| `PATCH /api/server-config/ai` | Token | `AiConfigChanges { key, model }`; 200 `AiConfig`; 409 `conflict` aus der Umgebung; 422; 500, wenn sich der Schlüssel nicht speichern lässt (11.13) |
+| `POST /api/server-config/ai/check` | Token | `AiCheckInput { key, model }`; 200 `AiCheck`, `Cache-Control: no-store`; 409, 422, 429 `rate_limited`, 503 `not_configured` (11.13) |
+| `POST /api/cook/ideas` | Token | `CookIdeasInput { wish, focus }`; 202 `CookJob`, `Cache-Control: no-store`; 409 `conflict` bei leerem Bestand, 422, 429 `rate_limited`, 503 `not_configured` (11.13) |
+| `GET /api/cook/ideas/{job_id}` | Token | 200 `CookJob`, `Cache-Control: no-store`; 404 (11.13) |
 | `PUT /api/restore/upload` | Token, beim ersten Start offen | Rumpf: die Datei (`application/octet-stream`), höchstens 512 MiB; 201 `RestoreUpload { upload_id, kind, size }`; 400, 401, 409, 413, 422, 429 (11.9) |
 | `POST /api/restore/check` | wie oben | `RestoreCheckInput { upload_id, identity }`; 200 `RestorePreview`; 400, 401, 404, 409, 413, 422 mit `details.reason`, 429 (11.9) |
 | `POST /api/restore/apply` | wie oben | `RestoreApplyInput { restore_id, password, device_name }`; 202 `RestoreApplied { login }`; 400, 401 (auch `invalid_password`), 404, 409, 422, 429, 503 (11.9) |
@@ -658,7 +663,7 @@ Alle Pfade, Parameter und Schemata stehen maschinenlesbar in [`openapi.json`](op
 - **Bilder sind ohne Anmeldung abrufbar**, weil `<img>` keinen `Authorization`-Kopf senden kann. Die Kennung ist der Hash des Inhalts und nicht zu erraten; ausgeliefert werden nur Vorschaubilder aus Open Food Facts, als JPEG, PNG oder WebP und nur, wenn die Bytes zum Typ passen, so, dass der Browser sie nur als Bild nimmt (`sandbox`, `nosniff`). Selbst ein Bild aus einer gefälschten Sicherung liefe so nie als Seite unter dem Ursprung von Stowly.
 - **Sicherung:** eine in sich stimmige Kopie der ganzen Datenbank (`sqlite3.Connection.backup`), seit 0.4.0 nur noch verschlüsselt im Ordner der Sicherungen ([`integrationen.md`](integrationen.md), 3); die unverschlüsselte (`GET /api/backup`) gibt es nicht mehr. Die Kopie bekommt eine **neue `dataset_id`**. Wird sie eingespielt (11.9), antwortet der Server allen Geräten mit `reset: true`; sie holen den Bestand vollständig neu und senden ihre Outbox erneut. Befehle, die schon in der Sicherung stecken, erkennt der Server als bekannt.
 - Unbekannte Pfade unter `/api` antworten mit 404 im Fehlerformat. Alles außerhalb von `/api` und `/print` liefert die Web-App (Datei oder `index.html`).
-- **Seit Stufe 2** kommen Statistik, Sensor, Push und der Zustand der Integrationen dazu (11.1 bis 11.4), seit 0.4.0 Sicherung jetzt, Zurückspielen und Home Assistant aus der App (11.9, 11.10). Die Pfade, Methoden, `operation_id`, Modelle und die Beschreibungen in `server/stowly/api/` sind Vertrag (sie stehen in `openapi.json`); umsetzen heißt, den Rumpf der Funktion zu füllen.
+- **Seit Stufe 2** kommen Statistik, Sensor, Push und der Zustand der Integrationen dazu (11.1 bis 11.4), seit 0.4.0 Sicherung jetzt, Zurückspielen und Home Assistant aus der App (11.9, 11.10), seit 0.6.0 die Vorschläge von Claude (11.13). Die Pfade, Methoden, `operation_id`, Modelle und die Beschreibungen in `server/stowly/api/` sind Vertrag (sie stehen in `openapi.json`); umsetzen heißt, den Rumpf der Funktion zu füllen.
 
 ### 11.1 Statistik
 
@@ -895,6 +900,28 @@ Beim Start erzeugt der Server die Vorlagen aus der Gestaltung, sonst nimmt er di
 
 `PUT /api/products/{product_id}/image` mit `ProductImageInput { image_id }` setzt das Bild eines Produkts auf ein Bild, das Stowly gespeichert hat (`image_id` aus `LookupResult`), oder entfernt es (`null`). 404 ohne Produkt (auch ein zusammengeführtes), 422 für ein unbekanntes Bild. Das Produkt bekommt einen neuen `rev`, also sehen alle Geräte das Bild beim nächsten Abgleich; die Antwort ist das Produkt danach. Der Aufruf liegt außerhalb des Sync: Protokoll 2 bleibt, und `product.update` ändert sich nicht. Offline geht er nicht; die App sagt dann, dass nur das Bild fehlt.
 
+### 11.13 Was koche ich? (seit 0.6.0)
+
+Vorschläge von Claude über die Anthropic-API, mit dem API-Schlüssel des Haushalts. Alle Aufrufe brauchen ein Geräte-Token und antworten mit `Cache-Control: no-store`, auch bei Fehlern (401, 404, 405, 413, 422, 429, 500, 503). Was an Anthropic geht, Aufruf, Fehler, Bremsen und Kosten: [`integrationen.md`](integrationen.md), Abschnitt 13. Die Such-Links zu Cookidoo und Chefkoch baut die App allein (13.1); dafür gibt es keinen Aufruf.
+
+| Aufruf | Antwort |
+|---|---|
+| `GET /api/server-config/ai` | `AiConfig`: `source` des Schlüssels (`env`: aus `STOWLY_ANTHROPIC_API_KEY`, in der App gesperrt; `app`; `default`: keiner), `key_set`, `key_set_at`, `model` mit `model_source`, `configured`, `problem`, `used_today` und `daily_limit`. Nie der Schlüssel, auch kein Teil davon. |
+| `PATCH /api/server-config/ai` mit `AiConfigChanges { key, model }` | Nur vorhandene Felder zählen; `key: null` entfernt den Schlüssel. Antwort `AiConfig`. 409 `conflict`, wenn `key` angegeben ist, der Schlüssel aber aus der Umgebung kommt; 422 an `["body", "key"]` bei falscher Form, nie mit dem Wert; 500, wenn er sich nicht speichern lässt, dann ändert sich nichts. `server.config_changed` nennt `ai_key_set_at` oder `ai_model` (Abschnitt 12). |
+| `POST /api/server-config/ai/check` mit `AiCheckInput { key, model }` | Prüft bei Anthropic und speichert nichts; ohne Felder Schlüssel und Modell, die wirken. Antwort `AiCheck { state, message, model }`: Was Anthropic sagt, steht in `state`, nicht im HTTP-Status. 409, wenn `key` angegeben ist, der Schlüssel aber aus der Umgebung kommt; 422 bei falscher Form; 429 `rate_limited`, wenn schon eine Prüfung läuft oder die letzte weniger als 3 Sekunden her ist; 503 `not_configured` ohne Schlüssel. |
+| `POST /api/cook/ideas` mit `CookIdeasInput { wish, focus }` | 202 `CookJob` mit `state: running`. Geprüft in dieser Reihenfolge: 422 bei falscher Eingabe (`wish` höchstens 200 Zeichen, `focus` höchstens 5 Kennungen); 503 `not_configured` ohne wirksamen Schlüssel, mit `details.reason` `missing` oder `lost` (nach dem Zurückspielen); 409 `conflict`, wenn kein Produkt mit Namen im Bestand ist; 429 `rate_limited` mit `details.reason` `busy`, `too_soon` oder `daily_limit` und `retry_after_s`. Erst danach zählt die Anfrage für heute. |
+| `GET /api/cook/ideas/{job_id}` | 200 `CookJob`: `running`, `done` mit `result` oder `failed` mit `problem`, dazu `used_today` und `daily_limit`. 404, wenn es den Auftrag nicht (mehr) gibt oder er einem anderen Gerät gehört. |
+
+- **`focus`:** die gewählten Zutaten als Kennungen von Produkten. Nur Produkte im Bestand zählen; die übrigen übergeht der Server.
+- **`CookIdeas`:**
+  - `ideas`: 1 bis 3 `CookIdea { title, summary, minutes, uses, missing, steps, search }`.
+  - `model`: das Modell, das geantwortet hat, bei einem Ersatz dieses (`fallback: true`).
+  - `stock_count`: so viele Produkte gingen an Claude; `truncated`: Es waren mehr als 300.
+- **`CookUse { product_id, name }`:** ein Produkt aus dem Vorrat, mit dem Namen aus Stowly.
+- **`CookProblem { reason, message, retry_after_s, category }`:** Fehler von Anthropic sind kein HTTP-Fehler, sondern stehen hier. `reason` ist eine von `refused`, `key_rejected`, `forbidden`, `billing`, `model_unavailable`, `busy`, `unavailable`, `unreachable`, `timeout`, `incomplete` und `error` ([`integrationen.md`](integrationen.md), 13.6); `category` nur bei `refused`.
+- **Aufträge** leben nur im Speicher des Servers: 15 Minuten lang (`COOK_JOB_TTL_S`) und nur bis zum Neustart; danach 404.
+- **Außerhalb des Sync:** Protokoll 2 bleibt. „Fehlendes auf die Einkaufsliste“ schreibt gewöhnliche Befehle `shopping_item.create` mit `text` (6.6).
+
 ## 12. Ereignisprotokoll
 
 Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `events`. Das Protokoll wird nie gekürzt und nicht an die Geräte synchronisiert; es ist über `GET /api/events` lesbar. Die Statistik (11.1) rechnet nicht daraus, sondern aus dem heutigen Stand der Packungen: So zählt ein Zusammenführen oder ein geänderter Grund richtig.
@@ -943,7 +970,7 @@ Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `
 |---|---|---|
 | `server.password_set` | `server` (`entity_id`: `password`) | `source`: `app` (erstes Passwort, auch ein neues beim Zurückspielen beim ersten Start) oder `env` (aus `STOWLY_PASSWORD` übernommen, ohne Gerät) |
 | `server.password_changed` | `server` (`entity_id`: `password`) | – |
-| `server.config_changed` | `server` (`entity_id`: `config`) | `keys`: die geänderten Schlüssel, nie ihre Werte (aus `PATCH /api/server-config`: `push_contact`, `update_enabled`, `backup_enabled`, `backup_time`, `backup_recipients`; aus `PATCH /api/server-config/ha`: `ha_url`, `ha_todo_entity`, `ha_token_set_at`; aus den Aufrufen zum Sensor-Token: `ha_sensor_set_at`; aus `PATCH /api/setup`: `setup_steps`, `setup_finished_at`, `tls_addresses`, `https_port`) |
+| `server.config_changed` | `server` (`entity_id`: `config`) | `keys`: die geänderten Schlüssel, nie ihre Werte (aus `PATCH /api/server-config`: `push_contact`, `update_enabled`, `backup_enabled`, `backup_time`, `backup_recipients`; aus `PATCH /api/server-config/ha`: `ha_url`, `ha_todo_entity`, `ha_token_set_at`; aus den Aufrufen zum Sensor-Token: `ha_sensor_set_at`; aus `PATCH /api/server-config/ai`: `ai_key_set_at`, `ai_model`, nie der Tageszähler `ai_usage`; aus `PATCH /api/setup`: `setup_steps`, `setup_finished_at`, `tls_addresses`, `https_port`) |
 | `server.restored` | `server` (`entity_id`: `restore`) | `kind`: `restore` oder `undo`; `source`: `age`, `gzip`, `sqlite` oder `previous` (beim Rückgängig); `first_start`; `schema_version` der Sicherung (`null` beim Rückgängig). Verbucht beim Tausch in der neuen Datenbank, mit dem Gerät, das angewendet hat (11.9) |
 | `pi_pairing.created` | `pi_pairing` | `printer_id` (gewählt oder `null`) |
 | `pi_pairing.cancelled` | `pi_pairing` | `reason`: `user` oder `replaced` (ein neuerer Code) |
@@ -968,17 +995,17 @@ Jede Fehlerantwort unter `/api` hat denselben Rumpf (`ErrorBody`):
 | 404 | `not_found` | Pfad oder Datensatz gibt es nicht | `not_found` |
 | 400, 405, 422 | `invalid_request` | Anfrage verletzt den Vertrag; bei 400 und 422 nennt `details.errors` die Stellen (`loc`, `msg`, `type`) | `invalid` |
 | 408 | `invalid_request` | Das Hochladen einer Sicherung stockt 60 Sekunden oder dauert länger als 20 Minuten (11.9) | `invalid` |
-| 409 | `conflict` | Zustand passt nicht zur Anfrage (etwa: Update schon angefordert) | `conflict` |
+| 409 | `conflict` | Zustand passt nicht zur Anfrage (etwa: Update schon angefordert, kein Produkt im Bestand für Vorschläge von Claude) | `conflict` |
 | 409 | `protocol_mismatch` | verschiedene Protokollversionen; `details: { server, client }` | `protocol_mismatch` |
 | 413 | `payload_too_large` | zu viele Befehle, zu großer Rumpf, auch ohne `Content-Length`; eine Sicherung über 512 MiB bzw. entpackt über 2 GiB (11.9) | `internal` |
-| 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung (auch beim Passwort zum Zurückspielen oder zum Hinzufügen eines Schlüssels), zu viele Testnachrichten (11.3), zu häufiges Suchen nach Updates (11.5), „Jetzt sichern" öfter als einmal je Minute, Zurückspielen (11.9), Prüfung der Verbindung zu HA (11.10); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
+| 429 | `rate_limited` | zu viele Fehlversuche bei der Anmeldung (auch beim Passwort zum Zurückspielen oder zum Hinzufügen eines Schlüssels), zu viele Testnachrichten (11.3), zu häufiges Suchen nach Updates (11.5), „Jetzt sichern" öfter als einmal je Minute, Zurückspielen (11.9), Prüfung der Verbindung zu HA (11.10), Vorschläge von Claude (eine Anfrage zugleich, 30 Sekunden je Gerät, 20 am Tag; `details.reason`) und die Prüfung des API-Schlüssels (11.13); `Retry-After`, `details.retry_after_s` | `rate_limited` mit `details.retry_after_s` |
 | 500 | `internal` | Fehler im Server; Einzelheiten nur im Log | `internal` |
 | 501 | `not_implemented` | Endpunkt ist noch nicht umgesetzt | `not_supported` |
-| 503 | `not_configured` | Es gibt noch kein Passwort, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (kein Kontakt), Sensor (kein Sensor-Token), Updates (aus, oder der Updater meldet sich nicht), Pi koppeln (keine nutzbare CA oder kein Paket), „Jetzt sichern" (kein Schlüssel oder kein brauchbarer Ordner), Zurückspielen (kein Neustart möglich) | `not_configured` |
+| 503 | `not_configured` | Es gibt noch kein Passwort, oder eine Integration, die der Aufruf braucht, ist nicht eingerichtet: Push (kein Kontakt), Sensor (kein Sensor-Token), Updates (aus, oder der Updater meldet sich nicht), Pi koppeln (keine nutzbare CA oder kein Paket), „Jetzt sichern" (kein Schlüssel oder kein brauchbarer Ordner), Zurückspielen (kein Neustart möglich), Vorschläge von Claude und ihre Prüfung (kein API-Schlüssel, 11.13) | `not_configured` |
 
 `message` ist deutscher Klartext und als Rückfall anzeigbar. Die App unterscheidet nach `code` und zeigt dazu ihren eigenen Text; die letzte Spalte nennt, als welchen Fehler ihr Kern die Antwort an die Oberfläche weitergibt (`web/src/core/http.ts`). Eine Fehlerantwort ohne diesen Rumpf stammt nicht vom Stowly-Server und gilt in der App als `offline` (Abschnitt 9.2). Im Server: `raise ApiError(status, ErrorCode.X, "…")` aus `stowly/errors.py`. Unbekannte Pfade unter `/api` und `/print` antworten bei jeder Methode mit 404, ein bekannter Pfad mit falscher Methode mit 405 und der Kopfzeile `Allow`; 401 trägt `WWW-Authenticate: Bearer`.
 
-Die Ergebnisse einzelner Befehle (`CommandResult.code`) sind davon getrennt: Ein abgelehnter Befehl ist kein HTTP-Fehler.
+Die Ergebnisse einzelner Befehle (`CommandResult.code`) sind davon getrennt: Ein abgelehnter Befehl ist kein HTTP-Fehler. Ebenso die Fehler von Anthropic bei den Vorschlägen von Claude: Sie stehen im fertigen Auftrag (`CookJob.problem`, 11.13).
 
 ## 14. Dieselben Typen auf beiden Seiten
 

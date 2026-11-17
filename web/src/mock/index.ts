@@ -20,6 +20,7 @@ export {
   type MockPushPermission,
   type MockScenario,
 } from "./core";
+export { AI_KEY_LOST, MOCK_AI_DAILY_MAX } from "./cook";
 export { derived, LiveValue } from "./live";
 export {
   createEmptyData,

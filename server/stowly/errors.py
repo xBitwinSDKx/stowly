@@ -38,6 +38,16 @@ _STATUS_MESSAGES: dict[int, str] = {
     429: "Zu viele Anfragen.",
 }
 
+# Unter diesen Pfaden trägt jede Antwort ``Cache-Control: no-store``, auch jeder Fehler (KI-Vorschläge,
+# docs/plan-0.6.md 2.3): ``app.NoStore`` setzt den Kopf, den 500 setzt der Handler unten selbst, denn den
+# schickt Starlette außerhalb jeder Middleware.
+NO_STORE_PATHS = ("/api/server-config/ai", "/api/cook")
+
+
+def no_store(path: str) -> bool:
+    """Gehört die Antwort auf ``path`` zu ``NO_STORE_PATHS`` (der Pfad selbst oder darunter)?"""
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in NO_STORE_PATHS)
+
 
 class ApiError(Exception):
     """Fehler, der als Antwort im Vertragsformat beim Aufrufer ankommt."""
@@ -99,6 +109,7 @@ def install_error_handlers(app: FastAPI) -> None:
         return error_response(exc.status_code, code, message, None, getattr(exc, "headers", None))
 
     @app.exception_handler(Exception)
-    async def _unexpected(_request: Request, exc: Exception) -> Response:
+    async def _unexpected(request: Request, exc: Exception) -> Response:
         log.exception("Unerwarteter Fehler", exc_info=exc)
-        return error_response(500, ErrorCode.INTERNAL, "Interner Fehler des Servers.")
+        headers = {"Cache-Control": "no-store"} if no_store(request.scope.get("path", "")) else None
+        return error_response(500, ErrorCode.INTERNAL, "Interner Fehler des Servers.", headers=headers)

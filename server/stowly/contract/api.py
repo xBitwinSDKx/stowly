@@ -1394,3 +1394,211 @@ class LabelPreview(Model):
     notes: list[str] = Field(
         description="Was nur verkleinert oder gekürzt passt, als Sätze, etwa 'Name auf 3,0 mm verkleinert und gekürzt.'; leer = alles passt."
     )
+
+
+# --- Was koche ich? (seit 0.6.0; docs/plan-0.6.md, docs/sync-protokoll.md 11.13) ---------
+#
+# Such-Links zu Cookidoo und Chefkoch baut die App allein. Hier steht nur der zweite Weg: Vorschläge
+# von Claude über die Anthropic-API, mit dem API-Schlüssel des Haushalts. Der Schlüssel liegt wie der
+# Token von Home Assistant in /data/secrets, nie in der Datenbank, einer Sicherung oder einer Antwort;
+# STOWLY_ANTHROPIC_API_KEY geht vor. Eine Anfrage läuft als Auftrag: POST startet ihn (202), GET holt den
+# Stand. Fehler von Anthropic stehen im fertigen Auftrag (CookProblem), nicht als HTTP-Fehler.
+
+# Höchstens so viele Anfragen am Tag (Tag in STOWLY_TIMEZONE), für den ganzen Haushalt; dauerhaft gezählt.
+AI_DAILY_MAX = 20
+# Ein Gerät startet höchstens alle so viele Sekunden einen Auftrag (gemessen ab dem letzten Start).
+AI_DEVICE_GAP_S = 30
+# Frist eines Auftrags am Server; die App wartet so lange und etwas länger.
+COOK_DEADLINE_S = 90
+# So lange bleibt ein fertiger Auftrag abrufbar (nach einem Neustart des Servers ist er weg).
+COOK_JOB_TTL_S = 900
+# Höchstens so viele Produkte gehen an Claude; die gewählten Zutaten immer.
+COOK_STOCK_MAX = 300
+# So viele Vorschläge erbittet der Server, höchstens so viele gibt er weiter.
+COOK_IDEAS_MAX = 3
+# Obergrenze der Ausgabe je Anfrage (bestimmt die höchsten Kosten mit).
+COOK_MAX_TOKENS = 8000
+# Denkaufwand (output_config.effort): low reicht für Rezeptideen und hält Zeit und Kosten klein.
+COOK_EFFORT = "low"
+# Grenzen der Felder eines Vorschlags; länger Geliefertes kürzt der Server.
+COOK_TITLE_MAX = 80
+COOK_SUMMARY_MAX = 300
+COOK_USES_MAX = 10
+COOK_MISSING_MAX = 12
+COOK_MISSING_ENTRY_MAX = 60
+COOK_STEPS_MAX = 10
+COOK_STEP_MAX = 300
+COOK_SEARCH_MAX = 60
+COOK_MINUTES_MAX = 600
+COOK_MESSAGE_MAX = 300
+
+AiKey = Annotated[str, Field(min_length=1, max_length=LIMITS["ai_key"])]
+CookJobId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+
+
+class AiModel(StrEnum):
+    """Die wählbaren Modelle von Anthropic (docs/integrationen.md, Abschnitt 13)."""
+
+    OPUS = "claude-opus-5-5"  # Vorgabe: die besten Vorschläge
+    SONNET = "claude-sonnet-5-5"  # schneller, etwa halb so teuer
+    HAIKU = "claude-haiku-5-5"  # am günstigsten; ohne Ersatzmodell bei einer Ablehnung
+
+
+AI_MODEL_DEFAULT = AiModel.OPUS
+
+
+class AiConfig(Model):
+    """``GET /api/server-config/ai``. Nie der Schlüssel, auch kein Teil davon."""
+
+    source: ConfigSource = Field(
+        description=(
+            "Woher der Schlüssel kommt. env: STOWLY_ANTHROPIC_API_KEY (in der App gesperrt); app: in der "
+            "App eingetragen; default: keiner."
+        )
+    )
+    key_set: bool
+    key_set_at: Timestamp | None = Field(description="Wann der Schlüssel in der App eingetragen wurde.")
+    model: AiModel
+    model_source: ConfigSource = Field(description="app: in der App gewählt; default: AI_MODEL_DEFAULT.")
+    configured: bool = Field(description="Es gibt einen wirksamen Schlüssel; KI-Vorschläge sind möglich.")
+    problem: str | None = Field(
+        description="Deutscher Satz, etwa wenn der Schlüssel nach dem Zurückspielen fehlt; null = keins."
+    )
+    used_today: Count = Field(description="Anfragen heute (Tag in STOWLY_TIMEZONE), für den ganzen Haushalt.")
+    daily_limit: int = Field(description="Höchstens so viele Anfragen am Tag (AI_DAILY_MAX).")
+
+
+class AiConfigChanges(Model):
+    """``PATCH /api/server-config/ai``. Nur vorhandene Felder zählen; ``key`` mit 409, wenn der Schlüssel
+    aus der Umgebung kommt. Ein ungültiger Schlüssel gibt 422 an ``["body","key"]``, ohne seinen Wert."""
+
+    key: AiKey | None = Field(default=None, description="API-Schlüssel (sk-ant-…); null = entfernen.")
+    model: AiModel = Field(default=None, description="Das Modell für die Vorschläge.")
+
+
+class AiCheckInput(Model):
+    """``POST /api/server-config/ai/check``. Ohne Felder: den wirksamen Schlüssel und das wirksame Modell
+    prüfen. Kostet keine Tokens (es fragt nur das Modell ab)."""
+
+    key: AiKey = Field(default=None)
+    model: AiModel = Field(default=None)
+
+
+class AiCheckState(StrEnum):
+    OK = "ok"
+    KEY_REJECTED = "key_rejected"  # Anthropic lehnt den Schlüssel ab (401)
+    FORBIDDEN = "forbidden"  # der Schlüssel darf das nicht (403)
+    MODEL_UNAVAILABLE = "model_unavailable"  # das Modell gibt es für diesen Schlüssel nicht (404)
+    BUSY = "busy"  # Anthropic bremst oder ist überlastet (429, 529)
+    UNREACHABLE = "unreachable"  # nicht erreichbar: Netz, Zeitüberschreitung
+    ERROR = "error"  # anderer Fehler
+
+
+class AiCheck(Model):
+    """Ergebnis der Prüfung. Nie eine rohe Antwort von Anthropic, nie der Schlüssel."""
+
+    state: AiCheckState
+    message: str = Field(max_length=COOK_MESSAGE_MAX, description="Deutscher Klartext.")
+    model: AiModel = Field(description="Das geprüfte Modell.")
+
+
+class CookIdeasInput(Model):
+    """``POST /api/cook/ideas``: einen Auftrag starten."""
+
+    wish: str = Field(
+        default="",
+        max_length=LIMITS["cook_wish"],
+        description="Wunsch in eigenen Worten, etwa „vegetarisch, schnell, für 2“; leer = keiner.",
+    )
+    focus: list[Uuid] = Field(
+        default_factory=list,
+        max_length=LIMITS["cook_focus"],
+        description=(
+            "Produkte, auf die die Vorschläge setzen sollen (die gewählten Zutaten); nur solche im Bestand zählen."
+        ),
+    )
+
+
+class CookUse(Model):
+    """Ein Produkt aus dem Vorrat, das ein Vorschlag verwendet."""
+
+    product_id: Uuid
+    name: str = Field(
+        max_length=LIMITS["product_name"], description="Der Name in Stowly, nicht aus der Antwort."
+    )
+
+
+class CookIdea(Model):
+    """Ein Vorschlag. Alle Texte kommen von Claude, gesäubert und gekürzt; die App zeigt sie als Text."""
+
+    title: str = Field(max_length=COOK_TITLE_MAX)
+    summary: str = Field(max_length=COOK_SUMMARY_MAX, description="Ein, zwei Sätze.")
+    minutes: int | None = Field(ge=1, le=COOK_MINUTES_MAX, description="Gesamtzeit; null = unbekannt.")
+    uses: list[CookUse] = Field(max_length=COOK_USES_MAX, description="Was aus dem Vorrat hineinkommt.")
+    missing: list[Annotated[str, Field(max_length=COOK_MISSING_ENTRY_MAX)]] = Field(
+        max_length=COOK_MISSING_MAX,
+        description="Was fehlt (Salz, Pfeffer, Wasser und Speiseöl gelten als vorhanden).",
+    )
+    steps: list[Annotated[str, Field(max_length=COOK_STEP_MAX)]] = Field(
+        max_length=COOK_STEPS_MAX, description="Kurze Schritte der Zubereitung, ohne Nummern."
+    )
+    search: str = Field(
+        max_length=COOK_SEARCH_MAX, description="Suchbegriff für Cookidoo und Chefkoch (1 bis 3 Wörter)."
+    )
+
+
+class CookIdeas(Model):
+    """Das Ergebnis eines Auftrags."""
+
+    ideas: list[CookIdea] = Field(min_length=1, max_length=COOK_IDEAS_MAX)
+    model: str = Field(
+        max_length=100, description="Das Modell, das geantwortet hat (bei einem Ersatz dieses)."
+    )
+    fallback: bool = Field(description="Ein Ersatzmodell hat geantwortet, weil das gewählte ablehnte.")
+    stock_count: Count = Field(description="So viele Produkte gingen an Claude.")
+    truncated: bool = Field(description="Der Bestand war größer als COOK_STOCK_MAX; der Rest ging nicht mit.")
+
+
+class CookFailure(StrEnum):
+    REFUSED = "refused"  # Claude lehnt die Anfrage ab (stop_reason refusal)
+    KEY_REJECTED = "key_rejected"  # 401
+    FORBIDDEN = "forbidden"  # 403
+    BILLING = "billing"  # kein Guthaben oder Abrechnung nicht eingerichtet
+    MODEL_UNAVAILABLE = "model_unavailable"  # 404
+    BUSY = "busy"  # 429 von Anthropic
+    UNAVAILABLE = "unavailable"  # 5xx, überlastet
+    UNREACHABLE = "unreachable"  # Netz
+    TIMEOUT = "timeout"  # Frist abgelaufen
+    INCOMPLETE = "incomplete"  # abgeschnitten oder ohne brauchbaren Vorschlag
+    ERROR = "error"  # anderer Fehler
+
+
+class CookProblem(Model):
+    """Warum ein Auftrag gescheitert ist; nie eine rohe Antwort von Anthropic."""
+
+    reason: CookFailure
+    message: str = Field(max_length=COOK_MESSAGE_MAX, description="Deutscher Klartext.")
+    retry_after_s: int | None = Field(ge=0, description="Frühestens dann noch einmal; null = keine Angabe.")
+    category: str | None = Field(
+        max_length=40, description="Bei refused: die Kategorie von Anthropic, soweit genannt."
+    )
+
+
+class CookJobState(StrEnum):
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class CookJob(Model):
+    """Ein Auftrag (``POST /api/cook/ideas`` → 202, ``GET /api/cook/ideas/{job_id}``); gebunden an das
+    Gerät, das ihn startete."""
+
+    id: CookJobId
+    state: CookJobState
+    started_at: Timestamp
+    finished_at: Timestamp | None
+    result: CookIdeas | None = Field(description="Bei done.")
+    problem: CookProblem | None = Field(description="Bei failed.")
+    used_today: Count
+    daily_limit: int

@@ -50,6 +50,10 @@ export const HA_SYNC_INTERVAL_S = 120;
 export const PUSH_TEST_INTERVAL_S = 10;
 /** Wohin eine Push-Nachricht führt; der Server setzt den Ursprung der App davor. */
 export const PUSH_PATHS = {"daily": "/warnungen", "test": "/einstellungen", "update": "/einstellungen"};
+/** KI-Vorschläge: Frist eines Auftrags am Server; die App wartet etwas länger. */
+export const COOK_DEADLINE_S = 90;
+/** KI-Vorschläge: Ein Gerät startet höchstens alle so viele Sekunden einen Auftrag. */
+export const AI_DEVICE_GAP_S = 30;
 /**
  * Eingabegrenzen des Vertrags: Zeichen bei Texten, Anzahl bei Listen, Tage bei Fristen.
  * Kern und Attrappe prüfen damit, bevor ein Befehl entsteht (src/contract/input.ts).
@@ -90,6 +94,9 @@ export const LIMITS = {
   ha_url: 200,
   ha_token: 2000,
   label_text: 40,
+  ai_key: 300,
+  cook_wish: 200,
+  cook_focus: 5,
 } as const;
 /** Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3). */
 export const SERVICE_ERROR_CODES = [
@@ -149,6 +156,7 @@ export const ENDPOINTS = {
   apply_restore: { method: "POST", path: "/api/restore/apply" },
   cancel_pi_pairing: { method: "DELETE", path: "/api/pi/pairings/{pairing_id}" },
   change_password: { method: "POST", path: "/api/auth/password" },
+  check_ai: { method: "POST", path: "/api/server-config/ai/check" },
   check_ha: { method: "POST", path: "/api/server-config/ha/check" },
   check_restore: { method: "POST", path: "/api/restore/check" },
   check_update: { method: "POST", path: "/api/update/check" },
@@ -159,6 +167,8 @@ export const ENDPOINTS = {
   delete_restore_previous: { method: "DELETE", path: "/api/restore/previous" },
   download_backup_file: { method: "GET", path: "/api/backup/files/{name}" },
   download_ca: { method: "GET", path: "/api/setup/ca.crt" },
+  get_ai_config: { method: "GET", path: "/api/server-config/ai" },
+  get_cook_ideas: { method: "GET", path: "/api/cook/ideas/{job_id}" },
   get_ha_config: { method: "GET", path: "/api/server-config/ha" },
   get_ha_sensor_token: { method: "GET", path: "/api/server-config/ha/sensor-token" },
   get_image: { method: "GET", path: "/api/images/{image_id}" },
@@ -193,8 +203,10 @@ export const ENDPOINTS = {
   send_push_test: { method: "POST", path: "/api/push/test" },
   set_product_image: { method: "PUT", path: "/api/products/{product_id}/image" },
   setup_password: { method: "POST", path: "/api/setup/password" },
+  start_cook_ideas: { method: "POST", path: "/api/cook/ideas" },
   sync: { method: "POST", path: "/api/sync" },
   undo_restore: { method: "POST", path: "/api/restore/undo" },
+  update_ai_config: { method: "PATCH", path: "/api/server-config/ai" },
   update_device: { method: "PATCH", path: "/api/devices/{device_id}" },
   update_ha_config: { method: "PATCH", path: "/api/server-config/ha" },
   update_server_config: { method: "PATCH", path: "/api/server-config" },
@@ -203,6 +215,67 @@ export const ENDPOINTS = {
 } as const;
 
 export type AddressSource = "learned" | "manual";
+
+/** Ergebnis der Prüfung. Nie eine rohe Antwort von Anthropic, nie der Schlüssel. */
+export interface AiCheck {
+  state: AiCheckState;
+  /** Deutscher Klartext. */
+  message: string;
+  /** Das geprüfte Modell. */
+  model: AiModel;
+}
+
+/**
+ * `POST /api/server-config/ai/check`. Ohne Felder: den wirksamen Schlüssel und das wirksame Modell
+ * prüfen. Kostet keine Tokens (es fragt nur das Modell ab).
+ */
+export interface AiCheckInput {
+  key?: string;
+  model?: AiModel;
+}
+
+export type AiCheckState =
+  | "ok"
+  | "key_rejected"
+  | "forbidden"
+  | "model_unavailable"
+  | "busy"
+  | "unreachable"
+  | "error";
+
+/** `GET /api/server-config/ai`. Nie der Schlüssel, auch kein Teil davon. */
+export interface AiConfig {
+  /** Woher der Schlüssel kommt. env: STOWLY_ANTHROPIC_API_KEY (in der App gesperrt); app: in der App eingetragen; default: keiner. */
+  source: ConfigSource;
+  key_set: boolean;
+  /** Wann der Schlüssel in der App eingetragen wurde. */
+  key_set_at: string | null;
+  model: AiModel;
+  /** app: in der App gewählt; default: AI_MODEL_DEFAULT. */
+  model_source: ConfigSource;
+  /** Es gibt einen wirksamen Schlüssel; KI-Vorschläge sind möglich. */
+  configured: boolean;
+  /** Deutscher Satz, etwa wenn der Schlüssel nach dem Zurückspielen fehlt; null = keins. */
+  problem: string | null;
+  /** Anfragen heute (Tag in STOWLY_TIMEZONE), für den ganzen Haushalt. */
+  used_today: number;
+  /** Höchstens so viele Anfragen am Tag (AI_DAILY_MAX). */
+  daily_limit: number;
+}
+
+/**
+ * `PATCH /api/server-config/ai`. Nur vorhandene Felder zählen; `key` mit 409, wenn der Schlüssel
+ * aus der Umgebung kommt. Ein ungültiger Schlüssel gibt 422 an `["body","key"]`, ohne seinen Wert.
+ */
+export interface AiConfigChanges {
+  /** API-Schlüssel (sk-ant-…); null = entfernen. */
+  key?: string | null;
+  /** Das Modell für die Vorschläge. */
+  model?: AiModel;
+}
+
+/** Die wählbaren Modelle von Anthropic (docs/integrationen.md, Abschnitt 13). */
+export type AiModel = "claude-opus-5-5" | "claude-sonnet-5-5" | "claude-haiku-5-5";
 
 export interface BackupConfig {
   /** Die automatische Sicherung ist an. */
@@ -597,6 +670,94 @@ export type CommandStatus = "applied" | "displaced" | "rejected";
 
 /** Woher ein wirksamer Wert kommt (docs/integrationen.md, Abschnitt 12). */
 export type ConfigSource = "env" | "app" | "default";
+
+export type CookFailure =
+  | "refused"
+  | "key_rejected"
+  | "forbidden"
+  | "billing"
+  | "model_unavailable"
+  | "busy"
+  | "unavailable"
+  | "unreachable"
+  | "timeout"
+  | "incomplete"
+  | "error";
+
+/** Ein Vorschlag. Alle Texte kommen von Claude, gesäubert und gekürzt; die App zeigt sie als Text. */
+export interface CookIdea {
+  title: string;
+  /** Ein, zwei Sätze. */
+  summary: string;
+  /** Gesamtzeit; null = unbekannt. */
+  minutes: number | null;
+  /** Was aus dem Vorrat hineinkommt. */
+  uses: CookUse[];
+  /** Was fehlt (Salz, Pfeffer, Wasser und Speiseöl gelten als vorhanden). */
+  missing: string[];
+  /** Kurze Schritte der Zubereitung, ohne Nummern. */
+  steps: string[];
+  /** Suchbegriff für Cookidoo und Chefkoch (1 bis 3 Wörter). */
+  search: string;
+}
+
+/** Das Ergebnis eines Auftrags. */
+export interface CookIdeas {
+  ideas: CookIdea[];
+  /** Das Modell, das geantwortet hat (bei einem Ersatz dieses). */
+  model: string;
+  /** Ein Ersatzmodell hat geantwortet, weil das gewählte ablehnte. */
+  fallback: boolean;
+  /** So viele Produkte gingen an Claude. */
+  stock_count: number;
+  /** Der Bestand war größer als COOK_STOCK_MAX; der Rest ging nicht mit. */
+  truncated: boolean;
+}
+
+/** `POST /api/cook/ideas`: einen Auftrag starten. */
+export interface CookIdeasInput {
+  /** Wunsch in eigenen Worten, etwa „vegetarisch, schnell, für 2“; leer = keiner. */
+  wish?: string;
+  /** Produkte, auf die die Vorschläge setzen sollen (die gewählten Zutaten); nur solche im Bestand zählen. */
+  focus?: string[];
+}
+
+/**
+ * Ein Auftrag (`POST /api/cook/ideas` → 202, `GET /api/cook/ideas/{job_id}`); gebunden an das
+ * Gerät, das ihn startete.
+ */
+export interface CookJob {
+  id: string;
+  state: CookJobState;
+  started_at: string;
+  finished_at: string | null;
+  /** Bei done. */
+  result: CookIdeas | null;
+  /** Bei failed. */
+  problem: CookProblem | null;
+  used_today: number;
+  daily_limit: number;
+}
+
+export type CookJobState = "running" | "done" | "failed";
+
+/** Warum ein Auftrag gescheitert ist; nie eine rohe Antwort von Anthropic. */
+export interface CookProblem {
+  reason: CookFailure;
+  /** Deutscher Klartext. */
+  message: string;
+  /** Frühestens dann noch einmal; null = keine Angabe. */
+  retry_after_s: number | null;
+  /** Bei refused: die Kategorie von Anthropic, soweit genannt. */
+  category: string | null;
+}
+
+/** Ein Produkt aus dem Vorrat, das ein Vorschlag verwendet. */
+export interface CookUse {
+  product_id: string;
+  /** Der Name in Stowly, nicht aus der Antwort. */
+  name: string;
+}
 
 export interface Device {
   id: string;

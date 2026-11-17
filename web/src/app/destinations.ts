@@ -1,5 +1,5 @@
 import { ROUTES } from "@/contract";
-import { BellIcon, HistoryIcon, PrinterIcon, RefreshIcon, SettingsIcon, ShoppingIcon, StatsIcon, StockIcon, ZonesIcon, type IconType } from "@/ui/icons";
+import { BellIcon, ChefHatIcon, HistoryIcon, PrinterIcon, RefreshIcon, SettingsIcon, ShoppingIcon, StatsIcon, StockIcon, ZonesIcon, type IconType } from "@/ui/icons";
 
 /** Ein Ziel der Navigation. */
 export interface Destination {
@@ -23,11 +23,13 @@ export function primaryDestinations(multiZone: boolean): Destination[] {
 }
 
 /**
- * Die weiteren Bereiche: kleine Symbole in der Seitenleiste, Einträge in den Menüs. Die Statistik
- * steht neben der Lösch-Historie: Beide zeigen, was entnommen wurde.
+ * Die weiteren Bereiche: kleine Symbole in der Seitenleiste, Einträge in den Menüs. „Was koche ich?"
+ * folgt den Warnungen: Es macht aus dem, was bald abläuft, ein Essen. Die Statistik steht neben der
+ * Lösch-Historie: Beide zeigen, was entnommen wurde.
  */
 export const SECONDARY_DESTINATIONS: readonly Destination[] = [
   { to: ROUTES.warnings, label: "Warnungen", icon: BellIcon },
+  { to: ROUTES.cook, label: "Was koche ich?", icon: ChefHatIcon },
   { to: ROUTES.history, label: "Lösch-Historie", icon: HistoryIcon },
   { to: ROUTES.stats, label: "Statistik", icon: StatsIcon },
   { to: ROUTES.printers, label: "Drucker", icon: PrinterIcon },

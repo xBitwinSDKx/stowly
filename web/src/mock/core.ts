@@ -93,12 +93,24 @@
  * `products.setImage` setzt das Bild sofort. Der Druckdienst des Pi meldet beim Prüfen seine Formate
  * (`template_schemas`) und die eingelegte Rolle (62 mm endlos) und vergleicht sie mit dem Papier des
  * Haushalts; der am Server ist immer aktuell.
+ *
+ * Seit 0.6.0 (docs/plan-0.6.md, 3): Vorschläge von Claude (`ai`). Ohne Ausgangslage gibt es keinen
+ * Schlüssel; "ai-…" richten ihn ein oder zeigen eine Störung. Ein Schlüssel muss nur die Form haben
+ * (`checkAiKey`); „Prüfen" ergibt, was `stowlyMock.setAiCheckResult` sagt (Vorgabe "ok"), mit drei
+ * Sekunden Abstand nach der Uhr der Attrappe. Ein Auftrag ist nach einer Weile fertig (mit Wartezeit
+ * gut zwei Sekunden, mit "ai-slow" etwa fünf, ohne Wartezeit sofort) und bringt die Beispielideen aus
+ * src/mock/cook.ts; wie er ausgeht, bestimmt `stowlyMock.setCookOutcome`. Die Bremsen sind die des
+ * Servers: ein Auftrag zugleich ("busy"), 30 Sekunden Abstand je Gerät ("too_soon") und 20 am Tag
+ * ("daily_limit", Tag in der Zeitzone des Servers); scheitert ein Auftrag an Anthropic, ohne dass es
+ * etwas berechnet hätte, zählt er nicht.
  */
 import { x25519 } from "@noble/curves/ed25519.js";
 import { bech32 } from "@scure/base";
 
+import { checkAiKey, checkCookInput } from "@/contract/ai";
 import {
   addDays,
+  AI_DEVICE_GAP_S,
   APP_VERSION,
   CoreError,
   checkBarcode,
@@ -142,10 +154,15 @@ import {
   toLocalDate,
   UPDATE_CHECK_MIN_GAP_S,
   willLookUp,
+  type AiCheckState,
+  type AiConfig,
+  type AiModel,
   type AppState,
   type BackupConfig,
   type BackupFile,
   type BackupStatus,
+  type CookFailure,
+  type CookJob,
   type Core,
   type Device,
   type DevicePrefs,
@@ -208,6 +225,7 @@ import {
   type ZoneChanges,
 } from "@/contract";
 
+import { AI_KEY_LOST, CREDITED_FAILURES, hasNamedStock, mockCheckMessage, MOCK_AI_DAILY_MAX, mockCookIdeas, mockCookProblem } from "./cook";
 import { MOCK_IMAGES, SAMPLE_IMAGE_ID } from "./images";
 import {
   MOCK_CUSTOM_DESIGN,
@@ -281,6 +299,13 @@ import { computeStats } from "./stats";
  *                  bleiben mit `outdated` ausstehend, bis er neu gekoppelt ist
  * - "lookup-refresh": „Online abfragen" findet jeden Barcode, mit Angaben, die vom Produkt abweichen,
  *                  und einem Bild; derselbe Barcode in der Minute danach kommt gebremst (`throttled`)
+ * - "ai-ready":    Vorschläge von Claude sind eingerichtet (Schlüssel aus der App); heute schon 3 von 20 Anfragen
+ * - "ai-env":      der Schlüssel kommt aus der Umgebung (STOWLY_ANTHROPIC_API_KEY) und ist in der App gesperrt
+ * - "ai-key-missing": der Schlüssel war eingetragen, fehlt aber nach einem Zurückspielen (steht in keiner Sicherung)
+ * - "ai-refused":  eingerichtet; Claude lehnt jede Anfrage ab (der Auftrag scheitert mit `refused`)
+ * - "ai-busy":     eingerichtet; Anthropic bremst (der Auftrag scheitert mit `busy`, später noch einmal)
+ * - "ai-limit":    eingerichtet; die 20 Anfragen für heute sind verbraucht (Start: "rate_limited", `daily_limit`)
+ * - "ai-slow":     eingerichtet; ein Auftrag braucht etwa 5 Sekunden, auch ohne Wartezeit
  */
 export type MockScenario =
   | "empty"
@@ -329,7 +354,14 @@ export type MockScenario =
   | "labels-die-cut"
   | "printer-off"
   | "pi-outdated"
-  | "lookup-refresh";
+  | "lookup-refresh"
+  | "ai-ready"
+  | "ai-env"
+  | "ai-key-missing"
+  | "ai-refused"
+  | "ai-busy"
+  | "ai-limit"
+  | "ai-slow";
 
 export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "empty",
@@ -379,6 +411,13 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "printer-off",
   "pi-outdated",
   "lookup-refresh",
+  "ai-ready",
+  "ai-env",
+  "ai-key-missing",
+  "ai-refused",
+  "ai-busy",
+  "ai-limit",
+  "ai-slow",
 ];
 
 /** Wie ein nachgespielter Druck ausgeht. */
@@ -730,6 +769,10 @@ export interface MockControl {
   completePairing(id?: string): void;
   /** Der Code einer Kopplung läuft ab, ohne dass der Pi gekoppelt wurde. Ohne Kennung die jüngste wartende. */
   expirePairing(id?: string): void;
+  /** Was „Prüfen" bei den KI-Vorschlägen ergibt (`ai.check`, Vorgabe "ok"). */
+  setAiCheckResult(state: AiCheckState): void;
+  /** Wie die nächsten Aufträge für Vorschläge ausgehen: "done" (Vorgabe) oder der Grund, an dem sie scheitern. */
+  setCookOutcome(outcome: "done" | CookFailure): void;
   /** Aktueller Datenbestand der Attrappe. */
   snapshot(): MockData;
 }
@@ -955,6 +998,29 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   let haSensorApp: { token: string; set_at: string } | null = initialHa !== "off" && !haFromEnv && !scenarios.has("ha-token-missing") ? { token: randomHex(32), set_at: setupSince } : null;
   /** Zeitpunkt der letzten Prüfung bei HA in Millisekunden (Uhr der Attrappe) oder null. */
   let lastHaCheck: number | null = null;
+
+  // Seit 0.6.0: Vorschläge von Claude (siehe Kopf der Datei). Ohne Ausgangslage kein Schlüssel.
+  const aiFromEnv = scenarios.has("ai-env");
+  const aiConfigured = ["ai-ready", "ai-refused", "ai-busy", "ai-limit", "ai-slow"].some((name) => scenarios.has(name as MockScenario));
+  /** Wann der Schlüssel in der App eingetragen wurde; null = keiner aus der App. */
+  let aiKeySetAt: string | null = aiConfigured ? setupSince : null;
+  /** Der Merker steht, die Datei mit dem Schlüssel fehlt (nach einem Zurückspielen). */
+  let aiKeyLost = scenarios.has("ai-key-missing");
+  let aiModel: AiModel | null = null;
+  /** Anfragen am Tag `day` (Zeitzone des Servers), für den ganzen Haushalt. */
+  let aiUsage = { day: serverDay(clock().getTime()), count: scenarios.has("ai-limit") ? MOCK_AI_DAILY_MAX : scenarios.has("ai-ready") ? 3 : 0 };
+  let aiCheckState: AiCheckState = "ok";
+  /** Zeitpunkt der letzten Prüfung in Millisekunden (Uhr der Attrappe) oder null. */
+  let lastAiCheck: number | null = null;
+  let cookOutcome: "done" | CookFailure = scenarios.has("ai-refused") ? "refused" : scenarios.has("ai-busy") ? "busy" : "done";
+  const cookSlow = scenarios.has("ai-slow");
+  /** Die Aufträge mit allen, die auf ihr Ende warten. */
+  const cookJobs = new Map<string, { job: CookJob; focus: string[]; waiting: Set<() => void> }>();
+  /** Der Auftrag, der gerade läuft (am Server einer zugleich), oder null. */
+  let cookRunning: string | null = null;
+  /** Wann dieses Gerät zuletzt einen Auftrag gestartet hat (Uhr der Attrappe) oder null. */
+  let lastCookStart: number | null = null;
+  let lastCookJob: string | null = null;
 
   // Einkaufsliste: was der Server selbst tut (siehe Kopf der Datei und `ServerEffect`).
   const serverEffects: ServerEffect[] = [];
@@ -1880,6 +1946,88 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       later(() => startPi(id), 10);
       later(() => completePi(id), 25);
     }
+  }
+
+  // ---------------------------------------------------------------- Vorschläge von Claude (seit 0.6.0)
+
+  /** Anfragen heute (Tag in der Zeitzone des Servers); ein neuer Tag beginnt bei null. */
+  function aiUsedToday(): number {
+    const today = serverDay(clock().getTime());
+    if (aiUsage.day !== today) {
+      aiUsage = { day: today, count: 0 };
+    }
+    return aiUsage.count;
+  }
+
+  /** Sekunden bis zum nächsten Tag in der Zeitzone des Servers, auf die Minute genau. */
+  function secondsUntilTomorrow(): number {
+    const nowMs = clock().getTime();
+    const today = serverDay(nowMs);
+    let probe = nowMs;
+    while (serverDay(probe) === today) {
+      probe += 3_600_000;
+    }
+    while (serverDay(probe - 60_000) !== today) {
+      probe -= 60_000;
+    }
+    return Math.max(1, Math.ceil((probe - nowMs) / 1000));
+  }
+
+  const aiModelNow = (): AiModel => aiModel ?? "claude-opus-5-5";
+
+  /** `AiConfig` der Attrappe: Umgebung ("ai-env") oder App; nie der Schlüssel. */
+  function aiConfigNow(): AiConfig {
+    const fromApp = aiKeySetAt !== null;
+    const configured = aiFromEnv || fromApp;
+    return {
+      // Wie der Server: Ein Schlüssel, der nach dem Zurückspielen fehlt, kam aus der App.
+      source: aiFromEnv ? "env" : fromApp || aiKeyLost ? "app" : "default",
+      key_set: configured,
+      key_set_at: aiFromEnv ? null : aiKeySetAt,
+      model: aiModelNow(),
+      model_source: aiModel === null ? "default" : "app",
+      configured,
+      problem: !configured && aiKeyLost ? AI_KEY_LOST : null,
+      used_today: aiUsedToday(),
+      daily_limit: MOCK_AI_DAILY_MAX,
+    };
+  }
+
+  /** Ein Auftrag endet: wie `cookOutcome` es will; was Anthropic nicht berechnet hätte, zählt nicht. */
+  function finishCookJob(id: string): void {
+    const entry = cookJobs.get(id);
+    if (!entry || entry.job.state !== "running") {
+      return;
+    }
+    const data = state.get();
+    const failed = cookOutcome !== "done";
+    if (failed && CREDITED_FAILURES.has(cookOutcome as CookFailure)) {
+      aiUsedToday();
+      aiUsage = { ...aiUsage, count: Math.max(0, aiUsage.count - 1) };
+    }
+    entry.job = {
+      ...entry.job,
+      state: failed ? "failed" : "done",
+      finished_at: stamp(),
+      result: failed ? null : mockCookIdeas(data.products, data.packages, entry.focus, aiModelNow()),
+      problem: failed ? mockCookProblem(cookOutcome as CookFailure) : null,
+      used_today: aiUsedToday(),
+    };
+    if (cookRunning === id) {
+      cookRunning = null;
+    }
+    for (const notify of [...entry.waiting]) {
+      notify();
+    }
+  }
+
+  /** Der Auftrag als eigene Kopie: Was die Oberfläche damit tut, ändert ihn nicht. */
+  function cookJobCopy(id: string): CookJob {
+    const entry = cookJobs.get(id);
+    if (!entry) {
+      throw new CoreError("not_found", "Diesen Auftrag gibt es nicht (mehr).");
+    }
+    return structuredClone(entry.job);
   }
 
   // ---------------------------------------------------------------- Die Schnittstelle
@@ -3548,6 +3696,137 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
     },
 
+    // Vorschläge von Claude (seit 0.6.0, siehe Kopf der Datei): braucht den Server.
+    ai: {
+      async load() {
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        return aiConfigNow();
+      },
+      async update(changes) {
+        // Wie im Kern: den Schlüssel vorher prüfen, ohne Anfrage.
+        const key = typeof changes.key === "string" ? checkAiKey(changes.key) : changes.key;
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        if (key !== undefined && aiFromEnv) {
+          throw new CoreError("conflict", "Der API-Schlüssel kommt aus der Umgebung (STOWLY_ANTHROPIC_API_KEY) und lässt sich nur dort ändern.");
+        }
+        if (key !== undefined) {
+          aiKeySetAt = key === null ? null : stamp();
+          aiKeyLost = false;
+        }
+        if (changes.model !== undefined) {
+          aiModel = changes.model;
+        }
+        return aiConfigNow();
+      },
+      async check(input) {
+        const key = typeof input?.key === "string" && input.key.trim() !== "" ? checkAiKey(input.key) : undefined;
+        await wait(1.5);
+        requireOnline();
+        requireSignedIn();
+        if (key !== undefined && aiFromEnv) {
+          throw new CoreError("conflict", "Der Schlüssel kommt aus der Umgebung; geprüft wird der von dort.");
+        }
+        const nowMs = clock().getTime();
+        if (lastAiCheck !== null && nowMs - lastAiCheck < 3_000) {
+          throw new CoreError("rate_limited", "Bitte kurz warten, dann noch einmal prüfen.", { retry_after_s: Math.max(1, Math.ceil((lastAiCheck + 3_000 - nowMs) / 1000)) });
+        }
+        if (key === undefined && !aiConfigNow().configured) {
+          throw new CoreError("not_configured", "Es ist noch kein API-Schlüssel eingetragen.");
+        }
+        lastAiCheck = nowMs;
+        const model = input?.model ?? aiModelNow();
+        const name = { "claude-opus-5-5": "Claude Opus 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-haiku-5-5": "Claude Haiku 5.5" }[model];
+        return { state: aiCheckState, message: mockCheckMessage(aiCheckState, name), model };
+      },
+      async start(input) {
+        const wanted = checkCookInput(input);
+        await wait(0.5);
+        requireOnline();
+        requireSignedIn();
+        // Dieselbe Reihenfolge wie beim Server: Schlüssel, Bestand, dann die Bremsen.
+        if (!aiConfigNow().configured) {
+          throw new CoreError("not_configured", "Für Vorschläge von Claude fehlt der API-Schlüssel.", { reason: aiKeyLost ? "lost" : "missing" });
+        }
+        const data = state.get();
+        if (!hasNamedStock(data.products, data.packages)) {
+          throw new CoreError("conflict", "Im Bestand ist kein Produkt mit Namen.");
+        }
+        const nowMs = clock().getTime();
+        if (cookRunning !== null) {
+          // Wie der Server (`BUSY_RETRY_S`): in ein paar Sekunden noch einmal.
+          throw new CoreError("rate_limited", "Gerade läuft schon eine Anfrage.", { reason: "busy", retry_after_s: 5 });
+        }
+        if (lastCookStart !== null && nowMs - lastCookStart < AI_DEVICE_GAP_S * 1000) {
+          throw new CoreError("rate_limited", "Dieses Gerät hat eben erst gefragt.", {
+            reason: "too_soon",
+            retry_after_s: Math.max(1, Math.ceil((lastCookStart + AI_DEVICE_GAP_S * 1000 - nowMs) / 1000)),
+          });
+        }
+        if (aiUsedToday() >= MOCK_AI_DAILY_MAX) {
+          throw new CoreError("rate_limited", "Für heute sind alle Anfragen verbraucht.", { reason: "daily_limit", retry_after_s: secondsUntilTomorrow() });
+        }
+        aiUsage = { ...aiUsage, count: aiUsage.count + 1 };
+        lastCookStart = nowMs;
+        const id = randomHex(16);
+        const job: CookJob = { id, state: "running", started_at: stamp(), finished_at: null, result: null, problem: null, used_today: aiUsage.count, daily_limit: MOCK_AI_DAILY_MAX };
+        cookJobs.set(id, { job, focus: wanted.focus, waiting: new Set() });
+        cookRunning = id;
+        lastCookJob = id;
+        const started = structuredClone(job);
+        // "ai-slow" braucht auch ohne Wartezeit seine fünf Sekunden; sonst wie alles andere.
+        if (cookSlow) {
+          setTimeout(() => finishCookJob(id), 5_000);
+        } else {
+          later(() => finishCookJob(id), 4);
+        }
+        return started;
+      },
+      async job(id) {
+        await wait(0.25);
+        requireOnline();
+        requireSignedIn();
+        return cookJobCopy(id);
+      },
+      async wait(id, options = {}) {
+        requireSignedIn();
+        const entry = cookJobs.get(id);
+        if (!entry) {
+          throw new CoreError("not_found", "Diesen Auftrag gibt es nicht (mehr).");
+        }
+        if (entry.job.state !== "running") {
+          return cookJobCopy(id);
+        }
+        const { signal, onTick } = options;
+        return new Promise<CookJob>((resolve, reject) => {
+          const ticker = setInterval(() => onTick?.(cookJobCopy(id)), 1_000);
+          const done = () => {
+            clearInterval(ticker);
+            entry.waiting.delete(done);
+            signal?.removeEventListener("abort", abort);
+            resolve(cookJobCopy(id));
+          };
+          const abort = () => {
+            clearInterval(ticker);
+            entry.waiting.delete(done);
+            reject(signal?.reason);
+          };
+          if (signal?.aborted) {
+            abort();
+            return;
+          }
+          entry.waiting.add(done);
+          signal?.addEventListener("abort", abort, { once: true });
+        });
+      },
+      async lastJob() {
+        return lastCookJob;
+      },
+    },
+
     control: {
       setOnline(online: boolean) {
         syncStatus.update((status) => ({
@@ -3646,6 +3925,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         if (target && (target.state === "waiting" || target.state === "installing")) {
           pairings.set(target.id, { ...target, state: "expired", expires_at: new Date(clock().getTime() - 1).toISOString() });
         }
+      },
+      setAiCheckResult(next: AiCheckState) {
+        aiCheckState = next;
+      },
+      setCookOutcome(outcome: "done" | CookFailure) {
+        cookOutcome = outcome;
       },
       snapshot() {
         return state.get();

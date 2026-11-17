@@ -1,13 +1,13 @@
 import { useMemo } from "react";
 
-import { ROUTES } from "@/contract";
+import { cookPath, ROUTES } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
 import { useStockDialogs, type StockDialogs } from "@/features/stock/dialogs";
 import { warningGroups, type WarningGroup } from "@/features/stock/model";
 import { useStock } from "@/features/stock/useStock";
 import { EmptyState, ExpiryLabel, PackageIds, packagesText, plural, Section, TextLink, ZoneLabel } from "@/ui";
-import { Badge, Button } from "@/ui/base";
-import { CircleCheckIcon } from "@/ui/icons";
+import { Badge, Button, ButtonLink } from "@/ui/base";
+import { ChefHatIcon, CircleCheckIcon } from "@/ui/icons";
 
 import styles from "./WarningsPage.module.css";
 
@@ -66,10 +66,24 @@ function GroupList({ groups, multiZone, dialogs }: GroupListProps) {
   );
 }
 
+/** So viele Produkte gibt „Was koche ich daraus?" mit: so viele wählt „Was koche ich?" höchstens von selbst vor. */
+const COOK_WITH_MAX = 3;
+
+/**
+ * Die Produkte für „Was koche ich daraus?": zuerst, was bald abläuft (noch gut), dann Abgelaufenes,
+ * je das Dringendste zuerst, ohne Doppelte und ohne Platzhalter.
+ */
+export function cookProducts(groups: readonly WarningGroup[]): string[] {
+  const ordered = [...groups.filter((group) => group.state === "soon"), ...groups.filter((group) => group.state === "expired").reverse()];
+  const ids = ordered.filter((group) => group.product !== undefined && group.product.name.trim() !== "").map((group) => group.product_id);
+  return [...new Set(ids)].slice(0, COOK_WITH_MAX);
+}
+
 /**
  * MHD-Warnungen: alle abgelaufenen und bald ablaufenden Packungen, nach Dringlichkeit,
  * zusammengefasst je Produkt und MHD. Die Liste ergibt sich allein aus dem Bestand;
- * es gibt kein Abhaken. Die Pille der Kopfzeile zählt dieselben Packungen.
+ * es gibt kein Abhaken. Die Pille der Kopfzeile zählt dieselben Packungen. „Was koche ich
+ * daraus?" führt mit den dringendsten Produkten zu „Was koche ich?".
  */
 export function WarningsPage() {
   const stock = useStock();
@@ -96,8 +110,16 @@ export function WarningsPage() {
       </>
     );
 
+  const cookIds = cookProducts(groups);
+  const cook =
+    cookIds.length > 0 ? (
+      <ButtonLink to={cookPath(cookIds)} icon={<ChefHatIcon />}>
+        Was koche ich daraus?
+      </ButtonLink>
+    ) : undefined;
+
   return (
-    <Page title="Warnungen" description="Abgelaufene und bald ablaufende Packungen, das Dringendste zuerst.">
+    <Page title="Warnungen" description="Abgelaufene und bald ablaufende Packungen, das Dringendste zuerst." actions={cook}>
       {groups.length === 0 ? (
         <EmptyState icon={<CircleCheckIcon size={26} />} title="Nichts läuft in nächster Zeit ab">
           {lead}

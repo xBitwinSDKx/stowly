@@ -2,6 +2,26 @@
 
 Jede Version, die auf GitHub erscheint, steht hier. Der Abschnitt einer Version wird zum Text ihres Releases; die App zeigt ihn unter Einstellungen → Aktualisierung. Muss beim Umstieg etwas von Hand geschehen (`docker-compose.yml`, `.env`, der Updater), steht es unter „Von Hand".
 
+## 0.6.0
+
+Was koche ich? Rezeptideen aus dem Vorrat, zuerst mit dem, was bald abläuft.
+
+- **Neue Seite „Was koche ich?“** unter „Weitere Bereiche“, dazu der Knopf „Was koche ich daraus?“ auf der Seite Warnungen.
+  - Vorgewählt sind zwei bis drei Zutaten, die bald ablaufen, als kurze Suchbegriffe: „Spaghetti“ statt „Barilla Spaghetti n.5 500 g“.
+  - Ein Tipp ändert einen Begriff; weitere Zutaten kommen aus dem Vorrat dazu.
+- **Such-Links:** „Bei Cookidoo suchen“ und „Bei Chefkoch suchen“ öffnen die Suche mit diesen Zutaten, ohne Einrichtung und auch offline.
+- **Vorschläge von Claude:** Mit einem eigenen API-Schlüssel von Anthropic schlägt Claude drei Gerichte vor, auf Wunsch etwa „vegetarisch, schnell, für 2“.
+  - Jede Karte zeigt die Zeit, was aus dem Vorrat hineinkommt (mit MHD), was fehlt, die Zubereitung und Links zu Ähnlichem bei Cookidoo und Chefkoch.
+  - „Fehlendes auf die Einkaufsliste“ übernimmt die fehlenden Zutaten, von dort auch nach Bring!.
+- **Einstellungen → „KI-Vorschläge“:** den Schlüssel eintragen, prüfen (kostet nichts) und entfernen; das Modell wählen: Opus 5.5 (Vorgabe), Sonnet 5.5 oder Haiku 5.5. Der Schlüssel liegt nur auf dem Server und in keiner Sicherung. `STOWLY_ANTHROPIC_API_KEY` in der Umgebung geht vor.
+- **Datenschutz und Kosten:**
+  - An Anthropic geht nur auf Knopfdruck: Name, Marke, Größe und Anzahl je Produkt im Bestand (höchstens 300) mit den Tagen bis zum MHD, dazu der Wunsch und die gewählten Zutaten.
+  - Nie dabei sind Zonen, Barcodes, Bilder, Geräte und die Einkaufsliste.
+  - Die Kosten trägt das Konto des Schlüssels, grob 7 Cent je Anfrage mit Opus. Höchstens 20 Anfragen am Tag gehen für den Haushalt hinaus.
+- **Updater für Docker Compose:** Die Zwischendatei, über die er die Version in die `.env` schreibt, ist jetzt nur für root lesbar und wird neu angelegt. Lässt sie sich nicht schreiben, bleibt die `.env` unberührt.
+
+Von Hand: Für den Betrieb nichts. Für die Vorschläge von Claude einen API-Schlüssel auf console.anthropic.com anlegen, am besten einen eigenen für Stowly mit Ausgabenlimit, und unter Einstellungen → „KI-Vorschläge“ eintragen (docs/betrieb.md, Abschnitt 21). Die Such-Links brauchen keinen.
+
 ## 0.5.1
 
 Update per Knopf robuster.

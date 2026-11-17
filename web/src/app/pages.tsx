@@ -103,6 +103,8 @@ export const ShoppingPage = lazyPage(() => import("@/features/shopping").then((m
 export const StatsPage = lazyPage(() => import("@/features/stats").then((module) => module.StatsPage));
 /** Etiketten gestalten (seit 0.5.0), eine Unterseite der Drucker. */
 export const LabelsPage = lazyPage(() => import("@/features/labels").then((module) => module.LabelsPage));
+/** Was koche ich? (seit 0.6.0) */
+export const CookPage = lazyPage(() => import("@/features/cook").then((module) => module.CookPage));
 /**
  * Die Einrichtung: der Assistent und die Willkommensseite vor dem ersten Passwort, aus einem Modul
  * und damit ein Teil der App. Er wird nicht vorab geholt (`preloadPages`): Die meisten Starts
@@ -124,6 +126,7 @@ const BY_PATH: Readonly<Record<string, LazyPage>> = {
   [ROUTES.shopping]: ShoppingPage,
   [ROUTES.stats]: StatsPage,
   [ROUTES.labels]: LabelsPage,
+  [ROUTES.cook]: CookPage,
 };
 
 const ALL: readonly LazyPage[] = Object.values(BY_PATH);

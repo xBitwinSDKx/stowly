@@ -25,7 +25,6 @@ import math
 import re
 import ssl
 import threading
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,9 +47,6 @@ SMALL_MAX = 64 * 1024
 LISTS_MAX = 100
 NAME_MAX = 100
 VERSION_MAX = 40
-# Zeichen, die in keinem angezeigten Namen stehen: Steuer- und Formatzeichen (auch Richtungswechsel),
-# Zeilen- und Absatztrenner, halbe Ersatzzeichen, private Zeichen.
-_DROPPED = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs", "Co"})
 _COUNT = re.compile(r"[0-9]{1,9}")
 
 TOKEN_NEEDED = (
@@ -159,12 +155,6 @@ def target(current: haconfig.Effective, body: HaCheckInput) -> Target:
 # --- Die Prüfung -------------------------------------------------------------------------------
 
 
-def _clean(text: str, limit: int) -> str:
-    """Ein Text aus HA zum Anzeigen: ohne Steuer- und Formatzeichen, Leerraum zusammengefasst, gekürzt."""
-    kept = "".join(" " if unicodedata.category(char) in _DROPPED else char for char in text)
-    return texts.shorten(" ".join(kept.split()), limit)
-
-
 def _result(
     state: HaCheckState,
     message: str,
@@ -212,8 +202,8 @@ def _config(payload: Any) -> tuple[str | None, str | None]:
         return None, None
     version, location = payload.get("version"), payload.get("location_name")
     return (
-        (_clean(version, VERSION_MAX) or None) if isinstance(version, str) else None,
-        (_clean(location, NAME_MAX) or None) if isinstance(location, str) else None,
+        (texts.clean(version, VERSION_MAX) or None) if isinstance(version, str) else None,
+        (texts.clean(location, NAME_MAX) or None) if isinstance(location, str) else None,
     )
 
 
@@ -228,7 +218,7 @@ def _lists(entities: list[Any]) -> list[dict[str, Any]]:
             continue
         attributes = entry.get("attributes")
         raw_name = attributes.get("friendly_name") if isinstance(attributes, dict) else None
-        name = _clean(raw_name, NAME_MAX) if isinstance(raw_name, str) else ""
+        name = texts.clean(raw_name, NAME_MAX) if isinstance(raw_name, str) else ""
         state = entry.get("state")
         found.setdefault(
             entity_id,
