@@ -129,7 +129,8 @@ describe("Drucker am Server mit Bild-Treiber", () => {
       copies: 1,
       cut: true,
       template: { schema: 1, name: "package-62x29" },
-      data: { title: "Linsen E1", subtitle: "500 g · Hof", best_before: "31.03.2027", zone: "" },
+      // Seit 0.5.0 alle Felder, auch die Zone bei nur einer Zone (docs/etiketten.md, 3.3).
+      data: { title: "Linsen E1", subtitle: "500 g · Hof", best_before: "31.03.2027", zone: "Vorrat", brand: "Hof", quantity: "500 g", best_before_short: "31.03.27" },
     });
     expect(typeof submit?.body?.expect_boot_id).toBe("string");
 

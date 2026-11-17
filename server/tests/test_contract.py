@@ -95,6 +95,13 @@ def test_openapi_lists_every_endpoint_and_command():
         ("POST", "/api/server-config/ha/sensor-token"),
         ("GET", "/api/server-config/ha/sensor-token"),
         ("DELETE", "/api/server-config/ha/sensor-token"),
+        # 0.5.0: Etiketten gestalten, Produktdaten neu abfragen, Produktbild setzen
+        ("GET", "/api/labels/design"),
+        ("PUT", "/api/labels/design"),
+        ("DELETE", "/api/labels/design"),
+        ("POST", "/api/labels/preview"),
+        ("POST", "/api/lookup/{barcode}/refresh"),
+        ("PUT", "/api/products/{product_id}/image"),
     }
     mapping = document["components"]["schemas"]["Command"]["discriminator"]["mapping"]
     assert sorted(mapping) == sorted(COMMAND_TYPES)

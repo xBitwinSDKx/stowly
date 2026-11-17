@@ -9,6 +9,10 @@ und in Starlette 1.x (Server) gleichermaßen gibt.
 * Das Token steht im Kopf (``Authorization: Bearer``) oder im Rumpf (``"token"``). Wer es
   prüft, ist austauschbar: am Pi ein festes Token, am Server das Geräte-Token.
 * Fehler haben immer den Rumpf ``{"error": {"code", "message", "details"}}``.
+* Seit 0.5.0 nennt ``/v1/health`` die Formate der Vorlage, die der Dienst rendert
+  (``template_schemas``), und je Drucker die eingelegte Rolle (``loaded``); ``?media=<Papier>``
+  vergleicht die Rolle mit diesem Papier. ``/v1/render`` liefert das Etikett in der Größe des
+  Papiers der Vorlage, so wie man es liest. Protokoll 1 bleibt: Es kommt nur etwas hinzu.
 """
 
 import base64
@@ -34,6 +38,7 @@ from stowly_print.model import (
     APP_NAME,
     MAX_PNG_BYTES,
     PROTOCOL_VERSION,
+    TEMPLATE_SCHEMAS,
     Health,
     HostHealth,
     JobRequest,
@@ -297,6 +302,10 @@ def create_app(
 
     async def health(request: Request) -> Response:
         nonce = request.query_params.get("nonce")
+        # Seit 0.5.0: das Papier des Haushalts. Die eingelegte Rolle wird damit verglichen statt mit
+        # der Konfiguration. Eine Kennung, die der Katalog nicht kennt, zählt wie keine (kein 400):
+        # Eine neuere App kann ein Papier kennen, das dieser Dienst noch nicht hat.
+        paper = request.query_params.get("media")
 
         def build() -> Health:
             key = authorize(token_of(request), write=False)
@@ -313,7 +322,8 @@ def create_app(
                 uptime_s=round(service.uptime_s, 3),
                 proof=proof,
                 host=None if host_health is None else host_health(),
-                printers=service.printers(),
+                printers=service.printers(paper=paper),
+                template_schemas=list(TEMPLATE_SCHEMAS),
             )
 
         return json_response(to_dict(await run_in_threadpool(build)))

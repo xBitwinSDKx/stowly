@@ -3,6 +3,12 @@
 Solange kein Drucker da ist, lässt sich damit der ganze Weg ansehen und testen: Der Auftrag
 ``<Auftrag>`` wird zur Datei ``<Auftrag>.png``, weitere Exemplare zu ``<Auftrag>.2.png`` und so fort.
 
+Papier: Der Treiber hat keine Rolle und kann jedes Papier des Katalogs. Nennt die Vorlage eines,
+schreibt er das PNG in dessen Größe (``for_paper``), sonst in der des Papiers aus der Konfiguration
+(``media``, Vorgabe 62 mm endlos). Das Bild liegt wie für einen Drucker in Druckrichtung, quer ×
+längs: Ein gedrehtes Etikett (Format 2, ``rotate: 90``) steht im PNG auf der Seite. Eine eingelegte
+Rolle meldet er nicht (``loaded`` ist ``None``) und deshalb auch nie ``media_mismatch``.
+
 Störungen nachstellen: Der Schalter ``simulate`` (beim Anlegen des Treibers oder als Inhalt
 der Datei ``simulate.txt`` im Verzeichnis) lässt den Treiber
 
@@ -22,15 +28,14 @@ from pathlib import Path
 
 from PIL import Image
 
-from stowly_print.drivers.base import Driver
-from stowly_print.model import Capabilities, DriverStatus, Media, PrinterError, PrintOutcome
+from stowly_print import media as catalog
+from stowly_print.drivers.base import Driver, Reading, catalog_media
+from stowly_print.model import Capabilities, DriverStatus, Paper, PrinterError, PrintOutcome
 
 log = logging.getLogger("stowly_print.image")
 
 SIMULATE_FILE = "simulate.txt"
-DEFAULT_DPI = 300
-DEFAULT_WIDTH_MM = 62.0
-DEFAULT_PRINTABLE_PX = 696
+DEFAULT_DPI = catalog.DPI
 _ERROR_CODES = frozenset(error.value for error in PrinterError)
 
 
@@ -39,28 +44,34 @@ class PrintAborted(RuntimeError):
 
 
 class ImageDriver:
-    """Schreibt PNG-Dateien. ``confirms_print`` ist wahr: Was geschrieben ist, ist „gedruckt"."""
+    """Schreibt PNG-Dateien. ``confirms_print`` ist wahr: Was geschrieben ist, ist „gedruckt".
+
+    ``media`` ist die Kennung eines Papiers im Katalog, die Vorgabe für Vorlagen ohne Papier
+    (ohne Angabe 62 mm endlos). Eine unbekannte Kennung ist ein ``ValueError``; ``build_driver``
+    macht daraus einen Drucker, der ``config`` meldet.
+    """
+
+    # Eine eingelegte Rolle gibt es nicht: Der Treiber kann jedes Papier.
+    loaded: Paper | None = None
 
     def __init__(
         self,
         directory: Path | str,
         *,
         dpi: int = DEFAULT_DPI,
-        width_mm: float = DEFAULT_WIDTH_MM,
-        printable_px: int = DEFAULT_PRINTABLE_PX,
+        media: str | None = None,
         simulate: str | None = None,
     ) -> None:
+        paper = catalog.paper(catalog.DEFAULT_PAPER_ID if media is None else media.strip())
+        if paper is None:
+            raise ValueError(f"Die Rolle '{media}' kennt der Bild-Treiber nicht (Papier-Katalog).")
         self.directory = Path(directory)
         self.simulate = simulate
+        self.paper = paper
         self.last_error: str | None = None
-        self._capabilities = Capabilities(
-            dpi=dpi,
-            media=Media(width_mm=width_mm, length_mm=None, printable_px=printable_px),
-            cutter=True,
-            colors=["black"],
-            status_query=True,
-            confirms_print=True,
-        )
+        self.last_message: str | None = None
+        self._dpi = dpi
+        self._capabilities = self._capabilities_for(paper)
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ Treiber-Schnittstelle
@@ -84,13 +95,21 @@ class ImageDriver:
 
     def print(self, image: Image.Image, cut: bool = True) -> PrintOutcome:
         """Ohne Auftrag im Rücken: Die Datei bekommt einen zufälligen Namen."""
-        return self._write(f"druck-{uuid.uuid4().hex}", image)
+        return self._write(f"druck-{uuid.uuid4().hex}", image, self.paper)
+
+    def probe(self) -> Reading:
+        """Der Zustand gilt für jedes Papier: Der Treiber hat keine Rolle, die passen müsste."""
+        return Reading(self.status())
 
     # ------------------------------------------------------------------ Erweiterungen für den Auftragsdienst
 
     def for_job(self, job_id: str, copy: int = 1) -> Driver:
         """Derselbe Treiber, der das nächste Bild unter der Kennung des Auftrags ablegt."""
-        return _JobView(self, job_id if copy <= 1 else f"{job_id}.{copy}")
+        return _JobView(self, _name(job_id, copy), self.paper)
+
+    def for_paper(self, paper: catalog.PaperSpec) -> "_JobView":
+        """Derselbe Treiber für ein Papier des Katalogs: Das PNG bekommt dessen Größe."""
+        return _JobView(self, None, paper)
 
     def image_path(self, job_id: str) -> Path | None:
         """Das PNG eines Auftrags, falls es schon geschrieben ist."""
@@ -151,12 +170,32 @@ class ImageDriver:
         code = argument.strip().lower()
         return mode, code if code in _ERROR_CODES else PrinterError.NO_MEDIA.value
 
-    def _write(self, name: str, image: Image.Image) -> PrintOutcome:
+    def _capabilities_for(self, paper: catalog.PaperSpec) -> Capabilities:
+        return Capabilities(
+            dpi=self._dpi,
+            media=catalog_media(paper),
+            cutter=True,
+            colors=["black"],
+            status_query=True,
+            confirms_print=True,
+        )
+
+    def _write(self, name: str, image: Image.Image, paper: catalog.PaperSpec) -> PrintOutcome:
         with self._lock:
             self.last_error = None
-            expected = self._capabilities.media.printable_px
-            if image.mode != "1" or image.size[0] != expected:
-                log.error("Bild passt nicht zum Bild-Treiber: %s, Modus %s.", image.size, image.mode)
+            self.last_message = None
+            fixed = paper.printable_length_px
+            if (
+                image.mode != "1"
+                or image.size[0] != paper.printable_width_px
+                or (fixed is not None and image.size[1] != fixed)
+            ):
+                log.error(
+                    "Bild passt nicht zum Papier %s des Bild-Treibers: %s, Modus %s.",
+                    paper.id,
+                    image.size,
+                    image.mode,
+                )
                 self.last_error = PrinterError.CONFIG.value
                 return PrintOutcome.FAILED
 
@@ -184,22 +223,43 @@ class ImageDriver:
             return PrintOutcome.PRINTED
 
 
-class _JobView:
-    """Der Bild-Treiber, an einen Auftrag gebunden: ``print`` schreibt ``<Auftrag>.png``."""
+def _name(job_id: str, copy: int) -> str:
+    return job_id if copy <= 1 else f"{job_id}.{copy}"
 
-    def __init__(self, driver: ImageDriver, name: str) -> None:
+
+class _JobView:
+    """Der Bild-Treiber für ein Papier und, wenn bekannt, einen Auftrag: ``print`` schreibt
+    ``<Auftrag>.png`` in der Größe des Papiers (ohne Auftrag unter einem zufälligen Namen)."""
+
+    def __init__(self, driver: ImageDriver, name: str | None, paper: catalog.PaperSpec) -> None:
         self._driver = driver
         self._name = name
+        self.paper = paper
 
     @property
     def last_error(self) -> str | None:
         return self._driver.last_error
 
+    @property
+    def last_message(self) -> str | None:
+        return self._driver.last_message
+
+    @property
+    def loaded(self) -> Paper | None:
+        return None
+
     def capabilities(self) -> Capabilities:
-        return self._driver.capabilities()
+        return self._driver._capabilities_for(self.paper)
 
     def status(self) -> DriverStatus:
         return self._driver.status()
 
     def print(self, image: Image.Image, cut: bool = True) -> PrintOutcome:
-        return self._driver._write(self._name, image)
+        name = self._name if self._name is not None else f"druck-{uuid.uuid4().hex}"
+        return self._driver._write(name, image, self.paper)
+
+    def for_job(self, job_id: str, copy: int = 1) -> Driver:
+        return _JobView(self._driver, _name(job_id, copy), self.paper)
+
+    def for_paper(self, paper: catalog.PaperSpec) -> "_JobView":
+        return _JobView(self._driver, self._name, paper)

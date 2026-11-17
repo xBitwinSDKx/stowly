@@ -18,22 +18,28 @@ export function templateFor(view: Tables, kind: PrintJobKind): { [key: string]: 
   return view.label_templates.get(kind)?.body ?? null;
 }
 
+/**
+ * Format (`schema`) und Papier (`media.id`, ohne Angabe die 62-mm-Endlosrolle) einer Vorlage: das
+ * Einzige, was die App aus ihr liest (docs/etiketten.md, 3.4).
+ */
+export function templateNeeds(template: { [key: string]: unknown }): { schema: unknown; paper: string } {
+  const media = template.media as { id?: unknown } | undefined;
+  return { schema: template.schema, paper: typeof media?.id === "string" ? media.id : "62" };
+}
+
+/** Das Papier des Haushalts laut Vorlage; null, solange keine da ist. */
+export function householdPaper(view: Tables): string | null {
+  const template = templateFor(view, "package") ?? templateFor(view, "zone");
+  return template ? templateNeeds(template).paper : null;
+}
+
 /** Die fertig formatierten Zeichenketten eines Etiketts; null, wenn es zu nichts mehr gehört. */
 export function labelData(view: Tables, subject: { package_id: string | null; zone_id: string | null }): { [key: string]: string } | null {
   const draft = new Draft(view);
   if (subject.package_id !== null) {
     const pkg = view.packages.get(subject.package_id);
-    if (!pkg) {
-      return null;
-    }
-    let zones = 0;
-    for (const zone of view.zones.values()) {
-      if (zone.deleted_at === null) {
-        zones += 1;
-      }
-    }
-    // Der Zonenname steht nur auf dem Etikett, wenn es mehr als eine Zone gibt.
-    return { ...packageLabelData(pkg, resolveProduct(draft, pkg.product_id), resolveZone(draft, pkg.zone_id), { show_zone: zones > 1 }) };
+    // Alle Felder stehen drin, auch die Zone; was gedruckt wird, entscheidet die Vorlage.
+    return pkg ? { ...packageLabelData(pkg, resolveProduct(draft, pkg.product_id), resolveZone(draft, pkg.zone_id)) } : null;
   }
   if (subject.zone_id !== null) {
     const zone = view.zones.get(subject.zone_id);

@@ -6,7 +6,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CoreError, ROUTES, type Core, type Live, type PrinterProblem, type PrintJob } from "@/contract";
+import { CoreError, ROUTES, type Core, type DriverStatus, type Live, type PrinterProbe, type PrinterProblem, type PrintJob, type ServicePaper } from "@/contract";
 import { App } from "@/app/App";
 import { renderApp } from "@/app/render.test-setup";
 import { createMockCore, createSampleData, DEVICE_IDS, MockScanPage, PRINTER_IDS, sampleUuid, ZONE_IDS, type MockCore, type MockOptions } from "@/mock";
@@ -167,7 +167,7 @@ describe("Drucker", () => {
     expect(fresh).toHaveTextContent("noch nichts: weder Standarddrucker noch einer Zone zugeordnet");
     expect(within(fresh).getByText("Drucker angelegt")).toBeInTheDocument();
     await userEvent.click(within(fresh).getByRole("button", { name: "Verbindung prüfen: Speisekammer" }));
-    expect(await within(fresh).findByText("Der Druckdienst antwortet.")).toBeInTheDocument();
+    expect(await within(fresh).findByText("Drucker bereit.")).toBeInTheDocument();
     expect(fresh).toHaveTextContent(/Zuletzt gesehen gerade eben/);
   });
 
@@ -361,7 +361,7 @@ describe("Verbindung prüfen", () => {
     expect(notice).toHaveTextContent("Stowly erfährt das Ergebnis nicht und fragt danach, ob gedruckt wurde.");
 
     await userEvent.click(within(card("Küche (Bild)")).getByRole("button", { name: "Verbindung prüfen: Küche (Bild)" }));
-    expect(await within(card("Küche (Bild)")).findByText("Der Druckdienst antwortet.")).toBeInTheDocument();
+    expect(await within(card("Küche (Bild)")).findByText("Drucker bereit.")).toBeInTheDocument();
     expect(probe).toHaveBeenCalledTimes(2);
   });
 
@@ -370,7 +370,7 @@ describe("Verbindung prüfen", () => {
     await ready();
     await userEvent.click(within(card("Keller (Pi)")).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
     const notice = await within(card("Keller (Pi)")).findByRole("status");
-    expect(notice).toHaveTextContent("Der Druckdienst antwortet.");
+    expect(notice).toHaveTextContent("Drucker bereit.");
     expect(notice).toHaveTextContent("Erreicht über https://10.71.83.1:8443.");
 
     // Im Keller fehlt der Server: Der Drucker dort oben ist nicht zu erreichen.
@@ -839,5 +839,148 @@ describe("Notweg über die Seite des Druckers", () => {
       expect(tab.location.replace).not.toHaveBeenCalled();
       cleanup();
     }
+  });
+});
+
+describe("Urteil aus Dienst und Drucker (seit 0.5.0)", () => {
+  /** Ein Ergebnis von „Verbindung prüfen", wie es der Kern liefert: Der Dienst antwortet, der Drucker meldet `status`. */
+  function answered(printerName: string, status: DriverStatus, loaded: ServicePaper | null = null, version = "0.5.0"): PrinterProbe {
+    return {
+      reachable: true,
+      url: null,
+      health: {
+        app: "stowly-print",
+        version,
+        protocol: 1,
+        boot_id: "boot",
+        uptime_s: 1,
+        proof: null,
+        host: null,
+        template_schemas: [1, 2],
+        printers: [
+          {
+            name: printerName,
+            driver: "brother_ql",
+            model: "QL-570",
+            capabilities: { dpi: 300, media: { width_mm: 62, length_mm: null, printable_px: 696 }, cutter: true, colors: ["black"], status_query: true, confirms_print: true },
+            status,
+            loaded,
+          },
+        ],
+      },
+      problem: null,
+      error: null,
+    };
+  }
+
+  it("ist gelb mit Rat, wenn der Pi antwortet und der Drucker nicht; zuletzt gesehen steht der Rat schon vor dem Prüfen", async () => {
+    renderApp({ scenarios: ["printer-off"] }, ROUTES.printers);
+    await ready();
+    const cellar = card("Keller (Pi)");
+    // Das rote Abzeichen bleibt; darunter jetzt der Rat statt einer kleinen Fehlerliste.
+    expect(cellar).toHaveTextContent("nicht verbunden");
+    const seen = within(cellar).getByRole("status");
+    expect(seen).toHaveTextContent("Der Drucker ist aus oder nicht verbunden.");
+    expect(within(seen).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Drucker einschalten.", "USB-Kabel an Drucker und Pi prüfen.", "Dann noch einmal „Verbindung prüfen“."]);
+
+    await userEvent.click(within(cellar).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
+    const verdict = await within(cellar).findByText("Der Pi antwortet, der Drucker nicht.");
+    expect(verdict.closest("[role=status]")).toHaveTextContent("USB-Kabel an Drucker und Pi prüfen.");
+    expect(cellar).not.toHaveTextContent("Drucker bereit.");
+    // Nach dem Prüfen gilt dessen Urteil; der Rat zum zuletzt Gesehenen steht nicht noch einmal da.
+    expect(within(cellar).getAllByRole("status")).toHaveLength(1);
+  });
+
+  it("ist grün nur mit bereitem Drucker und nennt nach dem Prüfen die eingelegte Rolle", async () => {
+    renderApp({ scenarios: ["at-pi"] }, ROUTES.printers);
+    await ready();
+    const cellar = card("Keller (Pi)");
+    await userEvent.click(within(cellar).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
+    const notice = await within(cellar).findByRole("status");
+    expect(notice).toHaveTextContent("Drucker bereit.");
+    expect(notice).toHaveTextContent("Rolle: 62 mm endlos");
+    expect(notice).toHaveTextContent("Druckdienst 0.5.0.");
+  });
+
+  it("gibt bei falscher Rolle die eingelegte Rolle und das Papier des Haushalts an", async () => {
+    renderApp({ scenarios: ["labels-die-cut", "at-pi"] }, ROUTES.printers);
+    await ready();
+    const cellar = card("Keller (Pi)");
+    await userEvent.click(within(cellar).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
+    const title = await within(cellar).findByText("Die eingelegte Rolle passt nicht zum Papier des Haushalts.");
+    const notice = title.closest("[role=status]");
+    expect(notice).toHaveTextContent("Eingelegt ist 62 mm endlos; das Papier des Haushalts ist 62 × 29 mm gestanzt.");
+    expect(notice).toHaveTextContent("Die passende Rolle einlegen oder unter „Etiketten gestalten“ das Papier ändern.");
+    expect(notice).not.toHaveTextContent("Erwartet wird die 62-mm-Endlosrolle");
+  });
+
+  it("rät je nach Anschluss: USB am Server mit dem Hinweis auf den Neustart, Netzwerk", async () => {
+    const base = mock();
+    await base.printers.create({ name: "Speisekammer", connection: "server", server: { driver: "brother_ql", model: "QL-570", address: "usb://04f9:2028", media: "62" } });
+    await base.printers.create({ name: "Flur", connection: "server", server: { driver: "brother_ql", model: "QL-820NWB", address: "tcp://192.168.1.60:9100", media: "62" } });
+    const off: DriverStatus = { reachable: false, ready: null, media_detected: null, errors: ["offline"] };
+    const core: Core = { ...base, printers: { ...base.printers, probe: async (id) => answered(id, off) } };
+    renderWith(core);
+    await ready();
+    await userEvent.click(within(card("Speisekammer")).getByRole("button", { name: "Verbindung prüfen: Speisekammer" }));
+    const atServer = (await within(card("Speisekammer")).findByText("Der Server antwortet, der Drucker nicht.")).closest("[role=status]");
+    expect(atServer).toHaveTextContent("USB-Kabel an Drucker und Server prüfen.");
+    expect(atServer).toHaveTextContent("Docker sieht einen frisch eingeschalteten Drucker manchmal erst nach einem Neustart von Stowly");
+    await userEvent.click(within(card("Flur")).getByRole("button", { name: "Verbindung prüfen: Flur" }));
+    const network = (await within(card("Flur")).findByText("Der Server antwortet, der Drucker nicht.")).closest("[role=status]");
+    expect(network).toHaveTextContent("Netzwerkkabel oder WLAN des Druckers prüfen");
+    expect(network).not.toHaveTextContent("Docker");
+  });
+
+  it("hat zu jedem Fehler des Druckers den Rat", async () => {
+    const cases: [string, string, string][] = [
+      ["no_media", "Es sind keine Etiketten eingelegt.", "Eine Etikettenrolle einlegen."],
+      ["cover_open", "Die Klappe des Druckers ist offen.", "Die Klappe des Druckers schließen."],
+      ["cutter_jam", "Das Schneidwerk klemmt.", "eingeklemmtes Papier am Schneidwerk vorsichtig entfernen"],
+      ["overheated", "Der Drucker ist überhitzt und braucht eine Pause.", "abkühlen lassen"],
+    ];
+    for (const [code, title, step] of cases) {
+      const base = mock();
+      const status: DriverStatus = { reachable: true, ready: false, media_detected: code !== "no_media", errors: [code] };
+      const core: Core = { ...base, printers: { ...base.printers, probe: async () => answered("ql570", status) } };
+      renderWith(core);
+      await ready();
+      await userEvent.click(within(card("Keller (Pi)")).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
+      const notice = (await within(card("Keller (Pi)")).findByText(title)).closest("[role=status]");
+      expect(notice, code).toHaveTextContent(step);
+      expect(notice, code).toHaveTextContent("Dann noch einmal „Verbindung prüfen“.");
+      cleanup();
+    }
+  });
+
+  it("sagt, wenn der Druckdienst des Pi zu alt für das Papier ist, und bietet Neu koppeln an", async () => {
+    renderApp({ scenarios: ["pi-outdated"] }, ROUTES.printers);
+    await ready();
+    const cellar = card("Keller (Pi)");
+    // Ohne Abfrage, aus der Kopplung (`PairedPrinter.version`).
+    const notice = await within(cellar).findByText("Druckdienst 0.4.0 kann dieses Papier nicht.");
+    expect(notice.closest("[role=status]")).toHaveTextContent("Seine Etiketten bleiben ausstehend, bis der Pi neu gekoppelt ist");
+    await userEvent.click(within(cellar).getByRole("button", { name: "Neu koppeln" }));
+    const dialog = screen.getByRole("dialog", { name: "Raspberry Pi koppeln" });
+    expect(within(dialog).getByLabelText("Drucker")).toHaveDisplayValue("Vorhandenen Drucker übernehmen: Keller (Pi)");
+  });
+
+  it("nimmt nach dem Prüfen die frische Angabe des Druckdienstes", async () => {
+    renderApp({ scenarios: ["pi-outdated", "at-pi"] }, ROUTES.printers);
+    await ready();
+    const cellar = card("Keller (Pi)");
+    await userEvent.click(within(cellar).getByRole("button", { name: "Verbindung prüfen: Keller (Pi)" }));
+    await within(cellar).findByRole("button", { name: "Neu koppeln" });
+    // Genau ein Hinweis: der aus der Abfrage.
+    expect(within(cellar).getAllByText("Druckdienst 0.4.0 kann dieses Papier nicht.")).toHaveLength(1);
+  });
+
+  it("führt im Abschnitt „Etiketten“ zur Gestaltung und nennt das Papier", async () => {
+    renderApp({ scenarios: ["labels-die-cut"] }, ROUTES.printers);
+    await ready();
+    const link = await within(section("Etiketten")).findByRole("link", { name: /Etiketten gestalten/ });
+    await waitFor(() => expect(link).toHaveTextContent("Papier: 62 × 29 mm gestanzt"));
+    await userEvent.click(link);
+    expect(await screen.findByRole("heading", { name: "Etiketten gestalten", level: 1 })).toBeInTheDocument();
   });
 });

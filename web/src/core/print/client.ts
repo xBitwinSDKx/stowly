@@ -156,10 +156,19 @@ export class PrintServiceClient {
   /**
    * Zustand des Dienstes. Mit `nonce` weist er sich aus (`proof`); am Server entfällt das.
    * `timeoutMs`: länger als üblich nur, wenn die Anfrage die Nachfrage des Browsers nach dem
-   * lokalen Netzwerk auslösen kann (src/core/print/connect.ts).
+   * lokalen Netzwerk auslösen kann (src/core/print/connect.ts). `media`: das Papier des Haushalts;
+   * damit vergleicht der Dienst die eingelegte Rolle (seit 0.5.0, ein älterer übergeht es).
    */
-  health(endpoint: ServiceEndpoint, nonce: string | null, timeoutMs: number = HEALTH_TIMEOUT_MS): Promise<ServiceReply<ServiceHealth>> {
-    const path = nonce === null ? "/v1/health" : `/v1/health?nonce=${encodeURIComponent(nonce)}`;
+  health(endpoint: ServiceEndpoint, nonce: string | null, timeoutMs: number = HEALTH_TIMEOUT_MS, media: string | null = null): Promise<ServiceReply<ServiceHealth>> {
+    const query = new URLSearchParams();
+    if (nonce !== null) {
+      query.set("nonce", nonce);
+    }
+    if (media !== null) {
+      query.set("media", media);
+    }
+    const search = query.toString();
+    const path = search === "" ? "/v1/health" : `/v1/health?${search}`;
     return this.call(endpoint, { method: "GET", path, timeoutMs }, async (response) => {
       const value: unknown = await response.json();
       return isHealth(value) ? value : null;

@@ -6,30 +6,18 @@
  * - Zustände und Fehler der Etiketten
  * - welcher Drucker am Ende druckt (dieselbe Regel wie im Kern: `printerIdForJob`)
  * - wann das Zertifikat eines gekoppelten Pi bald abläuft
+ *
+ * Was der Rahmen der App braucht (offene Etiketten, `viewJob`), steht in jobs.ts: So bleiben diese
+ * Sätze aus dem Hauptpaket. Von dort kommen hier nur Typen; zur Laufzeit hängt model.ts nicht an
+ * jobs.ts, sonst bekäme jobs.ts beim Bauen einen eigenen Teil neben dem Hauptpaket. Das Urteil nach
+ * „Verbindung prüfen" und der Rat je Fehler stehen in verdict.ts.
  */
-import {
-  formatDate,
-  PI_CERT_WARN_DAYS,
-  printerIdForJob,
-  productSubtitle,
-  productTitle,
-  type DriverStatus,
-  type HostHealth,
-  type HouseholdSettings,
-  type Package,
-  type Printer,
-  type PrinterErrorCode,
-  type PrinterProblem,
-  type PrinterStatus,
-  type PrintFlushReport,
-  type PrintJob,
-  type PrintJobErrorCode,
-  type PrintJobState,
-  type Product,
-  toLocalDate,
-  type Zone,
-} from "@/contract";
+import { formatDate, PI_CERT_WARN_DAYS, printerIdForJob, type DriverStatus, type HostHealth, type HouseholdSettings, type Printer, type PrinterErrorCode, type PrinterProblem, type PrinterStatus, type PrintFlushReport, type PrintJob, type PrintJobErrorCode, type PrintJobState, toLocalDate, type Zone } from "@/contract";
 import { plural } from "@/ui";
+
+import type { JobView, PrintData } from "./jobs";
+
+export type { JobGroup, JobView, PrintData } from "./jobs";
 
 // --------------------------------------------------------------------------------------
 // Schwellen: ab wann etwas am Rechner auffällt
@@ -62,7 +50,7 @@ export interface Fact {
 
 const PRINTER_ERROR_TEXTS: Record<PrinterErrorCode, string> = {
   no_media: "Es sind keine Etiketten eingelegt.",
-  media_mismatch: "Die eingelegte Rolle passt nicht. Erwartet wird die 62-mm-Endlosrolle.",
+  media_mismatch: "Die eingelegte Rolle passt nicht zum Papier des Haushalts.",
   cover_open: "Die Klappe des Druckers ist offen.",
   cutter_jam: "Das Schneidwerk klemmt.",
   overheated: "Der Drucker ist überhitzt und braucht eine Pause.",
@@ -106,11 +94,6 @@ export const JOB_STATES: Record<PrintJobState, { label: string; tone: JobTone }>
   unknown: { label: "unklar", tone: "warn" },
   cancelled: { label: "verworfen", tone: "neutral" },
 };
-
-/** Noch nicht abgeschlossen: Daran erinnern das Drucker-Symbol und das Menü. */
-export function isOpenJob(job: Pick<PrintJob, "state">): boolean {
-  return job.state === "pending" || job.state === "queued" || job.state === "printing" || job.state === "unknown";
-}
 
 // --------------------------------------------------------------------------------------
 // Warum ein Druckdienst nicht benutzbar ist
@@ -178,6 +161,12 @@ export function problemText(problem: DeliveryProblem, printer: Pick<Printer, "co
       return {
         title: "Direktdruck geht nur über die HTTPS-Adresse.",
         advice: "Stowly über seine HTTPS-Adresse öffnen. Über eine http-Adresse lässt der Browser nur den Druck über den Server zu.",
+      };
+    case "outdated":
+      return {
+        title: "Der Druckdienst ist zu alt für das Papier des Haushalts.",
+        advice:
+          "Den Pi neu koppeln: „Raspberry Pi koppeln“, dann „Vorhandenen Drucker übernehmen“. Das spielt den neuen Druckdienst ein; Token und Drucker bleiben. Bis dahin bleiben die Etiketten ausstehend, falsch gedruckt wird nichts.",
       };
     case "no_printer":
       return {
@@ -391,16 +380,7 @@ export function describeHealth(status: PrinterStatus | undefined, printer: Pick<
 // Welcher Drucker druckt
 // --------------------------------------------------------------------------------------
 
-/** Die Live-Daten, in denen die Regeln nachschlagen. */
-export interface PrintData {
-  printers: ReadonlyMap<string, Printer>;
-  zones: ReadonlyMap<string, Zone>;
-  /** Bestand und Lösch-Historie. */
-  packages: ReadonlyMap<string, Package>;
-  products: ReadonlyMap<string, Product>;
-  settings: Pick<HouseholdSettings, "default_printer_id"> | null | undefined;
-}
-
+/** Der Drucker nach der Regel des Kerns (`printerIdForJob`), wie `resolvePrinter` in jobs.ts. */
 function resolve(job: Pick<PrintJob, "printer_id" | "package_id" | "zone_id">, data: PrintData): Printer | undefined {
   const id = printerIdForJob(job, {
     package: (packageId) => data.packages.get(packageId),
@@ -518,71 +498,6 @@ export function describeRemoval(
   }
   labels.push("Etiketten werden dabei nicht gelöscht.");
   return { duties: sentences, labels };
-}
-
-// --------------------------------------------------------------------------------------
-// Etiketten für die Anzeige
-// --------------------------------------------------------------------------------------
-
-/**
- * In welchem Abschnitt der Liste ein Etikett steht:
- * - "ask": Ausgang unklar, die App fragt nach
- * - "waiting": ausstehend oder beim Drucker
- * - "done": erledigt, fehlgeschlagen oder verworfen
- */
-export type JobGroup = "ask" | "waiting" | "done";
-
-export interface JobView {
-  job: PrintJob;
-  group: JobGroup;
-  /** Wozu das Etikett gehört, als Überschrift: Produktname oder „Zone Keller". */
-  title: string;
-  /** Darunter: Packungs-ID mit Marke und Größe, oder leer. */
-  detail: string;
-  /** Kurz und eindeutig, für Beschriftungen: „Basmati Reis, Packung A2B3C" oder „Zone Keller". */
-  label: string;
-  /** Der Drucker, der druckt oder gedruckt hat; undefined = keiner zugeordnet oder nicht mehr bekannt. */
-  printer: Printer | undefined;
-  /** Dieses Gerät hat das Etikett angefordert und stellt es zu. */
-  own: boolean;
-  /** Ein Drucker mit Bild-Treiber hat es geschrieben: Das Bild lässt sich ansehen. */
-  hasImage: boolean;
-}
-
-function jobGroup(state: PrintJobState): JobGroup {
-  if (state === "unknown") {
-    return "ask";
-  }
-  return state === "pending" || state === "queued" || state === "printing" ? "waiting" : "done";
-}
-
-/** Bereitet ein Etikett für die Anzeige auf. */
-export function viewJob(job: PrintJob, data: PrintData, ownDeviceId: string | null): JobView {
-  let title: string;
-  let detail = "";
-  if (job.kind === "zone") {
-    const zone = job.zone_id === null ? undefined : data.zones.get(job.zone_id);
-    title = zone ? `Zone ${zone.name}` : "Zone (gelöscht)";
-    detail = "Zonen-Etikett";
-  } else {
-    const pkg = job.package_id === null ? undefined : data.packages.get(job.package_id);
-    const product = pkg ? data.products.get(pkg.product_id) : undefined;
-    title = pkg ? productTitle(product) : "Packung nicht mehr vorhanden";
-    detail = [job.package_id ? `Packung ${job.package_id}` : null, productSubtitle(product) || null].filter(Boolean).join(" · ");
-  }
-  // Solange ein Etikett aussteht, entscheidet die Regel bei jedem Versuch neu; danach steht fest, wer gedruckt hat.
-  const reported = job.printer_id === null ? undefined : data.printers.get(job.printer_id);
-  const printer = job.state === "pending" ? resolve(job, data) : (reported ?? (isOpenJob(job) ? resolve(job, data) : undefined));
-  return {
-    job,
-    group: jobGroup(job.state),
-    title,
-    detail,
-    label: job.kind === "package" && job.package_id ? `${title}, Packung ${job.package_id}` : title,
-    printer,
-    own: ownDeviceId !== null && job.device_id === ownDeviceId,
-    hasImage: (job.state === "printed" || job.state === "sent") && printer?.server?.driver === "image",
-  };
 }
 
 // --------------------------------------------------------------------------------------

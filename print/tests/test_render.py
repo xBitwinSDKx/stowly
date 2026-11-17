@@ -11,22 +11,32 @@ import base64
 import hashlib
 import io
 import logging
+import random
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageChops, ImageFont
-from print_support import REFERENCE_DIR
+from PIL import Image, ImageChops, ImageDraw, ImageFont
+from print_support import REFERENCE_DIR, format2
 
+from stowly_print import media as catalog
+from stowly_print import render as rendering
 from stowly_print.model import Capabilities, Media
 from stowly_print.render import (
     FONT_FILES,
+    MAX_FONT_STEPS,
+    MAX_KNOWN_GLYPHS,
+    MAX_LINES,
+    MAX_QR_LENGTH,
+    MAX_TEXT_LENGTH,
     PACKAGE_FONT_DIR,
     Fonts,
     Placed,
     RenderError,
     Target,
     decode_png,
+    for_print,
     mm_to_px,
+    paper_of,
     qr_matrix,
     render,
     render_with_report,
@@ -96,27 +106,22 @@ def text_template(**element) -> dict:
 # --- Referenzbilder ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("name", "kind", "data"),
-    [
-        ("package-62x29", "package", PACKAGE),
-        ("package-62x29-lang", "package", PACKAGE_LONG),
-        ("zone-62x29", "zone", ZONE),
-    ],
-)
-def test_builtin_templates_match_their_reference_images(name, kind, data, update_references):
+def assert_matches_reference(
+    image: Image.Image, report: list[Placed], name: str, size: tuple[int, int], update: bool
+) -> None:
+    """Vergleicht ein Etikett mit seinem Referenzbild (Leserichtung): Außerhalb der Textkästen
+    genau, in den Textkästen bis auf ``TEXT_TOLERANCE``."""
     if ImageFont.load_default(10).getname() != ("Aileron", "Regular"):
         pytest.skip("Diese Pillow-Version bringt eine andere eingebaute Schrift mit.")
-    image, report = render_with_report(load_builtin(kind), data, fonts=BUILTIN)
     path = REFERENCE_DIR / f"{name}.png"
-    if update_references:
+    if update:
         path.parent.mkdir(exist_ok=True)
         image.save(path, format="PNG", optimize=True)
 
     with Image.open(path) as stored:
         reference = stored.copy()
     assert reference.mode == "1"
-    assert reference.size == image.size == (696, 342)
+    assert reference.size == image.size == size
 
     difference = ImageChops.logical_xor(image, reference)
     # Außerhalb der Textkästen (QR-Code, Linie, Rand) gibt es keine Abweichung.
@@ -128,6 +133,168 @@ def test_builtin_templates_match_their_reference_images(name, kind, data, update
     assert outside.histogram()[-1] == 0
     area = sum((p.box[2] - p.box[0]) * (p.box[3] - p.box[1]) for p in texts(report) if p.drawn)
     assert in_text <= TEXT_TOLERANCE * area, f"{in_text} von {area} Pixeln weichen ab"
+
+
+@pytest.mark.parametrize(
+    ("name", "kind", "data"),
+    [
+        ("package-62x29", "package", PACKAGE),
+        ("package-62x29-lang", "package", PACKAGE_LONG),
+        ("zone-62x29", "zone", ZONE),
+    ],
+)
+def test_builtin_templates_match_their_reference_images(name, kind, data, update_references):
+    image, report = render_with_report(load_builtin(kind), data, fonts=BUILTIN)
+    assert_matches_reference(image, report, name, (696, 342), update_references)
+
+
+# Format 2 auf anderem Papier (docs/etiketten.md, 3.4): die Elemente der mitgelieferten
+# Packungs-Vorlage, gleichmäßig auf die Fläche des Papiers skaliert. Die Referenzbilder zeigen das
+# Etikett so, wie man es liest; gedreht wird erst für den Druck.
+FORMAT_2_REFERENCES = [
+    # 29 mm endlos, 62 mm lang: länger, als die Rolle breit ist, also gedreht (längs × quer).
+    ("format2-29-endlos-62mm", "29", 62, (732, 306)),
+    # 62 × 29 mm gestanzt: quer, nur 271 Punkte bedruckbar statt 342.
+    ("format2-62x29-gestanzt", "62x29", None, (696, 271)),
+    # 29 × 90 mm gestanzt: gedreht, 991 Punkte in Laufrichtung.
+    ("format2-29x90-gestanzt", "29x90", None, (991, 306)),
+]
+
+
+@pytest.mark.parametrize(("name", "paper_id", "length_mm", "size"), FORMAT_2_REFERENCES)
+def test_format_2_matches_its_reference_images(name, paper_id, length_mm, size, update_references):
+    image, report = render_with_report(format2(paper_id, length_mm), PACKAGE, fonts=BUILTIN)
+    assert image.mode == "1"
+    assert_matches_reference(image, report, name, size, update_references)
+
+
+def test_format_1_with_paper_id_stays_bit_identical():
+    """Der Server nennt das Papier auch im Format 1 (62 mm endlos); das ändert kein Pixel."""
+    plain = render(load_builtin("package"), PACKAGE, fonts=BUILTIN)
+    named = load_builtin("package")
+    named["media"].update({"id": "62", "kind": "endless"})
+    image = render(named, PACKAGE, fonts=BUILTIN)
+    assert image.tobytes() == plain.tobytes()
+    # Auch für einen Drucker mit dem Papier der Vorgabe, und für den Druck wird nichts gedreht.
+    endless = Capabilities(300, Media(62, None, 696, "62", "endless", None), True, ["black"], True, True)
+    assert render(named, PACKAGE, endless, fonts=BUILTIN).tobytes() == plain.tobytes()
+    assert for_print(image, named) is image
+    assert paper_of(named) == catalog.paper("62")
+    assert paper_of(load_builtin("package")) is None
+    # Format 1 bleibt ungedreht, auch wenn das Etikett länger ist als die Rolle breit (wie 0.4.0).
+    named["media"]["length_mm"] = 80
+    longer = render(named, PACKAGE, fonts=BUILTIN)
+    assert longer.size == (696, 944)
+    assert for_print(longer, named) is longer
+
+
+def test_rotated_labels_go_to_the_printer_turned_counter_clockwise():
+    for paper_id, length_mm, reading, printing in (
+        ("29", 62, (732, 306), (306, 732)),
+        ("29x90", None, (991, 306), (306, 991)),
+        ("62x100", None, (1109, 696), (696, 1109)),
+        ("62", 63, (744, 696), (696, 744)),  # 62 mm endlos erst über 62 mm Länge gedreht
+        ("62", 62, (696, 732), (696, 732)),
+        ("62x29", None, (696, 271), (696, 271)),
+    ):
+        template = format2(paper_id, length_mm)
+        image, report = render_with_report(template, PACKAGE, fonts=BUILTIN)
+        printed = for_print(image, template)
+        assert (image.size, printed.size) == (reading, printing), paper_id
+        if template["rotate"] == 0:
+            assert printed is image
+            continue
+        assert printed.tobytes() == image.transpose(Image.Transpose.ROTATE_90).tobytes()
+        # Gegen den Uhrzeigersinn: Der QR-Code, in Leserichtung links, liegt in Druckrichtung unten;
+        # was in Leserichtung oben rechts steht, kommt in Druckrichtung zuerst (oben links).
+        qr = next(placed for placed in report if placed.type == "qr")
+        left, top, right, bottom = qr.ink
+        width = image.size[0]
+        assert ink_box(printed.crop((top, width - right, bottom, width - left))) is not None
+        assert black(printed, (top, width - right, bottom, width - left)) == black(image, qr.ink)
+        assert (width - right) > printed.size[1] // 2
+
+
+def test_paper_of_the_template_decides_the_size_not_the_printer():
+    narrow = Capabilities(203, Media(29, None, 306), True, ["black"], True, True)
+    for template, size in ((format2("62x29"), (696, 271)), (format2("29", 62), (732, 306))):
+        assert render(template, PACKAGE, fonts=BUILTIN).size == size
+        assert render(template, PACKAGE, narrow, fonts=BUILTIN).size == size
+    assert Target.of_template(format2("62x29")) == Target(300, 696, 271, 0)
+    assert Target.of_template(format2("29", 62), narrow) == Target(300, 306, 732, 90)
+    assert Target.of_template(format2("62", 50)) == Target(300, 696, 590, 0)
+    # Kürzer, als die Rolle breit ist: quer, nicht gedreht.
+    assert Target.of_template(format2("29", 25)) == Target(300, 306, 295, 0)
+    named = load_builtin("zone")
+    named["media"]["id"] = "62"
+    assert Target.of_template(named, narrow) == Target(300, 696, 342, 0)
+    assert Target.of_paper(catalog.paper("29x42")) == Target(300, 306, 425, 0)
+    # Ohne Papier in der Vorlage gilt der Drucker, ohne Drucker die Vorgabe.
+    assert Target.of_template(load_builtin("package"), narrow) == Target.of(narrow) == Target(203, 306, None)
+    assert Target.of_template(load_builtin("package")) == Target()
+    # Ein ausdrückliches Ziel gilt immer; Papier und Drehung der Vorlage werden trotzdem geprüft.
+    assert render(format2("62x29"), PACKAGE, Target(300, 696, 342), fonts=BUILTIN).size == (696, 342)
+    broken = format2("62x29")
+    broken["rotate"] = 90
+    with pytest.raises(RenderError, match="rotate"):
+        render(broken, PACKAGE, Target(300, 696, 342), fonts=BUILTIN)
+    # Die QR-Codes bleiben auf diesen Papieren lesbar groß.
+    for template in (format2("62x29"), format2("29", 62), format2("29x90")):
+        qr = next(p for p in render_with_report(template, PACKAGE, fonts=BUILTIN)[1] if p.type == "qr")
+        assert qr.module_px >= 7
+
+
+@pytest.mark.parametrize(
+    ("paper_id", "change", "message"),
+    [
+        ("62x29", {"media": {"id": "63x29", "kind": "die_cut", "width_mm": 63, "length_mm": 29}}, "kennt"),
+        ("62x29", {"media": {"kind": "die_cut", "width_mm": 62, "length_mm": 29}}, "Papier"),
+        ("62x29", {"media": {"id": 62, "kind": "endless", "width_mm": 62, "length_mm": 29}}, "Papier"),
+        ("62x29", {"media": "62x29"}, "Papier"),
+        ("62x29", {"media": None}, "Papier"),
+        ("62x29", {"media": {"id": "62x29", "kind": "endless"}}, "kind"),
+        ("62x29", {"media": {"id": "62x29", "width_mm": 50}}, "width_mm"),
+        ("62x29", {"media": {"id": "62x29", "length_mm": 100}}, "length_mm"),
+        ("62x29", {"rotate": 90}, "rotate"),
+        ("29x90", {"rotate": 0}, "rotate"),
+        ("29x90", {"rotate": 45}, "rotate"),
+        ("29x90", {"rotate": "90"}, "rotate"),
+        ("29x90", {"rotate": True}, "rotate"),
+        ("29", {"rotate": 0}, "29 mm endlos bei 62 mm"),
+        ("29", {"media": {"id": "29", "kind": "endless", "width_mm": 29}}, "length_mm"),
+        ("29", {"media": {"id": "29", "kind": "endless", "width_mm": 29, "length_mm": 0}}, "length_mm"),
+    ],
+)
+def test_format_2_rejects_an_unknown_paper_or_a_wrong_rotation(paper_id, change, message):
+    template = format2(paper_id, 62)
+    template.update(change)
+    with pytest.raises(RenderError, match=message):
+        render(template, PACKAGE, fonts=BUILTIN)
+    with pytest.raises(RenderError):
+        paper_of(template)
+    with pytest.raises(RenderError):
+        Target.of_template(template)
+
+
+def test_paper_given_as_known_values_or_left_to_the_catalog():
+    # Was die Vorlage über das Papier sagt, muss passen; was fehlt, ergänzt der Katalog.
+    sparse = format2("62x29")
+    sparse["media"] = {"id": "62x29"}
+    assert render(sparse, PACKAGE, fonts=BUILTIN).size == (696, 271)
+    rotated = format2("29x90")
+    del rotated["rotate"]  # ohne Angabe 0, und das passt hier nicht
+    with pytest.raises(RenderError, match="rotate 90"):
+        render(rotated, PACKAGE, fonts=BUILTIN)
+    unrotated = format2("62x29")
+    del unrotated["rotate"]
+    assert render(unrotated, PACKAGE, fonts=BUILTIN).size == (696, 271)
+    # Brother nennt manche Rollen anders, als sie messen: 39 × 90 ist 38 mm breit.
+    assert Target.of_template(format2("39x90")) == Target(300, 413, 991, 90)
+    # Format 1 mit einem Papier, das der Katalog nicht kennt: abgelehnt statt geraten.
+    unknown = load_builtin("package")
+    unknown["media"]["id"] = "63"
+    with pytest.raises(RenderError, match="kennt"):
+        render(unknown, PACKAGE, fonts=BUILTIN)
 
 
 def test_result_is_one_bit_in_exactly_the_default_size():
@@ -216,7 +383,7 @@ def test_qr_without_content_fails():
 # --- Ablehnen statt raten ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("schema", [2, 0, "1", None, True, 1.5])
+@pytest.mark.parametrize("schema", [3, 0, "1", "2", None, True, 1.5])
 def test_unknown_schema_is_rejected(schema):
     template = load_builtin("package")
     template["schema"] = schema
@@ -698,6 +865,10 @@ def test_target_follows_the_capabilities_of_a_printer():
     # Festes Material: Die Länge kommt vom Drucker, nicht aus der Vorlage.
     fixed = Capabilities(300, Media(62, 100, 696), True, ["black"], True, True)
     assert render(load_builtin("package"), PACKAGE, fixed, fonts=BUILTIN).size == (696, 1181)
+    # Gestanzte Etiketten aus dem Katalog sind in Laufrichtung kürzer bedruckbar, als sie lang sind.
+    die_cut = Capabilities(300, Media(62, 29, 696, "62x29", "die_cut", 271), True, ["black"], True, True)
+    assert Target.of(die_cut) == Target(300, 696, 271)
+    assert render(load_builtin("package"), PACKAGE, die_cut, fonts=BUILTIN).size == (696, 271)
 
 
 # --- Linie und Rechteck ------------------------------------------------------------------
@@ -817,9 +988,394 @@ def test_broken_png_is_rejected():
         decode_png(base64.b64encode(jpeg.getvalue()).decode("ascii"))
 
 
+# --- Grenzen gegen feindliche Vorlagen ---------------------------------------------------
+# Vorlagen kommen von angemeldeten Geräten (/v1/render, Aufträge) und über den Sync auch aus einer
+# zurückgespielten Sicherung. Keine darf den Dienst lange beschäftigen oder seinen Speicher füllen.
+
+
+def huge_template(*elements: dict) -> dict:
+    """62 × 29 mm, die Fläche ist 696 × 342 Pixel."""
+    return {
+        "schema": 1,
+        "media": {"width_mm": 62, "length_mm": 29},
+        "design": {"width_mm": 58.9, "height_mm": 29.0},
+        "elements": list(elements),
+    }
+
+
+@pytest.fixture
+def allocations(monkeypatch):
+    """Merkt sich die Größe jedes Bildes, das Pillow anlegt."""
+    sizes: list[tuple[int, int]] = []
+    original = Image.new
+
+    def recording(mode, size, *args, **kwargs):
+        sizes.append(tuple(size))
+        return original(mode, size, *args, **kwargs)
+
+    monkeypatch.setattr(Image, "new", recording)
+    return sizes
+
+
+@pytest.fixture
+def measured(monkeypatch):
+    """Zählt, wie oft der Renderer Text vermisst (``getbbox``)."""
+    calls = {"n": 0}
+    original = ImageFont.FreeTypeFont.getbbox
+
+    def counting(self, *args, **kwargs):
+        calls["n"] += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ImageFont.FreeTypeFont, "getbbox", counting)
+    return calls
+
+
+def test_text_box_is_clipped_to_the_label(allocations):
+    big = {"type": "text", "x": 0, "y": 0, "w": 5000, "h": 5000, "value": "{t}", "size": 3}
+    image, report = render_with_report(huge_template(big), {"t": "Hallo"}, fonts=Fonts.builtin())
+    # Kein Bild ist größer als das Etikett (vorher eine Ebene von 56 129 × 56 129 Pixeln).
+    assert max(width * height for width, height in allocations) <= 696 * 342
+    # Beschnitten auf das Etikett (die Zeichenfläche liegt um 0,7 Pixel zentriert, daher x = 1).
+    assert report[0].drawn and report[0].box == (1, 0, 696, 342)
+    assert inside(report[0].ink, (0, 0, 696, 342))
+    # Ragt der Kasten über den Rand, wird der Text im sichtbaren Teil gesetzt.
+    edge = dict(big, x=50, y=20, w=100, h=100)
+    placed = render_with_report(huge_template(edge), {"t": "Hallo"}, fonts=Fonts.builtin())[1][0]
+    assert placed.box[2:] == (696, 342) and inside(placed.ink, placed.box)
+    # Liegt er ganz daneben, wird nichts gezeichnet.
+    for outside in (dict(big, x=100, w=5), dict(big, x=-500, w=100), dict(big, y=-40, h=5)):
+        image, report = render_with_report(huge_template(outside), {"t": "Hallo"}, fonts=Fonts.builtin())
+        assert not report[0].drawn
+        assert black(image) == 0
+
+
+def test_font_size_is_limited_by_the_label(allocations):
+    # Größer, als das Etikett hoch ist: abgelehnt, bevor eine Schrift geladen wird. Auch beim größten
+    # Maßstab, den eine Zeichenfläche erlaubt (1 mm, also 342 Pixel je Millimeter).
+    for size, design in (
+        (30, {"width_mm": 58.9, "height_mm": 29.0}),
+        (1.1, {"width_mm": 1, "height_mm": 1}),
+    ):
+        template = huge_template({"type": "text", "x": 0, "y": 0, "w": 1, "h": 1, "value": "x", "size": size})
+        template["design"] = design
+        with pytest.raises(RenderError, match="größer, als das Etikett hoch ist"):
+            render(template, {}, fonts=Fonts.builtin())
+    # Noch kleiner ist keine Zeichenfläche: Der Maßstab wüchse ins Unendliche.
+    tiny = huge_template({"type": "text", "x": 0, "y": 0, "w": 1, "h": 1, "value": "x", "size": 0.5})
+    tiny["design"] = {"width_mm": 0.001, "height_mm": 0.001}
+    with pytest.raises(RenderError, match="mindestens 1 mm"):
+        render(tiny, {}, fonts=Fonts.builtin())
+    assert max(width * height for width, height in allocations) <= 696 * 342
+    # Bis zur Höhe des Etiketts geht es.
+    tall = huge_template({"type": "text", "x": 0, "y": 0, "w": 58.9, "h": 29, "value": "H", "size": 28.9})
+    assert render_with_report(tall, {}, fonts=Fonts.builtin())[1][0].drawn
+
+
+def test_font_steps_and_lines_are_limited():
+    text = {"type": "text", "x": 1, "y": 1, "w": 50, "h": 20, "value": "{t}", "size": 12.0}
+    longest = MAX_FONT_STEPS * 0.2
+    render(huge_template(dict(text, min_size=12.0 - longest)), {"t": "x"}, fonts=Fonts.builtin())
+    with pytest.raises(RenderError, match="höchstens 50 Stufen"):
+        render(huge_template(dict(text, min_size=12.0 - longest - 0.2)), {"t": "x"}, fonts=Fonts.builtin())
+    render(huge_template(dict(text, max_lines=MAX_LINES)), {"t": "x"}, fonts=Fonts.builtin())
+    with pytest.raises(RenderError, match="max_lines"):
+        render(huge_template(dict(text, max_lines=MAX_LINES + 1)), {"t": "x"}, fonts=Fonts.builtin())
+
+
+def test_a_font_size_freetype_cannot_set_does_not_lose_the_font(caplog):
+    fonts = Fonts(directories=[PACKAGE_FONT_DIR])
+    with pytest.raises(RenderError, match="100000 Pixeln"):
+        fonts.face("regular", 100_000)
+    # Die Datei gilt weiter: Ein normales Etikett danach hat die echte Schrift, mit Umlauten.
+    assert fonts.describe()["regular"] == str(PACKAGE_FONT_DIR / FONT_FILES["regular"])
+    assert not fonts.face("regular", 35).builtin
+    assert not any("nicht lesbar" in record.getMessage() for record in caplog.records)
+
+
+def test_long_words_in_narrow_boxes_cost_little(measured):
+    """2000 Zeichen ohne Leerzeichen in einem Kasten von 7 mm, drei Schriftstufen: vorher 12 s."""
+    word = "".join(random.Random(5).choice("WMwmABCDEFGH") for _ in range(2000))
+    element = {"type": "text", "x": 0, "y": 0, "w": 7, "h": 3, "value": "{t}", "size": 3, "min_size": 2}
+    for max_lines in (1, 3, MAX_LINES):
+        before = measured["n"]
+        placed = render_with_report(
+            huge_template(dict(element, max_lines=max_lines)), {"t": word}, fonts=Fonts.builtin()
+        )[1][0]
+        assert placed.truncated and placed.lines[-1].endswith("…")
+        assert measured["n"] - before < 1_500, measured["n"] - before
+
+
+def test_a_hostile_template_runs_out_of_budget_and_the_next_label_is_fine(measured):
+    word = "".join(random.Random(1).choice("WMwmABCDEFGH") for _ in range(MAX_TEXT_LENGTH))
+    hostile = huge_template(
+        *(
+            {"type": "text", "x": 0, "y": 0, "w": 58.9, "h": 29, "value": word[i:] + word[:i], "size": 1.0,
+             "min_size": 0.1, "max_lines": MAX_LINES}
+            for i in range(100)
+        )
+    )  # fmt: skip
+    with pytest.raises(RenderError, match="zu aufwendig"):
+        render(hostile, {}, fonts=Fonts.builtin())
+    # Das Budget gilt je Etikett: Das nächste rendert wie immer.
+    assert render(load_builtin("package"), PACKAGE, fonts=Fonts.builtin()).size == (696, 342)
+    # Und es bremst früh genug: Die Vermessungen bleiben in der Größenordnung des Budgets.
+    assert measured["n"] < rendering.RENDER_BUDGET // rendering.MEASURE_COST
+
+
+def test_placeholders_cannot_blow_up_the_text():
+    template = text_template(value="{t}" * 100_000)
+    placed = render_with_report(template, {"t": "x" * 500}, fonts=Fonts.builtin())[1][0]
+    assert placed.drawn and placed.truncated
+    assert substitute("{t}" * 1000, {"t": "ab"}, limit=7) == "abababa"
+    assert substitute("{{a}} {a}", {"a": "1"}, limit=100) == substitute("{{a}} {a}", {"a": "1"})
+    # Ein QR-Code mit mehr Inhalt, als je einer fasst, scheitert sofort.
+    qr = {"type": "qr", "x": 0, "y": 0, "size": 24, "value": "{t}" * 100_000}
+    with pytest.raises(RenderError, match="keinen QR-Code"):
+        render(huge_template(qr), {"t": "1" * 500}, fonts=Fonts.builtin())
+    assert len(substitute(qr["value"], {"t": "1" * 500}, MAX_QR_LENGTH + 1)) == MAX_QR_LENGTH + 1
+
+
+@pytest.fixture
+def drawn(monkeypatch):
+    """Merkt sich die Koordinaten, die Rechtecke und Linien an Pillow geben."""
+    calls: list[tuple[float, ...]] = []
+    original_rectangle, original_line = ImageDraw.ImageDraw.rectangle, ImageDraw.ImageDraw.line
+
+    def rectangle(self, xy, *args, **kwargs):
+        calls.append(tuple(xy))
+        return original_rectangle(self, xy, *args, **kwargs)
+
+    def line(self, xy, *args, **kwargs):
+        calls.append(tuple(xy))
+        return original_line(self, xy, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "rectangle", rectangle)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "line", line)
+    return calls
+
+
+def max_scale_template(*elements: dict) -> dict:
+    """Die kleinste erlaubte Zeichenfläche (1 mm) auf 62 × 29 mm: 342 Pixel je Millimeter."""
+    template = huge_template(*elements)
+    template["design"] = {"width_mm": 1, "height_mm": 1}
+    return template
+
+
+def test_frames_and_lines_reach_pillow_only_on_the_label(drawn):
+    """Pillow zieht einen Rahmen je Pixel Randbreite als vier Linien und eine dünne Linie Punkt für
+    Punkt, auch außerhalb des Bildes (vorher: 100 Rahmen mit 10 000 mm Rand über 120 s, 100 schräge
+    Linien 44 s). An Pillow geht jetzt nur noch, was auf dem Etikett liegt."""
+    elements = [
+        {"type": "rect", "x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5, "stroke": 10000},
+        {"type": "rect", "x": 0, "y": 0, "w": 10000, "h": 10000, "stroke": 0.003},
+        {"type": "rect", "x": -5000, "y": -5000, "w": 10000, "h": 10000, "fill": True},
+        {"type": "line", "x1": 0, "y1": 0, "x2": 10000, "y2": 7000, "width": 0.003},
+        {"type": "line", "x1": -10000, "y1": -10000, "x2": 10000, "y2": 10000, "width": 10000},
+        {"type": "line", "x1": -10000, "y1": -10000, "x2": 10000, "y2": 10000, "width": 0.003},
+        {"type": "line", "x1": 0.5, "y1": -10000, "x2": 0.5, "y2": 10000, "width": 10000},
+        {"type": "line", "x1": -10000, "y1": 0.5, "x2": 10000, "y2": 0.5, "width": 0.003},
+    ]
+    for element in elements:
+        drawn.clear()
+        image = render(max_scale_template(*([element] * 100)), {}, fonts=Fonts.builtin())
+        assert image.size == (696, 342)
+        assert drawn, element
+        width, height = image.size
+        for xy in drawn:
+            xs, ys = xy[0::2], xy[1::2]
+            # Rechtecke ganz auf dem Etikett; Linien höchstens um ihre halbe Dicke daneben.
+            assert all(-2 * (width + height) <= x <= 3 * (width + height) for x in xs), (element, xy)
+            assert all(-2 * (width + height) <= y <= 3 * (width + height) for y in ys), (element, xy)
+
+
+def test_frames_inside_the_label_look_as_before():
+    """Der Rahmen aus vier Streifen hat dieselben Pixel wie Pillows Rahmen."""
+    for stroke_px in (1, 2, 3, 5, 17, 58):
+        stroke = stroke_px / (342 / 29)  # Millimeter, die genau so viele Pixel ergeben
+        template = huge_template({"type": "rect", "x": 10, "y": 5, "w": 20, "h": 10, "stroke": stroke})
+        image = render(template, {}, fonts=Fonts.builtin())
+        expected = Image.new("1", image.size, 1)
+        box = render_with_report(template, {}, fonts=Fonts.builtin())[1][0].box
+        ImageDraw.Draw(expected).rectangle(
+            (box[0], box[1], box[2] - 1, box[3] - 1), outline=0, width=round(stroke * 342 / 29)
+        )
+        assert image.tobytes() == expected.tobytes(), stroke_px
+    # Erreicht der Rand die halbe kleinere Seite, ist der Kasten voll, und nichts liegt daneben.
+    full = huge_template({"type": "rect", "x": 10, "y": 5, "w": 20, "h": 10, "stroke": 6})
+    image, report = render_with_report(full, {}, fonts=Fonts.builtin())
+    assert ink_box(image) == report[0].box
+    assert black(image) == (report[0].box[2] - report[0].box[0]) * (report[0].box[3] - report[0].box[1])
+
+
+def test_lines_inside_the_label_look_as_before():
+    for width_mm in (0.01, 0.25, 1.0, 3.0):
+        template = huge_template({"type": "line", "x1": 3, "y1": 2, "x2": 50, "y2": 25, "width": width_mm})
+        image = render(template, {}, fonts=Fonts.builtin())
+        expected = Image.new("1", image.size, 1)
+        frame_scale, left = 342 / 29, (696 - 58.9 * 342 / 29) / 2
+        points = (
+            round(left + 3 * frame_scale),
+            round(2 * frame_scale),
+            round(left + 50 * frame_scale),
+            round(25 * frame_scale),
+        )
+        ImageDraw.Draw(expected).line(points, fill=0, width=max(1, round(width_mm * frame_scale)))
+        assert image.tobytes() == expected.tobytes(), width_mm
+
+
+def test_lines_and_frames_partly_outside_the_label_still_show_their_visible_part():
+    # Eine Linie von weit außerhalb quer über das Etikett: zu sehen; ganz daneben: nichts.
+    across = render(
+        huge_template({"type": "line", "x1": -500, "y1": -300, "x2": 600, "y2": 300, "width": 0.5}), {}
+    )
+    assert black(across) > 0
+    beside = render(
+        huge_template({"type": "line", "x1": -500, "y1": -300, "x2": -100, "y2": -10, "width": 0.5}), {}
+    )
+    assert black(beside) == 0
+    # Ein Rahmen, dessen linke Seite auf dem Etikett liegt und der Rest daneben: nur die linke Seite.
+    frame = render(huge_template({"type": "rect", "x": 10, "y": -100, "w": 500, "h": 300, "stroke": 1}), {})
+    left, top, right, bottom = ink_box(frame)
+    assert (top, bottom) == (0, 342) and right - left == round(342 / 29)
+
+
+def test_qr_code_larger_than_the_label_or_beside_it():
+    qr = {"type": "qr", "x": 0, "y": 0, "size": 24, "value": "{qr}"}
+    with pytest.raises(RenderError, match="größer als das Etikett"):
+        render(huge_template(dict(qr, size=60)), PACKAGE, fonts=Fonts.builtin())
+    # Neben dem Etikett: nichts gezeichnet, und nichts davon geht an Pillow.
+    image = render(huge_template(dict(qr, x=5000, y=5000)), PACKAGE, fonts=Fonts.builtin())
+    assert black(image) == 0
+    # Halb darauf: der sichtbare Teil.
+    image = render(huge_template(dict(qr, x=-12)), PACKAGE, fonts=Fonts.builtin())
+    assert 0 < black(image) < black(render(huge_template(qr), PACKAGE, fonts=Fonts.builtin()))
+
+
+def test_design_must_be_at_least_a_millimetre():
+    template = huge_template({"type": "rect", "x": 0, "y": 0, "w": 0.5, "h": 0.5, "fill": True})
+    template["design"] = {"width_mm": 0.999, "height_mm": 1}
+    with pytest.raises(RenderError, match="mindestens 1 mm"):
+        render(template, {}, fonts=Fonts.builtin())
+    template["design"] = {"width_mm": 1, "height_mm": 1}
+    assert black(render(template, {}, fonts=Fonts.builtin())) > 0
+
+
+def test_missing_characters_are_replaced_once_per_font(monkeypatch):
+    calls = {"n": 0}
+    original = rendering._Glyphs.readable
+
+    def counting(self, text):
+        calls["n"] += 1
+        return original(self, text)
+
+    monkeypatch.setattr(rendering._Glyphs, "readable", counting)
+    cjk = "".join(chr(0x4E00 + i) for i in range(300))
+    template = huge_template(
+        {"type": "text", "x": 0, "y": 0, "w": 3, "h": 3, "value": cjk, "size": 10.0, "min_size": 0.01}
+    )
+    render(template, {}, fonts=Fonts(directories=[PACKAGE_FONT_DIR]))
+    assert calls["n"] == 1  # vorher einmal je Schriftgröße, also bis zu 50-mal
+
+
+def test_many_large_qr_codes_run_out_of_budget():
+    qr = {
+        "type": "qr",
+        "x": 0,
+        "y": 0,
+        "size": 29,
+        "value": "1" * 4000,
+        "ec": "L",
+        "quiet": 0,
+        "min_module_px": 1,
+    }
+    with pytest.raises(RenderError, match="zu aufwendig"):
+        render(huge_template(*([qr] * 100)), {}, fonts=Fonts.builtin())
+
+
+def test_known_glyphs_stay_bounded():
+    glyphs = Fonts.builtin().face("regular", 24).glyphs
+    for code in range(0x4E00, 0x4E00 + MAX_KNOWN_GLYPHS + 100):
+        glyphs.has(chr(code))
+    assert len(glyphs._known) <= MAX_KNOWN_GLYPHS
+
+
+def test_closest_cut_matches_the_linear_search():
+    """Die Halbierung beim Ausgleich findet dieselbe Schnittstelle wie das Durchprobieren."""
+    rng = random.Random(3)
+    for fonts in (Fonts.builtin(), Fonts(directories=[PACKAGE_FONT_DIR])):
+        for _ in range(300):
+            face = fonts.face(rng.choice(["regular", "bold", "mono"]), rng.choice([9, 24, 35]))
+            word = "".join(
+                rng.choice(rng.choice(["WMwmiIl1", "éäxyz", "0123456789"])) for _ in range(rng.randint(2, 60))
+            )
+            low, high = rng.randint(1, len(word)), rng.randint(0, len(word))
+            wanted = rng.uniform(0, face.extent(word) * 1.2)
+            expected = min(
+                range(low, high + 1),
+                key=lambda cut, wanted=wanted: abs(face.extent(word[:cut]) - wanted),
+                default=low,
+            )
+            assert rendering._closest_cut(word, 0, low, high, face, wanted) == expected
+
+
+def test_too_wide_measures_only_as_much_as_it_needs():
+    rng = random.Random(4)
+    for fonts in (Fonts.builtin(), Fonts(directories=[PACKAGE_FONT_DIR])):
+        face = fonts.face("regular", rng.choice([9, 35]))
+        for _ in range(200):
+            text = "".join(rng.choice("WMwmiIl1 é-") for _ in range(rng.randint(1, 600)))
+            width = rng.randint(1, max(2, face.extent(text) + 20))
+            assert rendering._too_wide(text, 0, len(text), face, width) == (face.extent(text) > width)
+
+
+def test_real_labels_stay_far_below_the_budget(monkeypatch):
+    spent = {"n": 0}
+
+    def counting(cost: int) -> None:
+        spent["n"] += cost
+
+    monkeypatch.setattr(rendering, "_spend", counting)
+    word = ("Hartweizengriess" * 40)[:500]  # so lang darf ein Wert in den Daten höchstens sein
+    for data in (PACKAGE, PACKAGE_LONG, {key: word for key in PACKAGE} | {"qr": PACKAGE["qr"]}):
+        spent["n"] = 0
+        render(load_builtin("package"), data, fonts=Fonts(directories=[PACKAGE_FONT_DIR]))
+        assert spent["n"] < rendering.RENDER_BUDGET // 10, spent["n"]
+
+
+def test_wrapping_stops_after_the_lines_that_fit():
+    face = Fonts.builtin().face("regular", 35)
+    rng = random.Random(9)
+    for _ in range(200):
+        text = " ".join(
+            "".join(rng.choice("WMwmiIl-/") for _ in range(rng.randint(1, 30)))
+            for _ in range(rng.randint(1, 30))
+        )
+        width = rng.randint(40, 400)
+        for balance in (True, False):
+            full = rendering._wrap(text, face, width, break_words=True, balance=balance, limit=10_000)
+            for limit in (1, 2, 3, 5):
+                lines = rendering._wrap(text, face, width, break_words=True, balance=balance, limit=limit)
+                if len(full) <= limit:
+                    assert lines == full
+                else:
+                    # Mehr als passen: eine Zeile mehr als die Grenze, und ohne Ausgleich (zum Kürzen)
+                    # sind die Zeilen bis zur Grenze dieselben wie ohne Grenze.
+                    assert len(lines) == limit + 1
+                    if not balance:
+                        assert lines[:limit] == full[:limit]
+
+
 def test_reference_images_are_small_one_bit_files():
     files = sorted(Path(REFERENCE_DIR).glob("*.png"))
-    assert [path.name for path in files] == ["package-62x29-lang.png", "package-62x29.png", "zone-62x29.png"]
+    assert [path.name for path in files] == [
+        "format2-29-endlos-62mm.png",
+        "format2-29x90-gestanzt.png",
+        "format2-62x29-gestanzt.png",
+        "package-62x29-lang.png",
+        "package-62x29.png",
+        "zone-62x29.png",
+    ]
     for path in files:
         assert path.stat().st_size < 10_000
         with Image.open(path) as image:

@@ -2,6 +2,17 @@
 
 Jede Version, die auf GitHub erscheint, steht hier. Der Abschnitt einer Version wird zum Text ihres Releases; die App zeigt ihn unter Einstellungen → Aktualisierung. Muss beim Umstieg etwas von Hand geschehen (`docker-compose.yml`, `.env`, der Updater), steht es unter „Von Hand".
 
+## 0.5.0
+
+Etiketten gestalten, Produktdaten neu abfragen und eine Druckerkarte, die sagt, was zu tun ist.
+
+- **Etiketten gestalten:** Drucker → „Etiketten gestalten". Ein Papier für alle Drucker: Endlosrollen von 18 bis 62 mm, auf Wunsch quer bedruckt, und gestanzte Etiketten bis 62 mm Breite. Je für Packungs- und Zonen-Etiketten: Länge (bei Endlosrollen), QR-Code links oder rechts in drei Größen, welche Felder in welcher Reihenfolge und Größe, Datum lang oder kurz, ein eigener Text und die Trennlinie. Neue Felder: Zone, Marke und Größe einzeln, kurzes Datum. Die Vorschau zeigt das echte Etikett; „Probedruck" druckt eines zum Vergleich. Wer den Editor nie öffnet, bekommt die Etiketten wie bisher.
+- **Produktdaten neu abfragen:** „Online abfragen" oben in „Produkt bearbeiten" fragt Open Food Facts jetzt, auch für einen Barcode, der früher unbekannt war. Name, Marke, Größe und Bild stehen nebeneinander; übernommen wird nur, was angehakt ist, und gespeichert erst mit „Speichern".
+- **Druckerkarte:** Grün nur noch, wenn Druckdienst und Drucker bereit sind. Antwortet der Pi, der Drucker aber nicht, steht gelb, was zu tun ist (Drucker einschalten, USB-Kabel prüfen). Nach „Verbindung prüfen" steht die eingelegte Rolle in der Karte. Beim Koppeln eines Pi gilt dasselbe.
+- **Druckdienst 0.5.0:** druckt jedes Papier des Katalogs, auch gestanzt, und vergleicht vor jedem Druck die eingelegte Rolle mit dem Etikett. Passt sie nicht, druckt er nichts und sagt, welche Rolle fehlt.
+
+Von Hand: Für ein anderes Papier als die 62-mm-Endlosrolle braucht der Pi den neuen Druckdienst. Dafür den Pi einmal neu koppeln: Drucker → „Raspberry Pi koppeln" → „Vorhandenen Drucker übernehmen"; Token und Drucker bleiben. Bis dahin bleiben solche Etiketten ausstehend, statt falsch gedruckt zu werden. Mit der 62-mm-Rolle und bis 62 mm Länge druckt auch der alte Druckdienst die neuen Etiketten.
+
 ## 0.4.0
 
 Der Einrichtungsassistent, Stufe B: Sicherung und Home Assistant geführt in der App, ohne Neustart. Die Umgebung geht weiter vor.

@@ -10,16 +10,22 @@ Er hat zwei Quellen:
   Anfrage wartet höchstens ``wait`` Sekunden auf das Ergebnis. Mehrere Anfragen zum selben
   Barcode teilen sich eine Abfrage. Wünsche zu Barcodes ohne Produkt sind begrenzt
   (``MAX_WISHES_WITHOUT_PRODUCT``); darüber wird nichts eingereiht.
+* **Neuabruf** (seit 0.5.0, ``POST /api/lookup/{barcode}/refresh``): ein Wunsch, der Open Food
+  Facts auch dann fragt, wenn schon ein Ergebnis gespeichert ist (``OffWorker.refresh``). Je
+  Barcode höchstens einmal in ``LOOKUP_REFRESH_GAP_S``, höchstens ``MAX_OPEN_REFRESHES`` zugleich,
+  Scans gehen vor. Ein Fund ersetzt das gespeicherte Ergebnis, ein Fehlschlag ändert nichts,
+  ``not_found`` überschreibt keinen Fund. Ein Neuabruf ändert kein Produkt: Was es übernimmt,
+  entscheidet der Anwender in der App.
 
-Für beide gilt dasselbe:
+Für alle gilt dasselbe:
 
 * höchstens ``LOOKUPS_PER_MINUTE`` Abfragen je Minute (Open Food Facts erlaubt 15),
 * Netzfehler, 429 und 5xx: neuer Versuch nach 1 Minute, 5 Minuten, 30 Minuten,
   3 Stunden, danach täglich; nach 429 ruht der ganze Ablauf,
-* jedes Ergebnis steht dauerhaft in ``off_lookups`` und wird nie erneut abgefragt, auch das
-  zu einem Barcode, der (noch) keinem Produkt gehört: Ein später angelegtes Produkt bekommt
-  die Daten gleich in dem Abgleich, der es anlegt (``settle``, gerufen aus
-  ``stowly/sync/handlers.py``),
+* jedes Ergebnis steht dauerhaft in ``off_lookups`` und wird im Hintergrund nie erneut
+  abgefragt (nur auf ausdrücklichen Wunsch, den Neuabruf), auch das zu einem Barcode, der
+  (noch) keinem Produkt gehört: Ein später angelegtes Produkt bekommt die Daten gleich in dem
+  Abgleich, der es anlegt (``settle``, gerufen aus ``stowly/sync/handlers.py``),
 * die Daten füllen **nur leere Felder** des Produkts; die Uhren der Felder bleiben
   unberührt, jede Eingabe eines Anwenders gewinnt, davor wie danach,
 * ladeninterne Codes (Präfix 2) werden nie abgefragt.
@@ -31,6 +37,7 @@ nie auf; sie setzen einen Ersatz-Transport ein (``httpx2.MockTransport``).
 
 import asyncio
 import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -50,9 +57,9 @@ from starlette.concurrency import run_in_threadpool
 
 from stowly import __version__, db, events
 from stowly.config import Settings
-from stowly.contract.api import LookupResultState
+from stowly.contract.api import LOOKUP_REFRESH_GAP_S, LookupResultState
 from stowly.contract.ids import is_store_internal_barcode
-from stowly.contract.timeutil import format_timestamp, parse_timestamp
+from stowly.contract.timeutil import format_timestamp, is_timestamp, parse_timestamp
 
 log = logging.getLogger("stowly.off")
 
@@ -88,6 +95,10 @@ ERROR_PAUSE_S = 30.0
 # Darüber antwortet der Server ``pending``, ohne einzureihen: Sonst könnte ein Gerät mit
 # erfundenen Barcodes die Warteschlange füllen.
 MAX_WISHES_WITHOUT_PRODUCT = 20
+# So viele Neuabrufe (POST …/refresh) warten höchstens zugleich, auch zu Barcodes mit Produkt. Darüber
+# kommt der gespeicherte Stand mit ``throttled``: Sonst stellte ein Gerät mit vielen Produkten die
+# Warteschlange mit Neuabrufen voll.
+MAX_OPEN_REFRESHES = 5
 
 
 class Clock:
@@ -136,7 +147,8 @@ class Image:
 @dataclass(frozen=True)
 class Job:
     barcode: str
-    state: str  # 'pending' = nachschlagen, 'found' = nur noch das Bild holen
+    # 'pending' = nachschlagen, 'refresh' = neu fragen (Neuabruf), 'found' = nur noch das Bild holen
+    state: str
     image_url: str | None
 
 
@@ -149,6 +161,8 @@ class Answer:
     brand: str = ""
     quantity: str = ""
     image_id: str | None = None
+    fetched_at: str | None = None  # seit 0.5.0: wann Open Food Facts das Ergebnis lieferte
+    throttled: bool = False  # seit 0.5.0: nur beim Neuabruf, der nicht neu gefragt hat
 
 
 PENDING = Answer(LookupResultState.PENDING)
@@ -156,9 +170,11 @@ PENDING = Answer(LookupResultState.PENDING)
 
 @dataclass(eq=False)
 class _Wish:
-    """Ein Barcode, auf den im Vordergrund jemand wartet (``GET /api/lookup/{barcode}``)."""
+    """Ein Barcode, auf den im Vordergrund jemand wartet (``GET /api/lookup/{barcode}`` oder der
+    Neuabruf ``POST …/refresh``)."""
 
     orphan: bool  # gehört keinem Produkt: zählt gegen MAX_WISHES_WITHOUT_PRODUCT
+    refresh: bool = False  # Neuabruf: fragt auch, wenn schon ein Ergebnis gespeichert ist
     done: asyncio.Event = field(default_factory=asyncio.Event)
     answer: Answer | None = None  # sobald Open Food Facts geantwortet hat, auch schon vor dem Bild
     waiting: int = 0  # so viele Anfragen warten gerade darauf
@@ -195,9 +211,17 @@ def _host_under(host: str | None, domains: tuple[str, ...]) -> bool:
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
+# Der Rechner einer Bild-Adresse: nur Buchstaben, Ziffern, Punkt und Bindestrich, höchstens Port 443. Kein
+# „@", „\", „%" oder „;": Wo Parser verschieden lesen, entschiede sonst der Downloader anders als die Prüfung.
+_IMAGE_NETLOC = re.compile(r"[a-z0-9.-]+(?::443)?", re.IGNORECASE)
+
+
 def is_allowed_image_url(url: Any) -> bool:
-    """Bilder nur über ``https`` und nur von Rechnern unter ``openfoodfacts.org``."""
+    """Bilder nur über ``https`` und nur von Rechnern unter ``openfoodfacts.org``; die Adresse ohne
+    Leerraum, Steuerzeichen und umgekehrte Schrägstriche, der Rechner streng nach ``_IMAGE_NETLOC``."""
     if not isinstance(url, str) or len(url) > 2000 or not url.isascii():
+        return False
+    if "\\" in url or any(not " " < char < "\x7f" for char in url):
         return False
     try:
         parts = urlsplit(url)
@@ -206,6 +230,7 @@ def is_allowed_image_url(url: Any) -> bool:
         return False
     return (
         parts.scheme == "https"
+        and _IMAGE_NETLOC.fullmatch(parts.netloc) is not None
         and parts.username is None
         and parts.password is None
         and port in (None, 443)
@@ -346,19 +371,27 @@ def stored_answer(con: sqlite3.Connection, barcode: str) -> Answer | None:
     schon in der Datenbank liegt.
     """
     row = con.execute(
-        "SELECT state, name, brand, quantity, image_url FROM off_lookups WHERE barcode = ?", (barcode,)
+        "SELECT state, name, brand, quantity, image_url, fetched_at FROM off_lookups WHERE barcode = ?",
+        (barcode,),
     ).fetchone()
     if row is None or row["state"] == "pending":
         return None
+    fetched_at = _timestamp_or_none(row["fetched_at"])
     if row["state"] == "not_found":
-        return Answer(LookupResultState.NOT_FOUND)
+        return Answer(LookupResultState.NOT_FOUND, fetched_at=fetched_at)
     return Answer(
         LookupResultState.FOUND,
         name=(row["name"] or "")[:NAME_LIMIT],
         brand=(row["brand"] or "")[:BRAND_LIMIT],
         quantity=(row["quantity"] or "")[:QUANTITY_LIMIT],
         image_id=_stored_image(con, row["image_url"]),
+        fetched_at=fetched_at,
     )
+
+
+def _timestamp_or_none(value: Any) -> str | None:
+    """``fetched_at`` aus der Datenbank, nur in der Form des Vertrags (aus einer Sicherung kann alles kommen)."""
+    return value if isinstance(value, str) and is_timestamp(value) else None
 
 
 def stored_answer_at(path: Path, barcode: str) -> Answer | None:
@@ -370,10 +403,19 @@ def stored_answer_at(path: Path, barcode: str) -> Answer | None:
         con.close()
 
 
-def _answer_of(outcome: Found | NotFound, image_id: str | None = None) -> Answer:
+def _answer_of(
+    outcome: Found | NotFound, image_id: str | None = None, fetched_at: str | None = None
+) -> Answer:
     if isinstance(outcome, NotFound):
-        return Answer(LookupResultState.NOT_FOUND)
-    return Answer(LookupResultState.FOUND, outcome.name, outcome.brand, outcome.quantity, image_id)
+        return Answer(LookupResultState.NOT_FOUND, fetched_at=fetched_at)
+    return Answer(
+        LookupResultState.FOUND,
+        outcome.name,
+        outcome.brand,
+        outcome.quantity,
+        image_id,
+        fetched_at=fetched_at,
+    )
 
 
 def ensure_queued(con: sqlite3.Connection, barcode: str, now: str) -> None:
@@ -540,6 +582,8 @@ class OffWorker:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Wünsche aus dem Vordergrund je Barcode, in der Reihenfolge ihres Eintreffens.
         self._wishes: dict[str, _Wish] = {}
+        # Neuabrufe der letzten LOOKUP_REFRESH_GAP_S Sekunden: Barcode -> Zeitpunkt der Abfrage (monoton).
+        self._refreshed: dict[str, float] = {}
         self._closing = False
 
     # ------------------------------------------------------------------ Lebenslauf
@@ -605,7 +649,7 @@ class OffWorker:
         if job is None:
             return settled > 0
         if (
-            job.state == "pending"
+            job.state in ("pending", "refresh")
             and not is_store_internal_barcode(job.barcode)
             and await self._wait_for_slot()
         ):
@@ -616,6 +660,8 @@ class OffWorker:
         try:
             if job.state == "pending":
                 await self._lookup(job.barcode)
+            elif job.state == "refresh":
+                await self._lookup(job.barcode, refresh=True)
             else:
                 await self._retry_image(job.barcode, job.image_url)
         finally:
@@ -626,7 +672,8 @@ class OffWorker:
 
     async def _pick(self) -> Job | None:
         """Der nächste Abruf. Wünsche, deren Antwort ohne Abruf feststeht, bekommen sie gleich."""
-        job, known = await run_in_threadpool(self._next_job, list(self._wishes))
+        wished = [(barcode, wish.refresh) for barcode, wish in self._wishes.items()]
+        job, known = await run_in_threadpool(self._next_job, wished)
         for barcode, answer in known.items():
             self._finish(barcode, answer)
         return job
@@ -646,6 +693,37 @@ class OffWorker:
         wish = self._wish(barcode, orphan=not owned)
         if wish is None:
             return PENDING
+        return await self._await(wish, wait_s)
+
+    async def refresh(self, barcode: str, wait_s: float) -> Answer:
+        """Antwort für ``POST /api/lookup/{barcode}/refresh`` zu einem gültigen, nachschlagbaren Barcode.
+
+        Fragt Open Food Facts neu, auch wenn ein Ergebnis gespeichert ist, auch nach ``not_found``, und
+        ohne die Wartezeit nach einem Fehlversuch. Der Barcode kommt wie ein Wunsch vor alle Abfragen im
+        Hintergrund; Rate und Pause nach 429 gelten. Läuft zu dem Barcode schon ein Neuabruf, teilt sich
+        die Anfrage ihn. Sonst kommt das gespeicherte Ergebnis mit ``throttled``, wenn der Barcode in den
+        letzten ``LOOKUP_REFRESH_GAP_S`` Sekunden neu gefragt wurde, der Ablauf nach einem 429 ruht, schon
+        ``MAX_OPEN_REFRESHES`` Neuabrufe warten oder die Wünsche ohne Produkt voll sind. Scans kommen vor
+        Neuabrufen dran. Kommt in ``wait_s`` Sekunden nichts, ``pending``; der Neuabruf läuft dann im
+        Hintergrund zu Ende.
+        """
+        stored, owned = await run_in_threadpool(self._stored, barcode)
+        wish = self._wishes.get(barcode)
+        if wish is None or not wish.refresh:
+            now = self._clock.monotonic()
+            last = self._refreshed.get(barcode)
+            busy = (
+                now < self._paused_until
+                or (last is not None and now - last < LOOKUP_REFRESH_GAP_S)
+                or sum(other.refresh for other in self._wishes.values()) >= MAX_OPEN_REFRESHES
+            )
+            wish = None if busy else self._wish(barcode, orphan=not owned, refresh=True)
+            if wish is None:
+                return dataclasses.replace(stored or PENDING, throttled=True)
+        return await self._await(wish, wait_s)
+
+    async def _await(self, wish: _Wish, wait_s: float) -> Answer:
+        """Wartet höchstens ``wait_s`` Sekunden auf die Antwort zu einem Wunsch; sonst ``pending``."""
         if wait_s > 0:
             wish.waiting += 1
             try:
@@ -662,10 +740,11 @@ class OffWorker:
         """
         return {barcode: wish.waiting for barcode, wish in self._wishes.items()}
 
-    def _wish(self, barcode: str, *, orphan: bool) -> _Wish | None:
+    def _wish(self, barcode: str, *, orphan: bool, refresh: bool = False) -> _Wish | None:
         """Stellt den Barcode vorn in die Warteschlange. ``None``: nicht eingereiht.
 
-        Gibt es schon einen Wunsch zu dem Barcode, teilen sich die Anfragen diesen.
+        Gibt es schon einen Wunsch zu dem Barcode, teilen sich die Anfragen diesen; ein Neuabruf macht
+        daraus einen Neuabruf.
         """
         if self._closing:
             return None
@@ -673,10 +752,13 @@ class OffWorker:
         if wish is None:
             if orphan and sum(w.orphan for w in self._wishes.values()) >= MAX_WISHES_WITHOUT_PRODUCT:
                 return None
-            wish = self._wishes[barcode] = _Wish(orphan=orphan)
+            wish = self._wishes[barcode] = _Wish(orphan=orphan, refresh=refresh)
             self._wake.set()
-        elif not orphan:
-            wish.orphan = False
+        else:
+            if not orphan:
+                wish.orphan = False
+            if refresh:
+                wish.refresh = True
         return wish
 
     def _finish(self, barcode: str, answer: Answer | None) -> None:
@@ -779,17 +861,20 @@ class OffWorker:
             log.warning("Open Food Facts: Bild ließ sich nicht laden", exc_info=True)
             return None, False
 
-    async def _lookup(self, barcode: str) -> None:
+    async def _lookup(self, barcode: str, *, refresh: bool = False) -> None:
         if is_store_internal_barcode(barcode):
             # Sicherheitsnetz: Ladeninterne Codes gehören nie in die Warteschlange.
             await run_in_threadpool(self._drop, barcode)
             return
         await self._throttle()
+        if refresh:
+            self._remember_refresh(barcode)
         outcome = await self._query(barcode)
+        fetched_at = self._stamp()
         wish = self._wishes.get(barcode)
         if wish is not None and not isinstance(outcome, Failed):
             # Name und Marke sind da. Wer nicht länger warten kann, bekommt sie schon vor dem Bild.
-            wish.answer = _answer_of(outcome)
+            wish.answer = _answer_of(outcome, fetched_at=fetched_at)
         image: Image | None = None
         image_retry = False
         if isinstance(outcome, Found) and outcome.image_url is not None:
@@ -800,10 +885,22 @@ class OffWorker:
             log.warning("Open Food Facts: Abruf für %s fehlgeschlagen (%s)", barcode, outcome.reason)
         else:
             log.info(
-                "Open Food Facts: %s %s", barcode, "gefunden" if isinstance(outcome, Found) else "unbekannt"
+                "Open Food Facts: %s %s%s",
+                barcode,
+                "gefunden" if isinstance(outcome, Found) else "unbekannt",
+                " (neu gefragt)" if refresh else "",
             )
-        answer = await run_in_threadpool(self._store_lookup, barcode, outcome, image, image_retry)
+        store = self._store_refresh if refresh else self._store_lookup
+        answer = await run_in_threadpool(store, barcode, outcome, image, image_retry, fetched_at)
         self._finish(barcode, answer)
+
+    def _remember_refresh(self, barcode: str) -> None:
+        """Merkt sich den Neuabruf (``LOOKUP_REFRESH_GAP_S``); was älter ist, fällt dabei weg."""
+        now = self._clock.monotonic()
+        self._refreshed = {
+            code: moment for code, moment in self._refreshed.items() if now - moment < LOOKUP_REFRESH_GAP_S
+        }
+        self._refreshed[barcode] = now
 
     async def _retry_image(self, barcode: str, url: str | None) -> None:
         image: Image | None = None
@@ -841,23 +938,30 @@ class OffWorker:
         finally:
             con.close()
 
-    def _next_job(self, wished: Sequence[str] = ()) -> tuple[Job | None, dict[str, Answer]]:
+    def _next_job(self, wished: Sequence[tuple[str, bool]] = ()) -> tuple[Job | None, dict[str, Answer]]:
         """Der nächste fällige Abruf und die Antworten auf Wünsche, die ohne Abruf feststehen.
 
-        Zuerst die Wünsche aus dem Vordergrund in der Reihenfolge ihres Eintreffens, dann, was
-        sonst fällig ist. Die Wartezeit nach einem Fehlversuch gilt für beide.
+        Zuerst die Wünsche aus dem Vordergrund (``(barcode, neuabruf)``) in der Reihenfolge ihres
+        Eintreffens, Scans vor Neuabrufen, dann, was sonst fällig ist. Die Wartezeit nach einem
+        Fehlversuch gilt für beide, nur nicht für einen Neuabruf: Der fragt immer.
         """
         con = db.connect(self._path)
         try:
             now = self._stamp()
             known: dict[str, Answer] = {}
-            for barcode in wished:
+            # Scans zuerst: Wer im Dialog auf den Namen wartet, steht nicht hinter Neuabrufen.
+            for barcode, refresh in wished:
+                if refresh:
+                    continue
                 row = con.execute(
                     "SELECT state, next_attempt_at FROM off_lookups WHERE barcode = ?", (barcode,)
                 ).fetchone()
                 if row is None or (row["state"] == "pending" and (row["next_attempt_at"] or now) <= now):
                     return Job(barcode, "pending", None), known
                 known[barcode] = stored_answer(con, barcode) or PENDING
+            for barcode, refresh in wished:
+                if refresh:
+                    return Job(barcode, "refresh", None), known
             row = con.execute(
                 f"SELECT l.barcode, l.state, l.image_url {_OPEN_WORK} AND l.next_attempt_at <= ? "
                 "ORDER BY l.next_attempt_at, l.barcode LIMIT 1",
@@ -898,6 +1002,19 @@ class OffWorker:
         finally:
             con.close()
 
+    def _stored(self, barcode: str) -> tuple[Answer | None, bool]:
+        """``(gespeicherte_antwort, hat_produkt)`` für den Neuabruf."""
+        con = db.connect(self._path)
+        try:
+            owner = con.execute(
+                "SELECT 1 FROM product_barcodes b JOIN products p ON p.id = b.product_id "
+                "WHERE b.barcode = ? AND p.deleted_at IS NULL",
+                (barcode,),
+            ).fetchone()
+            return stored_answer(con, barcode), owner is not None
+        finally:
+            con.close()
+
     def _seconds_until_due(self) -> float | None:
         con = db.connect(self._path)
         try:
@@ -925,16 +1042,23 @@ class OffWorker:
         )
 
     def _store_lookup(
-        self, barcode: str, outcome: Found | NotFound | Failed, image: Image | None, image_retry: bool
+        self,
+        barcode: str,
+        outcome: Found | NotFound | Failed,
+        image: Image | None,
+        image_retry: bool,
+        fetched_at: str | None = None,
     ) -> Answer | None:
         """Hält das Ergebnis dauerhaft fest und entscheidet das Produkt, dem der Barcode gehört.
 
         Liefert die Antwort für Wartende im Vordergrund; ``None`` nach einem Fehlversuch.
+        ``fetched_at``: wann Open Food Facts geantwortet hat (Vorgabe: jetzt).
         """
         con = db.connect(self._path)
         try:
             with db.transaction(con):
                 now = self._stamp()
+                fetched = fetched_at or now
                 row = con.execute("SELECT attempts FROM off_lookups WHERE barcode = ?", (barcode,)).fetchone()
                 if row is None:
                     if is_store_internal_barcode(barcode):
@@ -945,7 +1069,7 @@ class OffWorker:
                 answer: Answer | None = None
                 if isinstance(outcome, Found):
                     stored = image.id if image is not None else _stored_image(con, outcome.image_url)
-                    answer = _answer_of(outcome, stored)
+                    answer = _answer_of(outcome, stored, fetched)
                     if image is not None:
                         self._save_image(con, image, outcome.image_url, now)
                     # Fehlt nur noch das Bild, zählt ``attempts`` ab hier dessen Fehlversuche.
@@ -955,7 +1079,7 @@ class OffWorker:
                         (
                             1 if image_retry else attempts,
                             self._stamp(retry_delay_s(1)) if image_retry else None,
-                            now,
+                            fetched,
                             outcome.name,
                             outcome.brand,
                             outcome.quantity,
@@ -965,11 +1089,11 @@ class OffWorker:
                         ),
                     )
                 elif isinstance(outcome, NotFound):
-                    answer = _answer_of(outcome)
+                    answer = _answer_of(outcome, fetched_at=fetched)
                     con.execute(
                         "UPDATE off_lookups SET state = 'not_found', attempts = ?, next_attempt_at = NULL, "
                         "fetched_at = ?, raw = ? WHERE barcode = ?",
-                        (attempts, now, outcome.raw, barcode),
+                        (attempts, fetched, outcome.raw, barcode),
                     )
                 else:
                     con.execute(
@@ -986,6 +1110,71 @@ class OffWorker:
                         fresh[outcome.image_url] = image.id
                     settle(con, owner["product_id"], now, fresh)
                 return answer
+        finally:
+            con.close()
+
+    def _store_refresh(
+        self,
+        barcode: str,
+        outcome: Found | NotFound | Failed,
+        image: Image | None,
+        image_retry: bool,
+        fetched_at: str,
+    ) -> Answer | None:
+        """Hält das Ergebnis eines Neuabrufs fest. Liefert die Antwort; ``None`` = keine (Fehlschlag).
+
+        * Ein Fund ersetzt das gespeicherte Ergebnis samt Bild, auch für künftige Scans.
+        * ``not_found`` wird gemeldet, überschreibt aber keinen Fund.
+        * Ein Fehlschlag ändert nichts, auch nicht die Wartezeit nach Fehlversuchen. Bremst Open Food
+          Facts (429), kommt der gespeicherte Stand mit ``throttled``.
+        * Kein Produkt ändert sich. Ein Produkt, das noch auf sein Ergebnis wartet (``lookup =
+          pending``), übernimmt es danach im Hintergrund wie jedes andere (``_settle_pending``). Ein
+          Bild, das sich gerade nicht laden ließ, holt der Ablauf nur dann später nach, wenn der
+          Barcode vorher kein Ergebnis hatte: sonst bekäme ein fertiges Produkt ohne Bild ungefragt eins.
+        """
+        con = db.connect(self._path)
+        try:
+            if isinstance(outcome, Failed):
+                if outcome.pause_s is None:
+                    return None
+                return dataclasses.replace(stored_answer(con, barcode) or PENDING, throttled=True)
+            with db.transaction(con):
+                now = self._stamp()
+                row = con.execute(
+                    "SELECT state, attempts FROM off_lookups WHERE barcode = ?", (barcode,)
+                ).fetchone()
+                if row is None:
+                    ensure_queued(con, barcode, now)
+                previous = None if row is None else str(row["state"])
+                attempts = (0 if row is None else int(row["attempts"])) + 1
+                if isinstance(outcome, NotFound):
+                    if previous != "found":
+                        con.execute(
+                            "UPDATE off_lookups SET state = 'not_found', attempts = ?, next_attempt_at = NULL, "
+                            "fetched_at = ?, raw = ? WHERE barcode = ?",
+                            (attempts, fetched_at, outcome.raw, barcode),
+                        )
+                    return _answer_of(outcome, fetched_at=fetched_at)
+                if image is not None:
+                    self._save_image(con, image, outcome.image_url, now)
+                stored = image.id if image is not None else _stored_image(con, outcome.image_url)
+                retry = image_retry and previous in (None, "pending")
+                con.execute(
+                    "UPDATE off_lookups SET state = 'found', attempts = ?, next_attempt_at = ?, "
+                    "fetched_at = ?, name = ?, brand = ?, quantity = ?, image_url = ?, raw = ? WHERE barcode = ?",
+                    (
+                        1 if retry else attempts,
+                        self._stamp(retry_delay_s(1)) if retry else None,
+                        fetched_at,
+                        outcome.name,
+                        outcome.brand,
+                        outcome.quantity,
+                        outcome.image_url,
+                        outcome.raw,
+                        barcode,
+                    ),
+                )
+                return _answer_of(outcome, stored, fetched_at)
         finally:
             con.close()
 

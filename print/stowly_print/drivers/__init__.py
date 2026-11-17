@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from stowly_print.drivers.base import Driver
-from stowly_print.model import Capabilities, DriverStatus, Media, PrinterError, PrintOutcome
+from stowly_print import media as catalog
+from stowly_print.drivers.base import Driver, catalog_media
+from stowly_print.model import Capabilities, DriverStatus, PrinterError, PrintOutcome
 
 log = logging.getLogger("stowly_print.drivers")
 
@@ -30,6 +31,8 @@ class PrinterConfig:
     driver: str
     model: str | None = None
     address: str | None = None
+    # Kennung eines Papiers im Katalog (stowly_print.media): die Vorgabe für Vorlagen, die kein
+    # Papier nennen. Ohne Angabe 62 mm endlos.
     media: str | None = None
     # Nur Bild-Treiber: Verzeichnis für die PNG-Dateien und der Schalter zum Nachstellen von Störungen.
     directory: Path | None = None
@@ -45,10 +48,10 @@ class BrokenDriver:
         self.last_error: str | None = None
 
     def capabilities(self) -> Capabilities:
-        # Die Vorgabe dieser Stufe, damit sich eine Vorschau trotzdem rendern lässt.
+        # Die Vorgabe (62 mm endlos), damit sich eine Vorschau trotzdem rendern lässt.
         return Capabilities(
-            dpi=300,
-            media=Media(width_mm=62.0, length_mm=None, printable_px=696),
+            dpi=catalog.DPI,
+            media=catalog_media(catalog.BY_ID[catalog.DEFAULT_PAPER_ID]),
             cutter=False,
             colors=["black"],
             status_query=False,
@@ -73,12 +76,16 @@ def build_driver(config: PrinterConfig) -> Driver:
                 return _broken(config, "Für den Bild-Treiber fehlt das Verzeichnis.")
             from stowly_print.drivers.image import ImageDriver
 
-            return ImageDriver(config.directory, simulate=config.simulate)
+            if config.media is not None and catalog.paper(config.media.strip()) is None:
+                return _broken(config, f"Die Rolle '{config.media}' kennt der Bild-Treiber nicht.")
+            return ImageDriver(config.directory, media=config.media, simulate=config.simulate)
         if config.driver == "brother_ql":
             # Das Modul selbst lädt die Brother-Bibliothek erst, wenn der Drucker benutzt wird.
             from stowly_print.drivers.brother_ql import BrotherQLDriver
 
-            return BrotherQLDriver(model=config.model, address=config.address, media=config.media or "62")
+            return BrotherQLDriver(
+                model=config.model, address=config.address, media=config.media or catalog.DEFAULT_PAPER_ID
+            )
         return _broken(config, f"Den Treiber '{config.driver}' gibt es nicht.")
     except Exception as exc:  # ein Drucker mit kaputten Angaben darf den Dienst nicht aufhalten
         log.exception("Treiber für Drucker %s ließ sich nicht anlegen.", config.name)

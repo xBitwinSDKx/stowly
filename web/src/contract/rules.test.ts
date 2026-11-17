@@ -161,17 +161,32 @@ describe("Etikett-Daten", () => {
   const zone: Pick<Zone, "id" | "name"> = { id: "3f2b8c1e-5a47-4d09-9b6e-0c1d2e3f4a5b", name: "Keller" };
 
   it("füllt alle Felder einer Packung als fertige Texte", () => {
-    const data = packageLabelData(pkg, product, zone, { show_zone: true });
+    const data = packageLabelData(pkg, product, zone);
+    const stored = formatDate(toLocalDate(new Date(pkg.created_at)));
     expect(data).toEqual({
       qr: "STOWLY/P/A2B3C",
       id: "A2B3C",
       title: "Basmati Reis",
       subtitle: "1 kg · Kornhaus",
       best_before: "25.03.2027",
-      stored: formatDate(toLocalDate(new Date(pkg.created_at))),
+      stored,
       zone: "Keller",
+      // Seit 0.5.0: einzeln und kurz, für die Gestaltung des Haushalts.
+      brand: "Kornhaus",
+      quantity: "1 kg",
+      best_before_short: "25.03.27",
+      stored_short: `${stored.slice(0, 6)}${stored.slice(8)}`,
     });
+    expect(data.stored_short).toMatch(/^\d{2}\.\d{2}\.\d{2}$/);
     expect(Object.values(data).every((value) => typeof value === "string")).toBe(true);
+  });
+
+  it("nennt die Zone immer, auch wenn es nur eine gibt: Ob sie gedruckt wird, entscheidet die Vorlage", () => {
+    expect(packageLabelData(pkg, product, { name: "Vorrat" }).zone).toBe("Vorrat");
+    // Ohne Zone (sie ist gelöscht und nirgends hin verschoben) bleibt das Feld leer.
+    expect(packageLabelData(pkg, product, undefined).zone).toBe("");
+    // Marke und Größe ohne Leerraum am Rand, wie in der Zeile darüber.
+    expect(packageLabelData(pkg, { ...product, brand: " Kornhaus ", quantity: " 1 kg " }, zone)).toMatchObject({ brand: "Kornhaus", quantity: "1 kg", subtitle: "1 kg · Kornhaus" });
   });
 
   it("stellt auf dem Etikett die Packungsgröße vor die Marke: Gekürzt wird am Ende der Zeile", () => {
@@ -187,10 +202,13 @@ describe("Etikett-Daten", () => {
 
   it("lässt leer, was fehlt", () => {
     const placeholder = { name: " ", barcodes: ["4006381333931"], brand: "", quantity: "" };
-    const data = packageLabelData({ ...pkg, best_before: null }, placeholder, zone, { show_zone: false });
+    const data = packageLabelData({ ...pkg, best_before: null }, placeholder, undefined);
     expect(data.title).toBe("4006381333931");
     expect(data.subtitle).toBe("");
     expect(data.best_before).toBe("");
+    expect(data.best_before_short).toBe("");
+    expect(data.brand).toBe("");
+    expect(data.quantity).toBe("");
     expect(data.zone).toBe("");
     expect(isPlaceholder(placeholder)).toBe(true);
     expect(isPlaceholder(product)).toBe(false);

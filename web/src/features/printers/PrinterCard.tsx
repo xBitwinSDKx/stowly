@@ -1,10 +1,12 @@
-import { formatTimestamp, type Printer, type PrinterProbe, type Zone } from "@/contract";
+import { formatTimestamp, type PairedPrinter, type Printer, type PrinterProbe, type PrinterStatus, type Zone } from "@/contract";
 import { Notice, timeAgo, ZoneLabel } from "@/ui";
 import { Badge, Button, cx, type BadgeTone } from "@/ui/base";
-import { CircleCheckIcon, CpuIcon, ExternalLinkIcon, ImageIcon, PlugIcon, ServerIcon, WarningIcon } from "@/ui/icons";
+import { CircleCheckIcon, CpuIcon, ExternalLinkIcon, ImageIcon, PlugIcon, RefreshIcon, ServerIcon, WarningIcon } from "@/ui/icons";
 
 import { handoffHelps, problemText, type DeliveryProblem, type Fact, type HealthLevel, type PrinterHealth } from "./model";
+import { rememberedPapers, type HouseholdPaper } from "./paper";
 import styles from "./PrintersPage.module.css";
+import { outdatedService, probeVerdict, seenAdvice, type PrinterAdvice } from "./verdict";
 
 const LEVEL_TONES: Record<HealthLevel, BadgeTone> = { never: "neutral", ok: "success", attention: "warn", trouble: "danger" };
 
@@ -71,12 +73,100 @@ export function ProblemNotice({ problem, printer, name, fallback, pendingOwn, on
   );
 }
 
+/** Ein Hinweis mit Rat als Liste: Was los ist, was zu tun ist. */
+function AdviceList({ advice }: { advice: readonly string[] }) {
+  return (
+    <ul className={styles.advice}>
+      {advice.map((step) => (
+        <li key={step}>{step}</li>
+      ))}
+    </ul>
+  );
+}
+
+/** Der Druckdienst ist zu alt für das Papier des Haushalts; neu koppeln spielt den neuen ein. */
+export function OutdatedNotice({ version, onRepair }: { version: string | null; onRepair?: () => void }) {
+  return (
+    <Notice
+      tone="warn"
+      role="status"
+      icon={<WarningIcon />}
+      title={`Druckdienst ${version ?? "auf dem Pi"} kann dieses Papier nicht.`}
+      action={
+        onRepair ? (
+          <Button size="sm" icon={<RefreshIcon />} onClick={onRepair}>
+            Neu koppeln
+          </Button>
+        ) : undefined
+      }
+    >
+      Seine Etiketten bleiben ausstehend, bis der Pi neu gekoppelt ist; falsch gedruckt wird nichts. Neu koppeln spielt den neuen Druckdienst ein, Token und Zuordnung bleiben.
+    </Notice>
+  );
+}
+
+/** Der Zustand des Druckers mit Rat, gelb. */
+function AdviceNotice({ advice, roll }: { advice: PrinterAdvice; roll?: string | null }) {
+  return (
+    <Notice tone="warn" role="status" icon={<WarningIcon />} title={advice.title}>
+      <AdviceList advice={advice.advice} />
+      {roll ? <p className={styles.small}>Rolle: {roll}</p> : null}
+    </Notice>
+  );
+}
+
+export interface ProbeResultProps {
+  probe: PrinterProbe;
+  printer: Printer;
+  /** Das Papier des Haushalts laut Vorlagen; null, solange es nicht gelesen ist. */
+  paper: HouseholdPaper | null;
+  /** Eigene ausstehende Etiketten für diesen Drucker: Dann lohnt der Notweg. */
+  pendingOwn: number;
+  onHandoff?: (printer: Printer) => void;
+  handoffBusy?: boolean;
+  /** Neu koppeln, wenn der Druckdienst zu alt ist; ohne Angabe keine Schaltfläche. */
+  onRepair?: () => void;
+}
+
+/**
+ * Das Ergebnis von „Verbindung prüfen" aus Dienst und Drucker (`probeVerdict`): grün nur, wenn
+ * beide bereit sind; gelb mit Rat, wenn der Dienst antwortet und der Drucker nicht; sonst der Grund,
+ * warum der Dienst nicht benutzbar ist. Auch für das Koppeln eines Pi (Dialog und Assistent).
+ */
+export function ProbeResult({ probe, printer, paper, pendingOwn, onHandoff, handoffBusy = false, onRepair }: ProbeResultProps) {
+  const verdict = probeVerdict(probe, printer, paper?.name ?? null, rememberedPapers());
+  switch (verdict.kind) {
+    case "service":
+      return <ProblemNotice problem={verdict.problem} printer={printer} fallback={probe.error} pendingOwn={pendingOwn} onHandoff={onHandoff} busy={handoffBusy} />;
+    case "outdated":
+      return <OutdatedNotice version={verdict.version} onRepair={onRepair} />;
+    case "printer":
+      return <AdviceNotice advice={verdict.advice} roll={verdict.roll} />;
+    case "ready":
+      return (
+        <Notice tone="success" role="status" icon={<CircleCheckIcon />} title="Drucker bereit.">
+          {verdict.roll ? <p>Rolle: {verdict.roll}</p> : null}
+          <p>
+            {probe.url ? `Erreicht über ${probe.url}. ` : ""}
+            {probe.health ? `Druckdienst ${probe.health.version}.` : ""}
+          </p>
+        </Notice>
+      );
+  }
+}
+
 /** Stand einer Abfrage: läuft noch, oder das Ergebnis. */
 export type ProbeState = { status: "busy" } | { status: "done"; probe: PrinterProbe } | { status: "failed"; message: string };
 
 export interface PrinterCardProps {
   printer: Printer;
   health: PrinterHealth;
+  /** Was zuletzt von ihm gesehen wurde (`data.printerStatus`), für den Rat unter „Zuletzt gesehen". */
+  seen?: PrinterStatus;
+  /** Das Papier des Haushalts laut Vorlagen; null, solange es nicht gelesen ist. */
+  paper?: HouseholdPaper | null;
+  /** Die Kopplung eines Pi, wie der Server sie kennt (Version des Druckdienstes); undefined = keine bekannt. */
+  paired?: PairedPrinter;
   /** Jetzt, in Millisekunden (`useNow`). */
   now: number;
   isDefault: boolean;
@@ -94,16 +184,41 @@ export interface PrinterCardProps {
   onEdit: () => void;
   onDelete: () => void;
   onHandoff: (printer: Printer) => void;
+  /** Neu koppeln (nur ein Pi): spielt einen neuen Druckdienst ein. */
+  onRepair?: () => void;
 }
 
 /** Ein Drucker mit dem, wofür er zuständig ist, und dem, was zuletzt von ihm gesehen wurde. */
-export function PrinterCard({ printer, health, now, isDefault, zones, multiZone, probe, fresh, pendingOwn, handoffBusy, onProbe, onEdit, onDelete, onHandoff }: PrinterCardProps) {
+export function PrinterCard({
+  printer,
+  health,
+  seen,
+  paper = null,
+  paired,
+  now,
+  isDefault,
+  zones,
+  multiZone,
+  probe,
+  fresh,
+  pendingOwn,
+  handoffBusy,
+  onProbe,
+  onEdit,
+  onDelete,
+  onHandoff,
+  onRepair,
+}: PrinterCardProps) {
   const direct = printer.connection === "direct";
   const image = printer.server?.driver === "image";
   const kind = direct ? "direkt (Raspberry Pi)" : image ? "am Server · Bild (PNG)" : `am Server · ${printer.server?.model ?? "Brother QL"}`;
   // Je Adresse eine Zeile: So bricht am Handy keine Adresse mitten im Port um.
   const where = direct ? (printer.direct?.urls ?? []) : printer.server?.address ? [printer.server.address] : [];
   const done = probe?.status === "done" ? probe.probe : undefined;
+  // Ohne neues Prüfen: der Rat zum zuletzt gesehenen Zustand. Nach dem Prüfen gilt dessen Urteil.
+  const seenHint = done ? null : seenAdvice(seen, printer, paper?.name ?? null);
+  // Ein Druckdienst vor 0.5.0 kann kein Papier im Format 2; der Server ist immer aktuell.
+  const outdated = direct && paper && done?.problem !== "outdated" ? outdatedService(paper.schema, done, paired) : null;
 
   return (
     <li className={styles.printer} aria-label={printer.name} data-printer={printer.id}>
@@ -145,16 +260,7 @@ export function PrinterCard({ printer, health, now, isDefault, zones, multiZone,
             {health.stale ? <Badge>Stand ist alt</Badge> : null}
           </p>
           <Facts facts={health.facts} label="Zustand des Druckers" />
-          {health.errors.length > 0 ? (
-            <ul className={styles.errors}>
-              {health.errors.map((error) => (
-                <li key={error}>
-                  <WarningIcon size={15} aria-hidden="true" />
-                  <span>{error}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          {seenHint ? <AdviceNotice advice={seenHint} /> : null}
           {health.host.length > 0 ? (
             <div className={styles.host}>
               <div className={styles.hostTitle}>Rechner (Raspberry Pi)</div>
@@ -169,15 +275,8 @@ export function PrinterCard({ printer, health, now, isDefault, zones, multiZone,
           Als Nächstes die Verbindung prüfen: So zeigt sich gleich, ob die Angaben stimmen.
         </Notice>
       ) : null}
-      {done && done.problem === null ? (
-        <Notice tone="success" role="status" icon={<CircleCheckIcon />} title="Der Druckdienst antwortet.">
-          {done.url ? `Erreicht über ${done.url}. ` : ""}
-          {done.health ? `Druckdienst ${done.health.version}.` : ""}
-        </Notice>
-      ) : null}
-      {done && done.problem !== null ? (
-        <ProblemNotice problem={done.problem} printer={printer} fallback={done.error} pendingOwn={pendingOwn} onHandoff={onHandoff} busy={handoffBusy} />
-      ) : null}
+      {outdated ? <OutdatedNotice version={outdated.version} onRepair={onRepair} /> : null}
+      {done ? <ProbeResult probe={done} printer={printer} paper={paper} pendingOwn={pendingOwn} onHandoff={onHandoff} handoffBusy={handoffBusy} onRepair={onRepair} /> : null}
       {probe?.status === "failed" ? (
         <Notice tone="danger" role="alert">
           {probe.message}

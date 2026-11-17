@@ -28,7 +28,7 @@ from stowly import db, off
 from stowly.__main__ import Server
 from stowly.app import create_app, prepare_database
 from stowly.config import Settings
-from stowly.contract import ids
+from stowly.contract import ids, timeutil
 
 JPEG_ID = hashlib.sha256(JPEG).hexdigest()[:32] + ".jpg"
 OTHER_URL = IMAGE_URL.replace("front_de", "front_en")
@@ -40,9 +40,34 @@ def ean(number: int) -> str:
     return body + str(ids.gtin_check_digit(body))
 
 
+class AnyTimestamp:
+    """Gleich jedem Zeitstempel des Vertrags: wann Open Food Facts geantwortet hat, steht in ``off_lookups``."""
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str) and timeutil.is_timestamp(other)
+
+    def __repr__(self) -> str:
+        return "<Zeitstempel>"
+
+
+STAMP = AnyTimestamp()
+
+
 def result(
-    barcode: str, state: str, name: str = "", brand: str = "", quantity: str = "", image_id=None
+    barcode: str,
+    state: str,
+    name: str = "",
+    brand: str = "",
+    quantity: str = "",
+    image_id=None,
+    *,
+    fetched_at=...,
+    throttled: bool = False,
 ) -> dict:
+    """Die erwartete Antwort. ``fetched_at`` ist bei einem Ergebnis von Open Food Facts ein Zeitstempel
+    (seit 0.5.0), sonst ``null``; ``throttled`` gibt es nur beim Neuabruf."""
+    if fetched_at is ...:
+        fetched_at = STAMP if state in ("found", "not_found") else None
     return {
         "barcode": barcode,
         "state": state,
@@ -50,6 +75,8 @@ def result(
         "brand": brand,
         "quantity": quantity,
         "image_id": image_id,
+        "fetched_at": fetched_at,
+        "throttled": throttled,
     }
 
 
@@ -191,6 +218,33 @@ def test_not_found_and_from_the_cache(scanner):
     assert scanner.lookup(EAN_B, wait=0) == expected
     assert scanner.service.lookups == [EAN_B]
     assert scanner.state_of(EAN_B) == "not_found"
+
+
+def test_fetched_at_says_when_open_food_facts_answered(scanner):
+    """Seit 0.5.0 nennt die Antwort, wann Open Food Facts das Ergebnis geliefert hat (``off_lookups.fetched_at``),
+    auch aus dem Zwischenspeicher. Ein Ergebnis ohne Zeitpunkt (oder mit einem unlesbaren) hat null."""
+    scanner.service.products[EAN_A] = found(product_name="Reis")
+    first = scanner.lookup(EAN_A, wait=8)
+    assert first["fetched_at"] == scanner.row(EAN_A)["fetched_at"]
+    assert first["fetched_at"] == timeutil.format_timestamp(scanner.clock.now())
+    assert scanner.lookup(EAN_A, wait=0)["fetched_at"] == first["fetched_at"]
+
+    con = db.connect(scanner.settings.database_path)
+    try:
+        with db.transaction(con):
+            con.execute(
+                "INSERT INTO off_lookups (barcode, state, attempts, name) VALUES (?, 'found', 1, 'Nudeln')",
+                (EAN_B,),
+            )
+            con.execute(
+                "INSERT INTO off_lookups (barcode, state, attempts, fetched_at) VALUES (?, 'not_found', 1, 'gestern')",
+                (EAN_C,),
+            )
+    finally:
+        con.close()
+    assert scanner.lookup(EAN_B, wait=0) == result(EAN_B, "found", "Nudeln", fetched_at=None)
+    assert scanner.lookup(EAN_C, wait=0) == result(EAN_C, "not_found", fetched_at=None)
+    assert scanner.service.lookups == [EAN_A]
 
 
 def test_store_internal_codes_are_skipped(scanner):

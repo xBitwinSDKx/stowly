@@ -2917,6 +2917,344 @@
         ],
         "type": "object"
       },
+      "LabelDateStyle": {
+        "description": "Wie MHD und Einlagerdatum gedruckt werden.",
+        "enum": [
+          "long",
+          "short"
+        ],
+        "type": "string"
+      },
+      "LabelDesign": {
+        "additionalProperties": false,
+        "description": "Papier und beide Gestaltungen (``PUT /api/labels/design``).",
+        "properties": {
+          "package": {
+            "$ref": "#/components/schemas/LabelLayout"
+          },
+          "paper": {
+            "description": "Kennung des Papiers im Katalog (LabelPaper.id), für alle Drucker.",
+            "maxLength": 20,
+            "type": "string"
+          },
+          "zone": {
+            "$ref": "#/components/schemas/LabelLayout"
+          }
+        },
+        "required": [
+          "paper",
+          "package",
+          "zone"
+        ],
+        "type": "object"
+      },
+      "LabelDesignState": {
+        "additionalProperties": false,
+        "description": "Antwort von ``GET``, ``PUT`` und ``DELETE /api/labels/design``.",
+        "properties": {
+          "design": {
+            "$ref": "#/components/schemas/LabelDesign",
+            "description": "Die gültige Gestaltung; ohne eigene die Werte, die den mitgelieferten Vorlagen entsprechen."
+          },
+          "is_default": {
+            "description": "true = keine eigene Gestaltung: Es gelten die mitgelieferten Vorlagen.",
+            "type": "boolean"
+          },
+          "papers": {
+            "description": "Der Papier-Katalog, in der Reihenfolge für die App.",
+            "items": {
+              "$ref": "#/components/schemas/LabelPaper"
+            },
+            "type": "array"
+          },
+          "templates": {
+            "$ref": "#/components/schemas/LabelTemplateHashes",
+            "description": "Daran sieht die App, ob die Vorlagen nach dem Speichern schon über den Sync da sind."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wann die eigene Gestaltung gespeichert wurde; null = Vorgabe."
+          }
+        },
+        "required": [
+          "design",
+          "is_default",
+          "updated_at",
+          "templates",
+          "papers"
+        ],
+        "type": "object"
+      },
+      "LabelField": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "$ref": "#/components/schemas/LabelFieldName"
+          },
+          "lines": {
+            "anyOf": [
+              {
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nur beim Namen (title): höchstens so viele Zeilen; sonst null."
+          },
+          "size": {
+            "$ref": "#/components/schemas/LabelSize"
+          }
+        },
+        "required": [
+          "field",
+          "size"
+        ],
+        "type": "object"
+      },
+      "LabelFieldName": {
+        "description": "Was eine Zeile zeigt. Packungs-Etiketten können alle, Zonen-Etiketten nur ZONE_LABEL_FIELDS.",
+        "enum": [
+          "title",
+          "subtitle",
+          "quantity",
+          "brand",
+          "best_before",
+          "stored",
+          "id",
+          "zone",
+          "text"
+        ],
+        "type": "string"
+      },
+      "LabelKind": {
+        "description": "Etikettenart: je eine Gestaltung und eine Vorlage (LabelTemplate.key).",
+        "enum": [
+          "package",
+          "zone"
+        ],
+        "type": "string"
+      },
+      "LabelLayout": {
+        "additionalProperties": false,
+        "description": "Die Gestaltung einer Etikettenart. Die Anordnung übernimmt der Server: QR-Code als Quadrat an der\ngewählten Seite, die Felder untereinander daneben.",
+        "properties": {
+          "date": {
+            "$ref": "#/components/schemas/LabelDateStyle"
+          },
+          "divider": {
+            "description": "Trennlinie über der untersten Zeile.",
+            "type": "boolean"
+          },
+          "fields": {
+            "description": "Die gedruckten Felder von oben nach unten, jedes höchstens einmal; was fehlt, ist aus. Stehen id und stored direkt nacheinander, teilen sie sich die unterste Zeile.",
+            "items": {
+              "$ref": "#/components/schemas/LabelField"
+            },
+            "maxItems": 9,
+            "type": "array"
+          },
+          "length_mm": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 25.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Länge des Etiketts auf einer Endlosrolle; null bei gestanzten Etiketten."
+          },
+          "qr": {
+            "$ref": "#/components/schemas/LabelQr"
+          },
+          "text": {
+            "description": "Eigener Text für das Feld text; darf leer sein.",
+            "maxLength": 40,
+            "type": "string"
+          }
+        },
+        "required": [
+          "length_mm",
+          "qr",
+          "fields",
+          "date",
+          "text",
+          "divider"
+        ],
+        "type": "object"
+      },
+      "LabelPaper": {
+        "additionalProperties": false,
+        "description": "Ein Papier des Katalogs (``print/stowly_print/media.py``).",
+        "properties": {
+          "id": {
+            "description": "Kennung wie bei Brother: '62' (endlos), '62x29' (gestanzt).",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PaperKind"
+          },
+          "length_mm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Länge eines gestanzten Etiketts; null bei Endlosrollen."
+          },
+          "name": {
+            "description": "Anzeigename, etwa '62 mm endlos' oder '62 × 29 mm gestanzt'.",
+            "type": "string"
+          },
+          "printable_length_px": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Druckbare Punkte in Laufrichtung bei 300 dpi, nur gestanzt; null bei Endlosrollen."
+          },
+          "printable_width_px": {
+            "description": "Druckbare Punkte quer zur Laufrichtung bei 300 dpi.",
+            "type": "integer"
+          },
+          "width_mm": {
+            "description": "Breite der Rolle, quer zur Laufrichtung.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "width_mm",
+          "length_mm",
+          "printable_width_px",
+          "printable_length_px"
+        ],
+        "type": "object"
+      },
+      "LabelPreview": {
+        "additionalProperties": false,
+        "description": "Antwort von ``POST /api/labels/preview``.",
+        "properties": {
+          "height_px": {
+            "type": "integer"
+          },
+          "notes": {
+            "description": "Was nur verkleinert oder gekürzt passt, als Sätze, etwa 'Name auf 3,0 mm verkleinert und gekürzt.'; leer = alles passt.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "png": {
+            "description": "1-Bit-PNG als Base64, so wie man das Etikett liest (ungedreht).",
+            "type": "string"
+          },
+          "width_px": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "png",
+          "width_px",
+          "height_px",
+          "notes"
+        ],
+        "type": "object"
+      },
+      "LabelPreviewInput": {
+        "additionalProperties": false,
+        "description": "``POST /api/labels/preview``: ein Etikett rendern, ohne etwas zu speichern.",
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                "maxProperties": 32,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inhalt wie beim Drucken (PackageLabelData bzw. ZoneLabelData); null = ein Beispiel mit langem Namen und allen Feldern."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/LabelKind"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/LabelLayout"
+          },
+          "paper": {
+            "description": "Kennung des Papiers im Katalog.",
+            "maxLength": 20,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "paper",
+          "layout"
+        ],
+        "type": "object"
+      },
+      "LabelQr": {
+        "additionalProperties": false,
+        "properties": {
+          "side": {
+            "$ref": "#/components/schemas/LabelQrSide"
+          },
+          "size": {
+            "$ref": "#/components/schemas/LabelSize",
+            "description": "Die kleinste Stufe scannt noch sicher (mindestens 6 Pixel je Modul)."
+          }
+        },
+        "required": [
+          "side",
+          "size"
+        ],
+        "type": "object"
+      },
+      "LabelQrSide": {
+        "enum": [
+          "left",
+          "right"
+        ],
+        "type": "string"
+      },
+      "LabelSize": {
+        "description": "Größe eines Felds oder des QR-Codes: feste Millimeter, auf jedem Papier dieselben.",
+        "enum": [
+          "s",
+          "m",
+          "l"
+        ],
+        "type": "string"
+      },
       "LabelTemplate": {
         "additionalProperties": false,
         "description": "Etikett-Vorlage. Die App reicht ``body`` unverändert mit jedem Druckauftrag weiter.",
@@ -2941,6 +3279,23 @@
           "hash",
           "body",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "LabelTemplateHashes": {
+        "additionalProperties": false,
+        "description": "``hash`` der Vorlagen, die gerade gelten (wie LabelTemplate.hash im Sync).",
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "package",
+          "zone"
         ],
         "type": "object"
       },
@@ -2994,6 +3349,18 @@
             "maxLength": 80,
             "type": "string"
           },
+          "fetched_at": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Wann Open Food Facts dieses Ergebnis geliefert hat; null bei pending, skipped, disabled und bei Ergebnissen von vor 0.5.0 ohne Zeitpunkt."
+          },
           "image_id": {
             "anyOf": [
               {
@@ -3017,6 +3384,10 @@
           },
           "state": {
             "$ref": "#/components/schemas/LookupResultState"
+          },
+          "throttled": {
+            "description": "Nur bei POST …/refresh: true = nicht neu gefragt, weil dieser Barcode in der letzten Minute schon neu gefragt wurde oder Open Food Facts gerade bremst; die Antwort ist der gespeicherte Stand. Bei GET immer false.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3025,7 +3396,9 @@
           "name",
           "brand",
           "quantity",
-          "image_id"
+          "image_id",
+          "fetched_at",
+          "throttled"
         ],
         "type": "object"
       },
@@ -3175,6 +3548,14 @@
             "description": "MHD als 'TT.MM.JJJJ'; leer = keines.",
             "type": "string"
           },
+          "best_before_short": {
+            "description": "MHD als 'TT.MM.JJ'; leer = keines.",
+            "type": "string"
+          },
+          "brand": {
+            "description": "Marke allein; darf leer sein.",
+            "type": "string"
+          },
           "id": {
             "description": "Packungs-ID im Klartext, z. B. 'A2B3C'.",
             "type": "string"
@@ -3183,8 +3564,16 @@
             "description": "QR-Inhalt, z. B. 'STOWLY/P/A2B3C'.",
             "type": "string"
           },
+          "quantity": {
+            "description": "Packungsgröße allein, z. B. '500 g'; darf leer sein.",
+            "type": "string"
+          },
           "stored": {
             "description": "Tag des Einlagerns als 'TT.MM.JJJJ'.",
+            "type": "string"
+          },
+          "stored_short": {
+            "description": "Tag des Einlagerns als 'TT.MM.JJ'.",
             "type": "string"
           },
           "subtitle": {
@@ -3196,7 +3585,7 @@
             "type": "string"
           },
           "zone": {
-            "description": "Name der Zone; leer, wenn es nur eine gibt.",
+            "description": "Name der Zone, in der die Packung liegt; leer nur, wenn sie keine hat. Seit 0.5.0 immer gefüllt: Ob er gedruckt wird, entscheidet die Vorlage (ältere Apps schickten ihn nur bei mehr als einer Zone).",
             "type": "string"
           }
         },
@@ -3207,7 +3596,11 @@
           "subtitle",
           "best_before",
           "stored",
-          "zone"
+          "zone",
+          "brand",
+          "quantity",
+          "best_before_short",
+          "stored_short"
         ],
         "type": "object"
       },
@@ -3219,6 +3612,17 @@
             "description": "Hostname des Pi bei der Kopplung.",
             "type": "string"
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Druckermodell bei der Kopplung, etwa QL-570; null = keins erkannt."
+          },
           "not_after": {
             "description": "Ablauf des Zertifikats; die App warnt PI_CERT_WARN_DAYS Tage vorher.",
             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
@@ -3227,14 +3631,34 @@
           "printer_id": {
             "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
             "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Version des Druckdienstes bei der Kopplung; null = nicht gemeldet. Daran sieht die App ohne Abfrage, ob der Pi ein Papier im Format 2 drucken kann (docs/etiketten.md, 3.4)."
           }
         },
         "required": [
           "printer_id",
           "hostname",
-          "not_after"
+          "not_after",
+          "version",
+          "model"
         ],
         "type": "object"
+      },
+      "PaperKind": {
+        "enum": [
+          "endless",
+          "die_cut"
+        ],
+        "type": "string"
       },
       "PasswordChangeInput": {
         "additionalProperties": false,
@@ -3884,12 +4308,42 @@
       },
       "PrinterMedia": {
         "additionalProperties": false,
-        "description": "Eingelegtes Material. Längenangaben in Millimetern.",
+        "description": "Das eingerichtete Material (``media`` in der Konfiguration): die Vorgabe für Vorlagen, die kein\nPapier nennen. Längenangaben in Millimetern. Welche Rolle wirklich eingelegt ist, meldet\n``PrinterInfo.loaded``.",
         "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "length_mm": {
             "anyOf": [
               {
                 "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "printable_length_px": {
+            "anyOf": [
+              {
+                "type": "integer"
               },
               {
                 "type": "null"
@@ -4125,6 +4579,28 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "ProductImageInput": {
+        "additionalProperties": false,
+        "description": "``PUT /api/products/{product_id}/image``: das Bild eines Produkts setzen oder entfernen.",
+        "properties": {
+          "image_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ein Bild, das Stowly gespeichert hat (image_id aus LookupResult); null entfernt das Bild. Ein unbekanntes Bild gibt 422."
+          }
+        },
+        "required": [
+          "image_id"
+        ],
         "type": "object"
       },
       "PushConfig": {
@@ -4802,6 +5278,12 @@
           "protocol": {
             "type": "integer"
           },
+          "template_schemas": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
           "uptime_s": {
             "type": "number"
           },
@@ -4965,6 +5447,45 @@
         ],
         "type": "string"
       },
+      "ServicePaper": {
+        "additionalProperties": false,
+        "description": "Ein Papier, wie es eine Vorlage nennt (``media`` im Format 2) und wie ein Drucker die eingelegte\nRolle meldet (``PrinterInfo.loaded``). Längenangaben in Millimetern.",
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "length_mm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "width_mm": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "width_mm",
+          "length_mm"
+        ],
+        "type": "object"
+      },
       "ServicePrinter": {
         "additionalProperties": false,
         "description": "Ein Drucker, wie ihn ``GET /v1/printers`` und ``GET /v1/health`` melden.",
@@ -4974,6 +5495,16 @@
           },
           "driver": {
             "type": "string"
+          },
+          "loaded": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServicePaper"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "model": {
             "anyOf": [
@@ -6539,6 +7070,110 @@
         ]
       }
     },
+    "/api/labels/design": {
+      "delete": {
+        "description": "Zurück zur Vorgabe: Es gelten wieder die mitgelieferten Vorlagen mit ihrem ``hash``. Ohne eigene\nGestaltung ändert sich nichts. Ereignis ``labels.changed``.",
+        "operationId": "reset_label_design",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelDesignState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reset Label Design",
+        "tags": [
+          "labels"
+        ]
+      },
+      "get": {
+        "description": "Papier und beide Gestaltungen, ob es die Vorgabe ist, die ``hash`` der gültigen Vorlagen und\nder Papier-Katalog. Der Katalog kommt vom Server, nicht aus ``api.gen.ts``: Das schont das Bündel.",
+        "operationId": "get_label_design",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelDesignState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Label Design",
+        "tags": [
+          "labels"
+        ]
+      },
+      "put": {
+        "description": "Speichert Papier und beide Gestaltungen zusammen und erzeugt die Vorlagen neu; alle Geräte\nbekommen sie über den Sync. Vorher rendert der Server jede Vorlage mit Beispiel- und Grenzdaten\n(langer Name, alle Felder voll). Passt das nicht, oder ist das Papier unbekannt, ein Feld bei Zonen\nnicht erlaubt, doppelt oder ``lines`` außerhalb des Namens gesetzt, antwortet er 422 mit einem Satz,\netwa „Für so viele Felder ist das Etikett zu kurz: ein Feld weglassen, kleiner wählen oder länger\nmachen.\" Ereignis ``labels.changed``.",
+        "operationId": "put_label_design",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LabelDesign"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelDesignState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Put Label Design",
+        "tags": [
+          "labels"
+        ]
+      }
+    },
+    "/api/labels/preview": {
+      "post": {
+        "description": "Rendert ein Etikett, ohne etwas zu speichern, so wie man es liest (ungedreht), dazu Hinweise,\nwas nur verkleinert oder gekürzt passt. Höchstens ``LABEL_PREVIEWS_AT_ONCE`` zugleich, sonst 429;\npasst die Gestaltung gar nicht, 422 mit demselben Satz wie beim Speichern.",
+        "operationId": "preview_label",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LabelPreviewInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Preview Label",
+        "tags": [
+          "labels"
+        ]
+      }
+    },
     "/api/lookup/{barcode}": {
       "get": {
         "description": "Schlägt einen Barcode bei Open Food Facts nach, während der Anwender wartet.\n\nEin gespeichertes Ergebnis kommt sofort. Sonst stellt der Server den Barcode vorn in die\nWarteschlange seines Hintergrund-Ablaufs und wartet höchstens ``wait`` Sekunden; die Rate\ngilt unverändert. Ungültiger Barcode oder ``wait``: 400.",
@@ -6581,6 +7216,53 @@
           }
         },
         "summary": "Lookup Barcode",
+        "tags": [
+          "lookup"
+        ]
+      }
+    },
+    "/api/lookup/{barcode}/refresh": {
+      "post": {
+        "description": "Fragt Open Food Facts jetzt neu, auch wenn schon ein Ergebnis gespeichert ist, auch nach\n``not_found`` (seit 0.5.0; docs/sync-protokoll.md, Abschnitt 10).\n\nVor allen Abfragen im Hintergrund; die Rate (``LOOKUPS_PER_MINUTE``) und die Pause nach 429\ngelten weiter. Je Barcode höchstens einmal in ``LOOKUP_REFRESH_GAP_S``; sonst und wenn Open Food\nFacts bremst, kommt das gespeicherte Ergebnis mit ``throttled: true``. Ein Fund ersetzt das\ngespeicherte Ergebnis, auch für künftige Scans, samt Bild (``image_id``). Ein Fehlschlag (Netz,\n5xx) ändert nichts; ``not_found`` überschreibt keinen Fund, wird aber gemeldet. Kein Produkt\nändert sich, auch nicht sein Stand ``lookup``. Ladeninterne Codes: ``skipped``; Nachschlagen aus:\n``disabled``. Ungültiger Barcode oder ``wait``: 400.",
+        "operationId": "refresh_lookup",
+        "parameters": [
+          {
+            "description": "EAN-8 oder EAN-13 mit gültiger Prüfziffer, in der gespeicherten Form.",
+            "in": "path",
+            "name": "barcode",
+            "required": true,
+            "schema": {
+              "description": "EAN-8 oder EAN-13 mit gültiger Prüfziffer, in der gespeicherten Form.",
+              "title": "Barcode",
+              "type": "string"
+            }
+          },
+          {
+            "description": "So viele Sekunden wartet der Server höchstens auf ein Ergebnis, das er noch nicht hat.",
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "default": 4,
+              "maximum": 8,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LookupResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Refresh Lookup",
         "tags": [
           "lookup"
         ]
@@ -6767,6 +7449,49 @@
         "summary": "Get Pi Pairing",
         "tags": [
           "pi"
+        ]
+      }
+    },
+    "/api/products/{product_id}/image": {
+      "put": {
+        "description": "Setzt das Bild eines Produkts auf ein Bild, das Stowly gespeichert hat (``image_id`` aus\n``LookupResult``), oder entfernt es (``null``). 404 ohne Produkt (auch ein zusammengeführtes),\n422 für ein unbekanntes Bild. Das Produkt bekommt einen neuen ``rev``, also sehen alle Geräte das\nBild beim nächsten Sync; die Antwort ist das Produkt danach. Ereignis ``product.image``.",
+        "operationId": "set_product_image",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "product_id",
+            "required": true,
+            "schema": {
+              "title": "Product Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductImageInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Set Product Image",
+        "tags": [
+          "products"
         ]
       }
     },

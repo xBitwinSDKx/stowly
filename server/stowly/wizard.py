@@ -499,33 +499,37 @@ def https_status(
     }
 
 
-def paired_printers(con: sqlite3.Connection) -> list[dict[str, str]]:
+def paired_printers(con: sqlite3.Connection) -> list[dict[str, str | None]]:
     """Je nicht gelöschtem Drucker die jüngste gelungene Kopplung eines Pi, früheste Ablaufzeit zuerst.
 
     Daran warnt jedes Gerät vor dem Ablauf des Zertifikats (``PI_CERT_WARN_DAYS``), nicht nur das, das
-    gekoppelt hat. Gelesen wird ``pi_pairings.pi`` (``PiInfo``); was dort nicht passt, bleibt weg.
+    gekoppelt hat, und sieht ohne Abfrage, welchen Druckdienst der Pi hat (seit 0.5.0: ``version``,
+    ``model``). Gelesen wird ``pi_pairings.pi`` (``PiInfo``); was dort nicht passt, bleibt weg.
     """
     rows = con.execute(
         "SELECT p.printer_id, p.pi FROM pi_pairings AS p "
         "JOIN printers AS d ON d.id = p.printer_id AND d.deleted_at IS NULL "
         "WHERE p.paired_at IS NOT NULL ORDER BY p.paired_at, p.id"
     ).fetchall()
-    latest: dict[str, dict[str, str]] = {}
+    latest: dict[str, dict[str, str | None]] = {}
     for row in rows:
         try:
             pi = json.loads(row["pi"] or "null")
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if not isinstance(pi, dict):
             continue
         hostname, not_after = pi.get("hostname"), pi.get("not_after")
+        version, model = pi.get("version"), pi.get("model")
         if isinstance(hostname, str) and isinstance(not_after, str) and timeutil.is_timestamp(not_after):
             latest[row["printer_id"]] = {
                 "printer_id": row["printer_id"],
                 "hostname": hostname,
                 "not_after": not_after,
+                "version": version if isinstance(version, str) else None,
+                "model": model if isinstance(model, str) else None,
             }
-    return sorted(latest.values(), key=lambda entry: (entry["not_after"], entry["printer_id"]))
+    return sorted(latest.values(), key=lambda entry: (str(entry["not_after"]), str(entry["printer_id"])))
 
 
 def status(

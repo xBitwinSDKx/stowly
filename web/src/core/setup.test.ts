@@ -260,10 +260,11 @@ describe("Gekoppelte Pi (SetupStatus.paired_printers)", () => {
     const first = await core.printers.pair({ origin: "http://192.168.1.10:8010" });
     const cellar = server.completePairing(first.id, { hostname: "keller-pi", not_after: "2028-01-01T00:00:00.000Z" });
     const second = await core.printers.pair({ origin: "http://192.168.1.10:8010" });
-    const kitchen = server.completePairing(second.id, { hostname: "kueche-pi", address: "192.168.1.21", not_after: "2027-06-01T00:00:00.000Z" });
+    const kitchen = server.completePairing(second.id, { hostname: "kueche-pi", address: "192.168.1.21", not_after: "2027-06-01T00:00:00.000Z", version: "0.5.0", model: null });
+    // Seit 0.5.0 mit Version des Druckdienstes und Modell vom Koppeln: So sieht die App einen alten Pi ohne Abfrage.
     expect((await core.setup.load()).paired_printers).toEqual([
-      { printer_id: kitchen.id, hostname: "kueche-pi", not_after: "2027-06-01T00:00:00.000Z" },
-      { printer_id: cellar.id, hostname: "keller-pi", not_after: "2028-01-01T00:00:00.000Z" },
+      { printer_id: kitchen.id, hostname: "kueche-pi", not_after: "2027-06-01T00:00:00.000Z", version: "0.5.0", model: null },
+      { printer_id: cellar.id, hostname: "keller-pi", not_after: "2028-01-01T00:00:00.000Z", version: "0.3.0", model: "QL-570" },
     ]);
 
     // Neu gekoppelt: Es zählt die jüngste Kopplung.

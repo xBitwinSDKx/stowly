@@ -43,6 +43,7 @@ PRINT_RENAMES: dict[str, str] = {
     "PrinterInfo": "ServicePrinter",
     "Capabilities": "PrinterCapabilities",
     "Media": "PrinterMedia",
+    "Paper": "ServicePaper",
 }
 
 

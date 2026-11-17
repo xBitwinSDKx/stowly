@@ -8,6 +8,7 @@ import { PRINT_JOB_ERROR_CODES, PRINTER_ERROR_CODES, type HostHealth, type Print
 import { createSampleData, DEVICE_IDS, PRINTER_IDS, sampleUuid, ZONE_IDS } from "@/mock";
 import { troubledPrinterStatus } from "@/mock/sample";
 
+import { isOpenJob, viewJob, type PrintData } from "./jobs";
 import { labelStatusText, labelStatusTone } from "./LabelStatus";
 import {
   describeHealth,
@@ -15,7 +16,6 @@ import {
   flushSummary,
   handoffHelps,
   hostFacts,
-  isOpenJob,
   JOB_STATES,
   jobErrorText,
   joinNames,
@@ -25,9 +25,7 @@ import {
   printerForZone,
   problemText,
   uptimeText,
-  viewJob,
   type DeliveryProblem,
-  type PrintData,
 } from "./model";
 
 const NOW = new Date("2026-11-13T12:00:00Z");

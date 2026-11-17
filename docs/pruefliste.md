@@ -2,7 +2,7 @@
 
 Auf dem Entwicklungsrechner laufen Server, Druckdienst und App zusammen: automatische Tests auf allen Seiten, dazu ein Durchgang im Browser mit dem Bild-Treiber. Alles, was Docker, echte Handys, einen echten Drucker oder den Raspberry Pi braucht, ließ sich dort nicht prüfen. Diese Liste führt in der Reihenfolge hindurch, in der man es tut.
 
-Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis N in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
+Die Kürzel in Klammern verweisen auf die Tabellen mit Befehl und erwartetem Ergebnis: A bis O in [`betrieb.md`](betrieb.md) (Abschnitt „Prüfliste für die Zielumgebung"), P bis V in [`../pi/README.md`](../pi/README.md). Wo etwas anders ausgeht als beschrieben, hilft zuerst die Fehlersuche in `betrieb.md`, Abschnitt 11.
 
 ## A. Container
 
@@ -328,3 +328,14 @@ Automatisch geprüft, auch gegen den echten Server samt Neustart beim Zurückspi
 - **N20** entfällt am eigenen NAS: Ohne `.env` kommt nichts mehr aus der Umgebung.
 - **Gefunden:** Mit ausgeschaltetem Drucker zeigt die Druckerkarte grün „Der Druckdienst antwortet." neben rot „nicht verbunden". Das wirkte widersprüchlich. Der Rat, den Drucker einzuschalten oder das USB-Kabel zu prüfen, gehört sichtbarer in die Karte.
 - **Updater:** Den Updater-Container legte eine einmalige Aufgabe im DSM-Aufgabenplaner an, mit dem Befehl aus Einrichtung → „Updates“. Stowly zeigt „Updater bereit“. Die Aufgabe des Host-Updaters der alten Installation ist weg.
+
+## W. Etiketten gestalten, Produktdaten und Druckerkarte (0.5.0)
+
+Automatisch geprüft, auch gegen den echten Server und Druckdienst mit Bild-Treiber. Am NAS erst an einem Testcontainer per Mausklick, dann am eigenen Stowly; schmale und gestanzte Rollen erst, wenn so eine Rolle da ist.
+
+- [ ] **72.** Testcontainer mit der Vorabversion und einem Drucker am Server mit Bild-Treiber: der Editor mit jedem Papier, Vorschau und gedrucktes PNG vergleichen, auch gedreht und gestanzt (O1 bis O7).
+- [ ] **73.** Am Testcontainer „Online abfragen" an einem gescannten Produkt (O12 bis O15).
+- [ ] **74.** Das eigene Stowly per Knopf auf 0.5.0: Etikett gestalten (62 mm endlos, andere Länge), Probedruck am QL-570 noch mit Druckdienst 0.4.0 (O8); ein Papier, das 0.4.0 nicht kann, bleibt ausstehend (O9).
+- [ ] **75.** Den Pi neu koppeln, das sudo-Passwort tippt der Anwender; danach „Rolle: 62 mm endlos" und der Abgleich der Rolle (O10); QL-570 aus und wieder an (O11).
+- [ ] **76.** „Online abfragen" an einem offline angelegten Produkt, mit Bild (O12, O13).
+- [ ] **77.** Schmale oder gestanzte Rolle am QL-570, sobald eine da ist: Die Karte nennt die Rolle, das Etikett passt, mit der falschen Rolle druckt er nichts. Ungeprüft ist, ob der QL-570 bei gestanzten Rollen ihre Länge meldet: Steht in `GET /v1/health` bei `loaded` eine Länge von `null`, passt die gestanzte Rolle zu keinem Papier, und jeder Druck darauf endet mit `media_mismatch`; dann den Treiber nachbessern.

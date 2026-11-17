@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useCore, type Printer, type PrintFlushReport } from "@/contract";
 import { EmptyState, Notice, plural, Section, timeAgo } from "@/ui";
@@ -27,6 +27,8 @@ export interface LabelsProps {
   now: number;
   /** Springt zur Zuordnung der Drucker. */
   onAssign: () => void;
+  /** Ganz oben im Abschnitt: Papier und „Etiketten gestalten" (seit 0.5.0). */
+  design?: ReactNode;
 }
 
 /** Der Drucker eines Etiketts in Worten. Nur solange es aussteht, ist „kein Drucker" eine Auskunft; danach wird sie ausgelassen. */
@@ -66,7 +68,7 @@ function ImageDialog({ view, onClose }: { view: JobView; onClose: () => void }) 
 /**
  * Die Etiketten des Haushalts: was zu klären ist, was aussteht und der Verlauf der letzten 30 Tage.
  */
-export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
+export function Labels({ printing, actions, now, onAssign, design }: LabelsProps) {
   const [report, setReport] = useState<PrintFlushReport | null>(null);
   const [shown, setShown] = useState(HISTORY_STEP);
   const [viewing, setViewing] = useState<string | null>(null);
@@ -241,6 +243,7 @@ export function Labels({ printing, actions, now, onAssign }: LabelsProps) {
         ) : undefined
       }
     >
+      {design}
       {own > 0 && ownDirect ? (
         <p className={styles.small}>Beim Drucken auf den Raspberry Pi kann der Browser einmal fragen, ob Stowly auf Geräte im lokalen Netzwerk zugreifen darf.</p>
       ) : null}

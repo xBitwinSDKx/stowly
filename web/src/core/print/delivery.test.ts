@@ -163,7 +163,18 @@ describe("Etikett an den Drucker am Server", () => {
 
     // Genau ein Druck, mit den Daten des Etiketts und der Vorlage des Haushalts.
     expect(server.print.printed).toEqual([jobId]);
-    expect(server.print.prints[0]?.data).toMatchObject({ qr: `STOWLY/P/${stored.packages[0]?.id}`, id: stored.packages[0]?.id, title: "Basmati Reis", subtitle: "1 kg · Kornhaus", best_before: "25.03.2027", zone: "" });
+    // Seit 0.5.0 stehen alle Felder drin, auch die Zone bei nur einer Zone: Was gedruckt wird, entscheidet die Vorlage.
+    expect(server.print.prints[0]?.data).toMatchObject({
+      qr: `STOWLY/P/${stored.packages[0]?.id}`,
+      id: stored.packages[0]?.id,
+      title: "Basmati Reis",
+      subtitle: "1 kg · Kornhaus",
+      best_before: "25.03.2027",
+      zone: "Vorrat",
+      brand: "Kornhaus",
+      quantity: "1 kg",
+      best_before_short: "25.03.27",
+    });
 
     // Am Server: Geräte-Token im Kopf, gewöhnliches JSON, der Drucker unter seiner Kennung.
     // Auf Wunsch des Anwenders (`flush`) wird eingereicht, ohne auf den Druck zu warten.
@@ -343,7 +354,8 @@ describe("Direkt zum Pi", () => {
     const [health, submit] = calls;
     // Lesend: GET ohne eigene Kopfzeilen.
     expect(health?.headers).toEqual({});
-    expect(health?.query).toMatch(/^nonce=[A-Za-z0-9_-]{32}$/);
+    // Mit dem Papier des Haushalts (seit 0.5.0): Die mitgelieferten Vorlagen nennen keines, also die 62-mm-Endlosrolle.
+    expect(health?.query).toMatch(/^nonce=[A-Za-z0-9_-]{32}&media=62$/);
     // Schreibend: POST als text/plain, das Token im Rumpf, kein Authorization-Kopf.
     expect(submit?.headers).toEqual({ "content-type": "text/plain" });
     expect(submit?.body).toMatchObject({ token: pi.token, printer: null, copies: 1, cut: true, expect_boot_id: pi.bootId });
@@ -948,9 +960,9 @@ describe("Reihenfolge und Fehler", () => {
     harness.network.beforeRequest = null;
     pi.setPrinters([{ name: "brother", confirms: true }]);
 
-    // Eine Vorlage, die sich nicht rendern lässt.
+    // Eine Vorlage, die sich nicht rendern lässt: ein Format, das der Dienst kennt, aber ein Papier, das er nicht kennt.
     const template = server.data.label_templates.get("package");
-    server.put("label_templates", { key: "package", hash: "00000000000000ff", body: { schema: 99 }, updated_at: template?.updated_at ?? "" });
+    server.put("label_templates", { key: "package", hash: "00000000000000ff", body: { schema: 2, media: { id: "99x99" } }, updated_at: template?.updated_at ?? "" });
     await core.sync.now();
     const broken = await storeLabelled(core, 1, "Mais");
     await core.print.flush();
@@ -1535,5 +1547,88 @@ describe("Etiketten nach id_conflict", () => {
     expect(value(core.sync.problems)).toMatchObject([{ code: "id_conflict" }]);
     expect(jobOf(core, jobId).state).toBe("printed");
     expect(sent(harness, "print.report").map((command) => command.state)).toEqual(["printed"]);
+  });
+});
+
+// ------------------------------------------------------------------------------------------
+// Papier und Format der Vorlage (seit 0.5.0; docs/etiketten.md, 3.4 und 4.1)
+// ------------------------------------------------------------------------------------------
+
+describe("Papier und Format der Vorlage", () => {
+  /** Setzt die Vorlagen des Haushalts, als hätte der Server eine Gestaltung gespeichert, und gleicht ab. */
+  async function useTemplates(harness: Harness, body: Record<string, unknown>): Promise<void> {
+    for (const [key, hash] of [
+      ["package", "a000000000000001"],
+      ["zone", "b000000000000001"],
+    ] as const) {
+      harness.server.put("label_templates", { key, hash, body: { ...body, name: key }, updated_at: harness.clock.now().toISOString() });
+    }
+    await harness.core.sync.now();
+  }
+
+  const NARROW = { schema: 2, media: { id: "29", kind: "endless", width_mm: 29, length_mm: 50 }, rotate: 90, elements: [] };
+
+  it("stellt einem Druckdienst vor 0.5.0 kein Etikett im Format 2 zu: Es bleibt ausstehend mit `outdated`", async () => {
+    const harness = await withPi({}, {}, { templateSchemas: null });
+    const { core, pi, printerId } = harness;
+    await useTemplates(harness, NARROW);
+    const stored = await storeLabelled(core);
+    const jobId = stored.print_jobs[0]?.id;
+    expect(await core.print.flush()).toEqual({
+      delivered: 0,
+      pending: 1,
+      problems: [{ printer_id: printerId, problem: "outdated", message: "Der Druckdienst auf dem Pi ist zu alt für dieses Papier. Neu koppeln aktualisiert ihn." }],
+    });
+    expect(jobOf(core, jobId)).toMatchObject({ state: "pending", error: null });
+    // Nichts ging hinaus: nur die Abfrage des Zustands, kein Einreichen.
+    expect(harness.piCalls().filter((call) => call.method === "POST")).toEqual([]);
+    expect(pi.printed).toEqual([]);
+    // „Verbindung prüfen" sagt dasselbe; der Dienst selbst antwortet.
+    expect(await core.printers.probe(printerId)).toMatchObject({ reachable: true, problem: "outdated", health: { version: "0.4.0" } });
+
+    // Neu gekoppelt, also ein neuer Druckdienst: Jetzt geht das Etikett hinaus, so wie es war.
+    pi.templateSchemas = [1, 2];
+    expect(await core.print.flush()).toMatchObject({ delivered: 1, pending: 0, problems: [] });
+    expect(pi.printed).toEqual([jobId]);
+    const [submit] = harness.piCalls().filter((call) => call.method === "POST");
+    expect(submit?.body).toMatchObject({ template: { schema: 2, media: { id: "29" }, rotate: 90 } });
+  });
+
+  it("druckt Format 1 auch auf einem Druckdienst vor 0.5.0, mit allen Feldern der Daten", async () => {
+    const harness = await withPi({}, {}, { templateSchemas: null });
+    await useTemplates(harness, { schema: 1, media: { id: "62", kind: "endless", width_mm: 62, length_mm: 40 }, elements: [] });
+    const stored = await storeLabelled(harness.core);
+    expect(await harness.core.print.flush()).toMatchObject({ delivered: 1, problems: [] });
+    expect(harness.pi.printed).toEqual([stored.print_jobs[0]?.id]);
+    // Ein Druckdienst vor 0.5.0 nimmt unbekannte Schlüssel der Daten an.
+    expect(harness.pi.prints[0]?.data).toMatchObject({ brand: "Kornhaus", quantity: "1 kg", best_before_short: "25.03.27", zone: "Vorrat" });
+  });
+
+  it("nennt dem Druckdienst bei jeder Abfrage das Papier des Haushalts; eine andere Rolle meldet er, und gedruckt wird nicht", async () => {
+    const roll = { id: "62", kind: "endless", width_mm: 62, length_mm: null };
+    const harness = await withPi({}, {}, { printers: [{ name: "brother", confirms: true, loaded: roll }] });
+    await useTemplates(harness, { schema: 2, media: { id: "62x29", kind: "die_cut", width_mm: 62, length_mm: 29 }, rotate: 0, elements: [] });
+    const probe = await harness.core.printers.probe(harness.printerId);
+    const health = harness.piCalls().filter((call) => call.path === "/v1/health").at(-1);
+    expect(new URLSearchParams(health?.query).get("media")).toBe("62x29");
+    expect(probe).toMatchObject({ reachable: true, problem: null, health: { template_schemas: [1, 2] } });
+    expect(probe.health?.printers[0]).toMatchObject({ loaded: roll, status: { ready: false, errors: ["media_mismatch"] } });
+
+    const stored = await storeLabelled(harness.core);
+    await harness.core.print.flush();
+    await expect.poll(() => jobOf(harness.core, stored.print_jobs[0]?.id).state).toBe("failed");
+    expect(jobOf(harness.core, stored.print_jobs[0]?.id).error).toBe("media_mismatch");
+    expect(harness.pi.printed).toEqual([]);
+  });
+
+  it("reicht auf dem Notweg die Vorlage weiter wie bisher, auch an einen alten Druckdienst", async () => {
+    const harness = await withPi({}, {}, { templateSchemas: null });
+    await useTemplates(harness, NARROW);
+    await storeLabelled(harness.core);
+    const { url } = await harness.core.print.handoff(harness.printerId);
+    const fragment = url.slice(url.indexOf("#") + 1);
+    const binary = atob(fragment.replace(/-/g, "+").replace(/_/g, "/"));
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)))) as { template: Record<string, unknown> };
+    expect(payload.template).toMatchObject({ schema: 2, media: { id: "29" } });
   });
 });

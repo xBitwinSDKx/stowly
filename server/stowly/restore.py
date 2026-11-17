@@ -39,6 +39,7 @@ normal, ohne Neustart-Schleife. „Rückgängig" spielt ``previous.sqlite3`` üb
 import contextlib
 import functools
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -60,7 +61,19 @@ from typing import Any, BinaryIO
 
 import pyrage
 
-from stowly import auth, db, events, haconfig, off, push, records, safefile, serverconfig, updates
+from stowly import (
+    auth,
+    db,
+    events,
+    haconfig,
+    label_templates,
+    off,
+    push,
+    records,
+    safefile,
+    serverconfig,
+    updates,
+)
 from stowly.config import Settings
 from stowly.contract import ids
 from stowly.contract.api import (
@@ -93,6 +106,13 @@ _WORK_NAME = re.compile(r"^(work|candidate)-[0-9a-f]{32}\.sqlite3(-journal)?$")
 # „STOW" (Migration 0005); ältere Datenbanken haben 0.
 APPLICATION_ID = 0x53544F57
 UNPACKED_MAX = 2 * 1024 * 1024 * 1024
+# Größer ist kein Text, den Stowly schreibt (eine Anfrage hat höchstens 4 MiB): Die Prüfung der Texte lädt
+# ihn gar nicht erst und lehnt die Sicherung als beschädigt ab (text_problem).
+MAX_TEXT_BYTES = 16 * 1024 * 1024
+# So tief verschachtelt schreibt Stowly nie: Seine tiefsten JSON-Werte (Gestaltung der Etiketten, Befehle,
+# Ereignisse) haben vier, fünf Ebenen. 64 lässt viel Spielraum und bleibt weit unter dem, woran die Parser
+# scheitern (json.loads an der Rekursionsgrenze von etwa 1000, pydantic bei 200).
+MAX_JSON_DEPTH = 64
 ID_TTL = timedelta(seconds=RESTORE_ID_TTL_S)
 UNDO_FOR = timedelta(days=RESTORE_UNDO_DAYS)
 # Ein bereitgelegtes Zurückspielen gilt nur so lange nach dem Anwenden; danach verwirft der Start es.
@@ -169,6 +189,9 @@ NOT_A_KEY = "Das ist kein geheimer age-Schlüssel (AGE-SECRET-KEY-1…)."
 WRONG_KEY = "Der Schlüssel passt nicht zu dieser Sicherung."
 DAMAGED = "Die Datei ist beschädigt oder unvollständig."
 DAMAGED_DATABASE = "Die Datenbank in der Sicherung ist beschädigt."
+INVALID_TEXT = "Die Datenbank in der Sicherung ist beschädigt: Sie enthält Text, der kein gültiges UTF-8 ist."
+TEXT_TOO_LARGE = f"Die Datenbank in der Sicherung ist beschädigt: Sie enthält einen Text über {MAX_TEXT_BYTES // (1024 * 1024)} MiB."
+JSON_TOO_DEEP = "Die Datenbank in der Sicherung ist beschädigt: Sie enthält zu tief verschachtelte Daten."
 NOT_STOWLY = "Das ist keine Datenbank von Stowly."
 FOREIGN_SCHEMA = "Der Aufbau der Datenbank weicht von dem einer Datenbank von Stowly ab."
 TRIGGERS = "Die Datenbank enthält Trigger oder Views; eine Sicherung von Stowly hat keine."
@@ -650,12 +673,100 @@ def _rows_ok(rows: list[Any]) -> bool:
     return [str(row[0]) for row in rows] == ["ok"]
 
 
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def text_problem(con: sqlite3.Connection) -> str | None:
+    """Prüft jeden TEXT-Wert jeder Tabelle: strenges UTF-8, höchstens ``MAX_TEXT_BYTES`` groß und, wenn er wie
+    JSON beginnt, höchstens ``MAX_JSON_DEPTH`` tief verschachtelt. Liefert den Satz für ``damaged``
+    (``INVALID_TEXT``, ``TEXT_TOO_LARGE``, ``JSON_TOO_DEEP``) oder ``None``, wenn alles gut ist.
+
+    SQLite prüft das nicht: Eine Spalte TEXT nimmt auch ungültige Bytes an (``CAST(X'FF' AS TEXT)``), auch in
+    einer STRICT-Tabelle, und Python scheitert erst beim Lesen, etwa beim Start (``off.reconcile``,
+    ``db.seed_defaults``). Ebenso bricht ``json.loads`` an tief verschachteltem JSON mit ``RecursionError`` ab
+    (``serverconfig.get`` beim Start, der Abgleich bei ``settings``). Gelesen wird Zeile für Zeile und jeder
+    Text als Bytes; BLOB-Spalten (die Bilder) bleiben aus, und einen Wert über der Grenze lädt die Prüfung gar
+    nicht erst. Streng heißt: Python dekodiert ohne Ersatz, kodierte Surrogate (``ED A0 80``) gelten nicht."""
+    tables = [
+        row[0]
+        for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    ]
+    for table in tables:
+        columns = [
+            str(row[1])
+            for row in con.execute(f"PRAGMA table_info({_quoted(table)})").fetchall()
+            if str(row[2]).upper() != "BLOB"
+        ]
+        if not columns:
+            continue
+        # Je Spalte: der Text als Bytes, 0 für einen Text über der Grenze, NULL für alles andere.
+        values = ", ".join(
+            f"CASE WHEN typeof({name}) = 'text' THEN CASE WHEN {label_templates.byte_length(name)} <= "
+            f"{MAX_TEXT_BYTES} THEN CAST({name} AS BLOB) ELSE 0 END END"
+            for name in map(_quoted, columns)
+        )
+        for row in con.execute(f"SELECT {values} FROM {_quoted(table)}"):
+            for value in row:
+                if value is None:
+                    continue
+                if not isinstance(value, bytes):
+                    return TEXT_TOO_LARGE
+                try:
+                    value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return INVALID_TEXT
+                if too_deep(value):
+                    return JSON_TOO_DEEP
+    return None
+
+
+# Wie JSON beginnt ein Text, wenn nach Leerraum „[" oder „{" kommt (so beginnt alles, was json.loads tief
+# verschachtelt zurückweisen könnte). Zeichenketten in JSON enthalten Klammern als Text: Escapes (\x) fallen
+# zuerst weg, danach trennen die übrigen Anführungszeichen Zeichenketten vom Rest.
+_JSON_START = re.compile(rb"[ \t\r\n]*[\[{]")
+_JSON_ESCAPE = re.compile(rb"\\.", re.DOTALL)
+_NOT_STRUCTURE = bytes(byte for byte in range(256) if byte not in b'[]{}"')
+_DEPTH_STEP = [0] * 256
+for _open in b"[{":
+    _DEPTH_STEP[_open] = 1
+for _close in b"]}":
+    _DEPTH_STEP[_close] = -1
+
+
+def json_depth(data: bytes) -> int:
+    """Die tiefste Schachtelung von ``[`` und ``{`` außerhalb von Zeichenketten, ohne zu parsen.
+
+    Linear und ohne Objekte für die Werte: Escapes entfernen, alles außer Klammern und Anführungszeichen
+    löschen (beides in C), die Stücke außerhalb von Zeichenketten zusammensetzen und die größte Summe der
+    Schritte nehmen. Für kaputtes JSON ist das Ergebnis eine Schätzung; geprüft wird nur, ob es zu tief ist."""
+    structure = _JSON_ESCAPE.sub(b"", data).translate(None, _NOT_STRUCTURE)
+    outside = b"".join(structure.split(b'"')[0::2])
+    if not outside:
+        return 0
+    return max(0, max(itertools.accumulate(map(_DEPTH_STEP.__getitem__, outside))))
+
+
+def too_deep(value: bytes) -> bool:
+    """Beginnt ``value`` wie JSON und ist tiefer verschachtelt als ``MAX_JSON_DEPTH``? Was weniger öffnende
+    Klammern hat, als die Grenze erlaubt, kann nicht zu tief sein und wird gar nicht erst gezählt."""
+    if _JSON_START.match(value) is None:
+        return False
+    if value.count(b"[") + value.count(b"{") <= MAX_JSON_DEPTH:
+        return False
+    return json_depth(value) > MAX_JSON_DEPTH
+
+
 def examine(path: Path, *, now: datetime | None = None) -> Examined:
     """Prüft die entpackte Datenbank der Reihe nach und migriert sie dann an Ort und Stelle (die Datei ist
     schon eine Kopie). ``ApiError`` 422 mit ``details.reason``.
 
     Der Aufbau muss genau dem aus den Migrationen gleichen, Zeichen für Zeichen; Trigger und Views lehnt die
-    Prüfung unter jedem Namen ab, Statistiktabellen von SQLite nur in ihrer eigenen Form zu. Danach räumt
+    Prüfung unter jedem Namen ab, Statistiktabellen von SQLite nur in ihrer eigenen Form zu. Jeder Text muss
+    gültiges UTF-8 sein (``text_problem``), sonst ``damaged``; das gilt für beide Arten des Zurückspielens,
+    auch beim ersten Start, wo ``meta`` und ``server_config`` aus der Sicherung kommen. Danach räumt
     ``_clean_candidate`` den Kandidaten auf (``now``: Zeitpunkt dafür, Vorgabe jetzt)."""
     current = len(db.list_migrations())
     single_file(path)
@@ -691,6 +802,10 @@ def examine(path: Path, *, now: datetime | None = None) -> Examined:
             raise refused("damaged", DAMAGED_DATABASE)
         if con.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise refused("damaged", DAMAGED_DATABASE)
+        problem = text_problem(con)
+        if problem is not None:
+            log.warning("Zurückspielen: abgelehnt, %s", problem)
+            raise refused("damaged", problem)
     except sqlite3.Error:
         raise refused("damaged", DAMAGED_DATABASE) from None
     finally:
@@ -724,12 +839,19 @@ def _clean_candidate(con: sqlite3.Connection, now: datetime) -> None:
       die nicht zum Typ passen (``off.sniff_image``). Ein Produkt, das auf eines zeigt, hat dann kein Bild.
     * **Kopplungen eines Pi**, die noch nicht gekoppelt sind, gelten als abgebrochen: Ein Code aus einer
       gefälschten Sicherung bekäme sonst ein Zertifikat der eigenen CA.
+    * **Etikett-Vorlagen** (``label_templates``) fallen alle weg: Sie sind abgeleitet, und der Start erzeugt
+      sie neu (``label_templates.install``). Was eine Sicherung als Vorlage mitbrächte, ginge sonst über den
+      Sync unbesehen an alle Geräte, etwa ein fremder Inhalt im QR-Code.
+    * **Die Gestaltung der Etiketten** (``label_design``) bleibt nur, wenn sie taugt
+      (``label_templates.parse_design``: höchstens 64 KiB, UTF-8, nach dem Vertrag, Papier im Katalog,
+      ``updated_at`` ein Zeitstempel); sonst fällt sie weg, und es gelten die mitgelieferten Vorlagen.
     """
     doomed = [
         row[0]
         for row in con.execute("SELECT id, content_type, substr(data, 1, 16) FROM images")
         if not _image_ok(row[1], row[2])
     ]
+    designs = _unusable_designs(con)
     stamp = format_timestamp(now)
     with db.transaction(con):
         con.executemany("DELETE FROM images WHERE id = ?", [(image_id,) for image_id in doomed])
@@ -737,6 +859,8 @@ def _clean_candidate(con: sqlite3.Connection, now: datetime) -> None:
             "UPDATE pi_pairings SET cancelled_at = ? WHERE paired_at IS NULL AND cancelled_at IS NULL",
             (stamp,),
         ).rowcount
+        con.execute("DELETE FROM label_templates")
+        con.executemany("DELETE FROM label_design WHERE id = ?", [(design_id,) for design_id in designs])
     if doomed:
         log.warning(
             "Zurückspielen: %d Bilder der Sicherung sind kein JPEG, PNG oder WebP und fallen weg.",
@@ -744,6 +868,30 @@ def _clean_candidate(con: sqlite3.Connection, now: datetime) -> None:
         )
     if pairings:
         log.info("Zurückspielen: %d offene Kopplungen eines Pi aus der Sicherung sind abgebrochen.", pairings)
+    if designs:
+        log.warning(
+            "Zurückspielen: Die Gestaltung der Etiketten aus der Sicherung ist unbrauchbar und fällt weg; "
+            "es gelten die mitgelieferten Vorlagen."
+        )
+
+
+def _unusable_designs(con: sqlite3.Connection) -> list[int]:
+    """Die Zeilen in ``label_design``, die nicht taugen: nicht die Zeile 1, zu groß (gemessen in SQL, ohne sie
+    zu laden) oder abgelehnt von ``label_templates.parse_design``."""
+    unusable: list[int] = []
+    sizes = con.execute(f"SELECT id, {label_templates.byte_length('body')} FROM label_design").fetchall()
+    for design_id, size in sizes:
+        try:
+            if design_id != 1 or not isinstance(size, int) or size > label_templates.MAX_DESIGN_BYTES:
+                raise ValueError("Die Gestaltung ist zu groß oder nicht die einzige.")
+            body, updated_at = con.execute(
+                "SELECT CAST(body AS BLOB), CAST(updated_at AS BLOB) FROM label_design WHERE id = ?",
+                (design_id,),
+            ).fetchone()
+            label_templates.parse_design(body, updated_at)
+        except label_templates.UNREADABLE:
+            unusable.append(design_id)
+    return unusable
 
 
 def _image_ok(content_type: Any, head: Any) -> bool:

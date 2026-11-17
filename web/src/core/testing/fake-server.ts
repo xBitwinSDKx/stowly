@@ -33,13 +33,20 @@
  *   den es nie gab, mit `not_found` ab.
  * - Ein schon bekannter Befehl (`duplicate`) zählt nicht als Untergrenze der wirksamen
  *   Zeitpunkte (Abschnitt 4); es fehlt auch die Schranke für ein unmögliches Alter.
- * - Open Food Facts wird nachgespielt: gerade Endziffer des Barcodes = gefunden, nach
- *   `lookupDelayMs`. `product.add_barcode` und ein Zusammenführen setzen `lookup` nicht auf
- *   `pending`. Bilder gibt es nicht (404). Mit `lookupEnabled: false` meldet jede Antwort
+ * - Open Food Facts wird nachgespielt: was der Test in `offProducts` einträgt, sonst gerade
+ *   Endziffer des Barcodes = gefunden, nach `lookupDelayMs`. `product.add_barcode` und ein
+ *   Zusammenführen setzen `lookup` nicht auf `pending`. Bilder gibt es nur, wenn der Test sie in
+ *   `images` einträgt (ein kleines PNG), sonst 404. Mit `lookupEnabled: false` meldet jede Antwort
  *   `lookup_enabled: false`, und neue Produkte beginnen mit `lookup: "none"`.
- *   `GET /api/lookup/{barcode}` antwortet nach derselben Regel sofort (nie `pending`, nie mit
- *   Bild) und merkt sich nichts; der echte Server legt das Ergebnis ab und füllt damit später
- *   das Produkt.
+ *   `GET /api/lookup/{barcode}` antwortet nach derselben Regel sofort (nie `pending`) und merkt sich
+ *   nichts; der echte Server legt das Ergebnis ab und füllt damit später das Produkt. Der Neuabruf
+ *   (`POST …/refresh`, seit 0.5.0) merkt sich sein Ergebnis und bremst je Barcode eine Minute nach
+ *   der Uhr des Servers; die Bremse nach 429 und die Grenze je Minute gibt es hier nicht.
+ * - Etiketten gestalten (`/api/labels/…`, seit 0.5.0): Katalog und Vorlagen aus fake-labels.ts.
+ *   Die Vorlagen nennen Format, Papier und Drehung wie beim Server, haben aber keine Elemente; die
+ *   Prüfung kennt nur die Form und eine grobe Regel für „zu kurz"; die Vorschau ist ein weißes Feld
+ *   in der Größe des Papiers. Höchstens zwei Vorschauen zugleich prüft sie nicht (sie antwortet
+ *   ohnehin der Reihe nach).
  * - `last_seen_at` rückt bei jedem Abgleich vor, im echten Server höchstens einmal je Minute.
  * - Es gibt kein Ereignisprotokoll und keine Grenze für die Größe einer Anfrage; die Klartexte
  *   der Meldungen sind eigene, und `details.errors` ist bei 422 meist leer.
@@ -122,8 +129,14 @@ import {
   type HouseholdSettings,
   type HttpsStatus,
   type IntegrationStatus,
+  type LabelDesign,
+  type LabelDesignState,
+  type LabelLayout,
+  type LabelPaper,
+  type LabelPreview,
   type LabelTemplate,
   type LoginResponse,
+  type LookupResult,
   type Package,
   type PairedPrinter,
   type PasswordSource,
@@ -159,6 +172,7 @@ import { isDate, isTimeOfDay, isTimestamp } from "@/contract/time";
 
 import { applyCommand } from "../commands/apply";
 import { DAY_MS, isExpiredJob, isExpiredPackage, isExpiredShoppingItem, PRINT_JOB_RETENTION_DAYS, retentionLimit } from "../sync/retention";
+import { FAKE_DEFAULT_DESIGN, FAKE_PAPERS, fakeHash, fakeLayoutProblem, fakePaper, fakeTemplate, framePng, imageSize, isFakeDefault, toBase64 } from "./fake-labels";
 import { FakePrintService } from "./fake-print";
 import { ShoppingRules } from "./fake-shopping";
 import { fakeStats } from "./fake-stats";
@@ -166,6 +180,8 @@ import { Draft, EMPTY_TABLES, keyOf, TABLE_NAMES, type MutableTables, type Table
 
 export const FAKE_PASSWORD = "stowly";
 export const FAKE_VERSION = "0.0.0-fake";
+/** Neuabruf bei Open Food Facts: je Barcode höchstens einmal in dieser Zeit (`LOOKUP_REFRESH_GAP_S`). */
+export const FAKE_REFRESH_GAP_MS = 60_000;
 
 export interface FakeRequestData {
   method: string;
@@ -705,6 +721,8 @@ export interface FakePi {
   name?: string;
   /** Ablauf des Zertifikats, das der Server ausstellt; Vorgabe in `PI_CERT_DAYS` (825) Tagen. */
   not_after?: string;
+  /** Version des Druckdienstes, die der Pi beim Koppeln meldet (`PairedPrinter.version`). Vorgabe "0.3.0". */
+  version?: string;
 }
 
 /** Ist `version` neuer als `than`? Verglichen werden die drei Zahlen; was keine Version wie 1.2.3 ist, ist nie neuer. */
@@ -947,6 +965,17 @@ export class FakeServer {
   haCheckResult: HaCheck = FAKE_HA_CHECK;
   /** Die Prüfungen bei HA, wie sie kamen (Adresse und ob ein Token dabei war). */
   readonly haChecks: { url: string | null; token: boolean }[] = [];
+  // Seit 0.5.0: Etiketten gestalten und Produktdaten neu abfragen (docs/plan-0.5.md, 1 und 2).
+  /**
+   * Was Open Food Facts in der Nachbildung kennt, vor der Regel „gerade Endziffer = gefunden": für
+   * „erst unbekannt, dann gefunden". Gilt für das Nachschlagen im Hintergrund, beim Scannen und den
+   * Neuabruf; `image_id` muss ein Bild aus `images` sein (oder null).
+   */
+  readonly offProducts = new Map<string, { name: string; brand?: string; quantity?: string; image_id?: string | null }>();
+  /** Bilder, die der Server gespeichert hat (Tabelle `images`): Nur auf sie lässt sich ein Produktbild setzen. */
+  readonly images = new Set<string>();
+  /** Die Vorschauen, wie sie ankamen (`POST /api/labels/preview`). */
+  readonly previews: Record<string, unknown>[] = [];
 
   private tables: Tables = EMPTY_TABLES;
   /** Was der Server an der Einkaufsliste selbst schreibt (7.6), samt Sperren und Uhren. */
@@ -998,6 +1027,13 @@ export class FakeServer {
   private haApp: { url: string | null; entity: string | null; token: string | null; token_set_at: string | null } = { url: null, entity: null, token: null, token_set_at: null };
   private haSensorApp: { token: string; set_at: string } | null = null;
   private lastHaCheck: number | null = null;
+  /** Die eigene Gestaltung des Haushalts; null = Vorgabe, es gelten die mitgelieferten Vorlagen. */
+  private labelDesign: { design: LabelDesign; updated_at: string } | null = null;
+  /** Die mitgelieferten Vorlagen, wie beim Start übernommen: Zurücksetzen bringt sie mit demselben `hash` zurück. */
+  private bundledTemplates: LabelTemplate[] = [];
+  /** Das zuletzt gespeicherte Ergebnis je Barcode (`off_lookups`) und wann er zuletzt neu gefragt wurde. */
+  private readonly offStored = new Map<string, LookupResult>();
+  private readonly refreshedAt = new Map<string, number>();
 
   private readonly now: () => Date;
   private password: string;
@@ -1220,7 +1256,8 @@ export class FakeServer {
     for (const pairing of this.pairings.values()) {
       const printer = pairing.printer_id === null ? undefined : this.tables.printers.get(pairing.printer_id);
       if (pairing.state === "paired" && printer && printer.deleted_at === null && pairing.pi?.not_after) {
-        latest.set(printer.id, { printer_id: printer.id, hostname: pairing.pi.hostname, not_after: pairing.pi.not_after });
+        const { hostname, not_after, version, model } = pairing.pi;
+        latest.set(printer.id, { printer_id: printer.id, hostname, not_after, version: version ?? null, model });
       }
     }
     return [...latest.values()].sort((a, b) => a.not_after.localeCompare(b.not_after));
@@ -1890,7 +1927,7 @@ export class FakeServer {
     const notAfter = pi.not_after ?? new Date(this.now().getTime() + PI_CERT_DAYS * DAY_MS).toISOString();
     pairing.state = "paired";
     pairing.printer_id = printerId;
-    pairing.pi = { hostname, addresses: [address], model, printer_found: model !== null, version: "0.3.0", not_after: notAfter };
+    pairing.pi = { hostname, addresses: [address], model, printer_found: model !== null, version: pi.version ?? "0.3.0", not_after: notAfter };
     const printer = this.tables.printers.get(printerId);
     if (!printer) {
       throw new Error("Der Drucker ließ sich nicht anlegen.");
@@ -2016,6 +2053,7 @@ export class FakeServer {
       { key: "package", hash: "0000000000000001", body: { schema: 1, name: "package-62x29", elements: [] }, updated_at: at },
       { key: "zone", hash: "0000000000000002", body: { schema: 1, name: "zone-62x29", elements: [] }, updated_at: at },
     ];
+    this.bundledTemplates = templates;
     for (const template of templates) {
       this.put("label_templates", template);
     }
@@ -2158,39 +2196,176 @@ export class FakeServer {
         continue;
       }
       const code = product.barcodes.find((candidate) => !isStoreInternalBarcode(candidate)) ?? "";
-      const found = Number(code.at(-1)) % 2 === 0;
+      const answer = this.offStored.get(code) ?? this.offAnswer(code);
       // Die Daten füllen nur leere Felder (Abschnitt 10).
-      const filled: Product = found
-        ? {
-            ...product,
-            lookup: "found",
-            name: product.name === "" ? `Beispielprodukt ${code.slice(-4)}` : product.name,
-            brand: product.brand === "" ? "Beispielmarke" : product.brand,
-            quantity: product.quantity === "" ? "500 g" : product.quantity,
-          }
-        : { ...product, lookup: "not_found" };
+      const filled: Product =
+        answer.state === "found"
+          ? {
+              ...product,
+              lookup: "found",
+              name: product.name === "" ? answer.name : product.name,
+              brand: product.brand === "" ? answer.brand : product.brand,
+              quantity: product.quantity === "" ? answer.quantity : product.quantity,
+              image: product.image ?? answer.image_id,
+            }
+          : { ...product, lookup: "not_found" };
       this.put("products", filled);
     }
   }
 
-  /** `GET /api/lookup/{barcode}?wait=0..8`: Open Food Facts nachgespielt wie oben, sofort beantwortet. */
-  private lookupNow(barcode: string, query: string): FakeResponseData {
+  /**
+   * Was Open Food Facts in der Nachbildung zu einem Barcode sagt: was in `offProducts` steht, sonst
+   * gerade Endziffer = gefunden (ohne Bild), ungerade = unbekannt.
+   */
+  private offAnswer(barcode: string): LookupResult {
+    const known = this.offProducts.get(barcode);
+    const base = { barcode, image_id: null, fetched_at: this.stamp(), throttled: false };
+    if (known) {
+      return { ...base, state: "found", name: known.name, brand: known.brand ?? "", quantity: known.quantity ?? "", image_id: known.image_id ?? null };
+    }
+    return Number(barcode.at(-1)) % 2 === 0
+      ? { ...base, state: "found", name: `Beispielprodukt ${barcode.slice(-4)}`, brand: "Beispielmarke", quantity: "500 g" }
+      : { ...base, state: "not_found", name: "", brand: "", quantity: "" };
+  }
+
+  /** Prüft Barcode und `wait` wie der Server; liefert die Antworten ohne Abfrage (ladenintern, aus) oder null. */
+  private lookupPrecheck(barcode: string, query: string): FakeResponseData | null {
     const wait = new URLSearchParams(query).get("wait");
     const waitS = wait === null ? 4 : Number(wait);
     if (!isValidBarcode(barcode) || !Number.isInteger(waitS) || waitS < 0 || waitS > 8) {
       return failure(400, "invalid_request", "Barcode oder Wartezeit sind ungültig.");
     }
-    const empty = { barcode, name: "", brand: "", quantity: "", image_id: null };
+    const empty = { barcode, name: "", brand: "", quantity: "", image_id: null, fetched_at: null, throttled: false };
     if (isStoreInternalBarcode(barcode)) {
       return json(200, { ...empty, state: "skipped" });
     }
-    if (!this.lookupEnabled) {
-      return json(200, { ...empty, state: "disabled" });
+    return this.lookupEnabled ? null : json(200, { ...empty, state: "disabled" });
+  }
+
+  /** `GET /api/lookup/{barcode}?wait=0..8`: Open Food Facts nachgespielt wie oben, sofort beantwortet. */
+  private lookupNow(barcode: string, query: string): FakeResponseData {
+    const early = this.lookupPrecheck(barcode, query);
+    if (early) {
+      return early;
     }
-    if (Number(barcode.at(-1)) % 2 !== 0) {
-      return json(200, { ...empty, state: "not_found" });
+    return json(200, { ...(this.offStored.get(barcode) ?? this.offAnswer(barcode)), throttled: false });
+  }
+
+  /**
+   * `POST /api/lookup/{barcode}/refresh` (seit 0.5.0): fragt jetzt neu, höchstens einmal je Minute
+   * und Barcode, sonst der gespeicherte Stand mit `throttled`. Ein Fund ersetzt das gespeicherte
+   * Ergebnis; „unbekannt" überschreibt keinen Fund. Kein Produkt ändert sich.
+   */
+  private refreshLookup(barcode: string, query: string): FakeResponseData {
+    const early = this.lookupPrecheck(barcode, query);
+    if (early) {
+      return early;
     }
-    return json(200, { barcode, state: "found", name: `Beispielprodukt ${barcode.slice(-4)}`, brand: "Beispielmarke", quantity: "500 g", image_id: null });
+    const nowMs = this.now().getTime();
+    const last = this.refreshedAt.get(barcode);
+    const stored = this.offStored.get(barcode);
+    if (last !== undefined && nowMs - last < FAKE_REFRESH_GAP_MS) {
+      return json(200, { ...(stored ?? this.offAnswer(barcode)), throttled: true });
+    }
+    this.refreshedAt.set(barcode, nowMs);
+    const answer = this.offAnswer(barcode);
+    if (answer.state === "found" || stored?.state !== "found") {
+      this.offStored.set(barcode, answer);
+    }
+    return json(200, answer);
+  }
+
+  /** `PUT /api/products/{id}/image` (seit 0.5.0): nur Bilder, die der Server hat; neuer `rev`. */
+  private setProductImage(productId: string, body: unknown): FakeResponseData {
+    if (!object({ image_id: req(nullable(text(1, 100))) })(body)) {
+      return failure(422, "invalid_request", "Die Anfrage verletzt den Vertrag.", { errors: [] });
+    }
+    const product = this.tables.products.get(productId);
+    if (!product || product.deleted_at !== null || product.merged_into !== null) {
+      return failure(404, "not_found", "Das Produkt gibt es nicht.");
+    }
+    const imageId = (body as { image_id: string | null }).image_id;
+    if (imageId !== null && !this.images.has(imageId)) {
+      return failure(422, "invalid_request", "Dieses Bild hat Stowly nicht gespeichert.", { errors: [] });
+    }
+    const next: Product = { ...product, image: imageId, updated_at: this.stamp() };
+    this.put("products", next);
+    return json(200, next);
+  }
+
+  // ---------------------------------------------------------------- Etiketten gestalten (seit 0.5.0)
+
+  /** `LabelDesignState`: die gültige Gestaltung, ob es die Vorgabe ist, die `hash` der Vorlagen, der Katalog. */
+  labelDesignState(): LabelDesignState {
+    const templates = this.tables.label_templates;
+    return {
+      design: JSON.parse(JSON.stringify(this.labelDesign?.design ?? FAKE_DEFAULT_DESIGN)) as LabelDesign,
+      is_default: this.labelDesign === null,
+      updated_at: this.labelDesign?.updated_at ?? null,
+      templates: { package: templates.get("package")?.hash ?? "", zone: templates.get("zone")?.hash ?? "" },
+      papers: FAKE_PAPERS.map((paper) => ({ ...paper })),
+    };
+  }
+
+  /** Schreibt eine Vorlage, wenn sich ihr `hash` ändert: Dann bekommen alle Geräte sie mit dem Sync. */
+  private putTemplate(template: LabelTemplate): void {
+    if (this.tables.label_templates.get(template.key)?.hash !== template.hash) {
+      this.put("label_templates", { ...template, updated_at: this.stamp() });
+    }
+  }
+
+  private labelDesignRequest(method: string, body: unknown): FakeResponseData {
+    if (method === "GET") {
+      return json(200, this.labelDesignState());
+    }
+    if (method === "DELETE") {
+      this.labelDesign = null;
+      for (const template of this.bundledTemplates) {
+        this.putTemplate(template);
+      }
+      return json(200, this.labelDesignState());
+    }
+    if (method !== "PUT") {
+      return failure(405, "invalid_request", "Diese Methode ist hier nicht erlaubt.", null, { allow: "GET, PUT, DELETE" });
+    }
+    const wanted = isRecord(body) ? body : {};
+    // Wie der Server: der Satz, und die Stelle in `details.errors[0].loc` (welche Gestaltung).
+    for (const kind of ["package", "zone"] as const) {
+      const problem = fakeLayoutProblem(kind, wanted.paper, wanted[kind]);
+      if (problem !== null) {
+        return failure(422, "invalid_request", problem, { errors: [{ loc: ["body", kind], msg: problem, type: "label_design" }] });
+      }
+    }
+    const design = { paper: wanted.paper, package: wanted.package, zone: wanted.zone } as LabelDesign;
+    if (isFakeDefault(design)) {
+      // Die Vorgabe zu speichern heißt wie beim Server: keine eigene Gestaltung.
+      return this.labelDesignRequest("DELETE", undefined);
+    }
+    this.labelDesign = { design, updated_at: this.stamp() };
+    for (const kind of ["package", "zone"] as const) {
+      const template = fakeTemplate(kind, design);
+      this.putTemplate({ key: kind, hash: fakeHash(JSON.stringify(template)), body: template, updated_at: this.stamp() });
+    }
+    return json(200, this.labelDesignState());
+  }
+
+  /** `POST /api/labels/preview`: ein weißes Feld in der Größe des Papiers, so wie man es liest. */
+  private labelPreview(body: unknown): FakeResponseData {
+    const wanted = isRecord(body) ? body : {};
+    this.previews.push(wanted);
+    const kind = wanted.kind === "zone" ? "zone" : wanted.kind === "package" ? "package" : null;
+    const problem = kind === null ? "Unbekannte Etikettenart." : fakeLayoutProblem(kind, wanted.paper, wanted.layout);
+    if (problem !== null) {
+      return failure(422, "invalid_request", problem, { errors: [{ loc: ["body", "layout"], msg: problem, type: "label_design" }] });
+    }
+    const paper = fakePaper(String(wanted.paper)) as LabelPaper;
+    const layout = wanted.layout as LabelLayout;
+    const size = imageSize(paper, layout.length_mm, true);
+    // Eine einzeilige Überschrift mit langem Namen passt nur verkleinert: ein Hinweis wie beim Server.
+    const title = layout.fields.find((field) => field.field === "title");
+    const notes = title && (title.lines ?? 1) === 1 ? ["Name auf 3,0 mm verkleinert und gekürzt."] : [];
+    const preview: LabelPreview = { png: toBase64(framePng(size.width, size.height)), width_px: size.width, height_px: size.height, notes };
+    return json(200, preview);
   }
 
   // ---------------------------------------------------------------- Sync
@@ -2794,7 +2969,10 @@ export class FakeServer {
       return this.caCertificate(request.query ?? "");
     }
     if (method === "GET" && path.startsWith("/api/images/")) {
-      return failure(404, "not_found", "Das Bild gibt es nicht.");
+      // Nur die Bilder, die der Test eingetragen hat (`images`): ein kleines Feld mit Rahmen.
+      return this.images.has(decodeURIComponent(path.slice("/api/images/".length)))
+        ? { status: 200, headers: { "content-type": "image/png", "cache-control": "no-store" }, body: framePng(64, 64) }
+        : failure(404, "not_found", "Das Bild gibt es nicht.");
     }
     if (!path.startsWith("/api/")) {
       return failure(501, "not_implemented", "Die nachgebaute Schnittstelle kennt keinen Druckdienst.");
@@ -2881,6 +3059,20 @@ export class FakeServer {
     const lookupMatch = /^\/api\/lookup\/([^/]+)$/.exec(path);
     if (method === "GET" && lookupMatch) {
       return this.lookupNow(decodeURIComponent(lookupMatch[1] ?? ""), request.query ?? "");
+    }
+    const refreshMatch = /^\/api\/lookup\/([^/]+)\/refresh$/.exec(path);
+    if (method === "POST" && refreshMatch) {
+      return this.refreshLookup(decodeURIComponent(refreshMatch[1] ?? ""), request.query ?? "");
+    }
+    const imageMatch = /^\/api\/products\/([^/]+)\/image$/.exec(path);
+    if (method === "PUT" && imageMatch) {
+      return this.setProductImage(decodeURIComponent(imageMatch[1] ?? ""), body);
+    }
+    if (path === "/api/labels/design") {
+      return this.labelDesignRequest(method, body);
+    }
+    if (method === "POST" && path === "/api/labels/preview") {
+      return this.labelPreview(body);
     }
     return failure(501, "not_implemented", "Die nachgebaute Schnittstelle kennt diesen Aufruf nicht.");
   }

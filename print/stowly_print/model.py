@@ -20,6 +20,11 @@ from typing import Any
 PROTOCOL_VERSION = 1
 APP_NAME = "stowly-print"
 
+# Formate der Vorlage, die dieser Druckdienst rendert (docs/etiketten.md, 3.4): 1 = die 62-mm-Rolle
+# ohne Drehung, 2 = jedes Papier des Katalogs, mit ``media.id`` und ``rotate``. Ein Druckdienst vor
+# 0.5.0 meldet ``template_schemas`` nicht und kann nur Format 1.
+TEMPLATE_SCHEMAS = (1, 2)
+
 MAX_COPIES = 20
 MAX_DATA_FIELDS = 32
 MAX_DATA_VALUE_LENGTH = 500
@@ -51,7 +56,7 @@ class PrinterError(StrEnum):
     """Codes in ``DriverStatus.errors`` und als Fehler eines gescheiterten Auftrags (docs/etiketten.md, 5.5)."""
 
     NO_MEDIA = "no_media"  # Etiketten leer
-    MEDIA_MISMATCH = "media_mismatch"  # andere Rolle eingelegt als eingerichtet
+    MEDIA_MISMATCH = "media_mismatch"  # andere Rolle eingelegt, als das Etikett braucht (oder das Modell kann das Papier nicht)
     COVER_OPEN = "cover_open"
     CUTTER_JAM = "cutter_jam"
     OVERHEATED = "overheated"
@@ -90,11 +95,28 @@ class PrintOutcome(StrEnum):
 
 @dataclass(frozen=True)
 class Media:
-    """Eingelegtes Material. Längenangaben in Millimetern."""
+    """Das eingerichtete Material (``media`` in der Konfiguration): die Vorgabe für Vorlagen, die kein
+    Papier nennen. Längenangaben in Millimetern. Welche Rolle wirklich eingelegt ist, meldet
+    ``PrinterInfo.loaded``."""
 
     width_mm: float
     length_mm: float | None  # None = Endlosrolle
     printable_px: int  # druckbare Breite in Pixeln (quer zur Laufrichtung)
+    # Seit 0.5.0 (ein älterer Druckdienst lässt sie weg):
+    id: str | None = None  # Kennung im Papier-Katalog (stowly_print.media), etwa "62" oder "62x29"
+    kind: str | None = None  # "endless" oder "die_cut"
+    printable_length_px: int | None = None  # druckbare Länge gestanzter Etiketten in Pixeln
+
+
+@dataclass(frozen=True)
+class Paper:
+    """Ein Papier, wie es eine Vorlage nennt (``media`` im Format 2) und wie ein Drucker die eingelegte
+    Rolle meldet (``PrinterInfo.loaded``). Längenangaben in Millimetern."""
+
+    id: str | None  # Kennung im Papier-Katalog; None = die gemeldete Rolle steht nicht im Katalog
+    kind: str  # "endless" oder "die_cut"
+    width_mm: float  # Breite der Rolle, quer zur Laufrichtung
+    length_mm: float | None  # gestanzt: Länge des Etiketts; endlos: Länge der Vorlage bzw. None (gemeldet)
 
 
 @dataclass(frozen=True)
@@ -128,6 +150,9 @@ class PrinterInfo:
     model: str | None
     capabilities: Capabilities
     status: DriverStatus
+    # Seit 0.5.0: die eingelegte Rolle, wie der Drucker sie meldet; None = unbekannt (Treiber ohne
+    # Abfrage, Drucker aus, älterer Druckdienst).
+    loaded: Paper | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +185,9 @@ class Health:
     proof: str | None  # HMAC-SHA256(token, nonce) als Hex, wenn ?nonce= übergeben wurde
     host: HostHealth | None
     printers: list[PrinterInfo]
+    # Seit 0.5.0: die Formate der Vorlage, die der Dienst rendert (TEMPLATE_SCHEMAS). Fehlt die
+    # Angabe (älterer Druckdienst), kann er nur Format 1.
+    template_schemas: list[int] = dataclasses.field(default_factory=lambda: [1])
 
 
 @dataclass(frozen=True)

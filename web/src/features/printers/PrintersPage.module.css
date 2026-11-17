@@ -185,22 +185,13 @@
   color: var(--color-danger);
 }
 
-.errors {
+/* Rat zu einem Fehler des Druckers: Schritt für Schritt, als Liste im Hinweis (seit 0.5.0). */
+.advice {
   display: grid;
   gap: var(--space-1);
-  color: var(--color-danger);
-  font-size: var(--text-sm);
-}
-
-.errors li {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-}
-
-.errors svg {
-  flex: none;
-  margin-top: 0.15em;
+  margin: var(--space-1) 0 0;
+  padding-left: 1.25em;
+  list-style: disc;
 }
 
 .host {

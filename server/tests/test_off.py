@@ -567,6 +567,13 @@ def test_jpeg_png_and_webp_are_accepted_by_content(bench, data, content_type, ex
         "https://images.openfoodfacts.org:8443/bild.jpg",
         "ftp://images.openfoodfacts.org/bild.jpg",
         "//images.openfoodfacts.org/bild.jpg",
+        # Der Rechner streng: Wo Parser verschieden lesen, entschiede sonst der Downloader anders.
+        "https://images.example.org\\@images.openfoodfacts.org/bild.jpg",
+        "https://images.openfoodfacts.org\\.example.org/bild.jpg",
+        "https://images.openfoodfacts.org%2F@images.example.org/bild.jpg",
+        "https://images.openfoodfacts.org;images.example.org/bild.jpg",
+        "https://images.openfoodfacts.org/bild 1.jpg",
+        "https://images.openfoodfacts.org/bild\t1.jpg",
         "",
         None,
         17,

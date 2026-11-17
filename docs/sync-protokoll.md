@@ -535,7 +535,7 @@ Name, Marke, Packungsgröße und Bild unbekannter Barcodes schlägt der Server b
 - **Ergebnis:** Gefunden: `lookup = found`. 404 mit `product_not_found`: `lookup = not_found`, endgültig. Netzfehler, 429 und 5xx: Das Produkt bleibt `pending`; neue Versuche nach 1 Minute, 5 Minuten, 30 Minuten, 3 Stunden, danach täglich.
 - **Übernahme:** Die Daten füllen **nur leere Felder** des Produkts (`name` aus `product_name_de`, sonst `product_name`; `brand` aus dem ersten Eintrag von `brands`; `quantity`; `image`). Die Uhren der Felder bleiben unberührt: Jede Eingabe eines Anwenders gewinnt, davor wie danach.
 - **Bild:** Der Server lädt `image_front_small_url` einmal herunter (nur JPEG, PNG, WebP, höchstens 300 KB) und speichert es in der Datenbank. Die Bild-ID ist der Anfang des SHA-256 des Inhalts (32 Hex-Zeichen) plus Endung, z. B. `9f2c…e1.jpg`.
-- **Dauerhaft:** Jedes Ergebnis steht in `off_lookups` und wird nie erneut abgefragt, auch das zu einem Barcode, der (noch) keinem Produkt gehört. Bei einem solchen Barcode ruht, was noch aussteht (ein neuer Versuch nach einem Fehler, ein fehlendes Bild), bis ein Produkt ihn bekommt; einen neuen Versuch löst auch eine erneute Anfrage der App nach der Wartezeit aus. Die Tabelle ist von `products` getrennt, damit die Daten trennbar bleiben (ODbL). Die App nennt die Quelle: „Open Food Facts (ODbL)".
+- **Dauerhaft:** Jedes Ergebnis steht in `off_lookups` und wird von selbst nie erneut abgefragt (neu fragen kann nur der Anwender, 10.2), auch das zu einem Barcode, der (noch) keinem Produkt gehört. Bei einem solchen Barcode ruht, was noch aussteht (ein neuer Versuch nach einem Fehler, ein fehlendes Bild), bis ein Produkt ihn bekommt; einen neuen Versuch löst auch eine erneute Anfrage der App nach der Wartezeit aus. Die Tabelle ist von `products` getrennt, damit die Daten trennbar bleiben (ODbL). Die App nennt die Quelle: „Open Food Facts (ODbL)".
 - `STOWLY_OFF_ENABLED=0` schaltet das Nachschlagen ab; Produkte bekommen dann `lookup = none`. Beim Start gleicht der Server `lookup` an die Einstellung an: Wartende werden `none`, und nach dem Wiedereinschalten warten Produkte mit nachschlagbarem Barcode erneut. Jede Sync-Antwort nennt den Stand (`lookup_enabled`).
 - **Was die App verspricht:** Dass Name und Bild nachkommen, sagt sie nur, wenn es stimmt: bei einem Barcode, der nachgeschlagen wird (nicht ladenintern), und nur, solange der Server nicht `lookup_enabled: false` gemeldet hat. Die Regel steht als `willLookUp` in `web/src/contract/barcode.ts`; sie entscheidet auch über die lokale Vorwegnahme.
 - **Packungsgröße:** Ein Schätzzeichen am Ende der Mengenangabe von Open Food Facts (`e` oder `℮`, mit oder ohne Leerzeichen davor, etwa „400 g e") übernimmt der Server nicht; aus „400 g e" wird „400 g".
@@ -594,6 +594,18 @@ Leere Felder sind `""`, nie `null`; nur `image_id` ist `null`, solange es kein B
 - Der Endpunkt fragt nie selbst, er reiht nur ein. Abgefragt wird ausschließlich im Hintergrund-Ablauf, mit derselben Drosselung (höchstens 10 Abfragen in jedem Fenster von 60 Sekunden), denselben Wartezeiten nach Fehlern und derselben Pause nach 429.
 - Jedes Ergebnis wird gespeichert und nie erneut abgefragt. Wird aus dem gescannten Barcode ein Produkt, übernimmt es das gespeicherte Ergebnis, und die Abfrage im Hintergrund entfällt: Sie kommt nur früher, nicht zusätzlich. Neu ist allein die Abfrage zu einem Scan, aus dem kein Produkt wird; auch sie zählt in die 10 je Minute.
 - Gleichzeitige Anfragen zum selben Barcode ergeben eine Abfrage, und Wünsche zu Barcodes ohne Produkt sind auf 20 begrenzt.
+
+### 10.2 Neu abfragen (seit 0.5.0)
+
+Ein offline angelegtes Produkt behält seinen getippten Namen, und ein früher unbekannter Barcode bleibt `not_found`. In „Produkt bearbeiten" fragt der Anwender deshalb auf Knopfdruck neu („Online abfragen"):
+
+`POST /api/lookup/{barcode}/refresh?wait=<Sekunden>` mit Token; `barcode` und `wait` wie in 10.1.
+
+- **Jetzt:** Der Server fragt Open Food Facts sofort, auch wenn schon ein Ergebnis gespeichert ist, auch nach `not_found`, und vor allen Abfragen im Hintergrund. Die Rate (10 je Minute) und die Pause nach 429 gelten weiter.
+- **Bremse:** Je Barcode höchstens einmal je Minute (`LOOKUP_REFRESH_GAP_S`), und höchstens 5 Neuabrufe warten zugleich. Sonst, und wenn Open Food Facts gerade bremst, kommt das gespeicherte Ergebnis mit `throttled: true`; die App sagt dann „Open Food Facts bremst gerade; in einer Minute noch einmal." Barcodes, nach denen die App beim Scannen fragt (10.1), gehen vor.
+- **Ergebnis:** Ein Fund ersetzt das gespeicherte Ergebnis, auch für künftige Scans; das Bild lädt und speichert der Server wie in Abschnitt 10, `image_id` steht in der Antwort. Ein Fehlschlag (Netz, 5xx) ändert nichts am Gespeicherten. `not_found` überschreibt keinen Fund, wird aber gemeldet.
+- **Kein Produkt ändert sich,** auch nicht sein Stand `lookup`: Was übernommen wird, entscheidet der Anwender in der Gegenüberstellung (Name, Marke, Packungsgröße, Bild) und speichert es mit `product.update` wie jede Eingabe; das Bild mit `PUT /api/products/{id}/image` (11.12).
+- **Antwort** 200 `LookupResult` wie in 10.1, mit `fetched_at` (wann Open Food Facts das Ergebnis geliefert hat) und `throttled`. Ladeninterne Codes: `skipped`, Nachschlagen aus: `disabled`. Die Adresse von Open Food Facts steht fest (`STOWLY_OFF_URL`); fremde Adressen fragt der Server nie.
 
 ## 11. Weitere Endpunkte
 
@@ -827,7 +839,7 @@ Ein Raspberry Pi wird mit einem Befehl zum Druckdienst. Ablauf, Paket und Skript
 - Kopplungen eines Pi, deren Gerät es nicht mehr gibt, verlieren den Verweis darauf.
 - `STOWLY_PASSWORD` geht weiter vor.
 
-Beim ersten Start übernimmt der Server nichts; alles kommt aus der Sicherung. Aus der Sicherung fallen außerdem Bilder weg, die kein JPEG, PNG oder WebP sind oder deren Bytes nicht zum Typ passen (das Log zählt sie), und Kopplungen eines Pi, die dort noch offen waren, gelten als abgebrochen; für den Pi braucht es einen neuen Code. Beides geschieht schon in der geprüften Kopie, für beide Arten des Zurückspielens.
+Beim ersten Start übernimmt der Server nichts; alles kommt aus der Sicherung. Aus der Sicherung fallen außerdem Bilder weg, die kein JPEG, PNG oder WebP sind oder deren Bytes nicht zum Typ passen (das Log zählt sie), und Kopplungen eines Pi, die dort noch offen waren, gelten als abgebrochen; für den Pi braucht es einen neuen Code. Seit 0.5.0 fallen auch die Etikett-Vorlagen der Sicherung weg (`label_templates`, abgeleitete Daten: Der Start erzeugt sie neu), und die Gestaltung (`label_design`) bleibt nur, wenn sie höchstens 64 KiB groß, als UTF-8 lesbar und nach dem Vertrag gültig ist, ihr Papier im Katalog steht und `updated_at` ein Zeitstempel ist; sonst steht im Log, dass sie verworfen wurde. All das geschieht schon in der geprüften Kopie, für beide Arten des Zurückspielens. Eine Vorlage aus einer gefälschten Sicherung kommt so nie über den Sync auf die Geräte, und eine kaputte Gestaltung verhindert nie den Start.
 
 **Danach:** Die neue `dataset_id` lässt jedes Gerät den Bestand vollständig neu holen (`reset: true`, 6.4). Seine Outbox sendet es erneut; Befehle, die schon in der Sicherung stecken, erkennt der Server als bekannt.
 
@@ -844,7 +856,7 @@ Beim ersten Start übernimmt der Server nichts; alles kommt aus der Sicherung. A
   - `wrong_key`: Der Schlüssel öffnet die Datei nicht.
   - `not_a_key`: kein geheimer age-Schlüssel, auch ein öffentlicher (mit eigenem Satz).
   - `not_stowly`: keine Datei oder Datenbank von Stowly, auch eine mit fremdem Aufbau, mit Triggern oder Views.
-  - `damaged`: beschädigt oder unvollständig.
+  - `damaged`: beschädigt oder unvollständig; seit 0.5.0 auch, wenn ein Text der Datenbank kein gültiges UTF-8 ist, ein einzelner Text 16 MiB übersteigt oder JSON tiefer als 64 Ebenen verschachtelt ist (Stowly selbst schreibt höchstens fünf). Geprüft wird jeder Text aller Tabellen (Bilder ausgenommen), bei beiden Arten des Zurückspielens: Sonst könnte eine gefälschte Sicherung jeden Start von Stowly verhindern.
   - `newer_schema`: von einem neueren Stowly.
   - `migration_failed`: Die Migration der Kopie scheiterte; Einzelheiten im Log.
 - 404 `not_found`, wenn `upload_id` oder `restore_id` abgelaufen oder unbekannt ist.
@@ -866,6 +878,23 @@ Beim ersten Start übernimmt der Server nichts; alles kommt aus der Sicherung. A
 - **`POST /check` mit `HaCheckInput { url, token }`:** prüft und speichert nichts; ohne Felder die wirksame Einrichtung. Antwort `HaCheck`. Der gespeicherte Token geht nur an seine eigene Adresse. 409, wenn die Verbindung aus der Umgebung kommt und trotzdem Felder angegeben sind; 422 an `["body", "url"]` ohne jede Adresse; 429 mit `Retry-After`, wenn schon eine Prüfung läuft oder die letzte vor weniger als 3 Sekunden begann. Ablauf, Grenzen und Zustände: [`integrationen.md`](integrationen.md), 5.7.
 - **Sensor-Token:** `POST` erzeugt einen neuen (64 Hex-Zeichen; 201 `HaSensorToken { token }`) und ersetzt den bisherigen; `GET` zeigt den gespeicherten (404 ohne, auch wenn er nach einem Zurückspielen fehlt); `DELETE` entfernt ihn (204, auch ohne), danach antwortet der Sensor mit 503. Alle drei geben 409, wenn `STOWLY_HA_SUMMARY_TOKEN` gesetzt ist.
 
+### 11.11 Etiketten gestalten (seit 0.5.0)
+
+Die Gestaltung der Etiketten gilt für den ganzen Haushalt (docs/etiketten.md, 3.2): ein Papier für alle Drucker, je eine Gestaltung für Packungs- und Zonen-Etiketten. Sie steht in der Tabelle `label_design` (eine Zeile, nicht im Sync, in jeder Sicherung). Die Geräte bekommen nur die daraus erzeugten Vorlagen, über `label_templates` wie bisher.
+
+| Aufruf | Antwort |
+|---|---|
+| `GET /api/labels/design` | `LabelDesignState`: Papier und beide Gestaltungen, `is_default`, `updated_at`, die `hash` der gültigen Vorlagen (`templates`) und der Papier-Katalog (`papers`). Der Katalog kommt vom Server, nicht aus `api.gen.ts`: Das schont das Bündel der App. |
+| `PUT /api/labels/design` mit `LabelDesign` | Speichert Papier und beide Gestaltungen zusammen, erzeugt die Vorlagen neu und antwortet mit dem neuen `LabelDesignState`. Ändert sich ein `hash`, bekommt die Vorlage einen neuen `rev`, und alle Geräte bekommen sie beim nächsten Abgleich. Etiketten, die schon unterwegs sind, behalten ihren Inhalt (docs/etiketten.md, 4.1). Passt die Gestaltung nicht, 422 mit einem Satz. |
+| `DELETE /api/labels/design` | Zurück zur Vorgabe: Es gelten wieder die mitgelieferten Vorlagen mit ihrem `hash`. Dasselbe geschieht, wenn `PUT` genau die Vorgabe speichert. |
+| `POST /api/labels/preview` mit `LabelPreviewInput` | `LabelPreview`: das Etikett als 1-Bit-PNG, so wie man es liest, mit Größe und Hinweisen („Name auf 3,0 mm verkleinert und gekürzt."). Speichert nichts. Höchstens `LABEL_PREVIEWS_AT_ONCE` (2) zugleich, sonst 429 `rate_limited`; die App wartet 300 ms nach der letzten Änderung. Die Daten dürfen nicht länger sein als in der App (`qr` 41, `id` 5, `title` 120 bzw. 60 bei Zonen, `subtitle` 123, `quantity` 40, `brand` 80, `zone` 60, Datum 10, kurzes Datum 8 Zeichen); Längeres lehnt der Server mit 422 und einem Satz ab („Zu lang für ein Etikett: Name höchstens 120 Zeichen."), Stelle `["body", "data", <Schlüssel>]`. Unbekannte Schlüssel übergeht er. |
+
+Beim Start erzeugt der Server die Vorlagen aus der Gestaltung, sonst nimmt er die mitgelieferten. Ändert ein späterer Stowly den Generator, ändern sich beim Start auch die Vorlagen aus einer eigenen Gestaltung, so wie bisher die mitgelieferten. Den `hash` einer gespeicherten Vorlage rechnet der Server dabei aus ihrem Rumpf nach, statt der Spalte zu trauen. Lässt sich die Gestaltung nicht lesen, gelten die mitgelieferten Vorlagen, `GET` zeigt die Vorgabe (`is_default: true`), und das nächste Speichern ersetzt die Zeile. Das gilt auch für ein Papier, das dieser Stowly nicht kennt, etwa nach der Rückkehr zu einer älteren Version. Lässt sie sich lesen, aber nicht mehr erzeugen (ein späterer Generator), bleibt die bisherige Vorlage, sofern ihr Rumpf zu ihrem `hash` passt, sonst die mitgelieferte. Der Start scheitert daran nie.
+
+### 11.12 Produktbild setzen (seit 0.5.0)
+
+`PUT /api/products/{product_id}/image` mit `ProductImageInput { image_id }` setzt das Bild eines Produkts auf ein Bild, das Stowly gespeichert hat (`image_id` aus `LookupResult`), oder entfernt es (`null`). 404 ohne Produkt (auch ein zusammengeführtes), 422 für ein unbekanntes Bild. Das Produkt bekommt einen neuen `rev`, also sehen alle Geräte das Bild beim nächsten Abgleich; die Antwort ist das Produkt danach. Der Aufruf liegt außerhalb des Sync: Protokoll 2 bleibt, und `product.update` ändert sich nicht. Offline geht er nicht; die App sagt dann, dass nur das Bild fehlt.
+
 ## 12. Ereignisprotokoll
 
 Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `events`. Das Protokoll wird nie gekürzt und nicht an die Geräte synchronisiert; es ist über `GET /api/events` lesbar. Die Statistik (11.1) rechnet nicht daraus, sondern aus dem heutigen Stand der Packungen: So zählt ein Zusammenführen oder ein geänderter Grund richtig.
@@ -884,6 +913,7 @@ Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `
 | `product.barcode_added`, `product.barcode_removed` | `product` | `barcode` |
 | `product.merged` | `product` (Ziel) | `source_id`, `reason`: `user` oder `barcode`, `packages`: Anzahl |
 | `product.lookup` | `product` | `barcode`, `result`: `found` oder `not_found`, `filled`: Feldnamen |
+| `product.image` | `product` | `old`, `new`: Bild-IDs oder `null` (seit 0.5.0, 11.12) |
 | `zone.created`, `zone.updated` | `zone` | wie bei Packungen |
 | `zone.deleted` | `zone` | `moved_to`, `packages`: Anzahl |
 | `settings.updated` | `settings` (`entity_id`: `household`) | `changes`, `superseded` |
@@ -917,6 +947,7 @@ Der Server schreibt zu jeder Wirkung eines Befehls mindestens einen Eintrag in `
 | `server.restored` | `server` (`entity_id`: `restore`) | `kind`: `restore` oder `undo`; `source`: `age`, `gzip`, `sqlite` oder `previous` (beim Rückgängig); `first_start`; `schema_version` der Sicherung (`null` beim Rückgängig). Verbucht beim Tausch in der neuen Datenbank, mit dem Gerät, das angewendet hat (11.9) |
 | `pi_pairing.created` | `pi_pairing` | `printer_id` (gewählt oder `null`) |
 | `pi_pairing.cancelled` | `pi_pairing` | `reason`: `user` oder `replaced` (ein neuerer Code) |
+| `labels.changed` | `labels` (`entity_id`: `design`) | `paper`, `default` (`true` nach dem Zurücksetzen oder wenn genau die Vorgabe gespeichert wurde), `templates`: die Schlüssel der Vorlagen mit neuem `hash`; seit 0.5.0, 11.11. Ein Speichern ohne Wirkung schreibt keinen Eintrag |
 
 Das Zusammenführen vermerkt die mitgewanderten Einträge in `product.merged` (`shopping_items`: Anzahl).
 

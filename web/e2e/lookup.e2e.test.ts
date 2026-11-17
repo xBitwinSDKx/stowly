@@ -5,19 +5,23 @@
  * Open Food Facts selbst wird nie angesprochen: Der Server fragt einen Ersatz unter
  * 127.0.0.1, den dieser Test stellt (STOWLY_OFF_URL). Ob der echte Dienst so antwortet wie
  * der Ersatz, zeigt dieser Test deshalb nicht. Bilder holt der Server nur über https von
- * openfoodfacts.org; mit dem Ersatz bleibt `image` leer.
+ * openfoodfacts.org; mit dem Ersatz bleibt `image` leer. Für das Setzen eines Produktbilds (seit
+ * 0.5.0) legt der Test deshalb ein Bild selbst in die Datenbank des Servers, wie es das Nachschlagen täte.
  */
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 
 import { gtinCheckDigit, type Product } from "@/contract";
 
 import { firstZone, freshBarcode } from "./support/data";
-import { disposeDevices, signedIn, value, type Device } from "./support/device";
+import { disposeDevices, expectCoreError, signedIn, value, type Device } from "./support/device";
 import { expectSameAsServer, RawClient } from "./support/raw";
-import { startServer, type ServerHandle } from "./support/server";
+import { pythonPath, startServer, type ServerHandle } from "./support/server";
 
 interface Lookup {
   path: string;
@@ -195,4 +199,88 @@ it("schlägt gleich beim Scannen nach: Name, Marke und Größe sind sofort da, u
   await expectSameAsServer(device, raw);
   // Das Ergebnis von eben liegt beim Server: Open Food Facts wurde nicht noch einmal gefragt.
   expect(lookups.slice(asked).filter((lookup) => lookup.path.startsWith(`/api/v3/product/${beans}`))).toHaveLength(1);
+});
+
+/**
+ * Legt ein Bild in die Datenbank des Servers, als hätte er es bei Open Food Facts geladen (der Ersatz
+ * liefert keine Bilder: nur https von openfoodfacts.org). Liefert seine Kennung wie `off.image_id`.
+ */
+function storeImage(handle: ServerHandle): string {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+  const id = `${createHash("sha256").update(png).digest("hex").slice(0, 32)}.png`;
+  const script = [
+    "import sqlite3, sys",
+    "con = sqlite3.connect(sys.argv[1], timeout=10)",
+    "con.execute(\"INSERT OR IGNORE INTO images (id, content_type, data, source, source_url, created_at) VALUES (?, 'image/png', ?, 'openfoodfacts', 'https://images.openfoodfacts.org/images/e2e.png', '2026-11-16T10:00:00.000Z')\", (sys.argv[2], bytes.fromhex(sys.argv[3])))",
+    "con.commit()",
+  ].join("\n");
+  const result = spawnSync(pythonPath(), ["-I", "-c", script, join(handle.dataDir, "stowly.sqlite3"), id, png.toString("hex")], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`Bild ließ sich nicht ablegen: ${result.stderr}`);
+  }
+  return id;
+}
+
+it("fragt auf Wunsch neu: erst unbekannt, dann gefunden; übernommen wird nur, was der Anwender speichert, das Bild eingeschlossen", async () => {
+  const device = await signedIn(server.url, "Küche");
+  const raw = await RawClient.login(server.url);
+  const zone = firstZone(device);
+  const barcode = freshBarcode();
+
+  // Gescannt, Open Food Facts kennt den Barcode (noch) nicht.
+  const stored = await device.core.stock.store({ product: { kind: "barcode", barcode }, zone_id: zone.id, best_before: null, count: 1, labels: false });
+  expect(await untilSettled(device, stored.product.id)).toMatchObject({ name: "", lookup: "not_found" });
+
+  // Jetzt kennt ihn Open Food Facts: „Online abfragen" fragt neu, auch nach „unbekannt".
+  known.set(barcode, { product_name_de: "Bio Haferdrink", brands: "Hofgut", quantity: "1 l" });
+  const asked = lookups.length;
+  const found = await device.core.products.refreshLookup(barcode);
+  expect(found).toMatchObject({ barcode, state: "found", name: "Bio Haferdrink", brand: "Hofgut", quantity: "1 l", image_id: null, throttled: false });
+  expect(found.fetched_at).not.toBeNull();
+  expect(lookups.slice(asked).map((lookup) => lookup.path.split("?")[0])).toEqual([`/api/v3/product/${barcode}`]);
+
+  // Kein Produkt ändert sich, auch nicht sein Stand `lookup`.
+  await device.sync();
+  expect(product(device, stored.product.id)).toMatchObject({ name: "", lookup: "not_found", image: null });
+  // Gleich noch einmal: gebremst, der gespeicherte Stand, ohne neue Anfrage.
+  expect(await device.core.products.refreshLookup(barcode)).toMatchObject({ state: "found", name: "Bio Haferdrink", throttled: true });
+  expect(lookups.length).toBe(asked + 1);
+  // Das neue Ergebnis gilt auch für künftige Scans.
+  expect(await device.core.products.lookup(barcode)).toMatchObject({ state: "found", name: "Bio Haferdrink", brand: "Hofgut" });
+  // Ladeninterne Codes gehen nicht hinaus.
+  const internalBody = `23${String(process.pid % 100_000).padStart(5, "0")}00003`;
+  expect(await device.core.products.refreshLookup(internalBody + String(gtinCheckDigit(internalBody)))).toMatchObject({ state: "skipped" });
+  expect(lookups.length).toBe(asked + 1);
+
+  // „Übernehmen" und „Speichern": die Felder wie bisher, danach das Bild.
+  await device.core.products.update(stored.product.id, { name: found.name, brand: found.brand, quantity: found.quantity });
+  const image = storeImage(server);
+  await device.core.products.setImage(stored.product.id, image);
+  await device.sync();
+  expect(product(device, stored.product.id)).toMatchObject({ name: "Bio Haferdrink", brand: "Hofgut", quantity: "1 l", image });
+  await expectSameAsServer(device, raw);
+  const served = await fetch(`${server.url}/api/images/${image}`);
+  expect(served.headers.get("content-type")).toBe("image/png");
+
+  // Ein Bild, das Stowly nicht hat, lehnt der Server ab; null entfernt das Bild.
+  await expectCoreError(device.core.products.setImage(stored.product.id, "0123456789abcdef0123456789abcdef.png"), "invalid");
+  await expectCoreError(device.core.products.setImage("00000000-0000-4000-8000-000000000000", null), "not_found");
+  await device.core.products.setImage(stored.product.id, null);
+  await device.sync();
+  expect(product(device, stored.product.id).image).toBeNull();
+
+  const history = (await raw.events({ entity: "product", entity_id: stored.product.id })).map((event) => event.type);
+  expect(history.filter((type) => type === "product.image")).toHaveLength(2);
+});
+
+it("setzt das Bild eines offline angelegten Produkts erst nach dessen Abgleich", async () => {
+  const device = await signedIn(server.url, "Keller");
+  const image = storeImage(server);
+  device.net.online = false;
+  const made = await device.core.products.create({ name: "Mein Mehl offline" });
+  device.net.online = true;
+  // Der Kern gleicht vorher ab: Sonst kennte der Server das Produkt nicht (404).
+  await device.core.products.setImage(made.id, image);
+  await device.sync();
+  expect(product(device, made.id)).toMatchObject({ name: "Mein Mehl offline", image });
 });

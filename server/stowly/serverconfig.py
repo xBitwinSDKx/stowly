@@ -110,14 +110,15 @@ BACKUP_MOUNTED_UNUSABLE = (
 
 
 def get(con: sqlite3.Connection, key: str, default: Any = None) -> Any:
-    """Der Wert eines Schlüssels; ``default``, wenn er fehlt oder kein JSON ist."""
+    """Der Wert eines Schlüssels; ``default``, wenn er fehlt, kein JSON ist oder so tief verschachtelt, dass
+    ``json.loads`` aufgibt (``RecursionError``; eine Sicherung mit so etwas lehnt das Zurückspielen ab)."""
     row = con.execute("SELECT value FROM server_config WHERE key = ?", (key,)).fetchone()
     if row is None:
         return default
     try:
         return json.loads(row[0])
-    except ValueError:
-        log.warning("server_config: Der Wert von %s ist kein JSON und wird übergangen.", key)
+    except (ValueError, RecursionError):
+        log.warning("server_config: Der Wert von %s ist kein lesbares JSON und wird übergangen.", key)
         return default
 
 

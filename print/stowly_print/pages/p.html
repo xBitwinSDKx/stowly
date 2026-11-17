@@ -50,7 +50,7 @@ a { color: var(--accent); }
   var MAX_JOBS = 20;
   var ERRORS = {
     no_media: "Die Etiketten sind leer.",
-    media_mismatch: "Es ist eine andere Rolle eingelegt als eingerichtet.",
+    media_mismatch: "Die eingelegte Rolle passt nicht zum Etikett.",
     cover_open: "Der Deckel des Druckers ist offen.",
     cutter_jam: "Das Messer des Druckers klemmt.",
     overheated: "Der Drucker ist überhitzt.",
@@ -112,6 +112,8 @@ a { color: var(--accent); }
     var code = job.error && job.error.code;
     if (job.state === "printed") { return ["gedruckt", "ok"]; }
     if (job.state === "sent") { return ["an den Drucker gesendet", "ok"]; }
+    // Bei einer falschen Rolle nennt der Dienst beide Rollen in einem Satz.
+    if (job.state === "failed" && code === "media_mismatch" && isText(job.error.message) && job.error.message) { return ["nicht gedruckt: " + job.error.message, "bad"]; }
     if (job.state === "failed") { return ["nicht gedruckt: " + (ERRORS[code] || (job.error && job.error.message) || code || "unbekannter Fehler"), "bad"]; }
     if (job.state === "unknown") { return ["Ausgang offen: " + (ERRORS[code] || "Bitte am Drucker nachsehen."), "open"]; }
     return ["wartet noch im Druckdienst", "open"];

@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 from print_support import make_service, new_id, package_request, wait_until
 
+from stowly_print import media as catalog
 from stowly_print.drivers import BrokenDriver, Driver, PrinterConfig, build_driver
 from stowly_print.drivers.brother_ql import BrotherQLDriver
 from stowly_print.drivers.image import SIMULATE_FILE, ImageDriver, PrintAborted
@@ -96,6 +97,33 @@ def test_image_driver_refuses_an_image_that_does_not_fit(tmp_path):
     assert driver.last_error == "config"
     assert driver.for_job("b").print(Image.new("L", (696, 342), 255)) == PrintOutcome.FAILED
     assert list(tmp_path.iterdir()) == []
+
+
+def test_image_driver_writes_any_paper_of_the_catalog_in_its_size(tmp_path):
+    driver = ImageDriver(tmp_path)
+    media = driver.capabilities().media
+    assert (media.id, media.kind, media.printable_length_px) == ("62", "endless", None)
+    assert driver.loaded is None  # keine Rolle, also auch kein Abgleich
+    die_cut = driver.for_paper(catalog.paper("62x29"))
+    assert die_cut.capabilities().media.printable_length_px == 271
+    assert die_cut.loaded is None
+    # Gestanzt: genau die druckbaren Punkte, 696 × 271; die Länge der Vorlage zählt nicht.
+    assert die_cut.for_job("gestanzt").print(Image.new("1", (696, 271), 1)) == PrintOutcome.PRINTED
+    assert die_cut.for_job("zu-lang").print(Image.new("1", (696, 342), 1)) == PrintOutcome.FAILED
+    assert die_cut.last_error == "config"
+    # Endlos und gedreht: quer 306 Punkte, die Länge ist frei.
+    narrow = driver.for_paper(catalog.paper("29")).for_job("schmal", 2)
+    assert narrow.print(Image.new("1", (306, 732), 1)) == PrintOutcome.PRINTED
+    assert narrow.print(Image.new("1", (732, 306), 1)) == PrintOutcome.FAILED  # Leserichtung, nicht gedreht
+    with Image.open(tmp_path / "gestanzt.png") as stored:
+        assert stored.size == (696, 271)
+    with Image.open(tmp_path / "schmal.2.png") as stored:
+        assert stored.size == (306, 732)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["gestanzt.png", "schmal.2.png"]
+    # Mit einem anderen Papier als Vorgabe; ein unbekanntes ist ein Fehler beim Anlegen.
+    assert ImageDriver(tmp_path, media="62x100").capabilities().media.printable_length_px == 1109
+    with pytest.raises(ValueError, match="63"):
+        ImageDriver(tmp_path, media="63")
 
 
 def test_image_driver_reports_a_directory_it_cannot_use(tmp_path):
@@ -275,6 +303,10 @@ def test_build_driver_picks_the_driver_and_never_raises(tmp_path):
         PrinterConfig(name="keller", driver="brother_ql", model="QL-800", address="usb://04f9:209b")
     )
     assert isinstance(brother, BrotherQLDriver)
+    # Die Rolle der Konfiguration ist die Vorgabe für Vorlagen ohne Papier, ohne Angabe 62 mm endlos.
+    assert image.paper == catalog.paper("62")
+    other = build_driver(PrinterConfig(name="bild", driver="image", directory=tmp_path, media="62x29"))
+    assert isinstance(other, ImageDriver) and other.paper == catalog.paper("62x29")
 
     for config in (
         PrinterConfig(name="x", driver="image"),  # ohne Verzeichnis

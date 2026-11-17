@@ -33,12 +33,13 @@ from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from stowly import auth, db, events
+from stowly import auth, db, events, label_templates
 from stowly.api import sync as sync_api
 from stowly.config import Settings
 from stowly.contract.entities import PrintJobState
 from stowly.contract.timeutil import format_timestamp
 from stowly.sync.handlers import progress_after_outcome
+from stowly_print import media as catalog
 from stowly_print.drivers import PrinterConfig, build_driver
 from stowly_print.drivers.image import ImageDriver
 from stowly_print.http import create_app as create_print_app
@@ -104,7 +105,7 @@ class ServerPrinters:
         self._database = database
         self._image_dir = image_dir
         self._lock = threading.Lock()
-        self._entries: dict[str, tuple[str, PrinterEntry]] = {}
+        self._entries: dict[str, tuple[tuple[str, str | None], PrinterEntry]] = {}
 
     def _query(self, sql: str, parameters: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         con = db.connect(self._database)
@@ -125,22 +126,46 @@ class ServerPrinters:
         return None
 
     def lookup(self, name: str) -> PrinterEntry | None:
-        rows = self._query(
-            "SELECT id, config FROM printers WHERE id = ? AND connection = 'server' AND deleted_at IS NULL",
-            (name,),
-        )
-        if not rows:
-            return None
-        return self._entry(str(rows[0]["id"]), str(rows[0]["config"]))
+        con = db.connect(self._database)
+        try:
+            rows = con.execute(
+                "SELECT id, config FROM printers WHERE id = ? AND connection = 'server' AND deleted_at IS NULL",
+                (name,),
+            ).fetchall()
+            if not rows:
+                return None
+            paper = self._household_paper(con)
+        finally:
+            con.close()
+        return self._entry(str(rows[0]["id"]), str(rows[0]["config"]), paper)
 
-    def _entry(self, printer_id: str, config_text: str) -> PrinterEntry:
+    @staticmethod
+    def _household_paper(con: sqlite3.Connection) -> str | None:
+        """Das Papier aus der Gestaltung des Haushalts (seit 0.5.0); ``None`` ohne eigene Gestaltung.
+
+        Mit eigener Gestaltung ist es die Vorgabe der Drucker am Server statt ``media`` aus ihrer
+        Konfiguration: Gefragt ohne ``?media=`` (eine ältere App, der eigene Abgleich des Zustands),
+        vergleicht der Druckdienst die eingelegte Rolle dann mit demselben Papier wie beim Drucken,
+        und ``PrinterStatus`` springt nicht zwischen ok und ``media_mismatch``.
+
+        Nur ein Papier des Katalogs: Ein anderes (die Sicherung eines neueren Stowly, eine Fälschung)
+        machte jeden Drucker am Server zu ``config``; dann gilt weiter ``media`` der Konfiguration.
+        """
+        stored = label_templates.stored_design(con)
+        if stored is None or catalog.paper(stored[0].paper) is None:
+            return None
+        return stored[0].paper
+
+    def _entry(self, printer_id: str, config_text: str, paper: str | None = None) -> PrinterEntry:
+        # Der Schlüssel des Zwischenspeichers: dieselbe Konfiguration auf anderem Papier ist ein anderer Treiber.
+        key = (config_text, paper)
         with self._lock:
             known = self._entries.get(printer_id)
-            if known is not None and known[0] == config_text:
+            if known is not None and known[0] == key:
                 return known[1]
             try:
                 config = json.loads(config_text)
-            except ValueError:
+            except (ValueError, RecursionError):  # auch zu tief verschachtelt: Der Drucker meldet config
                 config = None
             if not isinstance(config, dict):
                 config = {}
@@ -148,6 +173,8 @@ class ServerPrinters:
             model = config.get("model") if isinstance(config.get("model"), str) else None
             address = config.get("address") if isinstance(config.get("address"), str) else None
             media = config.get("media") if isinstance(config.get("media"), str) else None
+            if paper is not None:
+                media = paper
             driver = build_driver(
                 PrinterConfig(
                     name=printer_id,
@@ -159,7 +186,7 @@ class ServerPrinters:
                 )
             )
             entry = PrinterEntry(name=printer_id, driver_name=driver_name, model=model, driver=driver)
-            self._entries[printer_id] = (config_text, entry)
+            self._entries[printer_id] = (key, entry)
             return entry
 
 

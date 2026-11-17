@@ -75,7 +75,8 @@ def load_run(con: sqlite3.Connection, job: str) -> JobRun:
         return JobRun(job)
     try:
         state = json.loads(row["state"])
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: tief verschachtelt (eine gefälschte Sicherung)
+        log.warning("Zeitplan: Der Stand von %s ist kein lesbares JSON und wird übergangen.", job)
         state = {}
     return JobRun(
         job=job,

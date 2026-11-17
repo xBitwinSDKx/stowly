@@ -23,6 +23,8 @@ from stowly.contract.entities import (
 )
 from stowly.contract.limits import LIMITS
 from stowly.contract.timeutil import MONTH_PATTERN
+from stowly_print import media as print_media
+from stowly_print import model as print_model
 
 # Wartezeit von GET /api/lookup/{barcode} in Sekunden: ?wait=0 bis LOOKUP_WAIT_MAX_S,
 # ohne Angabe LOOKUP_WAIT_DEFAULT_S.
@@ -179,6 +181,36 @@ class LookupResult(Model):
     quantity: QuantityText = Field(description="Packungsgröße ohne Schätzzeichen; leer, wenn unbekannt.")
     image_id: str | None = Field(
         description="Bild-ID für GET /api/images/{id}, wenn das Bild schon beim Server liegt; sonst null."
+    )
+    fetched_at: Timestamp | None = Field(
+        description=(
+            "Wann Open Food Facts dieses Ergebnis geliefert hat; null bei pending, skipped, disabled und "
+            "bei Ergebnissen von vor 0.5.0 ohne Zeitpunkt."
+        )
+    )
+    throttled: bool = Field(
+        description=(
+            "Nur bei POST …/refresh: true = nicht neu gefragt, weil dieser Barcode in der letzten Minute "
+            "schon neu gefragt wurde oder Open Food Facts gerade bremst; die Antwort ist der gespeicherte "
+            "Stand. Bei GET immer false."
+        )
+    )
+
+
+# Neuabruf (POST /api/lookup/{barcode}/refresh, docs/sync-protokoll.md, 10): je Barcode höchstens
+# einmal in so vielen Sekunden; sonst kommt das gespeicherte Ergebnis mit throttled = true.
+LOOKUP_REFRESH_GAP_S = 60
+
+
+class ProductImageInput(Model):
+    """``PUT /api/products/{product_id}/image``: das Bild eines Produkts setzen oder entfernen."""
+
+    image_id: str | None = Field(
+        max_length=100,
+        description=(
+            "Ein Bild, das Stowly gespeichert hat (image_id aus LookupResult); null entfernt das Bild. "
+            "Ein unbekanntes Bild gibt 422."
+        ),
     )
 
 
@@ -694,6 +726,15 @@ class PairedPrinter(Model):
     not_after: Timestamp = Field(
         description="Ablauf des Zertifikats; die App warnt PI_CERT_WARN_DAYS Tage vorher."
     )
+    version: str | None = Field(
+        description=(
+            "Version des Druckdienstes bei der Kopplung; null = nicht gemeldet. Daran sieht die App ohne "
+            "Abfrage, ob der Pi ein Papier im Format 2 drucken kann (docs/etiketten.md, 3.4)."
+        )
+    )
+    model: str | None = Field(
+        description="Druckermodell bei der Kopplung, etwa QL-570; null = keins erkannt."
+    )
 
 
 class SetupStatus(Model):
@@ -1167,3 +1208,189 @@ class PiPairResult(Model):
     origins: list[str] = Field(description="Ursprünge der App, die direkt drucken dürfen.")
     urls: list[str] = Field(description="Adressen, unter denen die App den Druckdienst anspricht.")
     not_after: Timestamp
+
+
+# ---------------------------------------------------------------------------------------------------
+# Etiketten gestalten (seit 0.5.0; docs/plan-0.5.md, 1; docs/etiketten.md, 3.1 bis 3.4).
+#
+# Eine Gestaltung gilt für den ganzen Haushalt: ein Papier für alle Drucker, je eine Gestaltung für
+# Packungs- und Zonen-Etiketten. Der Server erzeugt daraus die Vorlagen (LabelTemplate) und verteilt
+# sie über den Sync wie die mitgelieferten. Ohne eigene Gestaltung gelten die mitgelieferten
+# Vorlagen unverändert (gleicher hash).
+
+# Länge eines Etiketts auf einer Endlosrolle, in ganzen Millimetern.
+LABEL_LENGTH_MIN_MM = print_media.ENDLESS_LENGTH_MIN_MM
+LABEL_LENGTH_MAX_MM = print_media.ENDLESS_LENGTH_MAX_MM
+# Zeilen für den Namen (Feld title).
+LABEL_TITLE_LINES_MAX = 3
+# Vorschau: Die App wartet so lange nach der letzten Änderung, bevor sie fragt; mehr Vorschauen
+# zugleich lehnt der Server mit 429 (rate_limited) ab.
+LABEL_PREVIEW_DEBOUNCE_MS = 300
+LABEL_PREVIEWS_AT_ONCE = 2
+
+
+class LabelKind(StrEnum):
+    """Etikettenart: je eine Gestaltung und eine Vorlage (LabelTemplate.key)."""
+
+    PACKAGE = "package"
+    ZONE = "zone"
+
+
+class PaperKind(StrEnum):
+    ENDLESS = "endless"  # Endlosrolle, Länge aus der Gestaltung
+    DIE_CUT = "die_cut"  # gestanzte Etiketten fester Größe
+
+
+class LabelPaper(Model):
+    """Ein Papier des Katalogs (``print/stowly_print/media.py``)."""
+
+    id: str = Field(description="Kennung wie bei Brother: '62' (endlos), '62x29' (gestanzt).")
+    kind: PaperKind
+    name: str = Field(description="Anzeigename, etwa '62 mm endlos' oder '62 × 29 mm gestanzt'.")
+    width_mm: float = Field(description="Breite der Rolle, quer zur Laufrichtung.")
+    length_mm: float | None = Field(description="Länge eines gestanzten Etiketts; null bei Endlosrollen.")
+    printable_width_px: int = Field(description="Druckbare Punkte quer zur Laufrichtung bei 300 dpi.")
+    printable_length_px: int | None = Field(
+        description="Druckbare Punkte in Laufrichtung bei 300 dpi, nur gestanzt; null bei Endlosrollen."
+    )
+
+
+class LabelSize(StrEnum):
+    """Größe eines Felds oder des QR-Codes: feste Millimeter, auf jedem Papier dieselben."""
+
+    SMALL = "s"
+    MEDIUM = "m"
+    LARGE = "l"
+
+
+class LabelQrSide(StrEnum):
+    LEFT = "left"
+    RIGHT = "right"
+
+
+class LabelDateStyle(StrEnum):
+    """Wie MHD und Einlagerdatum gedruckt werden."""
+
+    LONG = "long"  # 25.03.2027 (Daten best_before, stored)
+    SHORT = "short"  # 25.03.27 (Daten best_before_short, stored_short)
+
+
+class LabelFieldName(StrEnum):
+    """Was eine Zeile zeigt. Packungs-Etiketten können alle, Zonen-Etiketten nur ZONE_LABEL_FIELDS."""
+
+    TITLE = "title"  # Produktname bzw. Name der Zone
+    SUBTITLE = "subtitle"  # Packung: Größe · Marke; Zone: „Lagerzone"
+    QUANTITY = "quantity"  # Packungsgröße allein
+    BRAND = "brand"  # Marke allein
+    BEST_BEFORE = "best_before"  # „MHD 25.03.2027"
+    STORED = "stored"  # Tag des Einlagerns
+    ID = "id"  # Packungs-ID
+    ZONE = "zone"  # Name der Zone
+    TEXT = "text"  # eigener Text aus der Gestaltung (LabelLayout.text)
+
+
+ZONE_LABEL_FIELDS = (LabelFieldName.TITLE, LabelFieldName.SUBTITLE, LabelFieldName.TEXT)
+
+
+class LabelQr(Model):
+    side: LabelQrSide
+    size: LabelSize = Field(
+        description="Die kleinste Stufe scannt noch sicher (mindestens 6 Pixel je Modul)."
+    )
+
+
+class LabelField(Model):
+    field: LabelFieldName
+    size: LabelSize
+    lines: int | None = Field(
+        default=None,
+        ge=1,
+        le=LABEL_TITLE_LINES_MAX,
+        description="Nur beim Namen (title): höchstens so viele Zeilen; sonst null.",
+    )
+
+
+class LabelLayout(Model):
+    """Die Gestaltung einer Etikettenart. Die Anordnung übernimmt der Server: QR-Code als Quadrat an der
+    gewählten Seite, die Felder untereinander daneben."""
+
+    length_mm: int | None = Field(
+        ge=LABEL_LENGTH_MIN_MM,
+        le=LABEL_LENGTH_MAX_MM,
+        description="Länge des Etiketts auf einer Endlosrolle; null bei gestanzten Etiketten.",
+    )
+    qr: LabelQr
+    fields: list[LabelField] = Field(
+        max_length=len(LabelFieldName),
+        description=(
+            "Die gedruckten Felder von oben nach unten, jedes höchstens einmal; was fehlt, ist aus. "
+            "Stehen id und stored direkt nacheinander, teilen sie sich die unterste Zeile."
+        ),
+    )
+    date: LabelDateStyle
+    text: str = Field(
+        max_length=LIMITS["label_text"], description="Eigener Text für das Feld text; darf leer sein."
+    )
+    divider: bool = Field(description="Trennlinie über der untersten Zeile.")
+
+
+class LabelDesign(Model):
+    """Papier und beide Gestaltungen (``PUT /api/labels/design``)."""
+
+    paper: str = Field(
+        max_length=20, description="Kennung des Papiers im Katalog (LabelPaper.id), für alle Drucker."
+    )
+    package: LabelLayout
+    zone: LabelLayout
+
+
+class LabelTemplateHashes(Model):
+    """``hash`` der Vorlagen, die gerade gelten (wie LabelTemplate.hash im Sync)."""
+
+    package: str
+    zone: str
+
+
+class LabelDesignState(Model):
+    """Antwort von ``GET``, ``PUT`` und ``DELETE /api/labels/design``."""
+
+    design: LabelDesign = Field(
+        description="Die gültige Gestaltung; ohne eigene die Werte, die den mitgelieferten Vorlagen entsprechen."
+    )
+    is_default: bool = Field(
+        description="true = keine eigene Gestaltung: Es gelten die mitgelieferten Vorlagen."
+    )
+    updated_at: Timestamp | None = Field(
+        description="Wann die eigene Gestaltung gespeichert wurde; null = Vorgabe."
+    )
+    templates: LabelTemplateHashes = Field(
+        description="Daran sieht die App, ob die Vorlagen nach dem Speichern schon über den Sync da sind."
+    )
+    papers: list[LabelPaper] = Field(description="Der Papier-Katalog, in der Reihenfolge für die App.")
+
+
+class LabelPreviewInput(Model):
+    """``POST /api/labels/preview``: ein Etikett rendern, ohne etwas zu speichern."""
+
+    kind: LabelKind
+    paper: str = Field(max_length=20, description="Kennung des Papiers im Katalog.")
+    layout: LabelLayout
+    data: dict[str, Annotated[str, Field(max_length=print_model.MAX_DATA_VALUE_LENGTH)]] | None = Field(
+        default=None,
+        max_length=print_model.MAX_DATA_FIELDS,
+        description=(
+            "Inhalt wie beim Drucken (PackageLabelData bzw. ZoneLabelData); null = ein Beispiel mit "
+            "langem Namen und allen Feldern."
+        ),
+    )
+
+
+class LabelPreview(Model):
+    """Antwort von ``POST /api/labels/preview``."""
+
+    png: str = Field(description="1-Bit-PNG als Base64, so wie man das Etikett liest (ungedreht).")
+    width_px: int
+    height_px: int
+    notes: list[str] = Field(
+        description="Was nur verkleinert oder gekürzt passt, als Sätze, etwa 'Name auf 3,0 mm verkleinert und gekürzt.'; leer = alles passt."
+    )

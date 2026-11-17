@@ -14,7 +14,7 @@ import re
 
 import pytest
 from PIL import Image
-from print_support import PACKAGE, FakeDriver, new_id, wait_until
+from print_support import PACKAGE, FakeDriver, format2, new_id, wait_until
 from starlette.testclient import TestClient
 
 from stowly_print import __version__
@@ -86,8 +86,20 @@ def test_health_is_a_plain_get_without_token(bench):
     assert response.headers["content-type"] == "application/json"
     assert response.headers["cache-control"] == "no-store"
     body = response.json()
-    assert set(body) == {"app", "version", "protocol", "boot_id", "uptime_s", "proof", "host", "printers"}
+    assert set(body) == {
+        "app",
+        "version",
+        "protocol",
+        "boot_id",
+        "uptime_s",
+        "proof",
+        "host",
+        "printers",
+        "template_schemas",
+    }
     assert (body["app"], body["version"], body["protocol"]) == ("stowly-print", __version__, 1)
+    # Seit 0.5.0: Format 1 und Format 2 der Vorlage (docs/etiketten.md, 3.4); Protokoll 1 bleibt.
+    assert body["template_schemas"] == [1, 2]
     assert body["boot_id"] == bench.service.boot_id
     assert body["uptime_s"] >= 0
     assert body["proof"] is None
@@ -138,15 +150,26 @@ def test_printers_list_capabilities_and_status(bench):
         "model": None,
         "capabilities": {
             "dpi": 300,
-            "media": {"width_mm": 62.0, "length_mm": None, "printable_px": 696},
+            # Seit 0.5.0 mit Kennung, Art und druckbarer Länge aus dem Papier-Katalog.
+            "media": {
+                "width_mm": 62.0,
+                "length_mm": None,
+                "printable_px": 696,
+                "id": "62",
+                "kind": "endless",
+                "printable_length_px": None,
+            },
             "cutter": True,
             "colors": ["black"],
             "status_query": True,
             "confirms_print": True,
         },
         "status": {"reachable": True, "ready": True, "media_detected": True, "errors": []},
+        # Der Bild-Treiber hat keine eingelegte Rolle.
+        "loaded": None,
     }
     assert (keller["name"], keller["driver"], keller["model"]) == ("keller", "brother_ql", "QL-800")
+    assert keller["loaded"] is None  # ein Treiber, der keine Rolle meldet
     assert bench.get("/v1/health").json()["printers"] == body["printers"]
 
 
@@ -431,6 +454,13 @@ def test_render_returns_a_png_in_the_size_of_the_printer(tmp_path):
         response = client.post("/v1/render", json=payload(printer="schmal"), headers=AUTH)
         with Image.open(io.BytesIO(response.content)) as image:
             assert image.size == (472, 231)
+        # Nennt die Vorlage ein Papier (Format 2), gilt dessen Größe, so wie man das Etikett liest.
+        rotated = {"template": format2("29", 62), "data": PACKAGE}
+        for printer in (None, "schmal"):
+            response = client.post("/v1/render", json={**rotated, "printer": printer}, headers=AUTH)
+            assert response.status_code == 200
+            with Image.open(io.BytesIO(response.content)) as image:
+                assert (image.size, image.mode) == ((732, 306), "1")
 
         # Gerendert, nicht gedruckt.
         assert narrow.calls == 0

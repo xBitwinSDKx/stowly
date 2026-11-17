@@ -21,6 +21,7 @@
  *   api/               die Teile der Schnittstelle `Core` (auch die Einkaufsliste, shopping.ts)
  *   admin.ts           Sicherung jetzt, Dateien und Home Assistant (nachgeladen, Stufe B)
  *   restore.ts         eine Sicherung zurückspielen (nachgeladen, Stufe B)
+ *   labels.ts          Etiketten gestalten, Produktdaten neu abfragen, Produktbild (nachgeladen, 0.5.0)
  *   images.ts          Produktbilder vorab laden
  *   background.ts      Abgleich im Service Worker
  *   push/              Push auf diesem Gerät (device.ts) und Nachrichten im Service Worker (worker.ts)
@@ -854,6 +855,9 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
     return api as T;
   }
 
+  /** Etiketten gestalten und Produktdaten neu abfragen (seit 0.5.0): nachgeladen, siehe `later`. */
+  const labels = () => import("./labels").then((module) => module.createLabels(runtime, fetchFn, { syncFirst: printRuntime.syncFirst, synced: () => void scheduler.request(true) }));
+
   // ---------------------------------------------------------------- Die Schnittstelle
 
   const core: StowlyCore = {
@@ -949,7 +953,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
 
     data: createDataApi(store, ready),
     stock: createStockApi(runtime),
-    products: { ...createProductsApi(runtime), lookup: lookupProduct },
+    products: { ...createProductsApi(runtime), lookup: lookupProduct, ...later(() => labels().then((module) => module.products), ["refreshLookup", "setImage"]) },
     zones: createZonesApi(runtime),
     settings: createSettingsApi(runtime),
 
@@ -1037,6 +1041,7 @@ export function createCore(options: CoreOptions = {}): StowlyCore {
       "createSensorToken",
       "deleteSensorToken",
     ]),
+    labels: later(() => labels().then((module) => module.labels), ["design", "preview", "save", "reset", "templates"]),
 
     app: {
       state: app,

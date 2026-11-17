@@ -629,12 +629,26 @@ describe("Drucker", () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith({ step: { id: "printer", state: "done" } }));
 
     await userEvent.click(screen.getByRole("button", { name: "Verbindung prüfen" }));
-    expect(await screen.findByText("Der Druckdienst antwortet.")).toBeInTheDocument();
+    expect(await screen.findByText("Drucker bereit.")).toBeInTheDocument();
     // Die Kopplung übersteht Weiter und Zurück.
     await userEvent.click(screen.getByRole("link", { name: "Weiter" }));
     expect(await screen.findByRole("heading", { name: "Sicherung", level: 2 })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("link", { name: "Zurück" }));
     expect(await screen.findByText("Gekoppelt: QL-570 am Pi stowly-pi (192.168.1.20)")).toBeInTheDocument();
+  });
+
+  it("urteilt beim Koppeln wie die Karte des Druckers: Der Pi antwortet, der Drucker nicht, mit Rat", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const core = await openStep({ scenarios: ["setup-open", "empty", "printer-off"] }, "printer");
+    await userEvent.click(screen.getByRole("button", { name: "Code erzeugen" }));
+    await screen.findByRole("group", { name: "Befehl für den Pi" });
+    core.control.completePairing();
+    await act(() => vi.advanceTimersByTimeAsync(PAIRING_POLL_MS));
+    expect(await screen.findByText("Gekoppelt: QL-570 am Pi stowly-pi (192.168.1.20)")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Verbindung prüfen" }));
+    const verdict = await screen.findByText("Der Pi antwortet, der Drucker nicht.");
+    expect(verdict.closest("[role=status]")).toHaveTextContent("Drucker einschalten.USB-Kabel an Drucker und Pi prüfen.Dann noch einmal „Verbindung prüfen“.");
+    expect(screen.queryByText("Drucker bereit.")).not.toBeInTheDocument();
   });
 
   it("fragt nur bei sichtbarer Seite nach und gleich wieder, sobald sie sichtbar wird", async () => {

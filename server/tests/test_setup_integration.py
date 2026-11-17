@@ -169,8 +169,15 @@ def test_a_fresh_container_from_first_password_to_a_paired_pi(client: TestClient
     assert printer["direct"]["urls"] == result["urls"]
 
     status = client.get("/api/setup", headers=headers).json()
+    # Seit 0.5.0 mit Version des Druckdienstes und Modell: Daran sieht die App ohne Abfrage, was der Pi kann.
     assert status["paired_printers"] == [
-        {"printer_id": result["printer_id"], "hostname": "stowly-pi", "not_after": result["not_after"]}
+        {
+            "printer_id": result["printer_id"],
+            "hostname": "stowly-pi",
+            "not_after": result["not_after"],
+            "version": "0.3.0",
+            "model": "QL-570",
+        }
     ]
     ready = {step["id"]: step["ready"] for step in status["steps"]}
     assert ready["printer"] is True

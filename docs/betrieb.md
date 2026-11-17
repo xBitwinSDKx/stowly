@@ -1352,3 +1352,25 @@ Erst in einem Testcontainer (19.1), dann am eigenen Stowly. Home Assistant gegen
 | N20 | Am eigenen Stowly mit HA aus der `.env` | Adresse, Liste und Token „gesetzt" nur zu sehen, mit dem Hinweis auf die Umgebung; „Verbindung prüfen" zeigt die Listen von HA |
 | N21 | „Sensor-Token erzeugen", das YAML in HA übernehmen, HA neu starten; dann „Neu erzeugen" | Der Sensor hat Werte (wie K4); nach „Neu erzeugen" bekommt HA mit dem alten Token 401, bis das neue YAML drin ist |
 | N22 | „Entfernen" beim Sensor-Token, dann `curl` wie in 18.1 | 503 mit „Der Sensor ist auf diesem Server nicht eingerichtet …" |
+
+### O. Etiketten gestalten, Produktdaten und Druckerkarte (0.5.0)
+
+Erst in einem Testcontainer (19.1) mit einem Drucker am Server mit Bild-Treiber, dann am eigenen Stowly mit dem Pi. Schmale und gestanzte Rollen erst, wenn so eine Rolle da ist.
+
+| # | Schritt | Erwartet |
+|---|---|---|
+| O1 | Drucker → Abschnitt „Etiketten" → „Etiketten gestalten", ohne etwas zu ändern | Papier „62 mm endlos"; die Vorschau zeigt die Etiketten wie bisher; „Speichern" und „Verwerfen" gehen erst nach einer Änderung |
+| O2 | Reiter „Packung": Länge 40 mm, QR-Code rechts und groß, ein Feld mit den Pfeilen verschieben, „Zone" an | Die Vorschau folgt kurz nach jeder Änderung; passt etwas nur verkleinert oder gekürzt, steht es darunter |
+| O3 | Felder anschalten und vergrößern, bis es nicht mehr passt; „Speichern" | Ein Satz wie „Für so viele Felder ist das Etikett zu kurz: ein Feld weglassen, kleiner wählen oder länger machen."; gespeichert ist nichts |
+| O4 | Eine passende Gestaltung „Speichern", dann an einem zweiten Gerät abgleichen und dort ein Etikett drucken | Beide Geräte drucken die neue Gestaltung; ein Etikett, das vorher schon unterwegs war, bleibt, wie es war |
+| O5 | „Probedruck" mit einer Packung aus dem Bestand | Das Etikett entspricht der Vorschau; am Testcontainer liegt das PNG des Bild-Treibers in der Größe des Papiers |
+| O6 | Papier „29 mm endlos", Länge 62 mm, Probedruck am Bild-Treiber | Die Vorschau liegt quer, wie man das Etikett liest; das PNG ist gedreht (306 × 732 Pixel) |
+| O7 | Papier „62 × 29 mm gestanzt", Probedruck am Bild-Treiber | PNG mit 696 × 271 Pixeln |
+| O8 | Eigenes Stowly, Pi noch mit Druckdienst 0.4.0: 62 mm endlos, Länge 40 mm, Probedruck am QL-570 | Druckt wie gestaltet |
+| O9 | Eigenes Stowly, Pi noch mit 0.4.0: Papier „29 mm endlos" speichern und ein Etikett anfordern | Es bleibt ausstehend: „Der Druckdienst auf dem Pi ist zu alt für dieses Papier. Neu koppeln aktualisiert ihn."; die Druckerkarte zeigt „Druckdienst 0.4.0 kann dieses Papier nicht" mit „Neu koppeln" |
+| O10 | Den Pi neu koppeln („Vorhandenen Drucker übernehmen"), dann „Verbindung prüfen"; mit Papier „29 mm endlos" bei eingelegter 62-mm-Rolle drucken; danach „Auf Vorgabe zurücksetzen" | Druckdienst 0.5.0, „Rolle: 62 mm endlos" in der Karte; der Druck endet mit „Eingelegt: 62 mm endlos; das Etikett braucht 29 mm endlos.", und es kommt nichts aus dem Drucker; nach dem Zurücksetzen druckt er wieder |
+| O11 | QL-570 ausschalten, „Verbindung prüfen"; einschalten, noch einmal | Gelb „Der Pi antwortet, der Drucker nicht." mit dem Rat, ihn einzuschalten und das USB-Kabel zu prüfen; danach grün „Drucker bereit." |
+| O12 | „Produkt bearbeiten" an einem offline angelegten Produkt mit Barcode, „Online abfragen" | Name, Marke, Größe und Bild „jetzt" und „Open Food Facts" nebeneinander, abweichende vorgehakt; Quelle „Daten von Open Food Facts (ODbL)" |
+| O13 | „Übernehmen", dann „Speichern" | Felder und Bild sind gespeichert; ein zweites Gerät zeigt das Bild nach dem Abgleich |
+| O14 | Gleich noch einmal „Online abfragen" | „Open Food Facts bremst gerade; in einer Minute noch einmal." |
+| O15 | Ein Produkt ohne Barcode oder nur mit ladeninternem Code (beginnt mit 2); dann eines mit Barcode, aber offline | Kein Knopf; offline ist er gesperrt und sagt warum |

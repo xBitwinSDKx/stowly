@@ -89,6 +89,7 @@ export const LIMITS = {
   restore_identity: 4096,
   ha_url: 200,
   ha_token: 2000,
+  label_text: 40,
 } as const;
 /** Fehlercodes der HTTP-Antworten des Druckdienstes (docs/etiketten.md, 5.3). */
 export const SERVICE_ERROR_CODES = [
@@ -162,6 +163,7 @@ export const ENDPOINTS = {
   get_ha_sensor_token: { method: "GET", path: "/api/server-config/ha/sensor-token" },
   get_image: { method: "GET", path: "/api/images/{image_id}" },
   get_integrations: { method: "GET", path: "/api/integrations" },
+  get_label_design: { method: "GET", path: "/api/labels/design" },
   get_pi_pairing: { method: "GET", path: "/api/pi/pairings/{pairing_id}" },
   get_push_key: { method: "GET", path: "/api/push/key" },
   get_restore_status: { method: "GET", path: "/api/restore" },
@@ -181,10 +183,15 @@ export const ENDPOINTS = {
   pi_install_script: { method: "GET", path: "/api/pi/install.sh" },
   pi_pair: { method: "POST", path: "/api/pi/pair" },
   pi_pair_start: { method: "POST", path: "/api/pi/pair/start" },
+  preview_label: { method: "POST", path: "/api/labels/preview" },
+  put_label_design: { method: "PUT", path: "/api/labels/design" },
   put_push_subscription: { method: "PUT", path: "/api/push/subscription" },
+  refresh_lookup: { method: "POST", path: "/api/lookup/{barcode}/refresh" },
+  reset_label_design: { method: "DELETE", path: "/api/labels/design" },
   revoke_device: { method: "DELETE", path: "/api/devices/{device_id}" },
   run_backup: { method: "POST", path: "/api/backup/run" },
   send_push_test: { method: "POST", path: "/api/push/test" },
+  set_product_image: { method: "PUT", path: "/api/products/{product_id}/image" },
   setup_password: { method: "POST", path: "/api/setup/password" },
   sync: { method: "POST", path: "/api/sync" },
   undo_restore: { method: "POST", path: "/api/restore/undo" },
@@ -950,12 +957,130 @@ export interface IntegrationStatus {
   update: UpdateStatus;
 }
 
+/** Wie MHD und Einlagerdatum gedruckt werden. */
+export type LabelDateStyle = "long" | "short";
+
+/** Papier und beide Gestaltungen (`PUT /api/labels/design`). */
+export interface LabelDesign {
+  /** Kennung des Papiers im Katalog (LabelPaper.id), für alle Drucker. */
+  paper: string;
+  package: LabelLayout;
+  zone: LabelLayout;
+}
+
+/** Antwort von `GET`, `PUT` und `DELETE /api/labels/design`. */
+export interface LabelDesignState {
+  /** Die gültige Gestaltung; ohne eigene die Werte, die den mitgelieferten Vorlagen entsprechen. */
+  design: LabelDesign;
+  /** true = keine eigene Gestaltung: Es gelten die mitgelieferten Vorlagen. */
+  is_default: boolean;
+  /** Wann die eigene Gestaltung gespeichert wurde; null = Vorgabe. */
+  updated_at: string | null;
+  /** Daran sieht die App, ob die Vorlagen nach dem Speichern schon über den Sync da sind. */
+  templates: LabelTemplateHashes;
+  /** Der Papier-Katalog, in der Reihenfolge für die App. */
+  papers: LabelPaper[];
+}
+
+export interface LabelField {
+  field: LabelFieldName;
+  size: LabelSize;
+  /** Nur beim Namen (title): höchstens so viele Zeilen; sonst null. */
+  lines?: number | null;
+}
+
+/** Was eine Zeile zeigt. Packungs-Etiketten können alle, Zonen-Etiketten nur ZONE_LABEL_FIELDS. */
+export type LabelFieldName =
+  | "title"
+  | "subtitle"
+  | "quantity"
+  | "brand"
+  | "best_before"
+  | "stored"
+  | "id"
+  | "zone"
+  | "text";
+
+/** Etikettenart: je eine Gestaltung und eine Vorlage (LabelTemplate.key). */
+export type LabelKind = "package" | "zone";
+
+/**
+ * Die Gestaltung einer Etikettenart. Die Anordnung übernimmt der Server: QR-Code als Quadrat an der
+ * gewählten Seite, die Felder untereinander daneben.
+ */
+export interface LabelLayout {
+  /** Länge des Etiketts auf einer Endlosrolle; null bei gestanzten Etiketten. */
+  length_mm: number | null;
+  qr: LabelQr;
+  /** Die gedruckten Felder von oben nach unten, jedes höchstens einmal; was fehlt, ist aus. Stehen id und stored direkt nacheinander, teilen sie sich die unterste Zeile. */
+  fields: LabelField[];
+  date: LabelDateStyle;
+  /** Eigener Text für das Feld text; darf leer sein. */
+  text: string;
+  /** Trennlinie über der untersten Zeile. */
+  divider: boolean;
+}
+
+/** Ein Papier des Katalogs (`print/stowly_print/media.py`). */
+export interface LabelPaper {
+  /** Kennung wie bei Brother: '62' (endlos), '62x29' (gestanzt). */
+  id: string;
+  kind: PaperKind;
+  /** Anzeigename, etwa '62 mm endlos' oder '62 × 29 mm gestanzt'. */
+  name: string;
+  /** Breite der Rolle, quer zur Laufrichtung. */
+  width_mm: number;
+  /** Länge eines gestanzten Etiketts; null bei Endlosrollen. */
+  length_mm: number | null;
+  /** Druckbare Punkte quer zur Laufrichtung bei 300 dpi. */
+  printable_width_px: number;
+  /** Druckbare Punkte in Laufrichtung bei 300 dpi, nur gestanzt; null bei Endlosrollen. */
+  printable_length_px: number | null;
+}
+
+/** Antwort von `POST /api/labels/preview`. */
+export interface LabelPreview {
+  /** 1-Bit-PNG als Base64, so wie man das Etikett liest (ungedreht). */
+  png: string;
+  width_px: number;
+  height_px: number;
+  /** Was nur verkleinert oder gekürzt passt, als Sätze, etwa 'Name auf 3,0 mm verkleinert und gekürzt.'; leer = alles passt. */
+  notes: string[];
+}
+
+/** `POST /api/labels/preview`: ein Etikett rendern, ohne etwas zu speichern. */
+export interface LabelPreviewInput {
+  kind: LabelKind;
+  /** Kennung des Papiers im Katalog. */
+  paper: string;
+  layout: LabelLayout;
+  /** Inhalt wie beim Drucken (PackageLabelData bzw. ZoneLabelData); null = ein Beispiel mit langem Namen und allen Feldern. */
+  data?: { [key: string]: string } | null;
+}
+
+export interface LabelQr {
+  side: LabelQrSide;
+  /** Die kleinste Stufe scannt noch sicher (mindestens 6 Pixel je Modul). */
+  size: LabelSize;
+}
+
+export type LabelQrSide = "left" | "right";
+
+/** Größe eines Felds oder des QR-Codes: feste Millimeter, auf jedem Papier dieselben. */
+export type LabelSize = "s" | "m" | "l";
+
 /** Etikett-Vorlage. Die App reicht `body` unverändert mit jedem Druckauftrag weiter. */
 export interface LabelTemplate {
   key: PrintJobKind;
   hash: string;
   body: { [key: string]: unknown };
   updated_at: string;
+}
+
+/** `hash` der Vorlagen, die gerade gelten (wie LabelTemplate.hash im Sync). */
+export interface LabelTemplateHashes {
+  package: string;
+  zone: string;
 }
 
 export interface LoginRequest {
@@ -981,6 +1106,10 @@ export interface LookupResult {
   quantity: string;
   /** Bild-ID für GET /api/images/{id}, wenn das Bild schon beim Server liegt; sonst null. */
   image_id: string | null;
+  /** Wann Open Food Facts dieses Ergebnis geliefert hat; null bei pending, skipped, disabled und bei Ergebnissen von vor 0.5.0 ohne Zeitpunkt. */
+  fetched_at: string | null;
+  /** Nur bei POST …/refresh: true = nicht neu gefragt, weil dieser Barcode in der letzten Minute schon neu gefragt wurde oder Open Food Facts gerade bremst; die Antwort ist der gespeicherte Stand. Bei GET immer false. */
+  throttled: boolean;
 }
 
 /** Ergebnis von `GET /api/lookup/{barcode}` (docs/sync-protokoll.md, Abschnitt 10). */
@@ -1028,8 +1157,16 @@ export interface PackageLabelData {
   best_before: string;
   /** Tag des Einlagerns als 'TT.MM.JJJJ'. */
   stored: string;
-  /** Name der Zone; leer, wenn es nur eine gibt. */
+  /** Name der Zone, in der die Packung liegt; leer nur, wenn sie keine hat. Seit 0.5.0 immer gefüllt: Ob er gedruckt wird, entscheidet die Vorlage (ältere Apps schickten ihn nur bei mehr als einer Zone). */
   zone: string;
+  /** Marke allein; darf leer sein. */
+  brand: string;
+  /** Packungsgröße allein, z. B. '500 g'; darf leer sein. */
+  quantity: string;
+  /** MHD als 'TT.MM.JJ'; leer = keines. */
+  best_before_short: string;
+  /** Tag des Einlagerns als 'TT.MM.JJ'. */
+  stored_short: string;
 }
 
 /** Ein Drucker an einem gekoppelten Pi, mit dem Ablauf von dessen Zertifikat. */
@@ -1039,7 +1176,13 @@ export interface PairedPrinter {
   hostname: string;
   /** Ablauf des Zertifikats; die App warnt PI_CERT_WARN_DAYS Tage vorher. */
   not_after: string;
+  /** Version des Druckdienstes bei der Kopplung; null = nicht gemeldet. Daran sieht die App ohne Abfrage, ob der Pi ein Papier im Format 2 drucken kann (docs/etiketten.md, 3.4). */
+  version: string | null;
+  /** Druckermodell bei der Kopplung, etwa QL-570; null = keins erkannt. */
+  model: string | null;
 }
+
+export type PaperKind = "endless" | "die_cut";
 
 /** Neues Haushalts-Passwort (`POST /api/auth/password`). */
 export interface PasswordChangeInput {
@@ -1205,11 +1348,18 @@ export type PrinterConnection = "server" | "direct";
 
 export type PrinterDriver = "brother_ql" | "image";
 
-/** Eingelegtes Material. Längenangaben in Millimetern. */
+/**
+ * Das eingerichtete Material (`media` in der Konfiguration): die Vorgabe für Vorlagen, die kein
+ * Papier nennen. Längenangaben in Millimetern. Welche Rolle wirklich eingelegt ist, meldet
+ * `PrinterInfo.loaded`.
+ */
 export interface PrinterMedia {
   width_mm: number;
   length_mm: number | null;
   printable_px: number;
+  id?: string | null;
+  kind?: string | null;
+  printable_length_px?: number | null;
 }
 
 /** Zuletzt gesehener Zustand eines Druckers („zuletzt gesehen", kein Herzschlag). */
@@ -1255,6 +1405,12 @@ export interface ProductChanges {
   warn_days?: number | null;
   /** null = kein Mindestbestand. Seit Protokoll 2. */
   min_stock?: number | null;
+}
+
+/** `PUT /api/products/{product_id}/image`: das Bild eines Produkts setzen oder entfernen. */
+export interface ProductImageInput {
+  /** Ein Bild, das Stowly gespeichert hat (image_id aus LookupResult); null entfernt das Bild. Ein unbekanntes Bild gibt 422. */
+  image_id: string | null;
 }
 
 export interface PushConfig {
@@ -1443,6 +1599,7 @@ export interface ServiceHealth {
   proof: string | null;
   host: HostHealth | null;
   printers: ServicePrinter[];
+  template_schemas?: number[];
 }
 
 /** Antwort auf das Einreichen und Abfragen eines Auftrags. */
@@ -1480,6 +1637,17 @@ export interface ServiceJobRequest {
 /** Zustand eines Auftrags im Druckdienst. */
 export type ServiceJobState = "queued" | "printing" | "printed" | "sent" | "failed" | "unknown";
 
+/**
+ * Ein Papier, wie es eine Vorlage nennt (`media` im Format 2) und wie ein Drucker die eingelegte
+ * Rolle meldet (`PrinterInfo.loaded`). Längenangaben in Millimetern.
+ */
+export interface ServicePaper {
+  id: string | null;
+  kind: string;
+  width_mm: number;
+  length_mm: number | null;
+}
+
 /** Ein Drucker, wie ihn `GET /v1/printers` und `GET /v1/health` melden. */
 export interface ServicePrinter {
   name: string;
@@ -1487,6 +1655,7 @@ export interface ServicePrinter {
   model: string | null;
   capabilities: PrinterCapabilities;
   status: DriverStatus;
+  loaded?: ServicePaper | null;
 }
 
 export interface SettingsChanges {

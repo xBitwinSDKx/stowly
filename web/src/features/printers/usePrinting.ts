@@ -2,7 +2,8 @@ import { useMemo } from "react";
 
 import { useCore, useLive, type HouseholdSettings, type Package, type Printer, type PrinterStatus, type PrintJob, type Product, type Zone } from "@/contract";
 
-import { isOpenJob, viewJob, type JobView, type PrintData } from "./model";
+// Aus jobs.ts, nicht aus model.ts: Der Rahmen im Hauptpaket braucht nur das (siehe dort).
+import { isOpenJob, viewJob, type JobView, type PrintData } from "./jobs";
 
 export interface Printing {
   /** false, solange der Kern noch lädt. */

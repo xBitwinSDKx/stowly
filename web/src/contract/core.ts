@@ -51,6 +51,11 @@ import type {
   HaConfigChanges,
   HouseholdSettings,
   IntegrationStatus,
+  LabelDesign,
+  LabelDesignState,
+  LabelPreview,
+  LabelPreviewInput,
+  LookupResult,
   LookupResultState,
   Package,
   PackageChanges,
@@ -465,6 +470,25 @@ export interface ProductsApi {
    * (`sync.status.online === false`: "offline"). Wirft nicht: Fehler stehen in `state`.
    */
   lookup(barcode: string): Promise<ProductLookup>;
+  /**
+   * „Online abfragen" (seit 0.5.0): fragt Open Food Facts über den Server jetzt neu, auch wenn er
+   * den Barcode schon kennt oder er früher unbekannt war (`POST /api/lookup/{barcode}/refresh`,
+   * docs/sync-protokoll.md, 10). Ändert kein Produkt: Was davon übernommen wird, entscheidet der
+   * Anwender (`update`, `setImage`). `throttled`: nicht neu gefragt, weil derselbe Barcode in der
+   * letzten Minute schon gefragt wurde oder Open Food Facts bremst; dann ist es der gespeicherte
+   * Stand. Ladeninterne Codes gehen nicht hinaus ("skipped"). Braucht den Server.
+   * @throws CoreError offline | invalid (kein gültiger Barcode) | unauthorized
+   */
+  refreshLookup(barcode: string): Promise<LookupResult>;
+  /**
+   * Setzt das Bild eines Produkts auf ein Bild, das Stowly gespeichert hat (`image_id` aus
+   * `refreshLookup`), oder entfernt es mit null (`PUT /api/products/{id}/image`, seit 0.5.0).
+   * Wartet ein Befehl zu diesem Produkt noch in der Outbox (etwa sein Anlegen), gleicht der Kern
+   * vorher ab, höchstens 10 Sekunden lang. Das Produkt mit dem neuen Bild kommt mit dem Abgleich,
+   * den der Kern danach anstößt. Braucht den Server.
+   * @throws CoreError offline | not_found (der Server kennt das Produkt nicht) | invalid (unbekanntes Bild) | unauthorized
+   */
+  setImage(productId: string, imageId: string | null): Promise<void>;
 }
 
 export interface NewZone {
@@ -921,7 +945,14 @@ export type PrinterProblem =
   /** Der Dienst kennt diesen Drucker nicht (`direct.printer` falsch, oder am Server nicht eingerichtet). */
   | "unknown_printer"
   /** Direkter Drucker, aber die App läuft ohne HTTPS (`secure_context: false`): Der Browser lässt den Direktdruck nicht zu. */
-  | "insecure_context";
+  | "insecure_context"
+  /**
+   * Seit 0.5.0: Der Druckdienst kennt das Format der Vorlage nicht (`ServiceHealth.template_schemas`;
+   * fehlt die Angabe, kann er nur Format 1). Er ist zu alt für das Papier des Haushalts; das Etikett
+   * bleibt ausstehend, statt falsch gedruckt zu werden. Neu koppeln aktualisiert einen Pi
+   * (docs/etiketten.md, 4.1).
+   */
+  | "outdated";
 
 /** Ergebnis einer Sofort-Abfrage eines Druckers. */
 export interface PrinterProbe {
@@ -1111,6 +1142,45 @@ export interface PrintApi {
 }
 
 // --------------------------------------------------------------------------------------
+// Etiketten gestalten (seit 0.5.0; docs/plan-0.5.md, 1)
+// --------------------------------------------------------------------------------------
+//
+// Die Gestaltung gilt für den ganzen Haushalt und liegt beim Server; er erzeugt daraus die
+// Vorlagen, und der Sync verteilt sie wie bisher. Der Code wird erst beim ersten Aufruf geladen
+// (src/core/labels.ts); scheitert das Laden, scheitert der Aufruf mit "offline".
+
+/** Was die App aus den Vorlagen im Sync liest (docs/etiketten.md, 3.4): Format, Papier und `hash`. */
+export interface LabelTemplatesInfo {
+  /** Papier des Haushalts laut Vorlage (`media.id`, ohne Angabe "62"); null, solange keine da ist. */
+  paper: string | null;
+  /** Das höchste Format (`schema`) der Vorlagen; 1, solange keine da ist. */
+  schema: number;
+  /** `hash` der Vorlagen im Sync je Art; null, solange sie fehlt. */
+  hashes: { package: string | null; zone: string | null };
+}
+
+export interface LabelsApi {
+  /** `GET /api/labels/design`: Papier, beide Gestaltungen und der Papier-Katalog. Braucht den Server. @throws CoreError offline | unauthorized | not_supported */
+  design(): Promise<LabelDesignState>;
+  /**
+   * `POST /api/labels/preview`: rendert ein Etikett, ohne etwas zu speichern. Braucht den Server.
+   * Der Server rendert höchstens zwei zugleich; die Oberfläche fragt erst 300 ms nach der letzten Änderung.
+   * @throws CoreError offline | invalid (passt so nicht; `message` ist der Satz des Servers) | rate_limited | unauthorized
+   */
+  preview(input: LabelPreviewInput): Promise<LabelPreview>;
+  /**
+   * `PUT /api/labels/design`: speichert Papier und beide Gestaltungen. Danach stößt der Kern einen
+   * Abgleich an, der die neuen Vorlagen bringt (`templates().hashes` gleich `templates` der Antwort).
+   * @throws CoreError offline | invalid (passt so nicht; `message` ist der Satz des Servers) | unauthorized
+   */
+  save(design: LabelDesign): Promise<LabelDesignState>;
+  /** `DELETE /api/labels/design`: zurück zur Vorgabe; danach ein Abgleich wie bei `save`. @throws CoreError offline | unauthorized */
+  reset(): Promise<LabelDesignState>;
+  /** Was in den Vorlagen steht, die der Sync gebracht hat. Ohne Server. */
+  templates(): Promise<LabelTemplatesInfo>;
+}
+
+// --------------------------------------------------------------------------------------
 // Verwaltung: braucht den Server
 // --------------------------------------------------------------------------------------
 
@@ -1216,4 +1286,6 @@ export interface Core {
   readonly restore: RestoreApi;
   /** Home Assistant und Bring! aus der App (Stufe B). Braucht den Server. */
   readonly haConfig: HaConfigApi;
+  /** Etiketten gestalten (seit 0.5.0). Braucht den Server, außer `templates`. */
+  readonly labels: LabelsApi;
 }

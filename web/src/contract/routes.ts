@@ -12,6 +12,8 @@ export const ROUTES = {
   /** Lösch-Historie. */
   history: "/verlauf",
   printers: "/drucker",
+  /** Etiketten gestalten (seit 0.5.0), eine Unterseite der Drucker. */
+  labels: "/drucker/etiketten",
   settings: "/einstellungen",
   /** Sync-Status mit abgelehnten Änderungen. */
   sync: "/sync",

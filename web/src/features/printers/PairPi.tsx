@@ -7,7 +7,8 @@ import { Button, Spinner } from "@/ui/base";
 import { CircleCheckIcon, InfoIcon, LockOpenIcon, PlugIcon, RefreshIcon, WarningIcon } from "@/ui/icons";
 import { CopyField } from "@/ui/CopyField";
 
-import { ProblemNotice } from "./PrinterCard";
+import { useHouseholdPaper } from "./paper";
+import { ProbeResult } from "./PrinterCard";
 import styles from "./PrintersPage.module.css";
 
 /** So oft fragt die App nach, solange der Pi wartet oder sich einrichtet (nur bei sichtbarer Seite). */
@@ -54,6 +55,7 @@ export function PairPi({ pairing, onPairing, printerId = null, onPaired, sdCard 
   const [error, setError] = useState<string | null>(null);
   const [probe, setProbe] = useState<ProbeState | null>(null);
   const [madeDefault, setMadeDefault] = useState(false);
+  const paper = useHouseholdPaper();
   const state = pairing?.state;
   const waiting = state === "waiting" || state === "installing";
   const secondsLeft = useSecondsLeft(waiting && pairing ? Date.parse(pairing.expires_at) : 0);
@@ -213,12 +215,8 @@ export function PairPi({ pairing, onPairing, printerId = null, onPaired, sdCard 
                     Verbindung prüfen
                   </Button>
                 </div>
-                {done && done.problem === null ? (
-                  <Notice tone="success" role="status" icon={<CircleCheckIcon />} title="Der Druckdienst antwortet.">
-                    {done.url ? `Erreicht über ${done.url}.` : null}
-                  </Notice>
-                ) : null}
-                {done && done.problem !== null ? <ProblemNotice problem={done.problem} printer={printer} fallback={done.error} pendingOwn={0} /> : null}
+                {/* Dasselbe Urteil wie auf der Karte des Druckers: aus Dienst und Drucker. */}
+                {done ? <ProbeResult probe={done} printer={printer} paper={paper} pendingOwn={0} /> : null}
                 {probe?.status === "failed" ? (
                   <Notice tone="danger" role="alert">
                     {probe.message}

@@ -40,7 +40,7 @@ Die Skripte werden mit `sudo bash pi/…` aufgerufen; sie brauchen dafür kein A
 | microSD-Karte, 16 bis 32 GB, „High Endurance" oder A1 | |
 | USB-OTG-Adapter (Micro-USB-Stecker auf USB-A-Buchse) | für das Druckerkabel |
 | Brother QL-800 (USB) | alternativ QL-820NWBc; den kann auch der Server über das Netz ansprechen. Der ältere **QL-570** (nur USB) geht ebenso, am Pi 5 geprüft. |
-| Endlosrollen 62 mm: DK-22205 (Papier, Regal), DK-22212 (Folie, Gefrierschrank) | Etiketten werden auf 29 mm geschnitten |
+| Endlosrollen 62 mm: DK-22205 (Papier, Regal), DK-22212 (Folie, Gefrierschrank) | Etiketten werden auf 29 mm geschnitten. Seit 0.5.0 gehen auch andere Brother-Rollen bis 62 mm, endlos und gestanzt; das Papier wählt der Haushalt in der App (Drucker → „Etiketten gestalten“) |
 | zum Einrichten: Rechner mit SD-Kartenleser und Raspberry Pi Imager, Heim-WLAN mit Internet | nur für die Installation |
 
 **Raspberry Pi 5** statt Zero (am 14.11.2026 geprüft):
@@ -261,7 +261,7 @@ Der Pi hat kein Internet; neue Dateien kommen über sein WLAN.
 | … `driver` | `brother_ql` oder `image` | Pflicht |
 | … `model` | Brother: `QL-800`, `QL-810W`, `QL-820NWB` (auch `QL-820NWBc`) und die übrigen der Bibliothek | – |
 | … `address` | `usb://04f9`, `usb://04f9:209b`, `usb://04f9:209b/<Seriennummer>` oder `tcp://192.168.1.60:9100` | – |
-| … `media` | Rolle; in dieser Stufe `62` (62 mm endlos) | `62` |
+| … `media` | Vorgabe-Rolle für Vorlagen ohne Papier (die mitgelieferten). Seit 0.5.0 nennt jede Vorlage aus der Gestaltung ihr Papier, und der Druckdienst druckt genau dafür; `media` ist nur noch die Vorgabe | `62` |
 | … `directory` | nur `image`: wohin die PNG-Dateien kommen | Pflicht bei `image` |
 
 Unbrauchbare Angaben zu einem Drucker (unbekanntes Modell, falsche Adresse, fehlende Bibliothek) halten den Dienst nicht auf: Der Drucker steht in der Liste und meldet `config`, der Grund steht im Journal. Ein Fehler in der Datei selbst (kein Token, kaputtes TOML) verhindert den Start mit einer Meldung im Journal.
@@ -275,7 +275,7 @@ Unbrauchbare Angaben zu einem Drucker (unbekanntes Modell, falsche Adresse, fehl
 | HTTPS? | von einem Laptop im WLAN des Pi: `curl --cacert stowly-ca.crt https://10.71.83.1:8443/v1/health`; Laufzeit: `sudo openssl x509 -in /etc/stowly-print/tls/pi.crt -noout -dates` |
 | Drucker meldet `offline` | nicht am USB gefunden: eingeschaltet? Editor-Lite-Modus aus? Kabel an der Daten-Buchse? `lsusb` |
 | Drucker meldet `config` | Modell, Adresse oder Rolle passen nicht, oder die Brother-Bibliothek fehlt; Grund im Journal |
-| `no_media`, `cover_open`, `media_mismatch` | Rolle leer, Deckel offen, andere Rolle als 62 mm endlos |
+| `no_media`, `cover_open`, `media_mismatch` | Rolle leer, Deckel offen, andere Rolle eingelegt als das Etikett braucht (seit 0.5.0 mit Satz, etwa „Eingelegt: 62 mm endlos; das Etikett braucht 29 × 90 mm gestanzt.“; es geht nichts an den Drucker) |
 | App zeigt den Drucker als „blockiert" | Ursprung der App fehlt in `origins` |
 | App zeigt „nicht erreichbar", Browser aber geht | Zertifikat (Handy vertraut der Zertifizierungsstelle nicht, iPhone: volles Vertrauen fehlt, abgelaufen) oder Android ohne „Verbunden bleiben" |
 | WLAN erscheint nicht | `systemctl status hostapd`, `journalctl -u hostapd -e`; Land (`--country`) passend? `nmcli device status` muss `wlan0` als `unmanaged` zeigen, sonst greift NetworkManager ein; `rfkill list` darf für das WLAN keine Sperre zeigen |

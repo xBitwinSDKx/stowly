@@ -8,7 +8,7 @@ import { Button, ButtonLink } from "@/ui/base";
 import { QuestionIcon } from "@/ui/icons";
 
 import { useLabelActions } from "./labelActions";
-import type { JobView } from "./model";
+import type { JobView } from "./jobs";
 import styles from "./PrintersPage.module.css";
 import { usePrinting } from "./usePrinting";
 

@@ -12,8 +12,15 @@ Was der Treiber zusagt:
   oder der Zustand vor dem Senden meldet schon den Fehler (Etiketten leer, falsche Rolle).
 * Geht nach dem ersten gesendeten Byte etwas schief, wirft ``print``: Der Ausgang ist offen.
 
-Rolle dieser Stufe ist die 62-mm-Endlosrolle bei 300 dpi (696 Pixel druckbar), geschnitten
-wird nach jedem Etikett.
+Papier (docs/etiketten.md, 3.1, 3.4 und 6): Gedruckt wird bei 300 dpi auf jedes Papier des
+Katalogs (``stowly_print.media``), endlos wie gestanzt; seine Kennung ist der Label-Name der
+Bibliothek. Nennt die Vorlage ein Papier, druckt ``for_paper(papier)`` genau dafür; ``media`` aus
+der Konfiguration ist nur die Vorgabe für Vorlagen ohne Papier (62 mm endlos, wenn nichts dasteht).
+Über USB meldet der Drucker Breite, Art und bei gestanzten die Länge der eingelegten Rolle
+(``loaded``). Vor jedem Druck wird sie mit dem Papier des Auftrags verglichen; passt sie nicht oder
+kann das Modell das Papier nicht, endet der Druck als ``failed`` mit ``media_mismatch`` und einem
+Satz, und es geht nichts an den Drucker. Über TCP gibt es keinen Zustand, also auch keinen Abgleich.
+Geschnitten wird nach jedem Etikett.
 """
 
 import errno
@@ -29,14 +36,15 @@ from urllib.parse import urlsplit
 
 from PIL import Image
 
-from stowly_print.model import Capabilities, DriverStatus, Media, PrinterError, PrintOutcome
+from stowly_print import media as catalog
+from stowly_print.drivers.base import Reading, catalog_media, fits, mismatch_message, reported_paper
+from stowly_print.model import Capabilities, DriverStatus, Paper, PrinterError, PrintOutcome
 
 log = logging.getLogger("stowly_print.brother_ql")
 
-DPI = 300
-DEFAULT_MEDIA = "62"
-# Was gilt, solange die Bibliothek nichts anderes sagt: (Breite der Rolle in mm, druckbare Pixel).
-DEFAULT_ROLL = (62.0, 696)
+DPI = catalog.DPI
+# Vorgabe für Vorlagen ohne Papier, wenn die Konfiguration keine Rolle nennt.
+DEFAULT_MEDIA = catalog.DEFAULT_PAPER_ID
 TCP_PORT = 9100
 BROTHER_VENDOR_ID = 0x04F9
 
@@ -188,6 +196,26 @@ class DeviceStatus:
     @property
     def endless(self) -> bool:
         return self.media_type & 0x0F == 0x0A
+
+    @property
+    def die_cut(self) -> bool:
+        return self.media_type & 0x0F == 0x0B
+
+    @property
+    def paper(self) -> Paper | None:
+        """Die eingelegte Rolle, auf den Katalog abgebildet (``id=None``, wenn er sie nicht kennt).
+
+        ``None``: keine Rolle erkannt, oder eine Art, die der Treiber nicht kennt. Bei gestanzten
+        Etiketten meldet der Drucker die Länge; meldet er keine (0), bleibt sie unbekannt, und die
+        Rolle passt zu keinem Papier.
+        """
+        if not self.media_detected:
+            return None
+        if self.endless:
+            return reported_paper(catalog.ENDLESS, self.media_width_mm, None)
+        if self.die_cut:
+            return reported_paper(catalog.DIE_CUT, self.media_width_mm, self.media_length_mm or None)
+        return None
 
 
 def parse_status(frame: bytes) -> DeviceStatus:
@@ -352,17 +380,20 @@ class _Setup:
     """Die geprüften Angaben zum Drucker."""
 
     model: str
-    label: str
     address: Address
-    width_mm: float
-    printable_px: int
+    paper: catalog.PaperSpec  # Vorgabe für Vorlagen ohne Papier (``media`` der Konfiguration)
     cutter: bool
     min_length_px: int
     max_length_px: int
 
 
 class BrotherQLDriver:
-    """Ein Brother QL. Die Angaben werden erst beim Benutzen geprüft; ein Fehler darin ist ``config``."""
+    """Ein Brother QL. Die Angaben werden erst beim Benutzen geprüft; ein Fehler darin ist ``config``.
+
+    ``print`` und ``status`` gelten für das Papier der Konfiguration, ``for_paper(papier)`` für ein
+    anderes Papier des Katalogs (Papier je Auftrag). ``loaded`` ist die eingelegte Rolle, wie sie die
+    letzte Abfrage über USB gemeldet hat.
+    """
 
     def __init__(
         self,
@@ -394,7 +425,9 @@ class BrotherQLDriver:
         self._setup: _Setup | None = None
         self._problem: str | None = None
         self._checked = False
+        self._loaded: Paper | None = None
         self.last_error: str | None = None
+        self.last_message: str | None = None  # Satz zu last_error, etwa bei media_mismatch
 
     # ------------------------------------------------------------------ Angaben prüfen
 
@@ -425,21 +458,46 @@ class BrotherQLDriver:
         if model is None:
             raise ConfigError(f"Das Modell '{self._model}' kennt der Treiber nicht.")
         label_name = (self._media or "").strip()
-        label = labels.LabelsManager().get(label_name)
-        if label is None:
-            raise ConfigError(f"Die Rolle '{self._media}' kennt der Treiber nicht.")
-        if label.form_factor != labels.FormFactor.ENDLESS or label.color != labels.Color.BLACK_WHITE:
-            raise ConfigError(f"Die Rolle '{self._media}' ist keine einfarbige Endlosrolle.")
-        return _Setup(
+        paper = catalog.paper(label_name)
+        if paper is None:
+            if labels.LabelsManager().get(label_name) is None:
+                raise ConfigError(f"Die Rolle '{self._media}' kennt der Treiber nicht.")
+            raise ConfigError(
+                f"Die Rolle '{self._media}' steht nicht im Papier-Katalog (einfarbig, bis 62 mm breit, "
+                "nicht rund, nicht 12 mm)."
+            )
+        setup = _Setup(
             model=model_name,
-            label=label_name,
             address=address,
-            width_mm=float(label.tape_size[0]),
-            printable_px=int(label.dots_printable[0]),
+            paper=paper,
             cutter=bool(model.cutting),
             min_length_px=int(model.min_max_length_dots[0]),
             max_length_px=int(model.min_max_length_dots[1]),
         )
+        reason = self._unsupported(setup, paper)
+        if reason is not None:
+            raise ConfigError(reason)
+        return setup
+
+    def _unsupported(self, setup: _Setup, paper: catalog.PaperSpec) -> str | None:
+        """Warum dieses Modell das Papier nicht bedrucken kann, als Satz; ``None``, wenn es geht.
+
+        Gründe: Die Bibliothek kennt das Papier nicht oder nur für andere Modelle, oder ein
+        gestanztes Etikett ist kürzer bedruckbar, als das Modell mindestens druckt (QL-500 bis
+        QL-560 und QL-650TD: 295 Punkte, also kein 62 × 29 mm).
+        """
+        _conversion, labels, _models, _raster = self._library()
+        label = labels.LabelsManager().get(paper.id)
+        sentence = f"Der {setup.model} kann {paper.name} nicht drucken."
+        if label is None or label.color != labels.Color.BLACK_WHITE:
+            log.warning("Die Bibliothek kennt das Papier %s nicht als einfarbige Rolle.", paper.id)
+            return sentence
+        if label.restricted_to_models and setup.model not in label.restricted_to_models:
+            return sentence
+        length = paper.printable_length_px
+        if length is not None and not setup.min_length_px <= length <= setup.max_length_px:
+            return sentence
+        return None
 
     @property
     def problem(self) -> str | None:
@@ -453,43 +511,89 @@ class BrotherQLDriver:
     # ------------------------------------------------------------------ Treiber-Schnittstelle
 
     def capabilities(self) -> Capabilities:
-        """Spricht das Gerät nicht an. Bei unbrauchbaren Angaben gilt die Vorgabe (62 mm, 696 Pixel)."""
+        """Spricht das Gerät nicht an. ``media`` ist das Papier der Konfiguration; bei unbrauchbaren
+        Angaben gilt die Vorgabe (62 mm endlos, 696 Pixel)."""
+        return self._capabilities(None)
+
+    def status(self) -> DriverStatus:
+        """Zustand des Druckers; die eingelegte Rolle wird mit dem Papier der Konfiguration verglichen."""
+        return self.probe().status
+
+    def print(self, image: Image.Image, cut: bool = True) -> PrintOutcome:
+        """Druckt auf das Papier der Konfiguration (Vorlagen ohne Papier, PNG-Aufträge)."""
+        return self._print(image, cut, None)
+
+    # ------------------------------------------------------------------ Papier je Auftrag
+
+    def for_paper(self, paper: catalog.PaperSpec) -> "_PaperView":
+        """Derselbe Drucker für ein Papier des Katalogs: druckt genau dafür, und sein Zustand
+        vergleicht die eingelegte Rolle damit statt mit der Konfiguration."""
+        return _PaperView(self, paper)
+
+    @property
+    def loaded(self) -> Paper | None:
+        """Die eingelegte Rolle, wie sie die letzte Abfrage über USB gemeldet hat; ``None`` =
+        unbekannt (Drucker aus, keine Rolle, über TCP, noch nicht gefragt)."""
+        return self._loaded
+
+    def _capabilities(self, paper: catalog.PaperSpec | None) -> Capabilities:
         setup = self._check()
-        width_mm, printable_px = DEFAULT_ROLL if setup is None else (setup.width_mm, setup.printable_px)
+        if paper is None:
+            paper = catalog.BY_ID[DEFAULT_MEDIA] if setup is None else setup.paper
         usb = self._is_usb()
         return Capabilities(
             dpi=DPI,
-            media=Media(width_mm=width_mm, length_mm=None, printable_px=printable_px),
+            media=catalog_media(paper),
             cutter=True if setup is None else setup.cutter,
             colors=["black"],
             status_query=usb,
             confirms_print=usb,
         )
 
-    def status(self) -> DriverStatus:
+    def probe(self) -> Reading:
+        """Fragt das Gerät einmal ab (über USB eine Statusabfrage). Der Zustand darin ist mit dem
+        Papier der Konfiguration verglichen; ``Reading.for_paper`` vergleicht dieselbe Antwort mit
+        einem anderen Papier, ohne das Gerät noch einmal zu fragen. Wirft nie."""
         try:
             setup = self._check()
             if setup is None:
-                return DriverStatus(reachable=False, ready=None, media_detected=None, errors=["config"])
+                self._loaded = None
+                return Reading(
+                    DriverStatus(reachable=False, ready=None, media_detected=None, errors=["config"])
+                )
             # Während eines Drucks gehört das Gerät dem Druck: nicht dazwischenfunken.
             if not self._lock.acquire(blocking=False):
-                return DriverStatus(reachable=True, ready=False, media_detected=None, errors=["busy"])
+                busy = DriverStatus(reachable=True, ready=False, media_detected=None, errors=["busy"])
+                return Reading(busy, loaded=self._loaded)
             try:
                 return self._query(setup)
             finally:
                 self._lock.release()
         except Exception:  # status() wirft nie
             log.exception("Der Zustand des Druckers ließ sich nicht feststellen.")
-            return DriverStatus(reachable=False, ready=None, media_detected=None, errors=["unknown"])
+            return Reading(DriverStatus(reachable=False, ready=None, media_detected=None, errors=["unknown"]))
 
-    def print(self, image: Image.Image, cut: bool = True) -> PrintOutcome:
+    def _print(self, image: Image.Image, cut: bool, paper: catalog.PaperSpec | None) -> PrintOutcome:
         with self._lock:
             self.last_error = None
+            self.last_message = None
             setup = self._check()
             if setup is None:
                 return self._failed(PrinterError.CONFIG)
-            if image.mode != "1" or image.size[0] != setup.printable_px:
-                log.error("Bild passt nicht zum Drucker: %s, Modus %s.", image.size, image.mode)
+            if paper is None:
+                paper = setup.paper
+            # Kann das Modell das Papier nicht, geht nichts an den Drucker.
+            reason = self._unsupported(setup, paper)
+            if reason is not None:
+                log.warning("Druck abgelehnt: %s", reason)
+                return self._failed(PrinterError.MEDIA_MISMATCH, reason)
+            fixed = paper.printable_length_px
+            if (
+                image.mode != "1"
+                or image.size[0] != paper.printable_width_px
+                or (fixed is not None and image.size[1] != fixed)
+            ):
+                log.error("Bild passt nicht zum Papier %s: %s, Modus %s.", paper.id, image.size, image.mode)
                 return self._failed(PrinterError.CONFIG)
             if not setup.min_length_px <= image.size[1] <= setup.max_length_px:
                 log.error(
@@ -500,7 +604,7 @@ class BrotherQLDriver:
                 )
                 return self._failed(PrinterError.CONFIG)
             try:
-                data = self.raster(image, cut=cut)
+                data = self.raster(image, cut=cut, paper=paper)
                 transport = self._open(setup)
             except ConfigError as exc:
                 log.error("Drucker nicht benutzbar: %s", exc)
@@ -510,18 +614,26 @@ class BrotherQLDriver:
                 return self._failed(exc.code)
             try:
                 if setup.address.kind == "usb":
-                    return self._print_usb(setup, transport, data)
+                    return self._print_usb(setup, paper, transport, data)
                 return self._print_tcp(transport, data)
             finally:
                 transport.close()
 
     # ------------------------------------------------------------------ Datenstrom
 
-    def raster(self, image: Image.Image, *, cut: bool = True) -> bytes:
-        """Der vollständige Rasterdatenstrom für ein Etikett, ohne Komprimierung (der QL-800 kann keine)."""
+    def raster(
+        self, image: Image.Image, *, cut: bool = True, paper: catalog.PaperSpec | None = None
+    ) -> bytes:
+        """Der vollständige Rasterdatenstrom für ein Etikett, ohne Komprimierung (der QL-800 kann keine).
+
+        ``image`` liegt in Druckrichtung (quer × längs) und hat genau die druckbaren Punkte des
+        Papiers; ``paper`` ohne Angabe ist das der Konfiguration.
+        """
         setup = self._check()
         if setup is None:
             raise ConfigError(self._problem or "Die Angaben zum Drucker sind unbrauchbar.")
+        if paper is None:
+            paper = setup.paper
         conversion, _labels, _models, raster = self._library()
         instructions = raster.BrotherQLRaster(setup.model)
         # Was ein Modell nicht kann, lässt die Bibliothek dann still weg, statt zu warnen.
@@ -531,7 +643,7 @@ class BrotherQLDriver:
                 conversion.convert(
                     instructions,
                     [image],
-                    setup.label,
+                    paper.id,
                     cut=cut,
                     dither=False,
                     compress=False,
@@ -567,48 +679,80 @@ class BrotherQLDriver:
             write_timeout=self._write_timeout,
         )
 
-    def _failed(self, code: PrinterError | str) -> PrintOutcome:
+    def _failed(self, code: PrinterError | str, message: str | None = None) -> PrintOutcome:
         self.last_error = str(getattr(code, "value", code))
+        self.last_message = message
         return PrintOutcome.FAILED
 
-    def _problems(self, setup: _Setup, status: DeviceStatus) -> list[str]:
-        """Fehlercodes einer Statusmeldung, dazu „keine Rolle" und „falsche Rolle"."""
+    def _problems(self, setup: _Setup, status: DeviceStatus, paper: catalog.PaperSpec) -> list[str]:
+        """Fehlercodes einer Statusmeldung, dazu „keine Rolle" und „falsche Rolle" für dieses Papier."""
         errors = list(status.errors)
+
+        def add(code: PrinterError) -> None:
+            if code.value not in errors:
+                errors.append(code.value)
+
         if not status.media_detected:
-            if PrinterError.NO_MEDIA.value not in errors:
-                errors.append(PrinterError.NO_MEDIA.value)
-        elif status.media_width_mm != round(setup.width_mm) or status.media_type & 0x0F == 0x0B:
-            if PrinterError.MEDIA_MISMATCH.value not in errors:
-                errors.append(PrinterError.MEDIA_MISMATCH.value)
+            add(PrinterError.NO_MEDIA)
+        elif not fits(status.paper, paper):
+            add(PrinterError.MEDIA_MISMATCH)
+        if self._unsupported(setup, paper) is not None:
+            add(PrinterError.MEDIA_MISMATCH)
         return errors
 
-    def _query(self, setup: _Setup) -> DriverStatus:
+    def _query(self, setup: _Setup) -> Reading:
         try:
             transport = self._open(setup)
         except ConfigError as exc:
             log.warning("Drucker nicht benutzbar: %s", exc)
-            return DriverStatus(reachable=False, ready=None, media_detected=None, errors=["config"])
+            self._loaded = None
+            return Reading(DriverStatus(reachable=False, ready=None, media_detected=None, errors=["config"]))
         except Unreachable as exc:
-            return DriverStatus(reachable=False, ready=None, media_detected=None, errors=[exc.code.value])
+            self._loaded = None
+            return Reading(
+                DriverStatus(reachable=False, ready=None, media_detected=None, errors=[exc.code.value])
+            )
         try:
             if setup.address.kind != "usb":
-                # Über das Netz gibt es keinen Zustand (nur per SNMP): Erreichbar ist alles, was sich sagen lässt.
-                return DriverStatus(reachable=True, ready=None, media_detected=None, errors=[])
+                # Über das Netz gibt es keinen Zustand (nur per SNMP): Erreichbar ist alles, was sich sagen
+                # lässt, und ob das Modell das Papier überhaupt kann.
+                self._loaded = None
+
+                def over_network(paper: catalog.PaperSpec) -> DriverStatus:
+                    if self._unsupported(setup, paper) is not None:
+                        return DriverStatus(
+                            reachable=True, ready=False, media_detected=None, errors=["media_mismatch"]
+                        )
+                    return DriverStatus(reachable=True, ready=None, media_detected=None, errors=[])
+
+                return Reading(over_network(setup.paper), compare=over_network)
             try:
                 transport.write(self._status_request(setup))
                 status = _StatusReader(transport, self._sleep).next(time.monotonic() + self._status_timeout)
             except Exception as exc:
                 log.warning("Der Drucker antwortet nicht auf die Statusabfrage (%s).", exc)
-                return DriverStatus(reachable=True, ready=None, media_detected=None, errors=["unknown"])
+                self._loaded = None
+                return Reading(
+                    DriverStatus(reachable=True, ready=None, media_detected=None, errors=["unknown"])
+                )
             if status is None:
-                return DriverStatus(reachable=True, ready=None, media_detected=None, errors=["unknown"])
-            errors = self._problems(setup, status)
-            return DriverStatus(
-                reachable=True,
-                ready=not errors and status.phase == PHASE_WAITING,
-                media_detected=status.media_detected,
-                errors=errors,
-            )
+                self._loaded = None
+                return Reading(
+                    DriverStatus(reachable=True, ready=None, media_detected=None, errors=["unknown"])
+                )
+            self._loaded = status.paper
+            answer = status
+
+            def over_usb(paper: catalog.PaperSpec) -> DriverStatus:
+                errors = self._problems(setup, answer, paper)
+                return DriverStatus(
+                    reachable=True,
+                    ready=not errors and answer.phase == PHASE_WAITING,
+                    media_detected=answer.media_detected,
+                    errors=errors,
+                )
+
+            return Reading(over_usb(setup.paper), loaded=status.paper, compare=over_usb)
         finally:
             transport.close()
 
@@ -622,9 +766,12 @@ class BrotherQLDriver:
             raise PrintInterrupted(f"Die Verbindung zum Drucker brach beim Senden ab ({exc}).") from exc
         return PrintOutcome.SENT
 
-    def _print_usb(self, setup: _Setup, transport: Transport, data: bytes) -> PrintOutcome:
+    def _print_usb(
+        self, setup: _Setup, paper: catalog.PaperSpec, transport: Transport, data: bytes
+    ) -> PrintOutcome:
         reader = _StatusReader(transport, self._sleep)
-        # 1. Zustand vor dem Senden: Hier lässt sich noch sicher „nichts gedruckt" sagen.
+        # 1. Zustand vor dem Senden: Hier lässt sich noch sicher „nichts gedruckt" sagen. Dazu
+        #    gehört der Abgleich der eingelegten Rolle mit dem Papier des Auftrags.
         try:
             transport.write(self._status_request(setup))
             before = reader.next(time.monotonic() + self._status_timeout)
@@ -634,9 +781,14 @@ class BrotherQLDriver:
         if before is None:
             log.warning("Der Drucker hat vor dem Druck nicht auf die Statusabfrage geantwortet.")
             return self._failed(PrinterError.UNKNOWN)
-        problems = self._problems(setup, before)
+        self._loaded = before.paper
+        problems = self._problems(setup, before, paper)
         if problems:
-            return self._failed(problems[0])
+            message = None
+            if problems[0] == PrinterError.MEDIA_MISMATCH.value and not fits(before.paper, paper):
+                message = mismatch_message(before.paper, paper)
+                log.warning("Druck abgelehnt: %s", message)
+            return self._failed(problems[0], message)
 
         # 2. Senden. Ab dem ersten Byte ist der Ausgang offen.
         try:
@@ -670,3 +822,42 @@ class BrotherQLDriver:
         if completed:
             return PrintOutcome.PRINTED
         raise PrintInterrupted("Der Drucker hat den Druck nicht bestätigt.")
+
+
+class _PaperView:
+    """Der Brother-Treiber für ein Papier des Katalogs (Papier je Auftrag, ``for_paper``).
+
+    Druckt genau für dieses Papier und vergleicht die eingelegte Rolle damit; Gerät, Sperre und
+    Fehlervermerk teilt er mit dem Treiber.
+    """
+
+    def __init__(self, driver: BrotherQLDriver, paper: catalog.PaperSpec) -> None:
+        self._driver = driver
+        self.paper = paper
+
+    @property
+    def last_error(self) -> str | None:
+        return self._driver.last_error
+
+    @property
+    def last_message(self) -> str | None:
+        return self._driver.last_message
+
+    @property
+    def loaded(self) -> Paper | None:
+        return self._driver.loaded
+
+    def capabilities(self) -> Capabilities:
+        return self._driver._capabilities(self.paper)
+
+    def status(self) -> DriverStatus:
+        return self._driver.probe().for_paper(self.paper)
+
+    def print(self, image: Image.Image, cut: bool = True) -> PrintOutcome:
+        return self._driver._print(image, cut, self.paper)
+
+    def for_paper(self, paper: catalog.PaperSpec) -> "_PaperView":
+        return self._driver.for_paper(paper)
+
+    def raster(self, image: Image.Image, *, cut: bool = True) -> bytes:
+        return self._driver.raster(image, cut=cut, paper=self.paper)

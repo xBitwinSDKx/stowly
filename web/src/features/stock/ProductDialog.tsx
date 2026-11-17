@@ -9,15 +9,47 @@ import {
   normalizeBarcode,
   productTitle,
   useCore,
+  useLive,
+  type LookupResult,
   type Product,
   type ProductChanges,
 } from "@/contract";
-import { ConfirmDialog, errorText, FieldGroup, focusFirstInvalid, Notice, packagesText } from "@/ui";
+import { ConfirmDialog, errorText, FieldGroup, focusFirstInvalid, Notice, packagesText, Select } from "@/ui";
 import { Button, Dialog, dialogFocus, IconButton, Spinner, TextField, useToast } from "@/ui/base";
-import { BarcodeIcon, CloseIcon, InfoIcon, MergeIcon, PlusIcon } from "@/ui/icons";
+import { BarcodeIcon, CircleCheckIcon, CloseIcon, CloudIcon, InfoIcon, MergeIcon, PlusIcon } from "@/ui/icons";
 
 import styles from "./dialogs.module.css";
+import type { LookupTaken } from "./LookupCompare";
 import type { StockData } from "./useStock";
+
+/** Die Gegenüberstellung wird erst nachgeladen, wenn jemand online abfragt. */
+type CompareModule = typeof import("./LookupCompare");
+
+/** Stand von „Online abfragen". */
+type RefreshState =
+  | { status: "idle" }
+  | { status: "busy" }
+  | { status: "done"; result: LookupResult; compare: CompareModule }
+  | { status: "failed"; message: string };
+
+/** Was die Antwort von Open Food Facts heißt, wenn es nichts zu vergleichen gibt (oder dazu). */
+export function refreshText(result: Pick<LookupResult, "state" | "throttled">): string | null {
+  if (result.throttled) {
+    return "Open Food Facts bremst gerade; in einer Minute noch einmal.";
+  }
+  switch (result.state) {
+    case "found":
+      return null;
+    case "not_found":
+      return "Open Food Facts kennt diesen Barcode nicht.";
+    case "pending":
+      return "Open Food Facts hat nicht rechtzeitig geantwortet. Bitte später noch einmal versuchen.";
+    case "disabled":
+      return "Der Server schlägt keine Barcodes nach (Open Food Facts ist bei ihm ausgeschaltet).";
+    case "skipped":
+      return "Ladeninterne Barcodes (Präfix 2) werden nicht nachgeschlagen.";
+  }
+}
 
 /** Der Mindestbestand als Text eines Eingabefelds: leer = keiner. */
 export function minStockInput(value: number | null | undefined): string {
@@ -70,7 +102,7 @@ export function lookupText(product: Pick<Product, "lookup" | "barcodes">): strin
     case "pending":
       return "Name und Bild werden bei Open Food Facts nachgeschlagen, sobald der Server erreichbar ist.";
     case "not_found":
-      return "Open Food Facts kennt diesen Barcode nicht. Bitte den Namen von Hand eintragen.";
+      return "Open Food Facts kannte diesen Barcode beim Nachschlagen nicht. „Online abfragen“ fragt noch einmal.";
     case "found":
       return "Open Food Facts kennt den Barcode, aber keinen Namen dazu. Bitte den Namen von Hand eintragen.";
     case "none":
@@ -93,11 +125,16 @@ interface MergeOffer {
  * Felder und Barcodes werden mit „Speichern" übernommen. Gehört ein Barcode schon zu einem
  * anderen Produkt, bietet der Dialog das Zusammenführen an; das geschieht nach einer
  * Rückfrage sofort, weil es sich nicht umkehren lässt.
+ *
+ * „Online abfragen" (seit 0.5.0) fragt Open Food Facts über den Server neu und stellt die Angaben
+ * je Feld gegenüber (`LookupCompare`, nachgeladen). „Übernehmen" trägt sie ins Formular und merkt
+ * das Bild vor; „Speichern" speichert die Felder wie bisher und danach das Bild.
  */
 export function ProductDialog({ stock, productId, onClose }: ProductDialogProps) {
   const core = useCore();
   const toast = useToast();
   const formId = useId();
+  const status = useLive(core.sync.status);
   const product = stock.products.find((candidate) => candidate.id === productId);
 
   const [name, setName] = useState(product?.name ?? "");
@@ -113,6 +150,11 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
   const [busy, setBusy] = useState(false);
   const [tried, setTried] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState<RefreshState>({ status: "idle" });
+  const [chosenBarcode, setChosenBarcode] = useState<string | null>(null);
+  /** Das Bild aus „Übernehmen", gespeichert mit „Speichern"; undefined = keins vorgemerkt. */
+  const [pendingImage, setPendingImage] = useState<string | undefined>(undefined);
+  const [applied, setApplied] = useState(false);
 
   if (!product) {
     return (
@@ -133,6 +175,49 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
     parsedDays !== null && (!/^\d+$/.test(warnDays.trim()) || parsedDays > 3650) ? "Bitte eine ganze Zahl von 0 bis 3650 eingeben oder das Feld leer lassen." : null;
   const parsedMin = readMinStock(minStock);
   const inStock = stock.entries.filter((entry) => entry.pkg.product_id === current.id).length;
+
+  // „Online abfragen": nur mit Barcodes, die Open Food Facts kennen kann (ladeninterne nicht).
+  const askable = barcodes.filter((code) => !isStoreInternalBarcode(code));
+  const askBarcode = chosenBarcode !== null && askable.includes(chosenBarcode) ? chosenBarcode : (askable[0] ?? null);
+  const refreshBlocked =
+    status?.online === false
+      ? "Online abfragen braucht den Server, und der ist gerade nicht erreichbar."
+      : status?.lookup_enabled === false
+        ? "Der Server schlägt keine Barcodes nach (Open Food Facts ist bei ihm ausgeschaltet)."
+        : null;
+  const image = pendingImage ?? current.image;
+
+  async function refreshLookup() {
+    if (askBarcode === null) {
+      return;
+    }
+    setRefresh({ status: "busy" });
+    setApplied(false);
+    try {
+      // Die Gegenüberstellung kommt erst jetzt: Sie gehört nicht in jeden Dialog.
+      const [compare, result] = await Promise.all([import("./LookupCompare"), core.products.refreshLookup(askBarcode)]);
+      setRefresh({ status: "done", result, compare });
+    } catch (caught) {
+      setRefresh({ status: "failed", message: errorText(caught, { offline: "Online abfragen braucht den Server, und der ist gerade nicht erreichbar." }) });
+    }
+  }
+
+  function apply(taken: LookupTaken) {
+    if (taken.name !== undefined) {
+      setName(taken.name);
+    }
+    if (taken.brand !== undefined) {
+      setBrand(taken.brand);
+    }
+    if (taken.quantity !== undefined) {
+      setQuantity(taken.quantity);
+    }
+    if (taken.image !== undefined) {
+      setPendingImage(taken.image);
+    }
+    setRefresh({ status: "idle" });
+    setApplied(true);
+  }
 
   function ownerOf(barcode: string): Product | undefined {
     return stock.products.find((candidate) => candidate.id !== current.id && candidate.barcodes.includes(barcode));
@@ -226,6 +311,21 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
           return;
         }
       }
+      if (pendingImage !== undefined && pendingImage !== current.image) {
+        // Das Bild braucht den Server; scheitert nur das, sind die Felder trotzdem gespeichert.
+        try {
+          await core.products.setImage(current.id, pendingImage);
+        } catch (caught) {
+          setError(
+            `Die Angaben sind gespeichert, das Bild aber nicht: ${errorText(caught, {
+              offline: "Der Server ist gerade nicht erreichbar.",
+              not_found: "Der Server kennt das Produkt noch nicht.",
+            })} „Speichern“ versucht es noch einmal.`,
+          );
+          setBusy(false);
+          return;
+        }
+      }
       toast.show({ message: `„${trimmedName || productTitle(current)}“ gespeichert`, tone: "success" });
       onClose();
     } catch (caught) {
@@ -259,6 +359,54 @@ export function ProductDialog({ stock, productId, onClose }: ProductDialogProps)
           {placeholder ? (
             <Notice tone="info" icon={current.lookup === "pending" ? <Spinner size={18} /> : <InfoIcon />} title={`Noch ohne Namen${current.barcodes[0] ? `: Barcode ${current.barcodes[0]}` : ""}`}>
               {lookupText(current)}
+            </Notice>
+          ) : null}
+
+          {askBarcode !== null ? (
+            <div className={styles.lookupRow}>
+              {askable.length > 1 ? (
+                <Select
+                  className={styles.lookupBarcode}
+                  label="Barcode für die Abfrage"
+                  value={askBarcode}
+                  onChange={setChosenBarcode}
+                  options={askable.map((code) => ({ value: code, label: `Barcode ${code}` }))}
+                />
+              ) : null}
+              <Button icon={<CloudIcon />} busy={refresh.status === "busy"} disabled={refreshBlocked !== null || busy} onClick={() => void refreshLookup()}>
+                Online abfragen
+              </Button>
+              {refreshBlocked ? <p className={styles.muted}>{refreshBlocked}</p> : null}
+            </div>
+          ) : null}
+          {refresh.status === "failed" ? (
+            <Notice tone="danger" role="alert">
+              {refresh.message}
+            </Notice>
+          ) : null}
+          {refresh.status === "done" && refreshText(refresh.result) ? (
+            <Notice tone="info" role="status" icon={<InfoIcon />}>
+              {refreshText(refresh.result)}
+            </Notice>
+          ) : null}
+          {refresh.status === "done" && refresh.result.state === "found" ? (
+            <refresh.compare.LookupCompare
+              result={refresh.result}
+              form={{ name, brand, quantity, image }}
+              imageUrl={(id) => core.data.imageUrl(id)}
+              onApply={apply}
+              onClose={() => setRefresh({ status: "idle" })}
+            />
+          ) : null}
+          {applied ? (
+            <Notice tone="success" role="status" icon={<CircleCheckIcon />} title="Übernommen.">
+              <p>Gespeichert wird mit „Speichern“.</p>
+              {pendingImage !== undefined && pendingImage !== current.image ? (
+                <p className={styles.pendingImage}>
+                  <img src={core.data.imageUrl(pendingImage)} alt="Neues Bild des Produkts" />
+                  <span>Das Bild kommt mit dem Speichern dazu.</span>
+                </p>
+              ) : null}
             </Notice>
           ) : null}
 

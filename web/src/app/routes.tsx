@@ -5,7 +5,7 @@ import { ROUTES } from "@/contract";
 
 import { NotFoundPage } from "./NotFoundPage";
 import { usePageTitle } from "./Page";
-import { HistoryPage, PrintersPage, SettingsPage, SetupPage, ShoppingPage, StatsPage, StockPage, SyncPage, WarningsPage, ZonesPage } from "./pages";
+import { HistoryPage, LabelsPage, PrintersPage, SettingsPage, SetupPage, ShoppingPage, StatsPage, StockPage, SyncPage, WarningsPage, ZonesPage } from "./pages";
 import { RouteError } from "./RouteError";
 import { Shell } from "./Shell";
 
@@ -44,6 +44,7 @@ export function appRoutes(ScanPage: ComponentType): RouteObject[] {
             { path: ROUTES.history, element: <HistoryPage /> },
             { path: ROUTES.stats, element: <StatsPage /> },
             { path: ROUTES.printers, element: <PrintersPage /> },
+            { path: ROUTES.labels, element: <LabelsPage /> },
             { path: ROUTES.settings, element: <SettingsPage /> },
             { path: ROUTES.sync, element: <SyncPage /> },
             { path: "*", element: <NotFoundPage /> },

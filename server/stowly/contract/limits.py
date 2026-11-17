@@ -51,5 +51,7 @@ LIMITS: Final = MappingProxyType(
         "restore_identity": 4096,  # Text mit dem geheimen age-Schlüssel (Zeilen mit # zählen nicht)
         "ha_url": 200,  # Adresse von Home Assistant
         "ha_token": 2000,  # Zugangs-Token von Home Assistant (ein JWT, meist um 180 Zeichen)
+        # Seit 0.5.0 (docs/plan-0.5.md):
+        "label_text": 40,  # eigener Text auf einem Etikett (Feld text der Gestaltung)
     }
 )

@@ -18,9 +18,15 @@
  * zusätzlich gegen den echten Dienst (web/e2e/delivery.e2e.test.ts). Was sie nicht kann oder
  * anders macht:
  *
- * - Es wird nichts gerendert. „Rendern" gelingt, wenn die Vorlage ein Objekt mit `schema: 1`
- *   ist und die Daten Zeichenketten sind; sonst `render_failed`. Die Mindestgröße der Module,
- *   Schriften und Maße prüft sie nicht. Bilder sind immer dasselbe winzige PNG.
+ * - Es wird nichts gerendert. „Rendern" gelingt, wenn die Vorlage ein Objekt mit einem Format ist,
+ *   das der Dienst kann (`schema` 1 oder 2; mit `templateSchemas: null` wie ein Druckdienst vor
+ *   0.5.0 nur 1), Format 2 ein Papier des Katalogs nennt und die Daten Zeichenketten sind; sonst
+ *   `render_failed`. Die Mindestgröße der Module, Schriften und Maße prüft sie nicht. Bilder sind
+ *   ein weißes Feld mit Rahmen in der Größe des Papiers (fake-labels.ts): bei `/v1/render` so, wie
+ *   man es liest, beim Bild-Treiber quer × längs.
+ * - Die eingelegte Rolle (`loaded`) gibt der Test je Drucker vor. Nennt die Abfrage ein Papier
+ *   (`media`), meldet ein Drucker mit anderer Rolle `media_mismatch`; ein Auftrag für ein anderes
+ *   Papier scheitert beim Drucken mit `media_mismatch`.
  * - `png` (fertiges Bild als Notausgang) wird angenommen, aber nicht auf Inhalt und Größe geprüft.
  * - Gedruckt wird sofort beim Einreichen und der Reihe nach, außer der Test hält den Drucker
  *   an (`pause`, `hangNext`). `wait` wartet deshalb nur mit `realWait` wirklich.
@@ -38,16 +44,16 @@
  *
  * Ohne DOM und ohne Node: läuft in den Tests (jsdom) und im Entwicklungsserver.
  */
-import type { DriverStatus, HostHealth, Printer, PrintJob, PrintJobState, ServiceHealth, ServiceJob, ServiceJobState, ServicePrinter } from "@/contract/api.gen";
+import type { DriverStatus, HostHealth, Printer, PrintJob, PrintJobState, ServiceHealth, ServiceJob, ServiceJobState, ServicePaper, ServicePrinter } from "@/contract/api.gen";
 import { isUuid, newUuid } from "@/contract/ids";
 
+import { fakePaper, framePng, imageSize } from "./fake-labels";
 import type { FakeRequestData, FakeResponseData } from "./fake-server";
 
 export const FAKE_PRINT_VERSION = "0.0.0-fake";
 export const FAKE_PRINT_TOKEN = "pi-token-0123456789";
-
-/** Ein winziges PNG (1 × 1 Bildpunkt): Platzhalter für jedes „gerenderte" Etikett. */
-const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+/** Die Formate der Vorlage, die die Nachbildung rendert, wie ein Druckdienst ab 0.5.0. */
+export const FAKE_TEMPLATE_SCHEMAS: readonly number[] = [1, 2];
 
 export interface FakeServicePrinter {
   name: string;
@@ -56,6 +62,8 @@ export interface FakeServicePrinter {
   model?: string | null;
   confirms?: boolean;
   status?: Partial<DriverStatus>;
+  /** Die eingelegte Rolle (`ServicePrinter.loaded`); fehlt = unbekannt. */
+  loaded?: ServicePaper | null;
 }
 
 /** Was der Dienst am Server vom Datenbestand braucht (docs/etiketten.md, 5.8). */
@@ -85,6 +93,17 @@ export interface FakePrintOptions {
   realWait?: boolean;
   /** Dauer eines Drucks in Millisekunden mit `realWait`. Vorgabe 800. */
   printMs?: number;
+  /**
+   * Die Formate der Vorlage, die der Dienst rendert (`template_schemas`). null: ein Druckdienst vor
+   * 0.5.0, der die Angabe nicht kennt und nur Format 1 rendert (und keine Rolle meldet). Vorgabe [1, 2].
+   */
+  templateSchemas?: readonly number[] | null;
+}
+
+/** Papier eines Auftrags laut Vorlage; ohne Angabe (Format 1 der mitgelieferten Vorlagen) die 62-mm-Endlosrolle. */
+interface JobPaper {
+  id: string;
+  length: number | null;
 }
 
 interface StoredJob {
@@ -98,6 +117,8 @@ interface StoredJob {
   data: Record<string, string> | null;
   /** Hat der Bild-Treiber ein Bild geschrieben? */
   image: boolean;
+  /** Papier laut Vorlage; null bei einem fertigen Bild (`png`). */
+  paper: JobPaper | null;
 }
 
 /** Was der Dienst gedruckt hat: ein Eintrag je Druck. Steht eine Kennung zweimal hier, wurde doppelt gedruckt. */
@@ -130,17 +151,43 @@ function failure(status: number, code: string, details: Record<string, unknown> 
   return json(status, { error: { code, message: ERROR_TEXTS[code] ?? code, details } });
 }
 
-function png(): FakeResponseData {
-  const binary = atob(TINY_PNG);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return { status: 200, headers: { "content-type": "image/png", "cache-control": "no-store" }, body: bytes };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Das Papier einer Vorlage, wenn die Nachbildung sie „rendern" kann: ein Format aus `schemas`,
+ * bei Format 2 ein Papier des Katalogs. null = `render_failed`.
+ */
+function templatePaper(template: Record<string, unknown>, schemas: readonly number[]): JobPaper | null {
+  const schema = template.schema;
+  if (typeof schema !== "number" || !schemas.includes(schema)) {
+    return null;
+  }
+  const media = isRecord(template.media) ? template.media : {};
+  const id = typeof media.id === "string" ? media.id : null;
+  const length = typeof media.length_mm === "number" ? media.length_mm : null;
+  if (schema === 1) {
+    // Format 1: Ein Druckdienst vor 0.5.0 übergeht `id`; ohne Angabe gilt die 62-mm-Endlosrolle.
+    return { id: "62", length: length ?? 29 };
+  }
+  return id !== null && fakePaper(id) ? { id, length } : null;
+}
+
+/** Ein Bild in der Größe des Papiers: `reading` wie man es liest (Vorschau), sonst quer × längs (Bild-Treiber). */
+function png(paper: JobPaper | null, reading: boolean): FakeResponseData {
+  const known = fakePaper(paper?.id ?? "62");
+  const size = known ? imageSize(known, paper?.length ?? 29, reading) : { width: 696, height: 342 };
+  return { status: 200, headers: { "content-type": "image/png", "cache-control": "no-store" }, body: framePng(size.width, size.height) };
+}
+
+/** Passt eine eingelegte Rolle zu einem Papier des Katalogs? Ohne Kennung der Rolle über Art und Breite. */
+function fits(loaded: ServicePaper, paperId: string): boolean {
+  if (loaded.id !== null) {
+    return loaded.id === paperId;
+  }
+  const paper = fakePaper(paperId);
+  return paper !== undefined && paper.kind === loaded.kind && Math.abs(paper.width_mm - loaded.width_mm) <= 1;
 }
 
 /** JSON mit sortierten Schlüsseln: dieselbe Nutzlast ergibt denselben Text. */
@@ -223,6 +270,9 @@ export class FakePrintService {
   /** Zustand des Rechners in `/v1/health`. */
   host: HostHealth | null;
 
+  /** Die Formate, die der Dienst rendert; null = ein Druckdienst vor 0.5.0 (nur Format 1, ohne Angabe). */
+  templateSchemas: readonly number[] | null;
+
   private readonly now: () => Date;
   private readonly backend: FakePrintBackend | null;
   private readonly realWait: boolean;
@@ -247,6 +297,7 @@ export class FakePrintService {
     this.backend = options.backend ?? null;
     this.realWait = options.realWait ?? false;
     this.printMs = options.printMs ?? 800;
+    this.templateSchemas = options.templateSchemas === undefined ? FAKE_TEMPLATE_SCHEMAS : options.templateSchemas;
     this.piPrinters = options.printers ?? [{ name: "brother", driver: "brother_ql", model: "QL-820NWB", confirms: true }];
     this.host = options.host === undefined ? (this.backend ? null : { uptime_s: 120, temperature_c: 48.5, throttled: false, undervoltage: null, storage_errors: 0, storage_read_only: false, overlay_used_pct: 2, memory_available_mb: 300 }) : options.host;
     this.startedAt = this.now().getTime();
@@ -333,7 +384,11 @@ export class FakePrintService {
 
   // ---------------------------------------------------------------- Drucker
 
-  private printers(): ServicePrinter[] {
+  /**
+   * Die Drucker mit Zustand. `media`: das Papier, mit dem die Abfrage die eingelegte Rolle
+   * vergleicht (seit 0.5.0); passt sie nicht, meldet der Drucker `media_mismatch`.
+   */
+  private printers(media: string | null = null): ServicePrinter[] {
     const configured: FakeServicePrinter[] = this.backend
       ? this.backend.printers().map((printer) => ({
           name: printer.id,
@@ -342,16 +397,24 @@ export class FakePrintService {
           confirms: printer.server?.driver === "image" || !(printer.server?.address ?? "").startsWith("tcp://"),
         }))
       : this.piPrinters;
+    const current = this.templateSchemas !== null;
     return configured.map((printer) => {
       const driver = printer.driver ?? "brother_ql";
       const confirms = printer.confirms ?? driver === "image";
-      return {
+      let status: DriverStatus = { ...DEFAULT_STATUS, ...printer.status, ...this.statusOverrides.get(printer.name) };
+      const loaded = printer.loaded ?? null;
+      if (current && media !== null && fakePaper(media) && loaded && status.reachable && !fits(loaded, media) && !status.errors.includes("media_mismatch")) {
+        status = { ...status, ready: false, errors: [...status.errors, "media_mismatch"] };
+      }
+      const described: ServicePrinter = {
         name: printer.name,
         driver,
         model: printer.model ?? null,
         capabilities: { dpi: 300, media: { width_mm: 62, length_mm: null, printable_px: 696 }, cutter: true, colors: ["black"], status_query: true, confirms_print: confirms },
-        status: { ...DEFAULT_STATUS, ...printer.status, ...this.statusOverrides.get(printer.name) },
+        status,
       };
+      // Ein Druckdienst vor 0.5.0 kennt die eingelegte Rolle nicht.
+      return current ? { ...described, loaded } : described;
     });
   }
 
@@ -416,7 +479,9 @@ export class FakePrintService {
     }
     const printer = this.printers().find((candidate) => candidate.name === job.printer);
     const forced = this.failures.shift();
-    const failed = forced ?? (printer ? (printer.status.errors[0] ?? (printer.status.reachable ? undefined : "offline")) : "config");
+    // Vor dem Druck vergleicht der Treiber die eingelegte Rolle mit dem Papier des Auftrags.
+    const mismatch = printer?.loaded && job.paper && !fits(printer.loaded, job.paper.id) ? "media_mismatch" : undefined;
+    const failed = forced ?? (printer ? (printer.status.errors[0] ?? (printer.status.reachable ? mismatch : "offline")) : "config");
     if (failed !== undefined) {
       this.settle(id, "failed", failed);
       return;
@@ -523,10 +588,11 @@ export class FakePrintService {
     if (this.queue.length >= this.queueLimit) {
       return failure(503, "queue_full");
     }
-    if (request.png === null && request.template?.schema !== 1) {
+    const paper = request.template === null ? null : templatePaper(request.template, this.templateSchemas ?? [1]);
+    if (request.png === null && paper === null) {
       return failure(422, "render_failed");
     }
-    const job: StoredJob = { id, state: "queued", printer: printer.name, error: null, hash, data: request.data, image: false };
+    const job: StoredJob = { id, state: "queued", printer: printer.name, error: null, hash, data: request.data, image: false, paper };
     this.jobs.set(id, job);
     this.queue.push(id);
     if (this.backend) {
@@ -582,16 +648,17 @@ export class FakePrintService {
       this.writeStatuses();
       const health: ServiceHealth = {
         app: "stowly-print",
-        version: FAKE_PRINT_VERSION,
+        version: this.templateSchemas === null ? "0.4.0" : FAKE_PRINT_VERSION,
         protocol: 1,
         boot_id: this.bootId,
         uptime_s: Math.max(0, (this.now().getTime() - this.startedAt) / 1_000),
         // Am Server entfällt der Nachweis: Dort bürgt die Verbindung selbst (5.5).
         proof: nonce === null || this.backend ? null : await hmacHex(this.token, nonce),
         host: this.host,
-        printers: this.printers(),
+        printers: this.printers(query.get("media")),
       };
-      return json(200, health);
+      // Ein Druckdienst vor 0.5.0 kennt die Angabe nicht.
+      return json(200, this.templateSchemas === null ? health : { ...health, template_schemas: [...this.templateSchemas] });
     }
     if (method === "GET" && path === "/v1/printers") {
       return json(200, { printers: this.printers() });
@@ -610,10 +677,11 @@ export class FakePrintService {
       if (wanted !== null && !this.printers().some((printer) => printer.name === wanted)) {
         return failure(404, "unknown_printer");
       }
-      if (body.template.schema !== 1 || Object.values(body.data).some((value) => typeof value !== "string")) {
+      const paper = templatePaper(body.template, this.templateSchemas ?? [1]);
+      if (paper === null || Object.values(body.data).some((value) => typeof value !== "string")) {
         return failure(422, "render_failed");
       }
-      return png();
+      return png(paper, true);
     }
 
     const match = /^\/v1\/jobs\/([^/]+)(\/cancel|\/image)?$/.exec(path);
@@ -626,7 +694,7 @@ export class FakePrintService {
     if (suffix === "/image" && method === "GET") {
       const job = this.jobs.get(id);
       // Nur beim Bild-Treiber, und erst, wenn gedruckt ist.
-      return job?.image ? png() : failure(404, "not_found");
+      return job?.image ? png(job.paper, false) : failure(404, "not_found");
     }
     if (suffix === "" && method === "GET") {
       if (!waitValid) {

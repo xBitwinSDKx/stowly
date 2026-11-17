@@ -68,6 +68,7 @@ describe("App", () => {
       [ROUTES.warnings]: "Warnungen",
       [ROUTES.history]: "Lösch-Historie",
       [ROUTES.printers]: "Drucker",
+      [ROUTES.labels]: "Etiketten gestalten",
       [ROUTES.settings]: "Einstellungen",
       [ROUTES.sync]: "Sync-Status",
       [ROUTES.scan]: "Scannen",

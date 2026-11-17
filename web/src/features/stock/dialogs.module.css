@@ -215,3 +215,106 @@
   flex: none;
   color: var(--color-success);
 }
+
+/* „Online abfragen" im Kopf des Produkt-Dialogs (seit 0.5.0) */
+.lookupRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
+
+.lookupBarcode {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* Gegenüberstellung mit Open Food Facts: je Feld „jetzt" und „Open Food Facts" */
+.compare {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-sunken);
+}
+
+.compareRows {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.compareRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-1) var(--space-2);
+}
+
+.compareRow + .compareRow {
+  padding-top: var(--space-2);
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.compareSame {
+  color: var(--color-text-muted);
+}
+
+.compareCheck {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--touch-target);
+  min-height: 1.5rem;
+  color: var(--color-success);
+}
+
+.compareLabel {
+  align-self: center;
+  font-weight: var(--weight-medium);
+}
+
+/* Die Werte unter der Beschriftung, nebeneinander; am Handy untereinander. */
+.compareValues {
+  grid-column: 2;
+  display: grid;
+  gap: var(--space-1) var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  overflow-wrap: anywhere;
+}
+
+.compareValue {
+  display: grid;
+  gap: 2px;
+}
+
+.compareSource {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.compareEmpty {
+  color: var(--color-text-faint);
+  font-style: italic;
+}
+
+.compareImage,
+.pendingImage img {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  object-fit: contain;
+}
+
+.compareActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.pendingImage {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}

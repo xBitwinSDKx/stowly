@@ -15,8 +15,9 @@ import time
 
 import pytest
 from PIL import Image
-from print_support import REFERENCE_DIR, new_id, package_request
+from print_support import PACKAGE, REFERENCE_DIR, format2, new_id, package_request
 
+from stowly_print import media as catalog
 from stowly_print.drivers.brother_ql import (
     STATUS_COMPLETED,
     STATUS_ERROR,
@@ -31,9 +32,10 @@ from stowly_print.drivers.brother_ql import (
     parse_address,
     parse_status,
 )
-from stowly_print.model import JobState, PrintOutcome
-from stowly_print.render import Fonts
+from stowly_print.model import JobState, Paper, PrintOutcome
+from stowly_print.render import Fonts, for_print, render
 from stowly_print.service import PrinterEntry, PrintService, StaticPrinters
+from stowly_print.templates import load_builtin
 
 needs_library = pytest.mark.skipif(
     importlib.util.find_spec("brother_ql") is None,
@@ -42,7 +44,9 @@ needs_library = pytest.mark.skipif(
 
 USB = "usb://04f9:209b"
 INVALIDATE = b"\x00" * 400
+INVALIDATE_QL570 = b"\x00" * 200  # die älteren Modelle leeren den Puffer mit 200 Nullen
 STATUS_REQUEST = b"\x1b\x69\x53"
+QL570 = 0x32  # Modellcode in der Statusmeldung
 
 
 def reference_label() -> Image.Image:
@@ -109,7 +113,9 @@ class FakeUsb:
         self.closed = True
 
 
-def usb_driver(device: FakeUsb | Exception, **options) -> BrotherQLDriver:
+def usb_driver(
+    device: FakeUsb | Exception, *, model: str = "QL-800", media: str = "62", **options
+) -> BrotherQLDriver:
     """Ein Treiber am nachgebildeten USB mit kurzen Fristen."""
 
     def opener(address: Address):
@@ -121,7 +127,13 @@ def usb_driver(device: FakeUsb | Exception, **options) -> BrotherQLDriver:
     options.setdefault("status_timeout", 0.3)
     options.setdefault("print_timeout", 0.6)
     options.setdefault("settle_timeout", 0.2)
-    return BrotherQLDriver(model="QL-800", address=USB, media="62", opener=opener, **options)
+    return BrotherQLDriver(model=model, address=USB, media=media, opener=opener, **options)
+
+
+def label_for(paper_id: str, length_mm: float | None = None) -> Image.Image:
+    """Das Packungs-Etikett im Format 2 für ein Papier, in Druckrichtung (quer × längs)."""
+    template = format2(paper_id, length_mm)
+    return for_print(render(template, PACKAGE, fonts=Fonts.builtin()), template)
 
 
 # --- Adresse und Modell ------------------------------------------------------------------
@@ -211,8 +223,13 @@ def test_capabilities_do_not_touch_the_device():
         ("QL-800", None, "62", "Adresse"),
         ("QL-800", USB, "63", "Rolle"),
         ("QL-800", USB, "", "Rolle"),
-        ("QL-800", USB, "62x29", "Endlosrolle"),  # gestanzte Etiketten: nicht in dieser Stufe
-        ("QL-800", USB, "62red", "Endlosrolle"),  # zweifarbige Rolle
+        # Seit 0.5.0 darf die Vorgabe jedes Papier des Katalogs sein, auch gestanzt; was dort
+        # nicht steht, ist config.
+        ("QL-800", USB, "62red", "Katalog"),  # zweifarbige Rolle
+        ("QL-800", USB, "12", "Katalog"),  # zu schmal für einen QR-Code
+        ("QL-800", USB, "d24", "Katalog"),  # rund
+        ("QL-800", USB, "102", "Katalog"),  # nur für die breiten Modelle
+        ("QL-550", USB, "62x29", "QL-550 kann 62 × 29 mm gestanzt nicht"),  # zu kurz für das Modell
     ],
 )
 def test_unusable_settings_report_config_and_keep_the_printer_listed(model, address, media, reason):
@@ -310,13 +327,15 @@ def split_stream(data: bytes) -> dict:
     return parts
 
 
-def image_from_rows(rows: list[bytes]) -> Image.Image:
-    """Macht aus den Rasterzeilen wieder das Etikett: 720 Punkte je Zeile, gespiegelt, 12 Punkte Rand."""
+def image_from_rows(rows: list[bytes], *, width: int = 696, offset_r: int = 12) -> Image.Image:
+    """Macht aus den Rasterzeilen wieder das Etikett: 720 Punkte je Zeile, gespiegelt, rechts
+    ``offset_r`` Punkte Rand (so legt die Bibliothek das Bild auf den Druckkopf), sonst nichts."""
     full = Image.frombytes("1", (720, len(rows)), b"".join(rows)).transpose(Image.FLIP_LEFT_RIGHT)
-    assert full.crop((0, 0, 12, len(rows))).getbbox() is None
-    assert full.crop((708, 0, 720, len(rows))).getbbox() is None
+    left = 720 - width - offset_r
+    assert full.crop((0, 0, left, len(rows))).getbbox() is None
+    assert full.crop((left + width, 0, 720, len(rows))).getbbox() is None
     # Im Datenstrom heißt ein gesetztes Bit „schwarz", im Bild heißt 0 „schwarz".
-    return full.crop((12, 0, 708, len(rows))).point(lambda value: 0 if value else 255, mode="1")
+    return full.crop((left, 0, left + width, len(rows))).point(lambda value: 0 if value else 255, mode="1")
 
 
 @needs_library
@@ -613,10 +632,10 @@ def test_print_refuses_images_that_do_not_fit_the_roll():
 # --- Drucken über TCP --------------------------------------------------------------------
 
 
-def tcp_driver(port: int, **options) -> BrotherQLDriver:
+def tcp_driver(port: int, *, model: str = "QL-820NWB", **options) -> BrotherQLDriver:
     options.setdefault("connect_timeout", 3.0)
     options.setdefault("linger", 1.0)
-    return BrotherQLDriver(model="QL-820NWB", address=f"tcp://127.0.0.1:{port}", **options)
+    return BrotherQLDriver(model=model, address=f"tcp://127.0.0.1:{port}", **options)
 
 
 def serve_once(listener: socket.socket, handle) -> threading.Thread:
@@ -747,4 +766,321 @@ def test_jobs_through_the_brother_driver_end_as_printed_failed_or_unknown():
     ]
     info = service.printers()[0]
     assert (info.driver, info.model, info.capabilities.confirms_print) == ("brother_ql", "QL-800", True)
+    service.close()
+
+
+# --- Papier je Auftrag (seit 0.5.0) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reply", "loaded"),
+    [
+        (READY, Paper("62", "endless", 62.0, None)),
+        (frame(media_type=0x4A, width=29), Paper("29", "endless", 29.0, None)),
+        (frame(media_type=0x0B, length=29), Paper("62x29", "die_cut", 62.0, 29.0)),
+        (frame(media_type=0x4B, width=29, length=90), Paper("29x90", "die_cut", 29.0, 90.0)),
+        # Brother nennt sie 39 × 90, gemessen ist sie 38 mm breit.
+        (frame(media_type=0x0B, width=38, length=90), Paper("39x90", "die_cut", 38.0, 90.0)),
+        (frame(width=12), Paper(None, "endless", 12.0, None)),  # nicht im Katalog
+        (frame(media_type=0x0B, length=0), Paper(None, "die_cut", 62.0, None)),  # Länge nicht gemeldet
+        (frame(media_type=0x0B, length=50), Paper(None, "die_cut", 62.0, 50.0)),
+        (NO_MEDIA, None),
+        (frame(media_type=0x0C), None),  # eine Art, die der Treiber nicht kennt
+    ],
+)
+def test_status_bytes_name_the_loaded_roll(reply, loaded):
+    assert parse_status(reply).paper == loaded
+
+
+@needs_library
+@pytest.mark.parametrize(
+    ("reply", "loaded"),
+    [
+        (READY, "62"),
+        (frame(media_type=0x0B, width=29, length=90, model=QL570), "29x90"),
+        (NO_MEDIA, None),
+    ],
+)
+def test_status_over_usb_remembers_the_loaded_roll(reply, loaded):
+    driver = usb_driver(FakeUsb(reply), model="QL-570")
+    assert driver.loaded is None  # noch nicht gefragt
+    driver.status()
+    assert (driver.loaded and driver.loaded.id) == loaded
+
+
+@needs_library
+def test_loaded_roll_is_forgotten_when_the_printer_is_gone():
+    devices: list = [FakeUsb(READY), Unreachable("nicht am USB")]
+
+    def opener(_address: Address):
+        device = devices.pop(0)
+        if isinstance(device, Exception):
+            raise device
+        return device
+
+    driver = BrotherQLDriver(model="QL-570", address=USB, opener=opener, status_timeout=0.3)
+    driver.status()
+    assert driver.loaded == Paper("62", "endless", 62.0, None)
+    assert driver.status().errors == ["offline"]
+    assert driver.loaded is None
+
+
+@needs_library
+@pytest.mark.parametrize(
+    ("reply", "paper", "errors"),
+    [
+        (READY, "62", []),
+        (READY, "29x90", ["media_mismatch"]),
+        (frame(media_type=0x0B, width=29, length=90), "29x90", []),
+        (frame(media_type=0x0B, width=29, length=90), "29", ["media_mismatch"]),
+        (frame(media_type=0x0B, width=29, length=90), "29x42", ["media_mismatch"]),
+        (frame(width=29), "29", []),
+        (frame(media_type=0x0B, length=0), "62x29", ["media_mismatch"]),
+        (NO_MEDIA, "29", ["no_media"]),
+    ],
+)
+def test_status_for_a_paper_compares_the_loaded_roll_with_it(reply, paper, errors):
+    device = FakeUsb(reply)
+    driver = usb_driver(device, model="QL-570")
+    status = driver.for_paper(catalog.paper(paper)).status()
+    assert (status.reachable, status.ready, status.errors) == (True, not errors, errors)
+    assert device.written == [INVALIDATE_QL570 + STATUS_REQUEST]
+
+
+@needs_library
+def test_one_status_query_answers_for_every_paper():
+    device = FakeUsb(frame(media_type=0x0B, width=29, length=90, model=QL570))
+    driver = usb_driver(device, model="QL-570")
+    reading = driver.probe()
+    assert device.written == [INVALIDATE_QL570 + STATUS_REQUEST]
+    assert reading.loaded == Paper("29x90", "die_cut", 29.0, 90.0)
+    assert reading.status.errors == ["media_mismatch"]  # verglichen mit der Konfiguration, 62 mm endlos
+    assert reading.for_paper(None) == reading.status
+    assert reading.for_paper(catalog.paper("29x90")).errors == []
+    assert reading.for_paper(catalog.paper("29x90")).ready is True
+    assert reading.for_paper(catalog.paper("62x29")).errors == ["media_mismatch"]
+    assert len(device.written) == 1  # gefragt wurde das Gerät dafür nur einmal
+
+    # Ohne Gerät, mit unbrauchbaren Angaben oder während eines Drucks gilt die Antwort für jedes Papier.
+    for broken in (usb_driver(Unreachable("nicht am USB")), BrotherQLDriver(model="QL-9999", address=USB)):
+        reading = broken.probe()
+        assert reading.for_paper(catalog.paper("29x90")) == reading.status
+        assert reading.loaded is None
+
+
+@needs_library
+def test_the_service_asks_the_device_once_for_all_papers():
+    opened: list[Address] = []
+
+    def opener(address: Address) -> FakeUsb:
+        opened.append(address)
+        return FakeUsb(frame(model=QL570))
+
+    driver = BrotherQLDriver(model="QL-570", address=USB, opener=opener, status_timeout=0.3)
+    service = PrintService(
+        StaticPrinters([PrinterEntry("keller", "brother_ql", "QL-570", driver)]),
+        fonts=Fonts.builtin(),
+        status_ttl_s=60,
+    )
+    service.start()
+    for paper in (None, "62", "29x90", "62x29", "29", "unbekannt"):
+        info = service.printers(paper=paper)[0]
+        assert info.loaded == Paper("62", "endless", 62.0, None)
+        assert info.status.errors == ([] if paper in (None, "62", "unbekannt") else ["media_mismatch"])
+    assert len(opened) == 1
+    service.close()
+
+
+@needs_library
+def test_capabilities_name_the_paper_of_the_configuration_or_of_the_job():
+    driver = BrotherQLDriver(model="QL-570", address=USB, media="62x29")
+    media = driver.capabilities().media
+    assert (media.id, media.kind, media.width_mm, media.length_mm) == ("62x29", "die_cut", 62.0, 29.0)
+    assert (media.printable_px, media.printable_length_px) == (696, 271)
+    endless = BrotherQLDriver(model="QL-570", address=USB).capabilities().media
+    assert (endless.id, endless.kind, endless.printable_px, endless.printable_length_px) == (
+        "62",
+        "endless",
+        696,
+        None,
+    )
+    view = driver.for_paper(catalog.paper("29x90"))
+    assert (view.capabilities().media.id, view.capabilities().media.printable_px) == ("29x90", 306)
+    # Die mitgelieferte Vorlage (ohne Papier) wird für die Vorgabe der Konfiguration gerendert.
+    image = render(load_builtin("package"), PACKAGE, driver.capabilities(), fonts=Fonts.builtin())
+    assert image.size == (696, 271)
+
+
+@needs_library
+def test_print_on_the_paper_of_the_job_after_checking_the_loaded_roll():
+    paper = catalog.paper("29x90")
+    label = label_for("29x90")
+    assert label.size == (306, 991)
+
+    # Eine andere Rolle: Es geht nur die Statusabfrage hinaus, kein Byte des Etiketts.
+    device = FakeUsb(frame(model=QL570))
+    driver = usb_driver(device, model="QL-570")
+    view = driver.for_paper(paper)
+    assert view.print(label) == PrintOutcome.FAILED
+    assert (view.last_error, view.last_message) == (
+        "media_mismatch",
+        "Eingelegt: 62 mm endlos; das Etikett braucht 29 × 90 mm gestanzt.",
+    )
+    assert device.written == [INVALIDATE_QL570 + STATUS_REQUEST]
+    assert driver.loaded == Paper("62", "endless", 62.0, None)
+
+    # Die passende Rolle: gedruckt, mit dem Datenstrom für 29 × 90 mm.
+    rolled = frame(media_type=0x0B, width=29, length=90, model=QL570)
+    device = FakeUsb(rolled, rolled + PRINTING + COMPLETED + WAITING)
+    driver = usb_driver(device, model="QL-570")
+    view = driver.for_paper(paper)
+    assert view.print(label) == PrintOutcome.PRINTED
+    assert (driver.last_error, driver.last_message) == (None, None)
+    assert device.written == [INVALIDATE_QL570 + STATUS_REQUEST, view.raster(label)]
+    assert split_stream(device.written[1])["media"][1:4] == bytes([0x0B, 29, 90])
+
+    # Meldet der Drucker bei gestanzten Etiketten keine Länge, passt die Rolle zu keinem Papier.
+    device = FakeUsb(frame(media_type=0x0B, length=0, model=QL570))
+    view = usb_driver(device, model="QL-570").for_paper(catalog.paper("62x29"))
+    assert view.print(label_for("62x29")) == PrintOutcome.FAILED
+    assert view.last_message == "Eingelegt: 62 mm gestanzt; das Etikett braucht 62 × 29 mm gestanzt."
+    assert len(device.written) == 1
+
+
+@needs_library
+def test_print_refuses_an_image_that_does_not_fit_the_paper_of_the_job():
+    device = FakeUsb(frame(media_type=0x0B, length=29))
+    view = usb_driver(device).for_paper(catalog.paper("62x29"))
+    for image in (
+        Image.new("1", (696, 342), 1),  # gestanzt: genau die druckbare Länge, 271 Punkte
+        Image.new("1", (306, 271), 1),  # zu schmal
+        label_for("29", 62),  # ein anderes Papier
+    ):
+        assert view.print(image) == PrintOutcome.FAILED
+        assert view.last_error == "config"
+    assert device.written == []
+
+
+@needs_library
+def test_model_that_cannot_print_the_paper_fails_without_touching_the_device():
+    opened: list = []
+    driver = BrotherQLDriver(model="QL-550", address=USB, opener=lambda address: opened.append(address))
+    assert driver.problem is None  # die Vorgabe (62 mm endlos) kann er
+    view = driver.for_paper(catalog.paper("62x29"))  # 271 Punkte lang, der QL-550 druckt ab 295
+    assert view.print(label_for("62x29")) == PrintOutcome.FAILED
+    assert (driver.last_error, driver.last_message) == (
+        "media_mismatch",
+        "Der QL-550 kann 62 × 29 mm gestanzt nicht drucken.",
+    )
+    assert opened == []
+    # Sein Zustand für dieses Papier sagt es auch, selbst mit der richtigen Rolle.
+    rolled = BrotherQLDriver(
+        model="QL-550", address=USB, opener=lambda _address: FakeUsb(frame(media_type=0x0B, length=29))
+    )
+    assert rolled.for_paper(catalog.paper("62x29")).status().errors == ["media_mismatch"]
+
+
+@needs_library
+def test_status_over_tcp_knows_which_papers_the_model_cannot_print(listener):
+    thread = serve_once(listener, lambda connection: connection.recv(1))
+    driver = tcp_driver(listener.getsockname()[1], model="QL-1060N")  # druckt erst ab 295 Punkten
+    status = driver.for_paper(catalog.paper("62x29")).status()
+    assert (status.reachable, status.ready, status.media_detected, status.errors) == (
+        True,
+        False,
+        None,
+        ["media_mismatch"],
+    )
+    assert driver.loaded is None  # über das Netz gibt es keine Rolle
+    thread.join(timeout=5)
+
+
+@needs_library
+@pytest.mark.parametrize("model", ["QL-570", "QL-800"])
+@pytest.mark.parametrize(
+    ("paper_id", "length_mm", "size", "media", "margin", "offset_r"),
+    [
+        ("62x29", None, (696, 271), (0x0B, 62, 29), 0, 12),  # gestanzt, quer
+        ("29", 62, (306, 732), (0x0A, 29, 0), 35, 6),  # 29 mm endlos, gedreht
+    ],
+)
+def test_raster_stream_for_other_papers_matches_the_library(
+    model, paper_id, length_mm, size, media, margin, offset_r
+):
+    from brother_ql.conversion import convert
+    from brother_ql.raster import BrotherQLRaster
+
+    label = label_for(paper_id, length_mm)
+    assert label.size == size
+    data = BrotherQLDriver(model=model, address=USB).for_paper(catalog.paper(paper_id)).raster(label)
+    # Genau das, was die Bibliothek selbst aus dem Bild macht (ihre Vorgaben: Schnitt, ohne
+    # Komprimierung, ohne Rot, nicht gedreht).
+    assert data == bytes(convert(BrotherQLRaster(model), [label], paper_id, cut=True))
+
+    parts = split_stream(data)
+    assert tuple(parts["media"][1:4]) == media
+    assert struct.unpack("<L", parts["media"][4:8])[0] == size[1]
+    assert parts["margin"] == margin
+    assert len(parts["rows"]) == size[1]
+    assert {len(row) for row in parts["rows"]} == {90}
+    # Aus den Rasterzeilen entsteht wieder genau das Etikett, am rechten Rand des Druckkopfs.
+    assert image_from_rows(parts["rows"], width=size[0], offset_r=offset_r).tobytes() == label.tobytes()
+
+
+@needs_library
+def test_jobs_print_on_the_paper_of_their_template_through_the_brother_driver():
+    # Was das Gerät gerade meldet: die eingelegte Rolle, und nach dem Etikett „gedruckt".
+    answers = {"roll": frame(model=QL570)}
+    written: list[bytes] = []
+
+    class Device(FakeUsb):
+        def write(self, data: bytes) -> None:
+            super().write(data)
+            written.append(bytes(data))
+
+    def opener(_address: Address) -> FakeUsb:
+        loaded = answers["roll"]
+        return Device(loaded, loaded + PRINTING + COMPLETED + WAITING)
+
+    driver = BrotherQLDriver(
+        model="QL-570", address=USB, opener=opener, status_timeout=0.3, print_timeout=0.5, settle_timeout=0.1
+    )
+    service = PrintService(
+        StaticPrinters([PrinterEntry("keller", "brother_ql", "QL-570", driver)]), fonts=Fonts.builtin()
+    )
+    service.start()
+
+    def submit(template: dict) -> tuple[str, str | None, bytes | None]:
+        """Reicht ein Etikett ein; liefert Zustand, Satz zum Fehler und die Medienangabe im Datenstrom."""
+        written.clear()
+        job_id = new_id()
+        service.submit(job_id, package_request(template=template))
+        job = service.wait(job_id, 5)
+        time.sleep(0.3)  # der Dienst fragt nach jedem Auftrag den Zustand ab
+        streams = [data for data in written if b"\x1b\x69\x7a" in data]
+        media = bytes(split_stream(streams[0])["media"][1:4]) if streams else None
+        return job.state.value, None if job.error is None else job.error.message, media
+
+    # 29 × 90 eingelegt: Format 2 für 29 × 90 druckt, gedreht und gestanzt.
+    answers["roll"] = frame(media_type=0x0B, width=29, length=90, model=QL570)
+    assert submit(format2("29x90")) == ("printed", None, bytes([0x0B, 29, 90]))
+    info = service.printers(paper="29x90")[0]
+    assert info.loaded == Paper("29x90", "die_cut", 29.0, 90.0)
+    assert info.status.errors == []
+    # Ohne Angabe gilt die Vorgabe der Konfiguration (62 mm endlos): Die Rolle passt nicht dazu.
+    assert service.printers(fresh=True)[0].status.errors == ["media_mismatch"]
+
+    # Dieselbe Rolle, die mitgelieferte Vorlage: Sie braucht die Vorgabe, 62 mm endlos.
+    state, message, media = submit(load_builtin("package"))
+    assert (state, media) == ("failed", None)
+    assert message == "Eingelegt: 29 × 90 mm gestanzt; das Etikett braucht 62 mm endlos."
+
+    # 62 mm eingelegt: die mitgelieferte Vorlage druckt, ein Etikett für 29 × 90 nicht.
+    answers["roll"] = frame(model=QL570)
+    assert submit(load_builtin("package")) == ("printed", None, bytes([0x0A, 62, 0]))
+    assert submit(format2("29x90")) == (
+        "failed",
+        "Eingelegt: 62 mm endlos; das Etikett braucht 29 × 90 mm gestanzt.",
+        None,
+    )
     service.close()

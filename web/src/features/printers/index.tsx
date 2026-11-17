@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router";
 
-import { useCore, type PiPairing, type Printer } from "@/contract";
+import { ROUTES, useCore, type PiPairing, type Printer } from "@/contract";
 import { Page, PageLoading } from "@/app/Page";
-import { ConfirmDialog, EmptyState, errorText, List, ListRow, Notice, Section, Select, useNow, ZoneLabel } from "@/ui";
+import { ConfirmDialog, EmptyState, errorText, List, ListLink, ListRow, Notice, Section, Select, useNow, ZoneLabel } from "@/ui";
 import { Button, Dialog, useToast } from "@/ui/base";
-import { CpuIcon, PlusIcon, PrinterIcon, WarningIcon } from "@/ui/icons";
+import { CpuIcon, LabelsIcon, PlusIcon, PrinterIcon, WarningIcon } from "@/ui/icons";
 
 import { useLabelActions } from "./labelActions";
 import { Labels, pendingFor } from "./Labels";
 import { certificateWarningTitle, describeHealth, describeRemoval, piCertificateWarning, printerDuties, printerForZone } from "./model";
 import { PairPi } from "./PairPi";
+import { useHouseholdPaper } from "./paper";
 import { usePairedPrinters } from "./usePairedPrinters";
 import { PrinterCard, type ProbeState } from "./PrinterCard";
 import { PrinterDialog } from "./PrinterDialog";
@@ -108,6 +109,7 @@ export function PrintersPage() {
   const actions = useLabelActions();
   const now = useNow();
   const paired = usePairedPrinters();
+  const paper = useHouseholdPaper();
   const [dialog, setDialog] = useState<DialogState>(null);
   const [serial, setSerial] = useState(0);
   const [probes, setProbes] = useState<ReadonlyMap<string, ProbeEntry>>(new Map());
@@ -279,6 +281,9 @@ export function PrintersPage() {
                   key={printer.id}
                   printer={printer}
                   health={describeHealth(printing.status.get(printer.id), printer, now)}
+                  seen={printing.status.get(printer.id)}
+                  paper={paper}
+                  paired={paired.paired.find((entry) => entry.printer_id === printer.id)}
                   now={now}
                   isDefault={duties.isDefault}
                   zones={duties.zones}
@@ -291,6 +296,7 @@ export function PrintersPage() {
                   onEdit={() => open({ kind: "edit", printer_id: printer.id })}
                   onDelete={() => open({ kind: "delete", printer_id: printer.id })}
                   onHandoff={(target) => void actions.handoff(target)}
+                  onRepair={printer.connection === "direct" ? () => open({ kind: "pair", printer_id: printer.id }) : undefined}
                 />
               );
             })}
@@ -355,7 +361,25 @@ export function PrintersPage() {
         </>
       )}
 
-      {printers.length > 0 || printing.jobs.length > 0 ? <Labels printing={printing} actions={actions} now={now} onAssign={() => scrollTo("zuordnung")} /> : null}
+      {printers.length > 0 || printing.jobs.length > 0 ? (
+        <Labels
+          printing={printing}
+          actions={actions}
+          now={now}
+          onAssign={() => scrollTo("zuordnung")}
+          design={
+            <List>
+              <ListLink
+                to={ROUTES.labels}
+                icon={<LabelsIcon size={20} />}
+                label="Etiketten gestalten"
+                hint="Papier für alle Drucker, Inhalt und Größe der Packungs- und Zonen-Etiketten."
+                value={paper?.name ? `Papier: ${paper.name}` : undefined}
+              />
+            </List>
+          }
+        />
+      ) : null}
 
       {dialog?.kind === "create" ? <PrinterDialog key={serial} onClose={close} onCreated={(created) => setFresh(created.id)} /> : null}
       {editing ? <PrinterDialog key={serial} printer={editing} onClose={close} /> : null}

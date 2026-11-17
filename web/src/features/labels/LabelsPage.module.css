@@ -1,0 +1,158 @@
+/*
+ * Etiketten gestalten: am Handy und Tablet die Vorschau über dem Formular, auf breiten Bildschirmen
+ * daneben, sobald neben der Seitenleiste auch das Formular genug Platz hat. Die Vorschau bleibt dann
+ * beim Blättern im Formular sichtbar (sticky), damit jede Änderung gleich zu sehen ist.
+ */
+.layout {
+  display: grid;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.previewArea {
+  min-width: 0;
+}
+
+.preview {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.form {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+@media (min-width: 72rem) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 26rem);
+    grid-template-areas: "form preview";
+  }
+
+  .form {
+    grid-area: form;
+  }
+
+  .previewArea {
+    grid-area: preview;
+    position: sticky;
+    top: calc(var(--header-height) + var(--space-4));
+  }
+}
+
+/* Das Etikett liegt wie auf der Rolle: weißer Grund in jedem Thema, 1 Bit, scharfe Kanten. */
+.frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 6rem;
+  aspect-ratio: 696 / 342;
+  margin: 0;
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--qr-bg);
+  color: var(--qr-fg);
+  overflow: hidden;
+}
+
+.image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+/* Eine neuere Vorschau ist unterwegs. */
+.stale {
+  opacity: 0.6;
+}
+
+.notes {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.notes li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.notes svg {
+  flex: none;
+  margin-top: 0.15em;
+}
+
+.printRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.small {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.length {
+  max-width: 16rem;
+}
+
+.qr {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Felder: an und aus, darunter Größe, Zeilen und Pfeile. Am Handy brechen die Bedienelemente um. */
+.fields {
+  display: grid;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+.field + .field {
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.fieldOff .fieldSwitch {
+  color: var(--color-text-muted);
+}
+
+.fieldControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.lines {
+  width: auto;
+  min-width: 8rem;
+}
+
+.arrows {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

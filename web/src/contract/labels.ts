@@ -45,26 +45,34 @@ export function labelSubtitle(product: Pick<Product, "brand" | "quantity"> | und
   return [product.quantity.trim(), product.brand.trim()].filter((part) => part !== "").join(" · ");
 }
 
-export interface PackageLabelOptions {
-  /** Zonenname mitdrucken. Die App setzt das nur, wenn es mehr als eine Zone gibt. */
-  show_zone: boolean;
+/** "25.03.2027" -> "25.03.27" (kurzes Datum auf dem Etikett); leer bleibt leer. */
+function shortDate(date: string): string {
+  return date.slice(0, 6) + date.slice(8);
 }
 
-/** Daten für das Etikett einer Packung. */
+/**
+ * Daten für das Etikett einer Packung. Seit 0.5.0 stehen alle Felder immer drin, auch der Name
+ * der Zone: Was gedruckt wird, entscheidet die Vorlage aus der Gestaltung des Haushalts.
+ */
 export function packageLabelData(
   pkg: Pick<Package, "id" | "best_before" | "created_at">,
   product: Pick<Product, "name" | "barcodes" | "brand" | "quantity"> | undefined,
   zone: Pick<Zone, "name"> | undefined,
-  options: PackageLabelOptions,
 ): PackageLabelData {
+  const bestBefore = pkg.best_before === null ? "" : formatDate(pkg.best_before);
+  const stored = formatDate(toLocalDate(new Date(pkg.created_at)));
   return {
     qr: packageQr(pkg.id),
     id: pkg.id,
     title: productTitle(product),
     subtitle: labelSubtitle(product),
-    best_before: pkg.best_before === null ? "" : formatDate(pkg.best_before),
-    stored: formatDate(toLocalDate(new Date(pkg.created_at))),
-    zone: options.show_zone && zone ? zone.name : "",
+    best_before: bestBefore,
+    stored,
+    zone: zone?.name ?? "",
+    brand: product?.brand.trim() ?? "",
+    quantity: product?.quantity.trim() ?? "",
+    best_before_short: shortDate(bestBefore),
+    stored_short: shortDate(stored),
   };
 }
 

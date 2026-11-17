@@ -1,4 +1,4 @@
-"""Bausteine der Tests: ein Treiber, der zählt und sich steuern lässt, und Beispielaufträge."""
+"""Bausteine der Tests: Treiber, die zählen und sich steuern lassen, und Beispielaufträge."""
 
 import threading
 import time
@@ -9,7 +9,9 @@ from typing import Any
 
 from PIL import Image
 
-from stowly_print.model import Capabilities, DriverStatus, JobRequest, Media, PrintOutcome
+from stowly_print import media as catalog
+from stowly_print.drivers.base import Reading, catalog_media, catalog_paper, fits, mismatch_message
+from stowly_print.model import Capabilities, DriverStatus, JobRequest, Media, Paper, PrintOutcome
 from stowly_print.render import Fonts
 from stowly_print.service import JobEvent, PrinterEntry, PrintService, StaticPrinters
 from stowly_print.store import JobStore
@@ -33,11 +35,33 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
-def package_request(title: str = "Basmati Reis", **more: Any) -> JobRequest:
+def package_request(title: str = "Basmati Reis", template: dict | None = None, **more: Any) -> JobRequest:
     """Ein Auftrag für ein Packungs-Etikett, geprüft wie ein empfangener."""
     return JobRequest.from_dict(
-        {"template": load_builtin("package"), "data": {**PACKAGE, "title": title}, **more}
+        {"template": template or load_builtin("package"), "data": {**PACKAGE, "title": title}, **more}
     )
+
+
+def format2(paper_id: str, length_mm: float | None = None, kind: str = "package") -> dict[str, Any]:
+    """Die mitgelieferte Vorlage im Format 2 auf einem Papier des Katalogs (docs/etiketten.md, 3.4).
+
+    Zeichenfläche und Elemente bleiben die der Vorlage; der Renderer skaliert sie auf die Fläche des
+    Papiers. ``length_mm`` ist die Länge auf einer Endlosrolle; die Drehung ergibt sich aus dem Papier.
+    """
+    paper = catalog.paper(paper_id)
+    assert paper is not None, paper_id
+    length = paper.length_mm if paper.kind == catalog.DIE_CUT else length_mm
+    assert length is not None, "Auf einer Endlosrolle braucht die Vorlage eine Länge."
+    template = load_builtin(kind)
+    template.update(
+        {
+            "schema": 2,
+            "name": f"{kind}-{paper_id}",
+            "media": {"id": paper.id, "kind": paper.kind, "width_mm": paper.width_mm, "length_mm": length},
+            "rotate": 90 if catalog.rotated(paper, length) else 0,
+        }
+    )
+    return template
 
 
 def wait_until(condition: Callable[[], bool], timeout: float = 5.0) -> None:
@@ -144,3 +168,113 @@ def make_service(
     if start:
         service.start()
     return service, recorder
+
+
+def roll(paper_id: str | None, *, kind: str = catalog.ENDLESS, width_mm: float = 62.0) -> Paper:
+    """Eine eingelegte Rolle, wie sie ein Drucker meldet: aus dem Katalog oder (``None``) unbekannt."""
+    if paper_id is None:
+        return Paper(id=None, kind=kind, width_mm=width_mm, length_mm=None)
+    paper = catalog.paper(paper_id)
+    assert paper is not None, paper_id
+    return catalog_paper(paper)
+
+
+class RollDriver(FakeDriver):
+    """Ein Treiber mit eingelegter Rolle, wie der Brother-Treiber über USB, aber ohne Gerät.
+
+    ``loaded`` ist die Rolle; ``media`` das Papier der Konfiguration. ``for_paper`` liefert den
+    Treiber für ein Papier: Er vergleicht vor dem Druck die Rolle damit und scheitert sonst mit
+    ``media_mismatch`` und einem Satz. ``papers`` merkt sich je Druck das Papier.
+
+    ``probe`` ist eine Abfrage des Geräts (``probes`` zählt sie); der Vergleich mit einem Papier
+    kommt aus derselben Abfrage, ``compared`` merkt sich die Papiere.
+    """
+
+    def __init__(
+        self, loaded: Paper | None, *, media: str = catalog.DEFAULT_PAPER_ID, **options: Any
+    ) -> None:
+        default = catalog.paper(media)
+        assert default is not None, media
+        super().__init__(printable_px=default.printable_width_px, **options)
+        self._capabilities = Capabilities(
+            dpi=300,
+            media=catalog_media(default),
+            cutter=True,
+            colors=["black"],
+            status_query=True,
+            confirms_print=True,
+        )
+        self.default = default
+        self.loaded = loaded
+        self.last_message: str | None = None
+        self.papers: list[str] = []
+        self.compared: list[str] = []  # mit welchem Papier der Zustand verglichen wurde
+        self.probes = 0
+
+    def probe(self) -> Reading:
+        self.probes += 1
+        loaded = self.loaded
+        return Reading(
+            self.compare(self.default, loaded),
+            loaded=loaded,
+            compare=lambda paper: self.compare(paper, loaded),
+        )
+
+    def status(self) -> DriverStatus:
+        return self.probe().status
+
+    def status_for(self, paper: catalog.PaperSpec) -> DriverStatus:
+        return self.probe().for_paper(paper)
+
+    def compare(self, paper: catalog.PaperSpec, loaded: Paper | None) -> DriverStatus:
+        self.compared.append(paper.id)
+        if fits(loaded, paper):
+            return READY
+        return DriverStatus(reachable=True, ready=False, media_detected=True, errors=["media_mismatch"])
+
+    def print(self, image: Image.Image, cut: bool = True) -> PrintOutcome:
+        return self.print_for(image, cut, self.default)
+
+    def print_for(self, image: Image.Image, cut: bool, paper: catalog.PaperSpec) -> PrintOutcome:
+        self.last_message = None
+        if not fits(self.loaded, paper):
+            self.calls += 1
+            self.last_error = "media_mismatch"
+            self.last_message = mismatch_message(self.loaded, paper)
+            return PrintOutcome.FAILED
+        outcome = super().print(image, cut)
+        if outcome != PrintOutcome.FAILED:
+            self.papers.append(paper.id)
+        return outcome
+
+    def for_paper(self, paper: catalog.PaperSpec) -> "RollView":
+        return RollView(self, paper)
+
+
+class RollView:
+    """``RollDriver.for_paper``: derselbe Treiber für ein Papier des Katalogs."""
+
+    def __init__(self, driver: RollDriver, paper: catalog.PaperSpec) -> None:
+        self.driver = driver
+        self.paper = paper
+
+    @property
+    def last_error(self) -> str | None:
+        return self.driver.last_error
+
+    @property
+    def last_message(self) -> str | None:
+        return self.driver.last_message
+
+    @property
+    def loaded(self) -> Paper | None:
+        return self.driver.loaded
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(300, catalog_media(self.paper), True, ["black"], True, True)
+
+    def status(self) -> DriverStatus:
+        return self.driver.status_for(self.paper)
+
+    def print(self, image: Image.Image, cut: bool = True) -> PrintOutcome:
+        return self.driver.print_for(image, cut, self.paper)

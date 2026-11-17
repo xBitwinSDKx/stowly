@@ -13,6 +13,7 @@ export const PROBLEM_TEXTS: Record<PrinterProblem | "no_printer", string> = {
   not_verified: "Unter der Adresse antwortet kein Stowly-Druckdienst, der dieses Token kennt.",
   unknown_printer: "Der Druckdienst kennt diesen Drucker nicht.",
   insecure_context: "Direkt drucken geht nur, wenn Stowly über HTTPS geöffnet ist.",
+  outdated: "Der Druckdienst auf dem Pi ist zu alt für dieses Papier. Neu koppeln aktualisiert ihn.",
   no_printer: "Diesen Etiketten ist kein Drucker zugeordnet.",
 };
 

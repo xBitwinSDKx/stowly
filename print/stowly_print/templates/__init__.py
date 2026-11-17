@@ -18,6 +18,8 @@ BUILTIN_TEMPLATES: dict[str, str] = {
     "zone": "zone-62x29.json",
 }
 
+# Format der mitgelieferten Vorlagen (62 mm endlos, ohne Papier-Kennung). Welche Formate der
+# Renderer kann, steht in ``stowly_print.model.TEMPLATE_SCHEMAS``; Format 2 erzeugt der Server.
 TEMPLATE_SCHEMA = 1
 
 

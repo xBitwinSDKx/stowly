@@ -16,9 +16,9 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from support import Device, events_of, statuses
 
-from stowly import db, printing
+from stowly import db, labels, printing
 from stowly.app import create_app
-from stowly.contract import ids
+from stowly.contract import ids, timeutil
 from stowly.contract.entities import PrintJobState
 from stowly_print.model import Job, JobState
 
@@ -138,6 +138,8 @@ def test_every_call_needs_a_device_token(client, make_device):
     assert health.status_code == 200
     body = health.json()
     assert (body["app"], body["protocol"], body["proof"], body["host"]) == ("stowly-print", 1, None, None)
+    # Seit 0.5.0: Der Dienst nennt die Formate der Vorlage, die er rendert (docs/etiketten.md, 3.4).
+    assert body["template_schemas"] == [1, 2]
     # Weder CORS noch die Seite /p: Die App spricht den Server immer vom eigenen Ursprung an.
     response = client.get("/print/v1/health", headers={**device.headers, "Origin": "https://fremd.example"})
     assert "access-control-allow-origin" not in response.headers
@@ -430,7 +432,17 @@ def test_printers_come_from_the_sync_and_changes_apply_at_once(client, make_devi
         "media_detected": None,
         "errors": ["config"],
     }
-    assert printers[1]["capabilities"]["media"] == {"width_mm": 62.0, "length_mm": None, "printable_px": 696}
+    # Seit 0.5.0 nennt das Papier der Konfiguration seine Kennung im Katalog und seine Art.
+    assert printers[1]["capabilities"]["media"] == {
+        "width_mm": 62.0,
+        "length_mm": None,
+        "printable_px": 696,
+        "id": "62",
+        "kind": "endless",
+        "printable_length_px": None,
+    }
+    # Die eingelegte Rolle meldet weder der Bild-Treiber noch ein Drucker, den der Treiber nicht erreicht.
+    assert [printer["loaded"] for printer in printers] == [None, None]
 
     # Ein Auftrag an den unbrauchbaren Drucker wird angenommen und endet als failed/config.
     job_id = request_label(device, second)
@@ -453,6 +465,34 @@ def test_printers_come_from_the_sync_and_changes_apply_at_once(client, make_devi
     response = submit(device, job_id, job_body(device, second))
     assert (response.status_code, error_code(response)) == (404, "unknown_printer")
     assert client.get("/print/v1/health", headers=device.headers).json()["printers"] == printers
+
+
+def test_with_an_own_design_server_printers_take_the_paper_of_the_household(client, make_device, settings):
+    """Seit 0.5.0: Mit eigener Gestaltung ist das Papier des Haushalts die Vorgabe der Drucker am Server
+    (statt ``media`` aus ihrer Konfiguration). Ohne Gestaltung gilt wieder die Konfiguration."""
+    device = make_device()
+    add_printer(device)
+
+    def media() -> dict:
+        printers = client.get("/print/v1/printers", headers=device.headers).json()["printers"]
+        return printers[0]["capabilities"]["media"]
+
+    assert (media()["id"], media()["kind"]) == ("62", "endless")
+
+    design = labels.DEFAULT_DESIGN.model_copy(update={"paper": "62x29"})
+    con = db.connect(settings.database_path)
+    try:
+        with db.transaction(con):
+            con.execute(
+                "INSERT INTO label_design (id, body, updated_at, updated_by) VALUES (1, ?, ?, NULL)",
+                (design.model_dump_json(), timeutil.now()),
+            )
+        assert (media()["id"], media()["kind"], media()["printable_length_px"]) == ("62x29", "die_cut", 271)
+        with db.transaction(con):
+            con.execute("DELETE FROM label_design")
+    finally:
+        con.close()
+    assert media()["id"] == "62"
 
 
 def test_preview_without_printer_uses_the_default_of_the_contract(client, make_device):

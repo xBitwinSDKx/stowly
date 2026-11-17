@@ -33,9 +33,11 @@ Verbindlicher Vertrag für alles rund ums Etikett in Stufe 1: was im QR-Code ste
 
 ### 3.1 Material und Maße
 
-- Brother DK-Endlosrolle, 62 mm breit, auf 29 mm Länge geschnitten: Papier DK-22205 fürs Regal, Folie DK-22212 für den Gefrierschrank.
+- Vorgabe: Brother DK-Endlosrolle, 62 mm breit, auf 29 mm Länge geschnitten: Papier DK-22205 fürs Regal, Folie DK-22212 für den Gefrierschrank.
 - Bei 300 dpi sind das **696 × 342 Pixel** (druckbare Breite × Länge), also etwa 58,9 × 29 mm Zeichenfläche. Die 62 mm liegen quer zur Laufrichtung, das Etikett wird im Querformat gelesen und nicht gedreht.
 - Gedruckt wird rein schwarz-weiß (1 Bit), ohne Graustufen.
+- **Papier-Katalog** (seit 0.5.0, `print/stowly_print/media.py`): Endlosrollen mit 18, 29, 38, 50, 54 und 62 mm, dazu gestanzte Etiketten bis 62 mm Breite (17 × 54 bis 62 × 100 mm). Die Kennung folgt Brother (`62`, `62x29`), die Werte der Tabelle von brother_ql_next: je Papier Art (`endless`, `die_cut`), Breite, bei gestanzten die Länge, dazu die druckbaren Punkte bei 300 dpi quer zur Laufrichtung und bei gestanzten in Laufrichtung. Gestanzte Etiketten sind in Laufrichtung kürzer bedruckbar, als sie lang sind (62 × 29 mm: 271 statt 342 Punkte). Auf Endlosrollen ist ein Etikett 25 bis 100 mm lang. Nicht im Katalog: Rollen über 62 mm, zweifarbige und runde Etiketten, die 12-mm-Rolle (darauf passt kein QR-Code mit 6 Punkten je Modul).
+- **Das Etikett liegt immer quer:** Ist es in Laufrichtung länger, als die Rolle breit ist, dreht der Renderer das Bild um 90° (Format 2, 3.4). Das betrifft etwa 29 mm endlos, 29 × 90 und 62 × 100 gestanzt und die 62-mm-Rolle ab einer Länge über 62 mm.
 
 ### 3.2 Aufbau
 
@@ -53,6 +55,15 @@ Verbindlicher Vertrag für alles rund ums Etikett in Stufe 1: was im QR-Code ste
 - Rechts Produktname (bis zu zwei Zeilen, wird bei Bedarf kleiner), Packungsgröße und Marke, das MHD, darunter die ID groß in Festbreitenschrift und klein das Datum des Einlagerns.
 - Das Zonen-Etikett zeigt links den QR-Code (27 mm), rechts groß den Namen der Zone und darunter „Lagerzone".
 
+**Gestaltung** (seit 0.5.0; Drucker → „Etiketten gestalten"): Der Haushalt wählt ein Papier für alle Drucker (3.1) und je Etikettenart, Packung und Zone, eine Gestaltung (`LabelLayout`):
+
+- **Länge**, nur auf Endlosrollen, 25 bis 100 mm;
+- **QR-Code** links oder rechts, klein, mittel oder groß; er ist immer drauf, und die kleinste Stufe scannt noch sicher (mindestens 6 Pixel je Modul);
+- **Felder** von oben nach unten, je an oder aus, mit Größe klein, mittel oder groß, der Name mit 1 bis 3 Zeilen. Packung: Name, Größe · Marke, Größe allein, Marke allein, MHD, Einlagerdatum, Packungs-ID, Zone, eigener Text. Zone: Name, „Lagerzone", eigener Text. Stehen Packungs-ID und Einlagerdatum direkt nacheinander, teilen sie sich wie bisher die unterste Zeile;
+- **Datum** lang (25.03.2027) oder kurz (25.03.27), ein **eigener Text** bis 40 Zeichen und eine **Trennlinie** über der untersten Zeile.
+
+Die Anordnung übernimmt der Server (`server/stowly/labels.py`): QR-Code als Quadrat an der gewählten Seite, die Felder untereinander daneben, Größen in festen Millimetern, auf jedem Papier dieselben. Er erzeugt daraus die Vorlagen (3.4) und verteilt sie über den Sync wie die mitgelieferten. Vor dem Speichern rendert er jede Vorlage mit Beispiel- und Grenzdaten; passt etwas gar nicht, lehnt er mit einem Satz ab, statt ein unlesbares Etikett zu speichern. Ohne eigene Gestaltung gelten die mitgelieferten Vorlagen unverändert, mit demselben `hash`.
+
 ### 3.3 Daten
 
 Die App schickt dem Druckdienst **fertig formatierte Zeichenketten**: Der Pi hat keine Uhr und kennt keine Sprache. Leere Zeichenketten sind erlaubt; die Vorlage lässt die Zeile dann weg.
@@ -67,7 +78,13 @@ Packung (`PackageLabelData`, erzeugt von `packageLabelData()` in `web/src/contra
 | `subtitle` | Packungsgröße und Marke, mit ` · ` verbunden; darf leer sein. Die Größe steht vorn, anders als in der App: Eine zu lange Zeile kürzt der Renderer am Ende, und das trifft dann die Marke (`labelSubtitle()`) | `1 kg · Kornhaus` |
 | `best_before` | MHD als `TT.MM.JJJJ`; leer = keines | `25.03.2027` |
 | `stored` | Tag des Einlagerns als `TT.MM.JJJJ` | `13.11.2026` |
-| `zone` | Name der Zone; leer, wenn es nur eine gibt | `Keller` |
+| `zone` | Name der Zone. Seit 0.5.0 immer gefüllt (ob er gedruckt wird, entscheidet die Vorlage); ältere Apps schickten ihn nur bei mehr als einer Zone | `Keller` |
+| `brand` | seit 0.5.0: Marke allein; darf leer sein | `Kornhaus` |
+| `quantity` | seit 0.5.0: Packungsgröße allein; darf leer sein | `1 kg` |
+| `best_before_short` | seit 0.5.0: MHD als `TT.MM.JJ`; leer = keines | `25.03.27` |
+| `stored_short` | seit 0.5.0: Tag des Einlagerns als `TT.MM.JJ` | `13.11.26` |
+
+Eine App vor 0.5.0 schickt die neuen Felder nicht; eine Vorlage, die sie nutzt, lässt die Zeile dann weg (`when`).
 
 Zone (`ZoneLabelData`, erzeugt von `zoneLabelData()`): `qr`, `title` (Name der Zone), `subtitle` („Lagerzone").
 
@@ -116,8 +133,37 @@ Für alle Elemente:
 - `value` setzt Daten über `{feld}` ein. Fehlende Felder sind leer. Geschweifte Klammern im Text werden verdoppelt (`{{`).
 - `when: "feld"` zeichnet das Element nur, wenn `data[feld]` nicht leer ist.
 - Unbekannte Elementtypen und ein unbekanntes `schema` lehnt der Renderer ab (`render_failed`), statt zu raten.
+- **Grenzen** (seit 0.5.0, gegen feindliche Vorlagen etwa aus einer gefälschten Sicherung): Ein Textkasten wird auf das Etikett beschnitten; liegt er ganz daneben, wird er nicht gezeichnet. `size` darf höchstens so groß sein, wie das Etikett hoch ist, zwischen `size` und `min_size` liegen höchstens 50 Schritte (10 mm), `max_lines` höchstens 20. Die Zeichenfläche (`design`) misst mindestens 1 mm je Seite. Rechtecke, Rahmen und Linien zeichnet der Renderer nur, soweit sie auf dem Etikett liegen; ein Rahmen ab der halben kleineren Seite füllt den Kasten. Ein QR-Code darf höchstens so groß sein wie die längere Seite des Etiketts. Je Etikett gibt es ein festes Rechenbudget; eine Vorlage, die es aufbraucht, endet als `render_failed` („Das Etikett ist zu aufwendig zu setzen …"). Gewöhnliche Etiketten brauchen davon einen kleinen Bruchteil. Scheitert die Schrift an einer einzelnen Größe, scheitert nur diese; die Schriftdatei bleibt.
 - Schriften: die Familie DejaVu (frei lizenziert). `regular` ist `DejaVuSans.ttf`, `bold` ist `DejaVuSans-Bold.ttf`, `mono` ist `DejaVuSansMono-Bold.ttf`. Die drei Dateien liegen im Paket (`print/stowly_print/fonts/`): DejaVu 2.37, unverändert aus `dejavu-fonts-ttf-2.37.tar.bz2` von der Seite des Projekts, samt Lizenztext (`DejaVu-LICENSE.txt`); ein Test hält ihre Prüfsummen fest. Der Renderer sucht jede Datei zuerst dort, dann unter den Schriften des Systems (`/usr/share/fonts/truetype/dejavu/`, Debian-Paket `fonts-dejavu-core`). Das Container-Image und das Installationsskript des Pi installieren dieses Paket zusätzlich, als Rückfall; im Betrieb wird auf dem Pi nichts nachgeladen. Fehlt eine Datei an beiden Stellen, nimmt der Renderer die in Pillow eingebaute Schrift und meldet das im Log, statt zu scheitern. Welche Schrift für `regular`, `bold` und `mono` gilt, nennt der Druckdienst beim Start im Log. Zeichen, die eine Schrift nicht hat, schreibt der Renderer lesbar aus („ü" als „ue", „ß" als „ss"); das betrifft nur die eingebaute Schrift, DejaVu hat sie alle. Die Tests legen die Schriftquelle selbst fest, damit ihre Referenzbilder nicht davon abhängen, welche Schriften auf dem Rechner liegen; die Referenzbilder entstehen mit der eingebauten Schrift, zwei Tests messen die Vorlagen mit den mitgelieferten Dateien nach (ID und Einlagerdatum vollständig, in der Größe der Vorlage).
 - Ein Renderer ohne Angabe eines Druckers (Vorschau am Server) rechnet mit der Vorgabe dieser Stufe: 62-mm-Rolle bei 300 dpi, also 696 Pixel druckbare Breite, Länge aus `media.length_mm` der Vorlage (342 Pixel).
+
+**Format 2** (`"schema": 2`, seit 0.5.0) gilt für jedes Papier des Katalogs (3.1) und jede Drehung. Der Server erzeugt so die Vorlagen aus der Gestaltung des Haushalts (3.2), außer für die 62-mm-Endlosrolle bis 62 mm Länge: Die bleibt Format 1, damit auch ein Druckdienst vor 0.5.0 sie druckt. Alles wie Format 1, dazu:
+
+```json
+{
+  "schema": 2,
+  "name": "package",
+  "media": { "id": "29", "kind": "endless", "width_mm": 29, "length_mm": 62 },
+  "rotate": 90,
+  "design": { "width_mm": 62.0, "height_mm": 25.9 },
+  "elements": [ "… wie bei Format 1 …" ]
+}
+```
+
+| Schlüssel | Bedeutung |
+|---|---|
+| `media.id` | Kennung im Papier-Katalog, wie bei Brother (`62`, `29`, `62x29`, `29x90`). Ein unbekanntes `id` lehnt der Renderer ab (`render_failed`). |
+| `media.kind` | `endless` oder `die_cut` |
+| `media.width_mm` | Breite der Rolle |
+| `media.length_mm` | Länge des Etiketts in Laufrichtung: bei Endlosrollen aus der Gestaltung, bei gestanzten die des Etiketts |
+| `rotate` | `0` oder `90`; `90` genau dann, wenn das Etikett in Laufrichtung länger ist, als die Rolle breit ist (`media.rotated()`). Die Leserichtung liegt dann längs zur Rolle. Passt `rotate` nicht zum Papier, lehnt der Renderer ab. |
+| `design` | Zeichenfläche **in Leserichtung**, Koordinaten wie bei Format 1 |
+
+- **Druckbare Fläche:** quer zur Laufrichtung `printable_width_px` des Papiers; in Laufrichtung bei Endlosrollen `mm_to_px(length_mm)` (abgerundet, 29 mm sind 342 Pixel), bei gestanzten `printable_length_px`. In Leserichtung ist die Fläche bei `rotate: 0` (quer × längs) breit × hoch, bei `rotate: 90` (längs × quer).
+- **Rendern:** in Leserichtung, `design` gleichmäßig auf diese Fläche skaliert und zentriert, wie bei Format 1. Bei `rotate: 90` dreht der Druckweg das fertige Bild danach um 90° gegen den Uhrzeigersinn (Pillow `Image.Transpose.ROTATE_90`). Was an den Treiber geht (und was der Bild-Treiber ablegt), hat also immer quer × längs Pixel. `/v1/render` und die Vorschau am Server (`POST /api/labels/preview`) liefern das Bild ungedreht, so wie man es liest.
+- **Papier je Auftrag:** Der Druckdienst druckt eine Vorlage im Format 2 genau für ihr Papier, auch gestanzt (Abschnitt 6). Die Vorlage gilt dabei mehr als `media` in der Konfiguration; die ist nur noch die Vorgabe für Vorlagen ohne Papier.
+- **Format 1 mit Papier:** Erzeugt der Server eine Vorlage im Format 1 (62 mm endlos, nicht gedreht), nennt `media` zusätzlich `id` und `kind`. Ein Druckdienst vor 0.5.0 übergeht beides. Fehlen sie (die mitgelieferten Vorlagen), gilt die 62-mm-Endlosrolle (`DEFAULT_PAPER_ID`).
+- **Wer was kann:** `ServiceHealth.template_schemas` nennt die Formate, die ein Druckdienst rendert (seit 0.5.0 `[1, 2]`); fehlt die Angabe, kann er nur Format 1. Die App liest aus einer Vorlage nur `schema` und `media.id` und stellt ein Etikett, dessen Format der Dienst nicht kann, nicht zu (`outdated`, 4.1).
 
 ## 4. Etiketten des Haushalts (`PrintJob`)
 
@@ -175,7 +221,9 @@ Regeln:
 
 Ein Versuch hat zwei Teile. Zuerst werden alle Drucker der Reihe nach bedient: einreichen, was aussteht, und einmal abfragen, was schon beim Dienst ist. Eingereicht wird mit `wait=5`, wenn die App von selbst zustellt (kommt der Endzustand gleich mit, genügt eine Meldung), und mit `wait=0` auf Wunsch des Anwenders: Dann wartet er auf den Bericht (`print.flush` erfüllt sich nach diesem Teil). Danach wird im Hintergrund nachgefragt (`wait=10`, höchstens 60 Sekunden je Drucker); will ein neuer Versuch zustellen, auch der eines anderen Tabs, bricht das Nachfragen ab und der neue fragt selbst wieder nach.
 
-Die Daten des Etiketts entstehen beim ersten Absenden aus dem, was die App dann zeigt (`packageLabelData`, `zoneLabelData`); `show_zone` ist gesetzt, wenn es mehr als eine Zone gibt.
+Die Daten des Etiketts entstehen beim ersten Absenden aus dem, was die App dann zeigt (`packageLabelData`, `zoneLabelData`). Seit 0.5.0 stehen alle Felder aus 3.3 immer drin; was gedruckt wird, entscheidet die Vorlage.
+
+**Zu alter Druckdienst** (seit 0.5.0): Vor dem Einreichen vergleicht die App das Format der Vorlage (`schema`) mit `ServiceHealth.template_schemas` (5.5; fehlt die Angabe, kann der Dienst nur Format 1). Kann er es nicht, stellt sie das Etikett nicht zu: Es bleibt `pending`, mit dem Grund `outdated` („Der Druckdienst auf dem Pi ist zu alt für dieses Papier. Neu koppeln aktualisiert ihn."). So wird nie auf falschem Papier gedruckt. Aus der Vorlage liest die App nur `schema` und `media.id`; sonst bleibt sie undurchsichtig. Der Notweg über die Seite des Druckdienstes (5.7) reicht die Vorlage weiter wie bisher; ein alter Dienst lehnt sie dort sichtbar ab (`render_failed`).
 
 Was die Antwort des Dienstes für das Etikett heißt:
 
@@ -239,12 +287,12 @@ Eine HTTPS-Seite, die einen anderen Ursprung anspricht, löst bei `PUT`, `DELETE
 
 | Aufruf | Zweck | Antwort |
 |---|---|---|
-| `GET /v1/health?nonce=<n>` | Erreichbarkeit, `boot_id`, Zustand des Rechners, Drucker mit Zustand | 200 `ServiceHealth` |
+| `GET /v1/health?nonce=<n>&media=<Papier>` | Erreichbarkeit, `boot_id`, Zustand des Rechners, Drucker mit Zustand und eingelegter Rolle, Formate der Vorlage; `media` seit 0.5.0, optional (5.5) | 200 `ServiceHealth` |
 | `GET /v1/printers` | Fähigkeiten und Zustand aller Drucker | 200 `{ "printers": ServicePrinter[] }` |
 | `POST /v1/jobs/{id}?wait=<s>` (auch `PUT`) | Auftrag einreichen | 201 `ServiceJob` (neu) oder 200 `ServiceJob` (schon bekannt) |
 | `GET /v1/jobs/{id}?wait=<s>` | Zustand eines Auftrags | 200 `ServiceJob`; 404 `not_found` |
 | `POST /v1/jobs/{id}/cancel` (auch `DELETE /v1/jobs/{id}`) | Auftrag verwerfen, solange er wartet | 200 `ServiceJob` mit `state: "failed"`, `error.code: "cancelled"`; 409 `not_cancellable` |
-| `POST /v1/render` | Vorschau: `{ template, data, printer? }` rendern, ohne zu drucken | 200 `image/png` in der Größe des Druckers; ohne `printer` am Pi für den Standarddrucker, am Server für die Vorgabe aus 3.4 |
+| `POST /v1/render` | Vorschau: `{ template, data, printer? }` rendern, ohne zu drucken | 200 `image/png` in der Größe des Druckers; ohne `printer` am Pi für den Standarddrucker, am Server für die Vorgabe aus 3.4. Nennt die Vorlage ein Papier (Format 2, oder Format 1 mit `media.id`), in dessen Größe und in Leserichtung, ungedreht |
 | `GET /v1/jobs/{id}/image` | das gerenderte Etikett eines Auftrags, nur beim Bild-Treiber | 200 `image/png`; 404 |
 | `GET /p` | nur am Pi: Seite, die Aufträge selbst einreicht (5.7) | 200 `text/html` |
 
@@ -315,7 +363,9 @@ proof = hex( HMAC-SHA256( Schlüssel = Token, Nachricht = nonce ) )
 
 Die App rechnet nach (WebCrypto). So geht ein fremdes Gerät, das im falschen WLAN zufällig dieselbe Adresse hat, nicht als Drucker durch. Am Server entfällt die Prüfung: Dort bürgt die Verbindung selbst.
 
-`ServiceHealth`: `app` (immer `"stowly-print"`), `version`, `protocol` (derzeit 1), `boot_id`, `uptime_s`, `proof`, `host` (`HostHealth` oder `null`), `printers`.
+`ServiceHealth`: `app` (immer `"stowly-print"`), `version`, `protocol` (derzeit 1), `boot_id`, `uptime_s`, `proof`, `host` (`HostHealth` oder `null`), `printers`, seit 0.5.0 `template_schemas` (die Formate der Vorlage, die der Dienst rendert, 3.4; fehlt = `[1]`). Je Drucker (`ServicePrinter`) seit 0.5.0 `loaded`: die eingelegte Rolle (`ServicePaper`: `id` im Katalog oder `null`, `kind`, `width_mm`, `length_mm`), `null` = unbekannt.
+
+`media=<Papier>` (seit 0.5.0, optional): Die App nennt das Papier des Haushalts. Dann vergleicht der Dienst die eingelegte Rolle damit statt mit `media` aus seiner Konfiguration und meldet bei einer anderen Rolle `media_mismatch`. Eine Kennung, die er nicht kennt, übergeht er. Ein Dienst vor 0.5.0 übergeht den Parameter ganz.
 
 Was der Rechner ehrlich melden kann (`HostHealth`, jedes Feld darf `null` = unbekannt sein): `uptime_s`, `temperature_c`, `throttled`, `undervoltage` (auf der Pi-Zero-Reihe immer `null`, sie hat keinen Detektor), `storage_errors` und `storage_read_only` (nur Symptome der SD-Karte), `overlay_used_pct`, `memory_available_mb`.
 
@@ -375,7 +425,7 @@ Darf der Browser den Pi aus der App heraus nicht ansprechen (iPhone, wenn die in
 Der Server bindet denselben Dienst unter `/print` ein (`/print/v1/health` und so weiter). Was dort anders ist als am Pi:
 
 - **Anmeldung:** Jeder Aufruf braucht das Geräte-Token (`Authorization: Bearer`), auch die lesenden. Fehler kommen im Format des Servers; 401 behandelt die App wie überall (das Gerät ist abgemeldet). CORS-Kopfzeilen und die Seite `/p` gibt es dort nicht.
-- **Drucker:** alle nicht gelöschten `Printer` mit `connection = "server"`, unter ihrer `Printer.id` als Name. Ändert ein Sync-Befehl einen Drucker, gilt das für den nächsten Auftrag und die nächste Abfrage. Der Dienst hat keinen Standarddrucker.
+- **Drucker:** alle nicht gelöschten `Printer` mit `connection = "server"`, unter ihrer `Printer.id` als Name. Ändert ein Sync-Befehl einen Drucker, gilt das für den nächsten Auftrag und die nächste Abfrage. Der Dienst hat keinen Standarddrucker. Hat der Haushalt eine eigene Gestaltung (3.2), ist deren Papier die Vorgabe dieser Drucker statt `media` aus ihrer Konfiguration (seit 0.5.0): Auch eine Abfrage ohne `?media=` vergleicht die eingelegte Rolle dann mit dem Papier, auf das gedruckt wird.
 - **Nur bekannte Etiketten:** Ein Auftrag wird nur angenommen, wenn es ein Etikett (`PrintJob`) mit dieser Kennung gibt und es `pending` ist. Sonst 404 `not_found` (die Anforderung ist noch nicht abgeglichen) oder 409 `not_pending` (verworfen oder erledigt). Ein Auftrag, den der Dienst schon kennt, liefert wie immer seinen Zustand.
 - **Zustand fortschreiben:** Mit dem Annehmen und bei jedem Wechsel schreibt der Server Zustand, `printer_id`, `boot_id` und `error` des Etiketts selbst (Regel in [`sync-protokoll.md`](sync-protokoll.md), 6.6), damit er auch ankommt, wenn das Gerät inzwischen offline ist. Das Gerät meldet trotzdem; beide Meldungen sagen dasselbe. Ein am Dienst verworfener Auftrag (`failed` mit `cancelled`) wird für das Etikett `cancelled` ohne Fehler, so wie es das Gerät meldet; ein unterbrochener `unknown` mit `interrupted`. Ein Zwischenstand ändert kein Etikett, das schon einen Ausgang hat (4).
 - **Läuft der Druckdienst im Server nicht** (er ließ sich beim Start nicht einrichten, etwa weil sein Verzeichnis nicht beschreibbar ist), antwortet jeder Aufruf unter `/print` mit 503 `queue_full` und dem Grund im Klartext; der Rest des Servers läuft weiter. Die App lässt die Etiketten ausstehen und nennt den Grund `unavailable`.
@@ -396,6 +446,7 @@ class Driver(Protocol):
 
 - `capabilities()` spricht das Gerät nicht an: Der Renderer braucht die Werte auch, wenn der Drucker aus ist.
 - `status()` wirft nicht; ein nicht erreichbares Gerät ist `reachable=False`. Kann der Treiber mit seiner Konfiguration nichts anfangen, meldet er `config` (5.5).
+- **Papier je Auftrag** (seit 0.5.0): Ein Treiber, der das kann, bietet zusätzlich `for_paper(paper)` (derselbe Treiber für ein Papier aus dem Katalog: sein `print` druckt genau dafür und vergleicht vorher die eingelegte Rolle, sein `status` meldet `media_mismatch`, wenn die Rolle nicht passt oder das Modell das Papier nicht kann), `loaded` (die eingelegte Rolle der letzten Abfrage oder `None`) und `last_error`/`last_message` (Code und Satz, wenn `print` `failed` geliefert hat, etwa „Eingelegt: 62 mm endlos; das Etikett braucht 29 × 90 mm gestanzt."). Der Auftragsdienst fragt mit `getattr` danach; ein Treiber ohne druckt wie bisher auf dem Papier seiner Konfiguration. Den Zustand fragt der Dienst je Drucker höchstens einmal je 2 Sekunden vom Gerät ab (`probe()` liefert ein `Reading`), und jeder Vergleich mit einem Papier (`?media=`) rechnet aus derselben Antwort. Wer den Zustand fortschreibt (am Server `PrinterStatus`), erfährt nur den Vergleich mit dem Papier der Konfiguration; am Server ist das bei eigener Gestaltung das Papier des Haushalts (5.8). Brother über TCP 9100 hat keinen Abgleich der Rolle, nur die Prüfung des Modells. `media` in der Konfiguration ist nur noch die Vorgabe für Vorlagen ohne Papier; erlaubt ist jedes Papier des Katalogs, sonst `config`. Der Brother-Treiber druckt auch gestanzte Etiketten und lehnt Papier ab, das ein Modell nicht kann (der QL-570 kann alle des Katalogs; QL-500, -550, -560, -650TD und die großen QL-1050/1060N/1100 keine gestanzten unter 295 bzw. 301 druckbaren Punkten Länge, also nicht 62 × 29, 52 × 29, 54 × 29 und 23 × 23). Der Bild-Treiber meldet keine eingelegte Rolle und nie `media_mismatch`.
 - `print()` bekommt ein 1-Bit-Bild in exakt passender Größe und blockiert, bis das Ergebnis feststeht. `printed` nur, wenn das Gerät bestätigt hat (Brother über USB); `sent`, wenn der Transport nur schreiben kann (Brother über TCP 9100); `failed`, wenn sicher nichts gedruckt wurde. Bricht der Vorgang mittendrin ab und ist der Ausgang offen, wirft die Methode: Der Auftrag wird `unknown`.
 - Vorgesehene Treiber: `brother_ql` (über `brother_ql_next`, fest gepinnt und nur in diesem Modul importiert), `image` (schreibt PNG), später `zpl`.
 

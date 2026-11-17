@@ -38,7 +38,7 @@
  *                Tabs), bricht das Nachfragen ab, die laufende Abfrage auch: Sie ändert am Dienst
  *                nichts, und der neue Versuch fragt selbst wieder nach.
  */
-import type { DriverStatus, Printer, PrintJob, PrintJobState, ServiceJob } from "@/contract/api.gen";
+import type { DriverStatus, Printer, PrintJob, PrintJobState, ServiceHealth, ServiceJob } from "@/contract/api.gen";
 import type { PrinterProbe, PrinterProblem, PrintFlushReport } from "@/contract/core";
 import { CoreError } from "@/contract/errors";
 import { progressAfterOutcome } from "@/contract/labels";
@@ -49,7 +49,7 @@ import { onLockWanted, withLock } from "../sync/lock";
 import type { PermissionReader } from "./address";
 import type { PrintServiceClient, ServiceReply } from "./client";
 import { connect, type Connection, type ConnectResult } from "./connect";
-import { buildContent, byRequestOrder, printerFor } from "./content";
+import { buildContent, byRequestOrder, householdPaper, printerFor, templateFor, templateNeeds } from "./content";
 import { PRINT_TEXTS, PROBLEM_TEXTS } from "./texts";
 
 /** Name der Sperre, die Zustellversuche über Tabs hinweg hintereinander reiht. */
@@ -172,6 +172,14 @@ function emptyOutcome(): DeliveryOutcome {
 /** Die Angaben, über die ein direkter Drucker erreicht wird. Ändern sie sich, lohnt ein neuer Versuch. */
 function accessOf(printer: Printer): string {
   return JSON.stringify(printer.direct ?? printer.server ?? null);
+}
+
+/**
+ * Kann der Dienst eine Vorlage dieses Formats rendern? `template_schemas` fehlt bei einem
+ * Druckdienst vor 0.5.0: Der kann nur Format 1 (docs/etiketten.md, 3.4).
+ */
+function renders(health: ServiceHealth, template: { [key: string]: unknown }): boolean {
+  return (health.template_schemas ?? [1]).includes(templateNeeds(template).schema as number);
 }
 
 function sameStatus(a: DriverStatus | null, b: DriverStatus | null): boolean {
@@ -404,6 +412,8 @@ export class DeliveryEngine {
       learnPromptFree: (space) => {
         void this.deps.store.markNetworkOpen(space).catch(() => undefined);
       },
+      // Der Dienst vergleicht die eingelegte Rolle mit dem Papier des Haushalts.
+      media: householdPaper(this.deps.store.snapshot.view),
     });
   }
 
@@ -502,6 +512,12 @@ export class DeliveryEngine {
       }
       const content = buildContent(state.view, job, connection.queue);
       if (!content) {
+        return "done";
+      }
+      if (!renders(connection.health, content.template)) {
+        // Ein zu alter Druckdienst für das Papier: Das Etikett bleibt ausstehend, statt falsch
+        // gedruckt zu werden. Neu koppeln aktualisiert einen Pi (docs/etiketten.md, 4.1).
+        this.problem(attempt, connection.printer.id, "outdated");
         return "done";
       }
       const wanted: DeliveryEntry = {
@@ -851,12 +867,19 @@ export class DeliveryEngine {
       // Den Zustand seiner Drucker schreibt der Server selbst fort; der Abgleich bringt ihn.
       this.deps.requestSync();
     }
+    // Kennt der Dienst das Format einer Vorlage des Haushalts nicht, ist er zu alt für das Papier.
+    const view = this.deps.store.snapshot.view;
+    const tooOld = (["package", "zone"] as const).some((kind) => {
+      const template = templateFor(view, kind);
+      return template !== null && !renders(connection.health, template);
+    });
+    const problem = result.problem ?? (tooOld ? "outdated" : null);
     return {
       reachable: true,
       url: connection.url,
       health: connection.health,
-      problem: result.problem,
-      error: result.problem ? PROBLEM_TEXTS[result.problem] : null,
+      problem,
+      error: problem ? PROBLEM_TEXTS[problem] : null,
     };
   }
 

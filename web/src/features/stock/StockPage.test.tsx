@@ -422,7 +422,7 @@ describe("Produkt bearbeiten", () => {
     const dialog = await openDialog(barcode);
 
     expect(dialog).toHaveTextContent(`Noch ohne Namen: Barcode ${barcode}`);
-    expect(dialog).toHaveTextContent("Open Food Facts kennt diesen Barcode nicht.");
+    expect(dialog).toHaveTextContent("Open Food Facts kannte diesen Barcode beim Nachschlagen nicht. „Online abfragen“ fragt noch einmal.");
     // Ein Platzhalter darf namenlos bleiben, aber nicht müssen.
     await userEvent.type(within(dialog).getByLabelText("Name"), "Frischkäse");
     await userEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));

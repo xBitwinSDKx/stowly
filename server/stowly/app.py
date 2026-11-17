@@ -12,6 +12,7 @@ Reihenfolge beim Aufbau:
 import asyncio
 import contextlib
 import logging
+import sqlite3
 from collections.abc import AsyncIterator, Mapping
 from types import MappingProxyType
 from typing import Any
@@ -387,20 +388,44 @@ def prepare_database(settings: Settings) -> None:
     """Legt die Datenbank an, migriert sie und bringt sie auf den Stand dieses Servers.
 
     * Grundausstattung (erste Zone, Einstellungen, ``dataset_id``)
-    * Etikett-Vorlagen aus ``stowly_print`` (kommen über den Sync auf die Geräte)
-    * ``lookup`` der Produkte passend zu ``STOWLY_OFF_ENABLED``
+    * Etikett-Vorlagen aus der Gestaltung des Haushalts, ohne eine aus ``stowly_print`` (kommen über den Sync
+      auf die Geräte). Scheitert das, gelten die mitgelieferten: Stowly startet immer, auch mit einer
+      kaputten Gestaltung aus einer Sicherung; sonst wäre auch „Rückgängig" unerreichbar.
+    * ``lookup`` der Produkte passend zu ``STOWLY_OFF_ENABLED``; scheitert das, steht es im Log, und Stowly
+      startet trotzdem (die Prüfung beim Zurückspielen lässt ohnehin nur gültigen Text herein)
     * das VAPID-Schlüsselpaar für Push, auch ohne ``STOWLY_PUSH_CONTACT`` (docs/integrationen.md, 4.1)
     """
     db.initialise(settings.database_path)
     con = db.connect(settings.database_path)
     try:
-        changed = label_templates.install(con)
+        changed = _install_label_templates(con)
         if changed:
             log.info("Etikett-Vorlagen übernommen: %s", ", ".join(changed))
-        off.reconcile(con, enabled=settings.off_enabled)
+        try:
+            off.reconcile(con, enabled=settings.off_enabled)
+        except Exception:
+            # Wie die Vorlagen: Was eine Sicherung an Unlesbarem mitbrachte, verhindert den Start nicht.
+            log.exception(
+                "Der Stand des Nachschlagens ließ sich beim Start nicht angleichen; Stowly startet trotzdem."
+            )
         push.ensure_vapid_keys(con)
     finally:
         con.close()
+
+
+def _install_label_templates(con: sqlite3.Connection) -> list[str]:
+    """``label_templates.install`` beim Start, mit Rückfall auf die mitgelieferten Vorlagen."""
+    try:
+        return label_templates.install(con)
+    except Exception:
+        log.exception(
+            "Die Etikett-Vorlagen ließen sich nicht aus der Gestaltung erzeugen; es gelten die mitgelieferten."
+        )
+    try:
+        return label_templates.install(con, use_design=False)
+    except Exception:
+        log.exception("Auch die mitgelieferten Etikett-Vorlagen ließen sich nicht übernehmen.")
+        return []
 
 
 def create_app(

@@ -372,3 +372,14 @@ Schmale Rollen und gestanzte Etiketten bleiben am Gerät offen, bis du so eine R
 - Druckdienst des Pi automatisch aktualisieren;
 - „Alle Platzhalter neu abfragen" auf einmal; weitere Felder von Open Food Facts (Kategorien, Nutri-Score);
 - die offenen Prüfpunkte aus `docs/pruefliste.md` (eigener Schritt).
+
+## Änderungen während der Umsetzung
+
+- **Papier-Katalog:** Die 12-mm-Endlosrolle fehlt: Auf ihre 106 druckbaren Punkte passt kein QR-Code mit 6 Punkten je Modul, und der QR-Code ist immer drauf. Die Kennungen folgen Brother, auch wo der Name nicht dem Maß entspricht (`39x90` ist 38 mm breit, `60x86` ist 87 mm lang); `60x86` ist dazugekommen.
+- **Drehung:** gedreht wird, wenn das Etikett in Laufrichtung *länger* ist, als die Rolle breit ist. Auf der 62-mm-Rolle also erst über 62 mm Länge; bis 62 mm bleibt es Format 1.
+- **Vertrag:** `LookupResult.throttled` sagt ausdrücklich, dass der Neuabruf nicht neu gefragt hat (statt es aus `fetched_at` zu schließen). `LabelDesignState.templates` nennt den `hash` der gültigen Vorlagen; daran sieht die App, ob sie nach dem Speichern über den Sync da sind, bevor „Probedruck" geht.
+- **Zustand des Druckdienstes:** Eine Papier-Kennung in `GET /v1/health?media=`, die der Dienst nicht kennt, übergeht er (kein 400): Eine neuere App kann ein Papier kennen, das ein älterer Katalog nicht hat.
+- **Härtung nach der Sicherheitsprüfung:**
+  - Beim Zurückspielen fallen die Etikett-Vorlagen der Sicherung weg (der Start erzeugt sie neu), und eine unbrauchbare Gestaltung wird verworfen. Den `hash` gespeicherter Vorlagen rechnet der Server aus dem Rumpf nach. Scheitert das Erzeugen beim Start, gelten die mitgelieferten Vorlagen: Stowly startet immer.
+  - Die Daten der Vorschau dürfen nicht länger sein als in der App (422 mit Satz). Höchstens 5 Neuabrufe warten zugleich; Scans gehen vor.
+  - Der Renderer beschneidet Textkästen auf das Etikett, begrenzt Schriftgrößen, Schritte und Zeilen und rechnet je Etikett mit einem festen Budget. Der Druckdienst fragt ein Gerät je Drucker nur einmal ab, und den Zustand am Server schreibt nur der Vergleich mit dem Papier der Konfiguration fort.

@@ -8,6 +8,7 @@ import {
   addDays,
   CoreError,
   expiryState,
+  gtinCheckDigit,
   isPackageId,
   isUuid,
   isValidBarcode,
@@ -1698,14 +1699,15 @@ describe("Einrichtung (docs/sync-protokoll.md, 11.6 bis 11.8)", () => {
   it("meldet gekoppelte Pi mit dem Ablauf ihres Zertifikats (paired_printers)", async () => {
     expect((await mock().setup.load()).paired_printers).toEqual([]);
     const core = mock({ scenarios: ["pi-cert-expiring"] });
+    // Seit 0.5.0 mit Version des Druckdienstes und Modell vom Koppeln.
     expect((await core.setup.load()).paired_printers).toEqual([
-      { printer_id: PRINTER_IDS.cellar, hostname: "stowly-pi", not_after: new Date(NOW.getTime() + 20.5 * 86_400_000).toISOString() },
+      { printer_id: PRINTER_IDS.cellar, hostname: "stowly-pi", not_after: new Date(NOW.getTime() + 20.5 * 86_400_000).toISOString(), version: "0.5.0", model: "QL-570" },
     ]);
     // Neu gekoppelt: Das neue Zertifikat gilt 825 Tage.
     const again = await core.printers.pair({ origin: "http://192.168.1.10:8010", printer_id: PRINTER_IDS.cellar });
     core.control.completePairing(again.id);
     expect((await core.setup.load()).paired_printers).toEqual([
-      { printer_id: PRINTER_IDS.cellar, hostname: "stowly-pi", not_after: new Date(NOW.getTime() + 825 * 86_400_000).toISOString() },
+      { printer_id: PRINTER_IDS.cellar, hostname: "stowly-pi", not_after: new Date(NOW.getTime() + 825 * 86_400_000).toISOString(), version: "0.5.0", model: "QL-570" },
     ]);
     // Ein gelöschter Drucker fällt weg.
     await core.printers.remove(PRINTER_IDS.cellar);
@@ -1889,5 +1891,178 @@ describe("Home Assistant aus der App", () => {
     expect(await core.haConfig.sensorToken()).toBe(token);
     await core.haConfig.deleteSensorToken();
     expect((await core.haConfig.load()).sensor.set).toBe(false);
+  });
+});
+
+describe("Etiketten gestalten (seit 0.5.0)", () => {
+  it("liefert Gestaltung und Katalog, prüft, zeichnet in der Größe des Papiers und bringt die Vorlagen mit dem Abgleich", async () => {
+    const core = mock();
+    const state = await core.labels.design();
+    expect(state).toMatchObject({ is_default: true, updated_at: null, design: { paper: "62" } });
+    expect(state.papers.map((paper) => paper.name)).toContain("62 × 29 mm gestanzt");
+    expect(await core.labels.templates()).toEqual({ paper: "62", schema: 1, hashes: state.templates });
+
+    // Die Vorschau hat die Größe des Papiers, so wie man das Etikett liest.
+    expect(await core.labels.preview({ kind: "package", paper: "62", layout: state.design.package, data: null })).toMatchObject({ width_px: 696, height_px: 342 });
+    const small = { side: "left" as const, size: "s" as const };
+    const fewer = state.design.package.fields.filter((field) => field.field !== "subtitle");
+    expect(await core.labels.preview({ kind: "package", paper: "62x29", layout: { ...state.design.package, length_mm: null, qr: small, fields: fewer }, data: null })).toMatchObject({ width_px: 696, height_px: 271 });
+    expect(await core.labels.preview({ kind: "zone", paper: "29", layout: { ...state.design.zone, length_mm: 62, qr: small }, data: null })).toMatchObject({ width_px: 732, height_px: 306 });
+    // Ein langer Name auf einer Zeile passt nur verkleinert: ein Hinweis.
+    const oneLine = { ...state.design.package, fields: state.design.package.fields.map((field) => (field.field === "title" ? { ...field, lines: 1 } : field)) };
+    expect((await core.labels.preview({ kind: "package", paper: "62", layout: oneLine, data: null })).notes).toEqual(["Name auf 3,0 mm verkleinert und gekürzt."]);
+
+    const saved = await core.labels.save({ paper: "29", package: { ...state.design.package, length_mm: 50 }, zone: { ...state.design.zone, length_mm: 50, qr: small } });
+    expect(saved).toMatchObject({ is_default: false, design: { paper: "29" } });
+    expect(saved.updated_at).not.toBeNull();
+    expect(await core.labels.templates()).toEqual({ paper: "29", schema: 2, hashes: saved.templates });
+
+    const crowded = { ...state.design.package, length_mm: 25, fields: (["title", "subtitle", "quantity", "brand", "best_before", "zone"] as const).map((field) => ({ field, size: "l" as const, lines: null })) };
+    const refused = await expectCoreError(core.labels.save({ ...state.design, package: crowded }), "invalid");
+    expect(refused.message).toBe("Für so viele Felder ist das Etikett zu kurz: ein Feld weglassen, kleiner wählen oder länger machen.");
+    await expectCoreError(core.labels.preview({ kind: "package", paper: "62", layout: crowded, data: null }), "invalid");
+    await expectCoreError(core.labels.save({ ...state.design, zone: { ...state.design.zone, fields: [{ field: "best_before", size: "s", lines: null }] } }), "invalid");
+
+    expect(await core.labels.reset()).toMatchObject({ is_default: true, templates: state.templates });
+    expect(await core.labels.templates()).toEqual({ paper: "62", schema: 1, hashes: state.templates });
+  });
+
+  it("braucht den Server, außer für die Vorlagen im Sync; die neuen kommen erst mit dem Abgleich", async () => {
+    const core = createMockCore({ latency: 5, now: () => NOW });
+    const state = await core.labels.design();
+    const small = { side: "left" as const, size: "s" as const };
+    const saved = await core.labels.save({
+      paper: "62x29",
+      package: { ...state.design.package, length_mm: null, qr: small, fields: state.design.package.fields.filter((field) => field.field !== "subtitle") },
+      zone: { ...state.design.zone, length_mm: null, qr: small },
+    });
+    // Noch nicht abgeglichen: die alten Vorlagen.
+    expect((await core.labels.templates()).hashes).toEqual(state.templates);
+    await expect.poll(async () => (await core.labels.templates()).hashes).toEqual(saved.templates);
+    core.control.setOnline(false);
+    await expectCoreError(core.labels.design(), "offline");
+    await expectCoreError(core.labels.preview({ kind: "package", paper: "62", layout: state.design.package, data: null }), "offline");
+    expect((await core.labels.templates()).paper).toBe("62x29");
+  });
+
+  it("prüft wie der Server: Die Gestaltungen der Ausgangslagen passen, die Vorgabe nicht auf 62 × 29 mm gestanzt", async () => {
+    for (const scenario of ["labels-custom", "labels-die-cut", "pi-outdated"] as const) {
+      const core = mock({ scenarios: [scenario] });
+      const state = await core.labels.design();
+      await core.labels.save(state.design);
+      for (const kind of ["package", "zone"] as const) {
+        await core.labels.preview({ kind, paper: state.design.paper, layout: state.design[kind], data: null });
+      }
+    }
+    const core = mock();
+    const state = await core.labels.design();
+    const dieCut = { ...state.design, paper: "62x29", package: { ...state.design.package, length_mm: null }, zone: { ...state.design.zone, length_mm: null } };
+    const refused = await expectCoreError(core.labels.save(dieCut), "invalid");
+    expect(refused.message).toBe("Der QR-Code ist für dieses Etikett zu groß: kleiner wählen oder ein größeres Papier nehmen.");
+    expect(refused.details).toMatchObject({ errors: [{ loc: ["body", "package"] }] });
+    // Mit kleinem QR-Code und einer Zeile weniger passt die Packung; die Zone braucht dann auch den kleinen.
+    const smaller = { ...dieCut, package: { ...dieCut.package, qr: { side: "left" as const, size: "s" as const }, fields: dieCut.package.fields.filter((field) => field.field !== "subtitle") } };
+    expect((await expectCoreError(core.labels.save(smaller), "invalid")).details).toMatchObject({ errors: [{ loc: ["body", "zone"] }] });
+    await core.labels.save({ ...smaller, zone: { ...smaller.zone, qr: { side: "left", size: "s" } } });
+    // Die Vorgabe zu speichern heißt: keine eigene Gestaltung.
+    expect(await core.labels.save(state.design)).toMatchObject({ is_default: true, updated_at: null, templates: state.templates });
+  });
+
+  it("kennt die Ausgangslagen mit eigener Gestaltung", async () => {
+    expect((await mock({ scenarios: ["labels-custom"] }).labels.design()).design).toMatchObject({ paper: "62", package: { length_mm: 50, qr: { side: "right" }, date: "short" } });
+    expect(await mock({ scenarios: ["labels-custom"] }).labels.templates()).toMatchObject({ paper: "62", schema: 1 });
+    expect(await mock({ scenarios: ["labels-die-cut"] }).labels.templates()).toMatchObject({ paper: "62x29", schema: 2 });
+    expect(await mock({ scenarios: ["pi-outdated"] }).labels.templates()).toMatchObject({ paper: "29", schema: 2 });
+  });
+});
+
+describe("Drucker und Papier (seit 0.5.0)", () => {
+  it("meldet beim Prüfen Formate und eingelegte Rolle; bei anderem Papier eine falsche Rolle", async () => {
+    const ready = await mock({ scenarios: ["at-pi"] }).printers.probe(PRINTER_IDS.cellar);
+    expect(ready).toMatchObject({ reachable: true, problem: null, health: { version: "0.5.0", template_schemas: [1, 2] } });
+    expect(ready.health?.printers[0]).toMatchObject({ loaded: { id: "62", kind: "endless" }, status: { ready: true, errors: [] } });
+    const dieCut = await mock({ scenarios: ["at-pi", "labels-die-cut"] }).printers.probe(PRINTER_IDS.cellar);
+    expect(dieCut.health?.printers[0]?.status).toMatchObject({ ready: false, errors: ["media_mismatch"] });
+  });
+
+  it("printer-off: Der Dienst antwortet, der Drucker nicht; zuletzt gesehen war er schon aus", async () => {
+    const core = mock({ scenarios: ["printer-off"] });
+    expect(value(core.data.printerStatus).find((entry) => entry.printer_id === PRINTER_IDS.cellar)?.status).toMatchObject({ reachable: false, errors: ["offline"] });
+    const probe = await core.printers.probe(PRINTER_IDS.cellar);
+    expect(probe).toMatchObject({ reachable: true, problem: null });
+    expect(probe.health?.printers[0]?.status).toMatchObject({ reachable: false, errors: ["offline"] });
+    // Ein Etikett dorthin scheitert, wie beim echten Dienst.
+    const [job] = await core.print.requestPackageLabels([value(core.data.packages).find((pkg) => pkg.zone_id === ZONE_IDS.cellar)?.id ?? ""]);
+    await core.print.flush();
+    expect(value(core.data.printJobs).find((entry) => entry.id === job?.id)).toMatchObject({ state: "failed", error: "offline" });
+  });
+
+  it("pi-outdated: Etiketten bleiben mit `outdated` ausstehend, bis der Pi neu gekoppelt ist", async () => {
+    const core = mock({ scenarios: ["pi-outdated", "at-pi"] });
+    expect((await core.setup.load()).paired_printers).toMatchObject([{ printer_id: PRINTER_IDS.cellar, version: "0.4.0", model: "QL-570" }]);
+    const probe = await core.printers.probe(PRINTER_IDS.cellar);
+    expect(probe).toMatchObject({ reachable: true, problem: "outdated", health: { version: "0.4.0" } });
+    expect(probe.health?.template_schemas).toBeUndefined();
+    expect(probe.health?.printers[0]?.loaded).toBeUndefined();
+    const [job] = await core.print.requestPackageLabels([value(core.data.packages).find((pkg) => pkg.zone_id === ZONE_IDS.cellar)?.id ?? ""]);
+    const report = await core.print.flush();
+    expect(report.problems).toContainEqual({ printer_id: PRINTER_IDS.cellar, problem: "outdated", message: "Der Druckdienst auf dem Pi ist zu alt für dieses Papier. Neu koppeln aktualisiert ihn." });
+    expect(value(core.data.printJobs).find((entry) => entry.id === job?.id)?.state).toBe("pending");
+
+    // Neu gekoppelt: neuer Druckdienst, und das Etikett geht hinaus (an die 62-mm-Rolle passt das Papier 29 mm nicht).
+    const again = await core.printers.pair({ origin: "http://192.168.1.10:8010", printer_id: PRINTER_IDS.cellar });
+    core.control.completePairing(again.id);
+    expect((await core.setup.load()).paired_printers).toMatchObject([{ printer_id: PRINTER_IDS.cellar, version: "0.5.0" }]);
+    expect((await core.printers.probe(PRINTER_IDS.cellar)).problem).toBeNull();
+    await core.print.flush();
+    expect(value(core.data.printJobs).find((entry) => entry.id === job?.id)).toMatchObject({ state: "failed", error: "media_mismatch" });
+  });
+});
+
+describe("Produktdaten neu abfragen (seit 0.5.0)", () => {
+  it("fragt nach der Regel der Attrappe, bremst je Barcode eine Minute und ändert kein Produkt", async () => {
+    let now = NOW.getTime();
+    const core = mock({ now: () => new Date(now) });
+    const even = value(core.data.products).find((product) => product.barcodes.length === 1 && Number(product.barcodes[0]?.at(-1)) % 2 === 0);
+    const odd = value(core.data.products).find((product) => product.barcodes.length === 1 && Number(product.barcodes[0]?.at(-1)) % 2 === 1);
+    const evenCode = even?.barcodes[0] ?? "";
+    const oddCode = odd?.barcodes[0] ?? "";
+    expect(await core.products.refreshLookup(evenCode)).toMatchObject({ state: "found", name: `Beispielprodukt ${evenCode.slice(-4)}`, throttled: false, fetched_at: NOW.toISOString() });
+    expect(await core.products.refreshLookup(oddCode)).toMatchObject({ state: "not_found", throttled: false });
+    expect(await core.products.refreshLookup(oddCode)).toMatchObject({ state: "not_found", throttled: true });
+    now += 61_000;
+    expect(await core.products.refreshLookup(oddCode)).toMatchObject({ throttled: false });
+    expect(value(core.data.products).find((product) => product.id === even?.id)).toEqual(even);
+    await expectCoreError(core.products.refreshLookup("123"), "invalid");
+    const body = "200123400001";
+    const internal = body + String(gtinCheckDigit(body));
+    expect(isValidBarcode(internal)).toBe(true);
+    expect(await core.products.refreshLookup(internal)).toMatchObject({ state: "skipped" });
+    core.control.setOnline(false);
+    await expectCoreError(core.products.refreshLookup(evenCode), "offline");
+  });
+
+  it("lookup-refresh findet jeden Barcode mit abweichenden Angaben und Bild", async () => {
+    const core = mock({ scenarios: ["lookup-refresh"] });
+    const rice = value(core.data.products).find((product) => product.name === "Basmati Reis");
+    expect(await core.products.refreshLookup(rice?.barcodes[0] ?? "")).toMatchObject({ state: "found", name: "Bio Basmati Reis", brand: "Kornhaus", quantity: "500 g" });
+    const placeholder = value(core.data.products).find((product) => product.name === "" && product.lookup === "not_found");
+    const found = await core.products.refreshLookup(placeholder?.barcodes[0] ?? "");
+    expect(found.state).toBe("found");
+    expect(found.image_id).not.toBeNull();
+  });
+
+  it("setzt das Bild eines Produkts sofort, nur auf ein Bild, das Stowly hat", async () => {
+    const core = mock({ scenarios: ["lookup-refresh"] });
+    const rice = value(core.data.products).find((product) => product.name === "Basmati Reis");
+    const found = await core.products.refreshLookup(rice?.barcodes[0] ?? "");
+    await core.products.setImage(rice?.id ?? "", found.image_id);
+    expect(value(core.data.products).find((product) => product.id === rice?.id)?.image).toBe(found.image_id);
+    await expectCoreError(core.products.setImage(rice?.id ?? "", "fremdes-bild"), "invalid");
+    await core.products.setImage(rice?.id ?? "", null);
+    expect(value(core.data.products).find((product) => product.id === rice?.id)?.image).toBeNull();
+    await expectCoreError(core.products.setImage("00000000-0000-4000-8000-000000000000", null), "not_found");
+    core.control.setOnline(false);
+    await expectCoreError(core.products.setImage(rice?.id ?? "", found.image_id), "offline");
   });
 });

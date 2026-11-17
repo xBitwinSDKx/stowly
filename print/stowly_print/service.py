@@ -8,6 +8,14 @@
   ``unknown``; gedruckt wird er nie von selbst noch einmal.
 * Jeder Zustandswechsel geht in seiner Reihenfolge an einen Beobachter. Daran hängt der Server
   sein Fortschreiben der Etiketten.
+* Papier je Auftrag (docs/etiketten.md, 3.4): Nennt die Vorlage ein Papier, druckt der Treiber
+  genau dafür (``for_paper``), sonst auf dem Papier seiner Konfiguration. Gerendert wird in
+  Leserichtung; an den Treiber geht das Bild in Druckrichtung (``render.for_print``).
+* Zustand eines Druckers: Das Gerät wird je Drucker höchstens einmal in ``status_ttl_s`` gefragt
+  (``probe``). Den Vergleich der eingelegten Rolle mit einem Papier (``GET /v1/health?media=``)
+  rechnet der Dienst aus derselben Abfrage. Der Beobachter erfährt nur den Zustand, verglichen
+  mit dem Papier der Konfiguration: Wer mit einem anderen Papier fragt, ändert nicht, was der
+  Server als Zustand des Druckers festhält.
 
 Der Dienst ist für Aufrufe aus mehreren Threads gebaut; seine Methoden blockieren (Rendern,
 Warten) und gehören deshalb nicht in eine Ereignisschleife.
@@ -24,8 +32,9 @@ from typing import Any, Protocol
 
 from PIL import Image
 
+from stowly_print import media as catalog
 from stowly_print import render as rendering
-from stowly_print.drivers.base import Driver
+from stowly_print.drivers.base import Driver, Reading
 from stowly_print.model import (
     FINAL_STATES,
     JOB_ERROR_CANCELLED,
@@ -38,6 +47,7 @@ from stowly_print.model import (
     JobError,
     JobRequest,
     JobState,
+    Paper,
     PrinterError,
     PrinterInfo,
     PrintOutcome,
@@ -63,7 +73,7 @@ HTTP_STATUS: dict[ServiceError, int] = {
 # Klartext zu den Fehlercodes eines Auftrags (``Job.error.message``).
 ERROR_TEXTS: dict[str, str] = {
     PrinterError.NO_MEDIA.value: "Die Etiketten sind leer.",
-    PrinterError.MEDIA_MISMATCH.value: "Es ist eine andere Rolle eingelegt als eingerichtet.",
+    PrinterError.MEDIA_MISMATCH.value: "Die eingelegte Rolle passt nicht zum Etikett.",
     PrinterError.COVER_OPEN.value: "Der Deckel des Druckers ist offen.",
     PrinterError.CUTTER_JAM.value: "Das Messer des Druckers klemmt.",
     PrinterError.OVERHEATED.value: "Der Drucker ist überhitzt.",
@@ -163,7 +173,7 @@ class _Entry:
 
 @dataclass
 class _Status:
-    status: DriverStatus
+    reading: Reading  # die Abfrage: Zustand für die Konfiguration, Rolle, Vergleich mit Papier
     at: float
     driver: Driver = field(repr=False)
 
@@ -188,6 +198,62 @@ def _status(driver: Driver) -> DriverStatus:
         return DriverStatus(
             reachable=False, ready=None, media_detected=None, errors=[PrinterError.UNKNOWN.value]
         )
+
+
+def _with_paper(driver: Driver, paper: catalog.PaperSpec | None) -> Driver:
+    """Der Treiber für ein Papier (``for_paper``). Ohne Papier, oder bei einem Treiber ohne diese
+    Erweiterung, der Treiber selbst: Er kennt dann nur das Papier seiner Konfiguration."""
+    if paper is None:
+        return driver
+    for_paper = getattr(driver, "for_paper", None)
+    return driver if for_paper is None else for_paper(paper)
+
+
+def _loaded(driver: Driver) -> Paper | None:
+    """Die eingelegte Rolle, die ein Treiber zuletzt gesehen hat; ``None`` = unbekannt."""
+    try:
+        loaded = getattr(driver, "loaded", None)
+    except Exception:
+        log.exception("Ein Treiber hat beim Nennen der eingelegten Rolle eine Ausnahme geworfen.")
+        return None
+    return loaded if isinstance(loaded, Paper) else None
+
+
+_UNKNOWN_STATUS = DriverStatus(
+    reachable=False, ready=None, media_detected=None, errors=[PrinterError.UNKNOWN.value]
+)
+
+
+def _probe(driver: Driver) -> Reading:
+    """Eine Abfrage des Druckers. Mit ``probe`` (Brother, Bild) einmal für jedes Papier; ein Treiber
+    ohne fragt ``status()`` und, wenn er ``for_paper`` kann, je Papier noch einmal."""
+    probe = getattr(driver, "probe", None)
+    if probe is not None:
+        try:
+            reading = probe()
+        except Exception:
+            log.exception("Ein Treiber hat beim Abfragen des Zustands eine Ausnahme geworfen.")
+            return Reading(_UNKNOWN_STATUS)
+        if isinstance(reading, Reading):
+            return reading
+        log.error("Ein Treiber hat auf die Abfrage keine Reading geliefert: %r", reading)
+        return Reading(_UNKNOWN_STATUS)
+    compare = None
+    if getattr(driver, "for_paper", None) is not None:
+
+        def compare(paper: catalog.PaperSpec) -> DriverStatus:
+            return _status(_with_paper(driver, paper))
+
+    return Reading(_status(driver), loaded=_loaded(driver), compare=compare)
+
+
+def _status_for(reading: Reading, paper: catalog.PaperSpec | None) -> DriverStatus:
+    """Der Zustand einer Abfrage für ein Papier. Wirft nicht."""
+    try:
+        return reading.for_paper(paper)
+    except Exception:
+        log.exception("Der Zustand ließ sich nicht mit dem Papier %s vergleichen.", paper and paper.id)
+        return _UNKNOWN_STATUS
 
 
 class PrintService:
@@ -241,6 +307,7 @@ class PrintService:
         self._queues: dict[str, deque[str]] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._events: deque[tuple[_Entry, JobEvent]] = deque()
+        # Zuletzt abgefragter Zustand je Drucker.
         self._statuses: dict[str, _Status] = {}
         self._status_lock = threading.Lock()
         self._pool: ThreadPoolExecutor | None = None
@@ -416,7 +483,11 @@ class PrintService:
         return None if locate is None else locate(job_id)
 
     def render(self, template: Any, data: Any, printer: str | None) -> bytes:
-        """Vorschau als PNG. Ohne ``printer`` für den Standarddrucker, sonst für die Vorgabe des Vertrags."""
+        """Vorschau als PNG, so wie man das Etikett liest (ungedreht).
+
+        Nennt die Vorlage ein Papier, in dessen Größe. Sonst für ``printer``, ohne Angabe für den
+        Standarddrucker, und hat der Dienst keinen, für die Vorgabe des Vertrags.
+        """
         capabilities: Capabilities | None = None
         if printer is not None or self._printers.default() is not None:
             capabilities = self._resolve(printer).driver.capabilities()
@@ -432,24 +503,34 @@ class PrintService:
 
     # ------------------------------------------------------------------ Drucker
 
-    def printers(self, *, fresh: bool = False) -> list[PrinterInfo]:
-        """Alle Drucker mit Fähigkeiten und Zustand, in fester Reihenfolge."""
+    def printers(self, *, fresh: bool = False, paper: str | None = None) -> list[PrinterInfo]:
+        """Alle Drucker mit Fähigkeiten, Zustand und eingelegter Rolle, in fester Reihenfolge.
+
+        ``paper`` ist die Kennung eines Papiers im Katalog (``GET /v1/health?media=``): Die
+        eingelegte Rolle wird damit verglichen statt mit dem Papier der Konfiguration. Eine Kennung,
+        die der Katalog nicht kennt, zählt wie keine. Gefragt wird das Gerät dafür nicht noch einmal:
+        Der Vergleich kommt aus derselben Abfrage, und weitergesagt wird er nicht.
+        """
+        spec = catalog.paper(paper) if isinstance(paper, str) else None
         entries = [entry for entry in map(self._printers.lookup, self._printers.names()) if entry is not None]
-        statuses = self._status_of(entries, fresh=fresh)
+        readings = self._status_of(entries, fresh=fresh)
         return [
             PrinterInfo(
                 name=entry.name,
                 driver=entry.driver_name,
                 model=entry.model,
                 capabilities=entry.driver.capabilities(),
-                status=statuses[entry.name],
+                status=_status_for(readings[entry.name], spec),
+                loaded=readings[entry.name].loaded,
             )
             for entry in entries
         ]
 
-    def _status_of(self, entries: Sequence[PrinterEntry], *, fresh: bool) -> dict[str, DriverStatus]:
+    def _status_of(self, entries: Sequence[PrinterEntry], *, fresh: bool) -> dict[str, Reading]:
+        """Die Abfrage je Drucker: höchstens eine je ``status_ttl_s``, außer ``fresh``. Was frisch
+        abgefragt ist, erfährt der Beobachter, verglichen mit dem Papier der Konfiguration."""
         now = self._clock()
-        result: dict[str, DriverStatus] = {}
+        result: dict[str, Reading] = {}
         stale: list[PrinterEntry] = []
         with self._status_lock:
             for entry in entries:
@@ -461,25 +542,25 @@ class PrintService:
                     and now - cached.at < self._status_ttl_s
                 )
                 if usable and cached is not None:
-                    result[entry.name] = cached.status
+                    result[entry.name] = cached.reading
                 else:
                     stale.append(entry)
         if len(stale) == 1:
-            fetched = [_status(stale[0].driver)]
+            fetched = [_probe(stale[0].driver)]
         elif stale:
             # Nebeneinander fragen: Ein ausgeschalteter Netzwerkdrucker hält die anderen nicht auf.
             with self._status_lock:
                 if self._pool is None:
                     self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="stowly-print-status")
                 pool = self._pool
-            fetched = list(pool.map(lambda entry: _status(entry.driver), stale))
+            fetched = list(pool.map(lambda entry: _probe(entry.driver), stale))
         else:
             fetched = []
-        for entry, status in zip(stale, fetched, strict=True):
+        for entry, reading in zip(stale, fetched, strict=True):
             with self._status_lock:
-                self._statuses[entry.name] = _Status(status=status, at=self._clock(), driver=entry.driver)
-            result[entry.name] = status
-            self._tell_status(entry.name, status)
+                self._statuses[entry.name] = _Status(reading=reading, at=self._clock(), driver=entry.driver)
+            result[entry.name] = reading
+            self._tell_status(entry.name, reading.status)
         return result
 
     def _tell_status(self, name: str, status: DriverStatus) -> None:
@@ -541,13 +622,24 @@ class PrintService:
             )
 
     def _render(self, request: JobRequest | dict[str, Any], capabilities: Capabilities) -> Image.Image:
+        """Das Etikett in Druckrichtung, wie es an den Treiber geht (quer × längs Pixel)."""
         content = _printable(request) if isinstance(request, JobRequest) else request
         try:
             if content.get("png") is not None:
                 return rendering.decode_png(content["png"], capabilities)
-            return rendering.render(
-                content.get("template"), content.get("data"), capabilities, fonts=self._fonts
-            )
+            template = content.get("template")
+            image = rendering.render(template, content.get("data"), capabilities, fonts=self._fonts)
+            return rendering.for_print(image, template)
+        except rendering.RenderError as exc:
+            raise ServiceFault(ServiceError.RENDER_FAILED, str(exc)) from exc
+
+    def _paper(self, request: dict[str, Any]) -> catalog.PaperSpec | None:
+        """Das Papier eines Auftrags: das der Vorlage; ``None`` = das der Konfiguration (Vorlage ohne
+        Papier, fertiges PNG)."""
+        if request.get("png") is not None:
+            return None
+        try:
+            return rendering.paper_of(request.get("template"))
         except rendering.RenderError as exc:
             raise ServiceFault(ServiceError.RENDER_FAILED, str(exc)) from exc
 
@@ -687,11 +779,16 @@ class PrintService:
         return dict(record.request or {})
 
     def _print(self, entry: _Entry, request: dict[str, Any]) -> tuple[JobState, JobError | None]:
+        """Druckt einen Auftrag. Liefert Endzustand und Fehler."""
         record = entry.record
         printer = self._printers.lookup(record.printer)
         if printer is None:
             return JobState.FAILED, self._error(ServiceError.UNKNOWN_PRINTER.value)
         driver = printer.driver
+        try:
+            paper = self._paper(request)
+        except ServiceFault as fault:
+            return JobState.FAILED, self._error(ServiceError.RENDER_FAILED.value, fault.message)
         capabilities = driver.capabilities()
         image = entry.image if entry.image_for == capabilities else None
         if image is None:
@@ -700,6 +797,14 @@ class PrintService:
                 image = self._render(request, capabilities)
             except ServiceFault as fault:
                 return JobState.FAILED, self._error(ServiceError.RENDER_FAILED.value, fault.message)
+        try:
+            # Nennt die Vorlage ein Papier, druckt der Treiber genau dafür.
+            driver = _with_paper(driver, paper)
+        except Exception:
+            log.exception(
+                "Treiber von Drucker %s kennt das Papier des Auftrags %s nicht.", record.printer, record.id
+            )
+            return JobState.FAILED, self._error(PrinterError.UNKNOWN.value)
 
         copies = int(request.get("copies") or 1)
         cut = bool(request.get("cut", True))
@@ -713,27 +818,29 @@ class PrintService:
                 log.warning("Druck von Auftrag %s unterbrochen: %s", record.id, exc)
                 return JobState.UNKNOWN, self._error(JOB_ERROR_INTERRUPTED)
             if outcome == PrintOutcome.FAILED:
-                code = self._failure_code(driver)
+                failure = self._failure(driver)
                 if not outcomes:
-                    return JobState.FAILED, self._error(code)
+                    return JobState.FAILED, failure
                 # Ein Teil ist gedruckt: weder sicher ganz noch sicher gar nicht.
-                reason = ERROR_TEXTS.get(code, code)
-                message = f"{len(outcomes)} von {copies} Etiketten gedruckt, dann: {reason}"
+                message = f"{len(outcomes)} von {copies} Etiketten gedruckt, dann: {failure.message}"
                 return JobState.UNKNOWN, self._error(JOB_ERROR_INTERRUPTED, message)
             outcomes.append(outcome)
         confirmed = all(outcome == PrintOutcome.PRINTED for outcome in outcomes)
         return (JobState.PRINTED if confirmed else JobState.SENT), None
 
-    def _failure_code(self, driver: Driver) -> str:
-        """Warum ein Treiber ``failed`` gemeldet hat: sein eigener Vermerk, sonst sein Zustand."""
+    def _failure(self, driver: Driver) -> JobError:
+        """Warum ein Treiber ``failed`` gemeldet hat: sein eigener Vermerk (mit Satz, wenn er einen
+        hat, etwa welche Rolle eingelegt ist und welche das Etikett braucht), sonst sein Zustand."""
         code = getattr(driver, "last_error", None)
         if isinstance(code, str) and code:
-            return code
+            message = getattr(driver, "last_message", None)
+            return self._error(code, message if isinstance(message, str) and message else None)
         errors = _status(driver).errors
-        return errors[0] if errors else PrinterError.UNKNOWN.value
+        return self._error(errors[0] if errors else PrinterError.UNKNOWN.value)
 
     def _after_job(self, name: str) -> None:
-        """Nach jedem Auftrag: den Zustand des Druckers frisch abfragen und weitersagen."""
+        """Nach jedem Auftrag: den Zustand des Druckers frisch abfragen und weitersagen (verglichen
+        mit dem Papier der Konfiguration, wie jeder Zustand, den der Beobachter erfährt)."""
         entry = self._printers.lookup(name)
         if entry is None or self._closed:
             return

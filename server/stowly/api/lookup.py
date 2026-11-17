@@ -1,4 +1,4 @@
-"""Barcode beim Scannen nachschlagen (docs/sync-protokoll.md, Abschnitt 10)."""
+"""Barcode beim Scannen nachschlagen und auf Knopfdruck neu abfragen (docs/sync-protokoll.md, Abschnitt 10)."""
 
 import dataclasses
 from typing import Annotated
@@ -75,8 +75,7 @@ async def lookup_barcode(
     Warteschlange seines Hintergrund-Ablaufs und wartet höchstens ``wait`` Sekunden; die Rate
     gilt unverändert. Ungültiger Barcode oder ``wait``: 400.
     """
-    if not (barcode.isascii() and is_valid_barcode(barcode)):
-        raise _invalid("path", "barcode", "Kein Barcode mit gültiger Prüfziffer (EAN-8 oder EAN-13).")
+    _check_barcode(barcode)
     wait = _wait_of(request)
     response.headers["Cache-Control"] = "no-store"
 
@@ -93,4 +92,60 @@ async def lookup_barcode(
             # Der Ablauf läuft nicht (mehr), etwa beim Herunterfahren: nur, was gespeichert ist.
             stored = await run_in_threadpool(off.stored_answer_at, settings.database_path, barcode)
             answer = stored or off.PENDING
+    # throttled gibt es nur beim Neuabruf; teilt sich ein Scan dessen Abfrage, gilt das nicht für ihn.
+    return _result(barcode, dataclasses.replace(answer, throttled=False))
+
+
+def _check_barcode(barcode: str) -> None:
+    if not (barcode.isascii() and is_valid_barcode(barcode)):
+        raise _invalid("path", "barcode", "Kein Barcode mit gültiger Prüfziffer (EAN-8 oder EAN-13).")
+
+
+def _result(barcode: str, answer: off.Answer) -> LookupResult:
     return LookupResult(barcode=barcode, **dataclasses.asdict(answer))
+
+
+@router.post(
+    "/lookup/{barcode}/refresh",
+    operation_id="refresh_lookup",
+    response_model=LookupResult,
+    openapi_extra=_WAIT_PARAMETER,
+)
+async def refresh_lookup(
+    barcode: Annotated[
+        str, Path(description="EAN-8 oder EAN-13 mit gültiger Prüfziffer, in der gespeicherten Form.")
+    ],
+    request: Request,
+    response: Response,
+    _device: CurrentDevice,
+) -> LookupResult:
+    """Fragt Open Food Facts jetzt neu, auch wenn schon ein Ergebnis gespeichert ist, auch nach
+    ``not_found`` (seit 0.5.0; docs/sync-protokoll.md, Abschnitt 10).
+
+    Vor allen Abfragen im Hintergrund; die Rate (``LOOKUPS_PER_MINUTE``) und die Pause nach 429
+    gelten weiter. Je Barcode höchstens einmal in ``LOOKUP_REFRESH_GAP_S``; sonst und wenn Open Food
+    Facts bremst, kommt das gespeicherte Ergebnis mit ``throttled: true``. Ein Fund ersetzt das
+    gespeicherte Ergebnis, auch für künftige Scans, samt Bild (``image_id``). Ein Fehlschlag (Netz,
+    5xx) ändert nichts; ``not_found`` überschreibt keinen Fund, wird aber gemeldet. Kein Produkt
+    ändert sich, auch nicht sein Stand ``lookup``. Ladeninterne Codes: ``skipped``; Nachschlagen aus:
+    ``disabled``. Ungültiger Barcode oder ``wait``: 400.
+    """
+    _check_barcode(barcode)
+    wait = _wait_of(request)
+    response.headers["Cache-Control"] = "no-store"
+
+    settings = get_settings(request)
+    if is_store_internal_barcode(barcode):
+        answer = off.Answer(LookupResultState.SKIPPED)
+    elif not settings.off_enabled:
+        answer = off.Answer(LookupResultState.DISABLED)
+    else:
+        worker: off.OffWorker | None = request.app.state.off_worker
+        if worker is not None:
+            # Fragt nur der Ablauf selbst, an die feste Adresse von Open Food Facts (STOWLY_OFF_URL).
+            answer = await worker.refresh(barcode, wait)
+        else:
+            # Der Ablauf läuft nicht (mehr): nicht neu gefragt, der gespeicherte Stand.
+            stored = await run_in_threadpool(off.stored_answer_at, settings.database_path, barcode)
+            answer = dataclasses.replace(stored or off.PENDING, throttled=True)
+    return _result(barcode, answer)

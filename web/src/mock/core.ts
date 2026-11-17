@@ -84,6 +84,15 @@
  * "ha-token-missing" ist in der App eingerichtet, aber ohne Token (nach einem Zurückspielen); die
  * übrigen "ha-…" sind in der App eingerichtet. „Verbindung prüfen" findet zwei Listen; nach dem
  * Speichern ist der Abgleich erst "pending", dann "ok".
+ *
+ * Seit 0.5.0 (docs/plan-0.5.md): Etiketten gestalten (`labels`) spielt den Server nach (Katalog,
+ * Prüfung und gezeichnete Vorschau in src/mock/labels.ts); die neuen Vorlagen kommen mit dem
+ * nächsten nachgespielten Abgleich (`labels.templates`). „Online abfragen" (`products.refreshLookup`)
+ * folgt der Regel des Nachschlagens (gerade Endziffer = gefunden, dann mit Bild), mit
+ * "lookup-refresh" findet es jeden Barcode; je Barcode einmal in der Minute, sonst `throttled`.
+ * `products.setImage` setzt das Bild sofort. Der Druckdienst des Pi meldet beim Prüfen seine Formate
+ * (`template_schemas`) und die eingelegte Rolle (62 mm endlos) und vergleicht sie mit dem Papier des
+ * Haushalts; der am Server ist immer aktuell.
  */
 import { x25519 } from "@noble/curves/ed25519.js";
 import { bech32 } from "@scure/base";
@@ -141,12 +150,17 @@ import {
   type Device,
   type DevicePrefs,
   type DisplacedChange,
+  type DriverStatus,
   type ConfigSource,
   type HaConfig,
   type HaState,
   type HaStatus,
   type HttpsStatus,
   type IntegrationStatus,
+  type LabelDesign,
+  type LabelDesignState,
+  type LabelTemplatesInfo,
+  type LookupResult,
   type NewPrinter,
   type NewProduct,
   type NewShoppingItem,
@@ -175,6 +189,8 @@ import {
   type RestoreUpload,
   type ServerConfig,
   type ServiceHealth,
+  type ServicePaper,
+  type ServicePrinter,
   type SessionState,
   type SettingsChanges,
   type SetupStatus,
@@ -193,6 +209,19 @@ import {
 } from "@/contract";
 
 import { MOCK_IMAGES, SAMPLE_IMAGE_ID } from "./images";
+import {
+  MOCK_CUSTOM_DESIGN,
+  MOCK_DEFAULT_DESIGN,
+  MOCK_DIE_CUT_DESIGN,
+  MOCK_NARROW_DESIGN,
+  MOCK_PAPERS,
+  isMockDefault,
+  mockHash,
+  mockLayoutProblem,
+  mockPaper,
+  mockPreview,
+  mockSchema,
+} from "./labels";
 import { derived, LiveValue } from "./live";
 import { PREVIEW_PNG_BASE64 } from "./preview";
 import { createEmptyData, createLargeData, createSampleData, createSingleZoneData, DEVICE_IDS, PRINTER_IDS, troubledPrinterStatus, type MockData } from "./sample";
@@ -243,6 +272,15 @@ import { computeStats } from "./stats";
  * - "ha-token-missing": Home Assistant in der App eingerichtet, aber der Token fehlt (nach einem Zurückspielen)
  * - "restore-preview": jede Datei gilt als Sicherung, jeder gültige geheime Schlüssel passt; vor zwei
  *                  Tagen wurde schon einmal zurückgespielt („Rückgängig" geht noch)
+ * - "labels-custom": eine eigene Gestaltung der Etiketten (62 mm endlos, 50 mm lang, QR-Code rechts)
+ * - "labels-die-cut": gestanzte Etiketten 62 × 29 mm (Format 2); im Drucker liegt weiter die
+ *                  62-mm-Endlosrolle: Prüfen meldet „falsche Rolle", Drucken scheitert damit
+ * - "printer-off": der Druckdienst des Pi antwortet, der Drucker daran ist aus (der Pi ist erreichbar)
+ * - "pi-outdated": der Pi wurde mit Druckdienst 0.4.0 gekoppelt (`paired_printers`), und das Papier
+ *                  des Haushalts braucht Format 2 (29 mm endlos, ohne "labels-…"): Seine Etiketten
+ *                  bleiben mit `outdated` ausstehend, bis er neu gekoppelt ist
+ * - "lookup-refresh": „Online abfragen" findet jeden Barcode, mit Angaben, die vom Produkt abweichen,
+ *                  und einem Bild; derselbe Barcode in der Minute danach kommt gebremst (`throttled`)
  */
 export type MockScenario =
   | "empty"
@@ -286,7 +324,12 @@ export type MockScenario =
   | "backup-app"
   | "ha-env"
   | "ha-token-missing"
-  | "restore-preview";
+  | "restore-preview"
+  | "labels-custom"
+  | "labels-die-cut"
+  | "printer-off"
+  | "pi-outdated"
+  | "lookup-refresh";
 
 export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "empty",
@@ -331,6 +374,11 @@ export const MOCK_SCENARIOS: readonly MockScenario[] = [
   "ha-env",
   "ha-token-missing",
   "restore-preview",
+  "labels-custom",
+  "labels-die-cut",
+  "printer-off",
+  "pi-outdated",
+  "lookup-refresh",
 ];
 
 /** Wie ein nachgespielter Druck ausgeht. */
@@ -574,8 +622,26 @@ function mockHttps(off: boolean, seenAt: string | null, nowMs: number): HttpsSta
 /** Eine Adresse im Heimnetz (docs/integrationen.md, 11.3), vereinfacht: private IPv4 oder ein lokaler Name. */
 const HOME_ADDRESS = /^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|[a-z0-9.-]+\.(local|lan|home|home\.arpa|internal|localdomain|fritz\.box))$/i;
 
-/** Der nachgespielte Pi: Hostname, Adresse und Drucker, so wie er sich beim Koppeln meldet. */
-const MOCK_PI = { hostname: "stowly-pi", address: "192.168.1.20", model: "QL-570" } as const;
+/** Der nachgespielte Pi: Hostname, Adresse, Drucker und Version des Druckdienstes, so wie er sich beim Koppeln meldet. */
+const MOCK_PI = { hostname: "stowly-pi", address: "192.168.1.20", model: "QL-570", version: "0.5.0" } as const;
+
+/** Der Satz des Kerns zu `outdated` (src/core/print/texts.ts). */
+const OUTDATED_MESSAGE = "Der Druckdienst auf dem Pi ist zu alt für dieses Papier. Neu koppeln aktualisiert ihn.";
+
+/** Die eingelegte Rolle am Drucker des Pi in der Attrappe: die 62-mm-Endlosrolle. */
+const MOCK_LOADED: ServicePaper = { id: "62", kind: "endless", width_mm: 62, length_mm: null };
+
+/** Was der Sync aus einer Gestaltung an Vorlagen bringt: Papier, Format, `hash` (Vorgabe wie beim Fake-Server). */
+function templatesOf(design: LabelDesign, isDefault: boolean): LabelTemplatesInfo {
+  if (isDefault) {
+    return { paper: "62", schema: 1, hashes: { package: "0000000000000001", zone: "0000000000000002" } };
+  }
+  return {
+    paper: design.paper,
+    schema: mockSchema(design),
+    hashes: { package: mockHash(JSON.stringify([design.paper, design.package])), zone: mockHash(JSON.stringify([design.paper, design.zone])) },
+  };
+}
 
 /** Was der nachgespielte Push-Dienst auf eine Testnachricht antwortet (docs/integrationen.md, 4.7 und 4.9). */
 const PUSH_TEST_RESULTS: Record<PushTestStatus, PushTestResult> = {
@@ -732,7 +798,16 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       : scenarios.has("large")
         ? createLargeData(clock())
         : createSampleData(clock());
-  const base: MockData = scenarios.has("printer-trouble") ? { ...chosen, printerStatus: troubledPrinterStatus(clock()) } : chosen;
+  const troubledData: MockData = scenarios.has("printer-trouble") ? { ...chosen, printerStatus: troubledPrinterStatus(clock()) } : chosen;
+  // "printer-off": Zuletzt gesehen war der Drucker am Pi aus.
+  const base: MockData = scenarios.has("printer-off")
+    ? {
+        ...troubledData,
+        printerStatus: troubledData.printerStatus.map((entry) =>
+          entry.printer_id === PRINTER_IDS.cellar ? { ...entry, observed_at: new Date(clock().getTime() - 600_000).toISOString(), status: { reachable: false, ready: null, media_detected: null, errors: ["offline"] } } : entry,
+        ),
+      }
+    : troubledData;
   const state = new LiveValue<MockData>({ ...base, ...options.data });
 
   /** Name, unter dem das Gerät der Attrappe angemeldet ist oder zuletzt war. */
@@ -817,11 +892,34 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   let secureTrusted = false;
   /** Die Kopplungen eines Pi, älteste zuerst; die Codes stehen nur in der Antwort auf `printers.pair`. */
   const pairings = new Map<string, PiPairing>();
-  /** Je Drucker die jüngste Kopplung eines Pi: Hostname und Ablauf des Zertifikats (`SetupStatus.paired_printers`). */
-  const piCertificates = new Map<string, { hostname: string; not_after: string }>();
-  if (scenarios.has("pi-cert-expiring")) {
-    piCertificates.set(PRINTER_IDS.cellar, { hostname: "stowly-pi", not_after: new Date(clock().getTime() + 20.5 * 86_400_000).toISOString() });
+  /**
+   * Je Drucker die jüngste Kopplung eines Pi: Hostname, Ablauf des Zertifikats, Version des
+   * Druckdienstes und Modell (`SetupStatus.paired_printers`).
+   */
+  const piCertificates = new Map<string, { hostname: string; not_after: string; version: string | null; model: string | null }>();
+  const piOutdated = scenarios.has("pi-outdated");
+  if (scenarios.has("pi-cert-expiring") || piOutdated) {
+    const days = scenarios.has("pi-cert-expiring") ? 20.5 : 400;
+    piCertificates.set(PRINTER_IDS.cellar, {
+      hostname: "stowly-pi",
+      not_after: new Date(clock().getTime() + days * 86_400_000).toISOString(),
+      version: piOutdated ? "0.4.0" : MOCK_PI.version,
+      model: MOCK_PI.model,
+    });
   }
+
+  // Etiketten gestalten (seit 0.5.0, siehe Kopf der Datei). `labelTemplates` ist, was der Sync zuletzt gebracht hat.
+  let labelDesign: LabelDesign = scenarios.has("labels-die-cut")
+    ? MOCK_DIE_CUT_DESIGN
+    : scenarios.has("labels-custom")
+      ? MOCK_CUSTOM_DESIGN
+      : piOutdated
+        ? MOCK_NARROW_DESIGN
+        : MOCK_DEFAULT_DESIGN;
+  let labelDesignAt: string | null = labelDesign === MOCK_DEFAULT_DESIGN ? null : setupSince;
+  let labelTemplates: LabelTemplatesInfo = templatesOf(labelDesign, labelDesignAt === null);
+  /** Wann ein Barcode zuletzt neu gefragt wurde (Uhr der Attrappe), und was dabei herauskam. */
+  const refreshed = new Map<string, { at: number; result: LookupResult }>();
 
   // Stufe B: Sicherung (siehe Kopf der Datei). Was aus der Umgebung kommt, steht fest.
   const backupSetup: "env" | "app" | "none" = scenarios.has("backup-none") || setupOpen ? "none" : scenarios.has("backup-app") || scenarios.has("backup-problem") ? "app" : "env";
@@ -869,9 +967,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   }
 
   // Nachgespielter Druck (siehe Kopf der Datei).
-  let piReachable = scenarios.has("at-pi");
+  const piPrinterOff = scenarios.has("printer-off");
+  let piReachable = scenarios.has("at-pi") || piPrinterOff;
   /** Ein Grund, aus dem der Pi nicht benutzbar ist (`setPiProblem`); null = es gilt `piReachable`. */
   let piProblem: PrinterProblem | null = null;
+  /** Der Druckdienst des Pi ist 0.4.0 ("pi-outdated"): nur Format 1, ohne eingelegte Rolle. Neu koppeln aktualisiert ihn. */
+  let piServiceOutdated = piOutdated;
   let printOutcome: MockPrintOutcome = "printed";
   const troubled = scenarios.has("printer-trouble");
   const BOOT_IDS = { server: "5e77e700-0000-4000-8000-000000000001", pi: "c0ffee00-0000-4000-8000-000000000001" } as const;
@@ -902,6 +1003,8 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     syncScheduled = false;
     if (syncStatus.get().online && session.get().status === "signed_in") {
       unsentPrinterReports.clear();
+      // Die Vorlagen zur Gestaltung des Haushalts kommen mit dem Abgleich (docs/plan-0.5.md, 1).
+      labelTemplates = templatesOf(labelDesign, labelDesignAt === null);
       // Der Server hat die Befehle verarbeitet: Was er dabei selbst schreibt, kommt jetzt (7.6).
       runServerEffects();
       syncStatus.update((status) => ({ ...status, phase: "idle", pending: 0, last_synced_at: stamp(), last_error: null }));
@@ -1173,6 +1276,29 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   }
 
+  /**
+   * Der Drucker am Pi, wie sein Druckdienst ihn meldet: aus ("printer-off"), sonst bereit, außer die
+   * eingelegte Rolle passt nicht zum Papier des Haushalts (das kann erst der Druckdienst ab 0.5.0).
+   */
+  function piDriverStatus(): DriverStatus {
+    if (piPrinterOff) {
+      return { reachable: false, ready: null, media_detected: null, errors: ["offline"] };
+    }
+    if (!piServiceOutdated && labelTemplates.paper !== null && labelTemplates.paper !== MOCK_LOADED.id) {
+      return { reachable: true, ready: false, media_detected: true, errors: ["media_mismatch"] };
+    }
+    return { reachable: true, ready: true, media_detected: true, errors: [] };
+  }
+
+  /** Warum ein angenommener Auftrag an diesem Drucker scheitert; null = er druckt. */
+  function printFailure(printer: Printer): string | null {
+    if (printer.connection !== "direct") {
+      return null;
+    }
+    const status = piDriverStatus();
+    return status.reachable ? (status.errors[0] ?? null) : "offline";
+  }
+
   function printerStatusFor(printer: Printer): PrinterStatus {
     const direct = printer.connection === "direct";
     const sample = troubled ? troubledPrinterStatus(clock()).find((status) => status.printer_id === (direct ? PRINTER_IDS.cellar : PRINTER_IDS.kitchen)) : undefined;
@@ -1180,7 +1306,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       printer_id: printer.id,
       observed_at: stamp(),
       boot_id: direct ? BOOT_IDS.pi : BOOT_IDS.server,
-      status: sample?.status ?? { reachable: true, ready: true, media_detected: direct ? true : null, errors: [] },
+      status: sample?.status ?? (direct ? piDriverStatus() : { reachable: true, ready: true, media_detected: null, errors: [] }),
       host: direct
         ? (sample?.host ?? {
             uptime_s: 4321,
@@ -1213,8 +1339,17 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     const seen = new Set<string | null>();
     for (const job of ownPending()) {
       const printer = printerFor(job);
-      if (printer && reachable(printer)) {
+      if (printer && reachable(printer) && !(printer.connection === "direct" && piServiceOutdated && labelTemplates.schema > 1)) {
         accepted.push({ job, printer });
+        continue;
+      }
+      if (printer && reachable(printer)) {
+        // Wie im Kern: Ein zu alter Druckdienst bekommt das Etikett nicht; es bleibt ausstehend.
+        report.pending += 1;
+        if (!seen.has(printer.id)) {
+          seen.add(printer.id);
+          report.problems.push({ printer_id: printer.id, problem: "outdated", message: OUTDATED_MESSAGE });
+        }
         continue;
       }
       report.pending += 1;
@@ -1239,11 +1374,15 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     }
     const outcome = printOutcome;
     later(() => {
-      for (const { job } of accepted) {
+      for (const { job, printer } of accepted) {
         if (state.get().printJobs.find((candidate) => candidate.id === job.id)?.state !== "queued") {
           continue; // inzwischen verworfen
         }
-        if (outcome === "printed") {
+        const failure = printFailure(printer);
+        if (failure !== null) {
+          // Drucker aus, oder die eingelegte Rolle passt nicht zum Papier des Etiketts.
+          setJobState(job.id, "failed", failure);
+        } else if (outcome === "printed") {
           setJobState(job.id, "printed");
         } else if (outcome === "failed") {
           setJobState(job.id, "failed", "no_media");
@@ -1600,7 +1739,7 @@ export function createMockCore(options: MockOptions = {}): MockCore {
     const printers = state.get().printers;
     const paired = [...piCertificates]
       .filter(([printerId]) => printers.some((printer) => printer.id === printerId && printer.deleted_at === null))
-      .map(([printerId, pi]) => ({ printer_id: printerId, hostname: pi.hostname, not_after: pi.not_after }))
+      .map(([printerId, pi]) => ({ printer_id: printerId, ...pi }))
       .sort((a, b) => a.not_after.localeCompare(b.not_after));
     return {
       password_source: fromEnv ? "env" : "app",
@@ -1608,6 +1747,18 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       finished_at: setupFinishedAt,
       paired_printers: paired,
       https: { ...https, addresses: https.addresses.map((address) => ({ ...address })), origins: [...https.origins] },
+    };
+  }
+
+  /** `LabelDesignState` (seit 0.5.0): die gültige Gestaltung, die `hash` der Vorlagen beim Server, der Katalog. */
+  function labelDesignState(): LabelDesignState {
+    const current = templatesOf(labelDesign, labelDesignAt === null);
+    return {
+      design: JSON.parse(JSON.stringify(labelDesign)) as LabelDesign,
+      is_default: labelDesignAt === null,
+      updated_at: labelDesignAt,
+      templates: { package: current.hashes.package ?? "", zone: current.hashes.zone ?? "" },
+      papers: MOCK_PAPERS.map((paper) => ({ ...paper })),
     };
   }
 
@@ -1714,8 +1865,12 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       return { ...data, printers };
     });
     const notAfter = new Date(clock().getTime() + 825 * 86_400_000).toISOString();
-    pairings.set(id, { ...pairing, state: "paired", printer_id: printerId, pi: { hostname, addresses: [address], model, printer_found: true, version: "0.3.0", not_after: notAfter } });
-    piCertificates.set(printerId, { hostname, not_after: notAfter });
+    pairings.set(id, { ...pairing, state: "paired", printer_id: printerId, pi: { hostname, addresses: [address], model, printer_found: true, version: MOCK_PI.version, not_after: notAfter } });
+    // Neu koppeln spielt den aktuellen Druckdienst ein.
+    piCertificates.set(printerId, { hostname, not_after: notAfter, version: MOCK_PI.version, model });
+    if (printerId === PRINTER_IDS.cellar) {
+      piServiceOutdated = false;
+    }
     piReachable = true;
   }
 
@@ -2099,6 +2254,50 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           ? answer("found", { name: `Beispielprodukt ${barcode.slice(-4)}`, brand: "Beispielmarke", quantity: "500 g", image_id: SAMPLE_IMAGE_ID })
           : answer("not_found");
       },
+      async refreshLookup(barcode: string): Promise<LookupResult> {
+        if (!isValidBarcode(barcode)) {
+          throw new CoreError("invalid", "Kein gültiger Barcode.");
+        }
+        const empty = { barcode, name: "", brand: "", quantity: "", image_id: null, fetched_at: null, throttled: false };
+        if (isStoreInternalBarcode(barcode)) {
+          return { ...empty, state: "skipped" };
+        }
+        requireSignedIn();
+        await wait(2);
+        requireOnline();
+        if (syncStatus.get().lookup_enabled === false) {
+          return { ...empty, state: "disabled" };
+        }
+        // Wie der Server: je Barcode höchstens einmal in der Minute, sonst der gespeicherte Stand.
+        const nowMs = clock().getTime();
+        const last = refreshed.get(barcode);
+        if (last && nowMs - last.at < 60_000) {
+          return { ...last.result, throttled: true };
+        }
+        const owner = barcodeOwner(barcode);
+        const everything = scenarios.has("lookup-refresh");
+        const found = everything || Number(barcode.at(-1)) % 2 === 0;
+        const name = everything && owner && owner.name.trim() !== "" ? `Bio ${owner.name.trim()}` : `Beispielprodukt ${barcode.slice(-4)}`;
+        const result: LookupResult = found
+          ? { barcode, state: "found", name, brand: everything && owner?.brand ? owner.brand : "Beispielmarke", quantity: "500 g", image_id: SAMPLE_IMAGE_ID, fetched_at: stamp(), throttled: false }
+          : { ...empty, state: "not_found", fetched_at: stamp() };
+        refreshed.set(barcode, { at: nowMs, result });
+        return result;
+      },
+      async setImage(productId: string, imageId: string | null) {
+        requireSignedIn();
+        await wait(0.5);
+        requireOnline();
+        const product = activeProduct(productId);
+        if (imageId !== null && !Object.hasOwn(MOCK_IMAGES, imageId)) {
+          throw new CoreError("invalid", "Dieses Bild hat Stowly nicht gespeichert.");
+        }
+        // Beim Server bekommt das Produkt einen neuen Stand; die Attrappe zeigt ihn sofort.
+        state.update((data) => ({
+          ...data,
+          products: data.products.map((candidate) => (candidate.id === product.id ? { ...candidate, image: imageId, updated_at: stamp() } : candidate)),
+        }));
+      },
       async update(id: string, changes: ProductChanges) {
         const product = activeProduct(id);
         const name = changes.name === undefined ? undefined : requiredText(changes.name, LIMITS.product_name, "Das Produkt");
@@ -2397,7 +2596,8 @@ export function createMockCore(options: MockOptions = {}): MockCore {
         }
         const status = printerStatusFor(printer);
         rememberStatus(status);
-        const health = sampleHealth(printer, status);
+        const outdated = printer.connection === "direct" && piServiceOutdated;
+        const health = sampleHealth(printer, status, outdated);
         // Ein direkter Drucker bringt seinen Zustand mit dem nächsten Abgleich zum Server
         // (`printer.report`). Wartet von ihm noch eine ungesendete Meldung, ersetzt die neue sie.
         if (printer.connection === "direct") {
@@ -2406,7 +2606,9 @@ export function createMockCore(options: MockOptions = {}): MockCore {
           changed(replaces ? 0 : 1);
         }
         deliverSoon();
-        return { reachable: true, url: printer.direct?.urls[0] ?? null, health, problem: null, error: null };
+        // Wie im Kern: Kennt der Dienst das Format der Vorlagen nicht, ist er zu alt für das Papier.
+        const tooOld = outdated && labelTemplates.schema > 1;
+        return { reachable: true, url: printer.direct?.urls[0] ?? null, health, problem: tooOld ? "outdated" : null, error: tooOld ? OUTDATED_MESSAGE : null };
       },
       // Einen Pi koppeln (Protokoll 11.8), nachgespielt; siehe Kopf der Datei.
       async pair(input) {
@@ -3294,6 +3496,58 @@ export function createMockCore(options: MockOptions = {}): MockCore {
       },
     },
 
+    // Etiketten gestalten (seit 0.5.0, siehe Kopf der Datei): braucht den Server, außer `templates`.
+    labels: {
+      async design() {
+        requireSignedIn();
+        await wait(0.5);
+        requireOnline();
+        return labelDesignState();
+      },
+      async preview(input) {
+        requireSignedIn();
+        await wait(0.5);
+        requireOnline();
+        const problem = mockLayoutProblem(input.kind, input.paper, input.layout);
+        const paper = mockPaper(input.paper);
+        if (problem !== null || !paper) {
+          const message = problem ?? "Dieses Papier kennt Stowly nicht.";
+          throw new CoreError("invalid", message, { errors: [{ loc: ["body", "layout"], msg: message, type: "label_design" }] });
+        }
+        return mockPreview(paper, input.layout, input.data === null || input.data === undefined);
+      },
+      async save(design) {
+        requireSignedIn();
+        await wait();
+        requireOnline();
+        // Wie der Server: der Satz, und die Stelle in `details.errors[0].loc` (welche Gestaltung).
+        for (const kind of ["package", "zone"] as const) {
+          const problem = mockLayoutProblem(kind, design.paper, design[kind]);
+          if (problem !== null) {
+            throw new CoreError("invalid", problem, { errors: [{ loc: ["body", kind], msg: problem, type: "label_design" }] });
+          }
+        }
+        labelDesign = JSON.parse(JSON.stringify(design)) as LabelDesign;
+        // Die Vorgabe zu speichern heißt wie beim Server: keine eigene Gestaltung.
+        labelDesignAt = isMockDefault(design) ? null : stamp();
+        // Die neuen Vorlagen kommen mit dem nächsten Abgleich (`finishSync`).
+        changed(0);
+        return labelDesignState();
+      },
+      async reset() {
+        requireSignedIn();
+        await wait();
+        requireOnline();
+        labelDesign = MOCK_DEFAULT_DESIGN;
+        labelDesignAt = null;
+        changed(0);
+        return labelDesignState();
+      },
+      async templates() {
+        return { ...labelTemplates, hashes: { ...labelTemplates.hashes } };
+      },
+    },
+
     control: {
       setOnline(online: boolean) {
         syncStatus.update((status) => ({
@@ -3402,34 +3656,39 @@ export function createMockCore(options: MockOptions = {}): MockCore {
   return core;
 }
 
-function sampleHealth(printer: Printer, status: PrinterStatus): ServiceHealth {
+/**
+ * Was der Druckdienst bei „Verbindung prüfen" meldet. `outdated`: ein Druckdienst vor 0.5.0, ohne
+ * `template_schemas` und ohne eingelegte Rolle.
+ */
+function sampleHealth(printer: Printer, status: PrinterStatus, outdated: boolean): ServiceHealth {
   const direct = printer.connection === "direct";
-  return {
+  const described: ServicePrinter = {
+    // Am Server heißt ein Drucker im Druckdienst wie seine Kennung, am Pi trägt er einen eigenen Namen.
+    name: direct ? (printer.direct?.printer ?? "ql570") : printer.id,
+    driver: direct ? "brother_ql" : (printer.server?.driver ?? "image"),
+    model: direct ? MOCK_PI.model : (printer.server?.model ?? null),
+    capabilities: {
+      dpi: 300,
+      media: { width_mm: 62, length_mm: null, printable_px: 696 },
+      cutter: true,
+      colors: ["black"],
+      status_query: direct,
+      confirms_print: direct,
+    },
+    status: status.status ?? { reachable: true, ready: true, media_detected: null, errors: [] },
+  };
+  const health: ServiceHealth = {
     app: "stowly-print",
-    version: "0.1.0",
+    version: outdated ? "0.4.0" : MOCK_PI.version,
     protocol: 1,
     boot_id: status.boot_id ?? "",
     uptime_s: 4321,
     proof: null,
     host: status.host,
-    printers: [
-      {
-        // Am Server heißt ein Drucker im Druckdienst wie seine Kennung, am Pi trägt er einen eigenen Namen.
-        name: direct ? (printer.direct?.printer ?? "ql800") : printer.id,
-        driver: direct ? "brother_ql" : (printer.server?.driver ?? "image"),
-        model: direct ? "QL-800" : (printer.server?.model ?? null),
-        capabilities: {
-          dpi: 300,
-          media: { width_mm: 62, length_mm: null, printable_px: 696 },
-          cutter: true,
-          colors: ["black"],
-          status_query: direct,
-          confirms_print: direct,
-        },
-        status: status.status ?? { reachable: true, ready: true, media_detected: null, errors: [] },
-      },
-    ],
+    // Die Rolle meldet nur ein Drucker mit Etiketten (nicht der Bild-Treiber), und erst ab 0.5.0.
+    printers: [outdated ? described : { ...described, loaded: direct && status.status?.reachable !== false ? MOCK_LOADED : null }],
   };
+  return outdated ? health : { ...health, template_schemas: [1, 2] };
 }
 
 /**

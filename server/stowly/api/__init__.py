@@ -16,8 +16,10 @@ from stowly.api import (
     haconfig,
     images,
     integrations,
+    labels,
     lookup,
     pi,
+    products,
     push,
     restore,
     serverconfig,
@@ -49,5 +51,8 @@ router.include_router(pi.router)
 # Stufe B: Home Assistant aus der App, Zurückspielen einer Sicherung
 router.include_router(haconfig.router)
 router.include_router(restore.router)
+# 0.5.0: Etiketten gestalten, Produktbild setzen
+router.include_router(labels.router)
+router.include_router(products.router)
 
 __all__ = ["router"]

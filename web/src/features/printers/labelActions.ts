@@ -4,7 +4,7 @@ import { isCoreError, useCore, type Printer, type PrintFlushReport } from "@/con
 import { errorText, plural } from "@/ui";
 import { useToast } from "@/ui/base";
 
-import type { JobView } from "./model";
+import type { JobView } from "./jobs";
 
 export interface LabelActions {
   /** Was gerade läuft: die Kennung eines Etiketts, "flush", "all" oder "handoff:<Drucker>"; sonst null. */

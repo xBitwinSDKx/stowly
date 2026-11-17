@@ -96,11 +96,13 @@ export interface ConnectOptions {
   promptFree(space: AddressSpace): boolean;
   /** Eine Anfrage in diesen Adressraum wurde beantwortet, und die Erlaubnis steht weiter auf „offen". */
   learnPromptFree(space: AddressSpace): void;
+  /** Das Papier des Haushalts (`media` der Abfrage, seit 0.5.0); null = keines bekannt. */
+  media?: string | null;
 }
 
 async function connectServer(printer: Printer, options: ConnectOptions): Promise<ConnectResult> {
   const endpoint: ServiceEndpoint = { kind: "server", token: options.deviceToken };
-  const reply = await options.client.health(endpoint, null);
+  const reply = await options.client.health(endpoint, null, undefined, options.media);
   if (!reply.ok) {
     if (!reply.reached) {
       return { ok: false, problem: "offline" };
@@ -147,7 +149,7 @@ async function connectDirect(printer: Printer, options: ConnectOptions): Promise
     const endpoint: ServiceEndpoint = { kind: "direct", base, token: direct.token };
     const nonce = newNonce();
     // Kann diese Anfrage die Nachfrage des Browsers auslösen, bekommt der Anwender Zeit für seine Antwort.
-    const reply = await options.client.health(endpoint, nonce, healthTimeout(mayPrompt, startedAt, Date.now()));
+    const reply = await options.client.health(endpoint, nonce, healthTimeout(mayPrompt, startedAt, Date.now()), options.media);
     if (permission === "prompt" && (reply.ok || reply.reached) && (await options.readPermission(space)) === "prompt") {
       // Beantwortet, ohne dass der Browser gefragt hätte: In diesem Adressraum fragt er nicht.
       options.learnPromptFree(space);

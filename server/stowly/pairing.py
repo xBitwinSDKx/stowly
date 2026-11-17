@@ -410,7 +410,7 @@ def _pi_info(raw: str | None) -> dict[str, Any] | None:
     """``PiInfo`` aus der Spalte ``pi``; fehlt etwas, gilt die Vorgabe."""
     try:
         stored = json.loads(raw) if raw else None
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     if not isinstance(stored, dict) or not isinstance(stored.get("hostname"), str):
         return None
