@@ -371,3 +371,7 @@ Automatisch geprüft:
 
 - [ ] **78.** Das eigene Stowly per Knopf auf 0.5.1 bringen. Noch während „wird installiert“ Einrichtung → Updates öffnen: Dort steht kein Befehl, sondern „Gerade läuft ein Update …“. Nach „Aktualisiert auf 0.5.1“ erscheinen Hinweis und Befehl (M14).
 - [ ] **79.** Den Updater mit dem neuen Befehl erneuern (M15). Die Übernahme der Sperre am NAS nicht absichtlich herbeiführen; sie ist automatisch geprüft.
+
+**Stand 17.11.2026** (eigenes NAS):
+- **78:** Das Update per Knopf von 0.5.0 auf 0.5.1 lief in gut einer Minute ohne Zwischenfall. Der Updater 0.5.0 hielt Stowly an, sicherte, startete 0.5.1, fand es „healthy“ und räumte das alte Image 0.4.0 auf: „Aktualisiert von 0.5.0 auf 0.5.1.“ Ob Einrichtung → Updates währenddessen den neuen Hinweis zeigte (M14), ist nicht eigens angesehen.
+- **79:** Den Updater per SSH mit demselben Befehl erneuert, den die App zeigt: Image 0.5.1, `--volumes-from` des neuen Containers. Vorher prüfte ein Skript, dass `update/state` „done“ für 0.5.1 meldet. Das Lebenszeichen kommt seitdem mit Version 0.5.1 (M15, in der App nicht eigens angesehen).
