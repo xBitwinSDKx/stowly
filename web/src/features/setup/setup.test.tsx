@@ -52,10 +52,15 @@ async function statusOf(scenarios: Parameters<typeof createMockCore>[0] = {}): P
   return createMockCore({ latency: 0, ...scenarios }).setup.load();
 }
 
-/** Öffnet einen Schritt der Einrichtung. */
+/**
+ * Öffnet einen Schritt der Einrichtung. Die Überschrift steht schon, während die Einrichtung noch
+ * lädt; den Schritt gibt es erst danach. Ohne dieses Warten fand ein langsamer Rechner (GitHub
+ * Actions) den Knopf „Code erzeugen" mal nicht.
+ */
 async function openStep(scenarios: Parameters<typeof renderApp>[0], step: Parameters<typeof setupPath>[0]): Promise<MockCore> {
   const core = renderApp(scenarios, setupPath(step));
   await screen.findByRole("heading", { name: "Einrichtung", level: 1 });
+  await waitFor(() => expect(screen.queryByRole("status", { name: /^Einrichtung wird geladen/ })).not.toBeInTheDocument());
   return core;
 }
 
