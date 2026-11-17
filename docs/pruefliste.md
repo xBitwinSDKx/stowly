@@ -427,3 +427,9 @@ Am Gerät, mit dem eigenen Schlüssel (`betrieb.md`, Tabelle P); den Schlüssel 
 - [ ] **83.** „Fehlendes auf die Einkaufsliste“ bis zu Bring! (P8).
 - [ ] **84.** Bremse je Gerät, Rückkehr auf die Seite, Zähler nach einem Neustart, offline (P9 bis P12).
 - [ ] **85.** Log und Arbeitsspeicher am NAS (P13, P14).
+
+**Stand 17.11.2026** (eigenes NAS; den Testcontainer hat der Anwender übersprungen, daher direkt `v0.6.0` auf demselben Commit wie rc.1):
+- **Update per Knopf:** von 0.5.1 auf 0.6.0 ohne Zwischenfall. Der Updater 0.5.1 sicherte die Datenbank, fand 0.6.0 nach 38 Sekunden „healthy“ und entfernte das alte Image 0.5.0. Am Updater im Container hat sich nichts geändert; dass die App ihn als älter meldet, ist harmlos.
+- **81 und 82, nur mit Opus 5.5:** Den Schlüssel hat der Anwender selbst eingetragen. Die Vorschläge kamen nach etwa 10 Sekunden, laut Anwender. Damit nimmt das Konto auch den Kopf für das Ersatzmodell an; sonst hätte Anthropic jede Anfrage mit Opus abgelehnt.
+- **80, 83 bis 85 und die Durchgänge mit Sonnet und Haiku:** auf Wunsch des Anwenders übersprungen.
+- **Wunsch daraus:** „Was koche ich?“ gehört in die Hauptnavigation neben die Einkaufsliste, umgesetzt in 0.6.1.

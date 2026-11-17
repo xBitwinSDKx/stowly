@@ -1140,7 +1140,7 @@ Geht das nicht, etwa nach einem Plattenausfall, bleibt die Sicherung: beim erste
 
 ## 21. Was koche ich? Vorschläge von Claude
 
-Die Seite „Was koche ich?“ steht unter „Weitere Bereiche“, in der Seitenleiste und im Menü am Handy. Sie sucht mit Zutaten aus dem Vorrat bei Cookidoo und Chefkoch; das geht ohne Einrichtung, auch offline. Vorschläge von Claude brauchen einen API-Schlüssel von Anthropic. Die Regeln stehen in [`integrationen.md`](integrationen.md), Abschnitt 13.
+Die Seite „Was koche ich?“ steht in der Hauptnavigation gleich hinter der Einkaufsliste, in der Seitenleiste und oben im Menü am Handy (seit 0.6.1; in 0.6.0 unter „Weitere Bereiche“). Sie sucht mit Zutaten aus dem Vorrat bei Cookidoo und Chefkoch; das geht ohne Einrichtung, auch offline. Vorschläge von Claude brauchen einen API-Schlüssel von Anthropic. Die Regeln stehen in [`integrationen.md`](integrationen.md), Abschnitt 13.
 
 ### 21.1 Schlüssel anlegen
 

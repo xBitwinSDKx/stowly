@@ -33,10 +33,23 @@ describe("App", () => {
 
   it("wechselt über die Navigation die Ansicht", async () => {
     renderApp();
+    // „Was koche ich?" steht gleich hinter der Einkaufsliste (seit 0.6.0).
+    expect(within(mainNavigation()).getAllByRole("link").map((link) => link.textContent?.replace(/\d+$/, ""))).toEqual([
+      "Bestand",
+      "Einkaufsliste",
+      "Was koche ich?",
+      "Zonen",
+      "Einstellungen",
+    ]);
     await userEvent.click(within(mainNavigation()).getByRole("link", { name: "Zonen" }));
     expect(await screen.findByRole("heading", { name: "Zonen" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Bearbeiten: Gefrierschrank" })).toBeInTheDocument();
     expect(window.location.pathname).toBe(ROUTES.zones);
+
+    await userEvent.click(within(mainNavigation()).getByRole("link", { name: "Was koche ich?" }));
+    expect(await screen.findByRole("heading", { name: "Was koche ich?", level: 1 })).toBeInTheDocument();
+    expect(window.location.pathname).toBe(ROUTES.cook);
+    expect(within(mainNavigation()).getByRole("link", { name: "Was koche ich?" })).toHaveAttribute("aria-current", "page");
   });
 
   it("führt über die kleinen Symbole und das Geräte-Menü in die weiteren Bereiche", async () => {
@@ -44,7 +57,6 @@ describe("App", () => {
     const more = screen.getByRole("navigation", { name: "Weitere Bereiche" });
     expect(within(more).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual([
       "Warnungen",
-      "Was koche ich?",
       "Lösch-Historie",
       "Statistik",
       "Drucker: 4 Etiketten offen",
@@ -53,10 +65,6 @@ describe("App", () => {
 
     await userEvent.click(within(more).getByRole("link", { name: "Lösch-Historie" }));
     expect(await screen.findByRole("heading", { name: "Lösch-Historie" })).toBeInTheDocument();
-
-    await userEvent.click(within(more).getByRole("link", { name: "Was koche ich?" }));
-    expect(await screen.findByRole("heading", { name: "Was koche ich?", level: 1 })).toBeInTheDocument();
-    expect(window.location.pathname).toBe(ROUTES.cook);
 
     await userEvent.click(screen.getByRole("button", { name: /Dieses Gerät/ }));
     const menu = screen.getByRole("menu", { name: "Geräte-Menü" });
@@ -329,10 +337,10 @@ describe("Rahmen am Handy", () => {
     expect(within(menu).getAllByRole("link").map((link) => link.textContent?.replace(/\d+$/, ""))).toEqual([
       "Bestand",
       "Einkaufsliste4 offen",
+      "Was koche ich?",
       "Zonen",
       "Einstellungen",
       "Warnungen",
-      "Was koche ich?",
       "Lösch-Historie",
       "Statistik",
       "Drucker4 offen",

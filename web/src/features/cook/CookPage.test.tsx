@@ -318,7 +318,7 @@ describe("Vorschläge von Claude", () => {
     await userEvent.click(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Bestand" }));
     await screen.findByRole("heading", { name: "Bestand", level: 1 });
     const lastJob = vi.spyOn(core.ai, "lastJob");
-    await userEvent.click(within(screen.getByRole("navigation", { name: "Weitere Bereiche" })).getByRole("link", { name: "Was koche ich?" }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Was koche ich?" }));
     await ready();
     expect(await within(claude()).findByText("Claude überlegt …")).toBeInTheDocument();
     expect(lastJob).toHaveBeenCalled();
@@ -332,7 +332,7 @@ describe("Vorschläge von Claude", () => {
     expect(await within(claude()).findAllByRole("article")).toHaveLength(3);
     await userEvent.click(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Einstellungen" }));
     await screen.findByRole("heading", { name: "Einstellungen", level: 1 });
-    await userEvent.click(within(screen.getByRole("navigation", { name: "Weitere Bereiche" })).getByRole("link", { name: "Was koche ich?" }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Hauptnavigation" })).getByRole("link", { name: "Was koche ich?" }));
     await ready();
     expect(await within(claude()).findAllByRole("article")).toHaveLength(3);
   });

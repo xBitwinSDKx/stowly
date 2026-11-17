@@ -2,6 +2,14 @@
 
 Jede Version, die auf GitHub erscheint, steht hier. Der Abschnitt einer Version wird zum Text ihres Releases; die App zeigt ihn unter Einstellungen → Aktualisierung. Muss beim Umstieg etwas von Hand geschehen (`docker-compose.yml`, `.env`, der Updater), steht es unter „Von Hand".
 
+## 0.6.1
+
+„Was koche ich?“ in der Hauptnavigation.
+
+- **Navigation:** „Was koche ich?“ steht jetzt gleich hinter der Einkaufsliste, am PC in der Seitenleiste und am Handy oben im Menü. Unter „Weitere Bereiche“ fällt es dafür weg.
+
+Von Hand: nichts.
+
 ## 0.6.0
 
 Was koche ich? Rezeptideen aus dem Vorrat, zuerst mit dem, was bald abläuft.
